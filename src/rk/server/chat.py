@@ -64,13 +64,29 @@ class ChatManager:
             entry.lock.release()
 
     def close(self, chat_id: str) -> bool:
+        """End a chat: it takes no further messages at once, but a turn still running finishes before the session
+        (its working directory) and its token go."""
         with self._mutex:
             entry = self._sessions.pop(chat_id, None)
         if entry is None:
             return False
-        entry.session.close()
-        self.kernel.tokens.revoke(chat_id)
+        if entry.lock.acquire(blocking=False):
+            self._end(chat_id, entry)
+        else:
+            threading.Thread(target=self._end_after_turn, args=(chat_id, entry), name="rk-chat-close",
+                             daemon=True).start()
         return True
+
+    def _end_after_turn(self, chat_id: str, entry: _Open) -> None:
+        entry.lock.acquire()
+        self._end(chat_id, entry)
+
+    def _end(self, chat_id: str, entry: _Open) -> None:
+        try:
+            entry.session.close()
+            self.kernel.tokens.revoke(chat_id)
+        finally:
+            entry.lock.release()
 
     def close_all(self) -> None:
         for chat_id in list(self._sessions):

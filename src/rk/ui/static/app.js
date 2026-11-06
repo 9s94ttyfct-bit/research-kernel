@@ -127,7 +127,7 @@ function listen(fn) {
 // pages
 
 const pages = {};
-let unlisten = null;
+let leaving = [];  // what the shown page undoes when the user moves on: its subscriptions, its open chat
 let chatOpens = 0;  // numbers each chat.open so a re-rendered chat page ignores the replies meant for an earlier render
 
 function needProject() {
@@ -186,10 +186,25 @@ pages.chat = async (root) => {
   let current = null;
   const ref = ++chatOpens;
   state.chat = null;  // until this render's own chat.opened arrives
+  const ws = state.ws;
+  let chat = null, left = false;
+  const close = (id) => { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "chat.close", chat_id: id })); };
+  // Kept past leaving the page: a chat opened for this render after the user has moved on is closed, not leaked.
+  const stopOpening = listen((msg) => {
+    if (msg.ref !== ref || (msg.type !== "chat.opened" && msg.type !== "chat.error")) return;
+    stopOpening();
+    if (msg.type === "chat.error") status.textContent = `Chat unavailable: ${msg.message}`;
+    else if (left) close(msg.chat_id);
+    else { chat = state.chat = msg.chat_id; status.textContent = `Talking to ${msg.driver}.`; }
+  });
+  root.onLeave(() => {
+    left = true;
+    if (!chat) return;
+    close(chat);
+    if (state.chat === chat) state.chat = null;
+  });
   const add = (node) => { transcript.append(node); node.scrollIntoView({ block: "end" }); return node; };
   root.listen((msg) => {
-    if (msg.type === "chat.opened" && msg.ref === ref) { state.chat = msg.chat_id; status.textContent = `Talking to ${msg.driver}.`; }
-    if (msg.type === "chat.error" && msg.ref === ref) { status.textContent = `Chat unavailable: ${msg.message}`; }
     if (msg.type !== "chat" || msg.chat_id !== state.chat) return;
     if (msg.kind === "text") {
       current = current || add(el("div", { class: "msg" }));
@@ -476,18 +491,19 @@ pages.settings = async (root) => {
 let renders = 0;
 
 async function route() {
-  if (unlisten) { unlisten(); unlisten = null; }
+  for (const undo of leaving.splice(0)) undo();
   const render = ++renders;
   const current = () => render === renders;
   const [path, query] = location.hash.replace(/^#\/?/, "").split("?");
   const name = pages[path] ? path : state.project ? "chat" : "projects";
   document.querySelectorAll(".rail a").forEach((a) => { if (a.dataset.page !== name) a.removeAttribute("aria-current"); else a.setAttribute("aria-current", "page"); });
-  // Pages draw and subscribe through this root, so a page still awaiting its data when the user has moved on to
-  // another page neither draws over that page nor takes its live updates.
+  // Pages draw, subscribe and register what to undo on leaving through this root, so a page still awaiting its data
+  // when the user has moved on to another page neither draws over that page nor takes its live updates.
   const page = $("#page");
   const root = {
     replaceChildren: (...nodes) => { if (current()) page.replaceChildren(...nodes); },
-    listen: (fn) => { if (current()) unlisten = listen(fn); },
+    listen: (fn) => { if (current()) leaving.push(listen(fn)); },
+    onLeave: (fn) => { if (current()) leaving.push(fn); },
   };
   try {
     await pages[name](root, new URLSearchParams(query || ""));

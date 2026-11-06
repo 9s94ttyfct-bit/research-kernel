@@ -477,6 +477,7 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
 
         pump_task = asyncio.create_task(pump())
         streams: set[asyncio.Task] = set()
+        opened: set[str] = set()  # chats opened over this socket; the page that holds them goes with it
         try:
             while True:
                 msg = await websocket.receive_json()
@@ -486,6 +487,7 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
                     ref = msg.get("ref")  # echoed so a page binds only to the chat it asked for
                     try:
                         chat_id = await run_in_threadpool(chats.open, driver, "lead", slug)
+                        opened.add(chat_id)
                         await send({"type": "chat.opened", "ref": ref, "chat_id": chat_id, "driver": driver})
                     except (ValueError, LookupError) as e:
                         await send({"type": "chat.error", "ref": ref, "message": str(e)})
@@ -494,6 +496,7 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
                     streams.add(t)
                     t.add_done_callback(streams.discard)
                 elif kind == "chat.close" and msg.get("chat_id"):
+                    opened.discard(msg["chat_id"])
                     await run_in_threadpool(chats.close, msg["chat_id"])
         except WebSocketDisconnect:
             pass
@@ -501,5 +504,7 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
             pump_task.cancel()
             for t in streams:
                 t.cancel()
+            for chat_id in opened:
+                chats.close(chat_id)  # a turn still running finishes first (in its own thread)
 
     return r

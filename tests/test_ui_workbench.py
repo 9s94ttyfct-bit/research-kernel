@@ -218,3 +218,26 @@ def test_ws_chat_with_fake_driver(ui, project, fake, monkeypatch):
     for t in threading.enumerate():
         if t.name == "rk-ui-chat":
             t.join(10)
+
+
+def test_ws_disconnect_closes_its_chats(ui, project, fake):
+    exe, _records = fake
+    save_settings(load_settings().model_copy(update={"cli_paths": {"claude": exe}}))
+
+    def open_chat(ws, ref):
+        ws.send_json({"type": "chat.open", "driver": "claude_cli", "ref": ref})
+        return next(m for m in iter(ws.receive_json, None) if m["type"] == "chat.opened")["chat_id"]
+
+    with ui.websocket_connect("/ui/ws?project=demo", headers=W) as other:
+        assert other.receive_json()["type"] == "hello"
+        kept = open_chat(other, 1)
+        with ui.websocket_connect("/ui/ws?project=demo", headers=W) as ws:
+            assert ws.receive_json()["type"] == "hello"
+            first, second = open_chat(ws, 1), open_chat(ws, 2)
+            ws.send_json({"type": "chat.close", "chat_id": first})
+            assert open_chat(ws, 3) not in (first, second)  # chat.close is handled in order, before this open
+            assert first not in ui.chats._sessions and second in ui.chats._sessions
+        deadline = time.time() + 5
+        while time.time() < deadline and len(ui.chats._sessions) > 1:
+            time.sleep(0.05)
+        assert list(ui.chats._sessions) == [kept]  # the closed socket's chats are gone; the other socket's stay

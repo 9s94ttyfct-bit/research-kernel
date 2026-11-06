@@ -24,9 +24,10 @@ def kernel(tmp_home, replay_http):
 def ui(kernel):
     auth = UiAuth(ORIGIN)
     reg = build_registry(kernel)
-    app = create_app(reg, SERVE_TOKEN, tokens=kernel.tokens, chats=ChatManager(kernel, reg), ui=auth, kernel=kernel)
+    chats = ChatManager(kernel, reg)
+    app = create_app(reg, SERVE_TOKEN, tokens=kernel.tokens, chats=chats, ui=auth, kernel=kernel)
     client = TestClient(app)
-    client.auth_ui = auth
+    client.auth_ui, client.chats = auth, chats
     return client
 
 

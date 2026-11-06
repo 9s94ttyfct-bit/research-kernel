@@ -2,7 +2,9 @@ import json
 import shutil
 import stat
 import sys
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,7 +14,8 @@ from rk.llm.chat.omp_gateway import OmpGatewayBackend
 from rk.llm.chat_provider import ChatApiProvider
 from rk.llm.cli_claude import ClaudeCliProvider
 from rk.llm.cli_codex import CodexCliProvider
-from rk.llm.types import ChatSpec, RunContext
+from rk.llm.types import ChatEvent, ChatSpec, RunContext
+from rk.server.chat import ChatManager, _Open
 
 from .test_agent_loop import ScriptedBackend
 
@@ -121,6 +124,37 @@ def test_server_chat_endpoints_with_fake_claude(fake, monkeypatch, tmp_home, liv
     assert live_server.kernel.tokens.lookup(token) is None  # session token dies with the session
     bad = list(live_server.chat_send(chat_id, "after close"))
     assert bad[0]["kind"] == "error"
+
+
+def test_chat_close_waits_for_the_running_turn():
+    """Closing a chat mid-turn takes it out of use at once, but its session (working directory) and token go only
+    after the turn ends, so a closed or abandoned chat never pulls them out from under a running CLI."""
+    revoked = []
+    mgr = ChatManager(SimpleNamespace(tokens=SimpleNamespace(revoke=revoked.append)), None)
+    started, finish, closed = threading.Event(), threading.Event(), threading.Event()
+
+    class Session:
+        def send(self, text):
+            started.set()
+            finish.wait(5)
+            yield ChatEvent("done", {})
+
+        def close(self):
+            closed.set()
+
+    mgr._sessions["c1"] = _Open(Session(), threading.Lock(), "fake")
+    events = []
+    turn = threading.Thread(target=lambda: events.extend(mgr.send("c1", "hi")))
+    turn.start()
+    assert started.wait(5)
+    assert mgr.close("c1")
+    assert not closed.is_set() and revoked == []  # the turn is still running
+    with pytest.raises(KeyError):
+        list(mgr.send("c1", "again"))
+    finish.set()
+    turn.join(5)
+    assert closed.wait(5) and revoked == ["c1"] and [e.kind for e in events] == ["done"]
+    assert not mgr.close("c1")
 
 
 # ---------------- live: memory across turns on each driver family ----------------

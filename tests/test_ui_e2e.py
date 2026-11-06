@@ -37,13 +37,13 @@ def workbench(tmp_home, replay_http, fake):
     registry = build_registry(kernel)
     origin = f"http://127.0.0.1:{rt.port}"
     ui = UiAuth(origin)
-    app = create_app(registry, rt.token, tokens=kernel.tokens, chats=ChatManager(kernel, registry), ui=ui,
-                     kernel=kernel)
+    chats = ChatManager(kernel, registry)
+    app = create_app(registry, rt.token, tokens=kernel.tokens, chats=chats, ui=ui, kernel=kernel)
     server = uvicorn.Server(uvicorn.Config(app, log_level="warning"))
     t = threading.Thread(target=server.run, kwargs={"sockets": [rt.sock]}, daemon=True)
     t.start()
     time.sleep(0.5)
-    yield kernel, ui
+    yield kernel, ui, chats
     server.should_exit = True
     t.join(5)
     kernel.close()
@@ -54,7 +54,7 @@ def workbench(tmp_home, replay_http, fake):
 def page(workbench):
     from playwright.sync_api import sync_playwright
 
-    _, ui = workbench
+    _, ui, _ = workbench
     with sync_playwright() as p:
         try:
             browser = p.chromium.launch(headless=True)
@@ -105,7 +105,7 @@ def test_slow_page_does_not_render_over_a_newer_one(page, monkeypatch):
 
 
 def test_answer_checkpoint_from_ui(page, workbench):
-    kernel, _ = workbench
+    kernel, _, _ = workbench
     ps, _ = kernel.project("demo")
     chk = create_checkpoint(ps, "captcha_wait", "Google Scholar shows a CAPTCHA.", ["done"], actor="kernel:browser")
     page.goto(page.url.split("#")[0] + "#/checkpoints")
@@ -118,7 +118,7 @@ def test_answer_checkpoint_from_ui(page, workbench):
 
 
 def test_library_search_and_badges(page, workbench):
-    kernel, _ = workbench
+    kernel, _, _ = workbench
     ps, lib = kernel.project("demo")
     iid = lib.add_item(ItemIn(title="Encapsulation of fixture cells", year=2024, creators=[Creator(family="Author")],
                               ids=Ids(doi="10.5555/ok")), added_by="human", actor="t").item_id
@@ -145,7 +145,7 @@ def test_chat_roundtrip_fake_driver(page, monkeypatch):
     assert page.errors == []
 
 
-def test_chat_ignores_a_superseded_open(page, monkeypatch):
+def test_chat_ignores_a_superseded_open(page, workbench, monkeypatch):
     """Re-rendering the chat page opens a new chat; the earlier render's ``chat.opened`` arriving late must not bind
     the new page to that chat (whose replies the page would then drop once its own ``chat.opened`` arrives)."""
     monkeypatch.setenv("FAKE_KIND", "claude")
@@ -164,3 +164,31 @@ def test_chat_ignores_a_superseded_open(page, monkeypatch):
     page.get_by_role("button", name="Send").click()
     page.locator(".msg:not(.you)").first.wait_for(timeout=10_000)
     assert page.errors == []
+    _, _, chats = workbench
+    until(lambda: len(chats._sessions) == 1)  # the superseded renders' chats, opened after they were left, are closed
+
+
+def test_leaving_the_chat_page_closes_its_chat(page, workbench):
+    _, _, chats = workbench
+    base = page.url.split("#")[0]
+    page.get_by_text("Talking to claude_cli.").wait_for()  # login lands on Chat
+    until(lambda: len(chats._sessions) == 1)
+    page.goto(base + "#/library")
+    page.wait_for_function("document.querySelector('main h1')?.textContent === 'Library'")
+    until(lambda: not chats._sessions)
+    page.goto(base + "#/chat")
+    page.get_by_text("Talking to claude_cli.").wait_for()
+    (second,) = until(lambda: list(chats._sessions))
+    page.goto(base + "#/chat?again")  # supersedes that render's chat
+    until(lambda: list(chats._sessions) not in ([], [second]) and second not in chats._sessions)
+    assert len(chats._sessions) == 1
+    assert page.errors == []
+
+
+def until(pred, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if v := pred():
+            return v
+        time.sleep(0.05)
+    raise AssertionError("condition not reached")
