@@ -16,8 +16,8 @@ _CAPTCHA_MARKUP = re.compile(
     r"""(?:id|class)\s*=\s*["'][^"']*\b(?:gs_captcha_ccl|captcha-form|g-recaptcha|h-captcha|cf-turnstile|"""
     r"""cf-challenge[\w-]*|challenge-form)\b|src\s*=\s*["'][^"']*(?:recaptcha|hcaptcha\.com|challenges\.cloudflare)""",
     re.IGNORECASE)
-_CAPTCHA_TEXT = re.compile(r"unusual traffic|not a robot|verify (?:that )?you are (?:a )?human|are you a robot",
-                           re.IGNORECASE)
+_CAPTCHA_TEXT = re.compile(r"unusual traffic|not a robot|verify (?:that )?you are (?:a )?human|are you a robot|"
+                           r"sending automated queries", re.IGNORECASE)
 _LOGIN_HOST = re.compile(r"(?:^|\.)(?:login|signin|sso|idp|auth|wayf|shibboleth)\.|openathens", re.IGNORECASE)
 _LOGIN_PATH = re.compile(
     r"(?:^|[/?&=])(?:log-?in|sign-?in|sso|shibboleth(?:\.sso)?|cas/login|adfs|wayf|showlogin|saml2?)(?:$|[/?&.=_-])",

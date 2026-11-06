@@ -29,6 +29,15 @@ def test_unusual_traffic_text():
     assert detect_block("https://scholar.google.com/scholar?q=x", html).kind == "captcha"
 
 
+def test_scholar_automated_queries_page():
+    # Served at the normal results URL (probed live 2026-11-06), no /sorry/ path and no CAPTCHA widget.
+    html = ("<html><head><title>Sorry...</title></head><body><h1>We're sorry...</h1><p>... but your computer or "
+            "network may be sending automated queries. To protect our users, we can't process your request right "
+            "now.</p></body></html>")
+    b = detect_block("https://scholar.google.com/scholar?hl=en&q=x", html)
+    assert b and b.kind == "captcha"
+
+
 def test_unusual_traffic_in_hidden_script_is_ignored():
     html = '<html><body><script>var msg = "unusual traffic";</script><p>Results</p></body></html>'
     assert detect_block("https://scholar.google.com/scholar?q=x", html) is None
