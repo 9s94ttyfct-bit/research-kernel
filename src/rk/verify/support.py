@@ -2,8 +2,8 @@
 
 supported      ≥ min_judges cross-vendor judges, all "supported" (with verbatim quotes), and p ≥ τ_hi —
                or p ≥ τ_hi_judged when at least two such judges agree
-unsupported /  ≥ min_judges judges, all "unsupported"/"contradicted", and p ≤ τ_lo —
-contradicted   or p ≤ τ_lo_judged when at least two such judges agree
+unsupported /  ≥ min_judges judges sharing one label ("unsupported", or "contradicted"), and p ≤ τ_lo —
+contradicted   or p ≤ τ_lo_judged when at least two such judges agree (a split between the two is not agreement)
 uncertain      everything else, including a missing layer 1, missing evidence, or too few eligible judges
 
 τ_hi/τ_lo are calibrated on layer 1 alone; τ_*_judged jointly on layer 1 plus two judges (``rk eval support``).
@@ -60,8 +60,9 @@ def combine(p: float | None, opinions: list[JudgeOpinion], *, tau_hi: float, tau
             lo = max(tau_lo, tau_lo_judged)
     if p >= hi and labels == {"supported"}:
         return "supported"
-    if p <= lo and labels <= {"unsupported", "contradicted"}:
-        return "contradicted" if labels == {"contradicted"} else "unsupported"
+    # Agreement means one shared label: a split between "unsupported" and "contradicted" is not agreement.
+    if p <= lo and labels in ({"unsupported"}, {"contradicted"}):
+        return labels.pop()
     return "uncertain"
 
 

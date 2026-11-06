@@ -63,12 +63,12 @@ def calibrate_joint(rows: list[tuple[float | None, list[str], str]], *, target_p
     """Layer-1 thresholds for the judged tier, from (p, valid judge labels, gold) on a calibration sample.
 
     τ_hi_judged: smallest p threshold such that, among pairs where ≥2 judges all say "supported" and p ≥ τ, at least
-    ``target_precision`` are gold-supported. τ_lo_judged: largest threshold such that, among pairs where ≥2 judges all
-    say unsupported/contradicted and p ≤ τ, at least ``target_precision`` are not gold-supported. None when the target
-    cannot be reached (the judged tier then never relaxes layer 1)."""
+    ``target_precision`` are gold-supported. τ_lo_judged: largest threshold such that, among pairs where ≥2 judges
+    agree on one negative label (all "unsupported" or all "contradicted") and p ≤ τ, at least ``target_precision`` are
+    not gold-supported. None when the target cannot be reached (the judged tier then never relaxes layer 1)."""
     agree_sup = [(p, g) for p, labels, g in rows if p is not None and len(labels) >= 2 and set(labels) == {"supported"}]
-    agree_neg = [(p, g) for p, labels, g in rows
-                 if p is not None and len(labels) >= 2 and set(labels) <= {"unsupported", "contradicted"}]
+    agree_neg = [(p, g) for p, labels, g in rows if p is not None and len(labels) >= 2
+                 and set(labels) in ({"unsupported"}, {"contradicted"})]
     return {"tau_hi_judged": _smallest_hi(agree_sup, target_precision),
             "tau_lo_judged": _largest_lo(agree_neg, target_precision),
             "n": len(rows), "n_agree_supported": len(agree_sup), "n_agree_negative": len(agree_neg),

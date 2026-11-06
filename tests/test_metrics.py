@@ -102,8 +102,9 @@ def test_joint_calibration_report_and_opinion_cache(tmp_home, tmp_path):
 
 def test_calibrate_joint_unreachable_and_empty():
     rows = [(0.9, ["supported", "supported"], "unsupported"), (0.8, ["supported"], "supported"),
-            (0.1, ["unsupported", "contradicted"], "supported")]
+            (0.1, ["contradicted", "contradicted"], "supported"), (0.05, ["unsupported", "contradicted"], "unsupported")]
     j = calibrate_joint(rows, target_precision=0.95)
     assert j["tau_hi_judged"] is None and j["tau_lo_judged"] is None  # agreement exists but is wrong
-    assert j["n_agree_supported"] == 1 and j["n_agree_negative"] == 1  # single-judge rows never count
+    # single-judge rows and split unsupported/contradicted rows never count as agreement
+    assert j["n_agree_supported"] == 1 and j["n_agree_negative"] == 1
     assert calibrate_joint([], target_precision=0.95)["tau_hi_judged"] is None

@@ -33,7 +33,8 @@ def op(label, error=None):
     (0.9, ["supported", "partial"], 2, "uncertain"),
     (0.5, ["supported", "supported"], 2, "uncertain"),  # layer 1 in the grey zone
     (0.1, ["contradicted", "contradicted"], 2, "contradicted"),
-    (0.1, ["contradicted", "unsupported"], 2, "unsupported"),
+    (0.1, ["contradicted", "unsupported"], 2, "uncertain"),  # split negative labels are not agreement
+    (0.1, ["unsupported", "unsupported"], 2, "unsupported"),
     (0.1, ["supported", "unsupported"], 2, "uncertain"),
     (0.9, ["unsupported", "unsupported"], 2, "uncertain"),  # layers disagree
     (None, ["supported", "supported"], 2, "uncertain"),
@@ -52,7 +53,8 @@ def test_failed_judges_do_not_count():
     (0.3, ["supported", "supported"], 2, "uncertain"),      # still below the judged threshold
     (0.5, ["supported"], 1, "uncertain"),                   # one judge: layer-1-only τ_hi = 0.85 applies
     (0.5, ["supported", "partial"], 2, "uncertain"),        # judges disagree: no verdict at any p
-    (0.55, ["unsupported", "contradicted"], 2, "unsupported"),  # τ_lo_judged = 0.6
+    (0.55, ["unsupported", "unsupported"], 2, "unsupported"),  # τ_lo_judged = 0.6
+    (0.55, ["unsupported", "contradicted"], 2, "uncertain"),   # split: no agreement, no relaxation
     (0.55, ["unsupported"], 1, "uncertain"),
     (0.7, ["contradicted", "contradicted"], 2, "uncertain"),
 ])
