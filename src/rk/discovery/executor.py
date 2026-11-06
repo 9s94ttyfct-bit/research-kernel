@@ -8,6 +8,7 @@ from typing import Protocol
 
 from pydantic import BaseModel
 
+from rk.llm.drivers import DriverSpec
 from rk.llm.runner import run_task
 from rk.llm.types import Provider, TaskResult
 from rk.orchestrator.graph import OPEN_STAGES
@@ -32,13 +33,19 @@ class RateCapped(Exception):
 
 class TaskExecutor(Protocol):
     def run(self, role: str, instructions: str, inputs: dict, output_schema: type[BaseModel], *, stage: str,
-            attempt: int, tools: list[str] | None = None) -> TaskResult: ...
+            attempt: int, tools: list[str] | None = None, driver: DriverSpec | None = None,
+            provider: Provider | None = None, max_turns: int | None = None,
+            timeout_s: int | None = None) -> TaskResult:
+        """``driver`` (and ``provider``) replace the role's configured driver, e.g. a V-SUPPORT judge; ``max_turns`` and
+        ``timeout_s`` default to ``run_task``'s."""
+        ...
 
 
 class KernelExecutor:
     """Runs role tasks with ``run_task`` and links each to its stage attempt (event ``run.task``). With a ``run_id``
     (D2) a task in an open stage first checks the stage budget of the run session; without one (D1) there is no
-    budget. ``provider_for`` (role -> provider) replaces the configured drivers, e.g. in tests."""
+    budget. ``provider_for`` (role -> provider) replaces the configured drivers, e.g. in tests; a ``provider`` given to
+    ``run`` takes precedence."""
 
     def __init__(self, kernel, registry, project: str, *, run_id: str | None, session: int | None,
                  max_tasks_per_stage: int = 40, provider_for: Callable[[str], Provider] | None = None,
@@ -48,15 +55,20 @@ class KernelExecutor:
         self.provider_for, self.actor = provider_for, actor
 
     def run(self, role: str, instructions: str, inputs: dict, output_schema: type[BaseModel], *, stage: str,
-            attempt: int, tools: list[str] | None = None) -> TaskResult:
+            attempt: int, tools: list[str] | None = None, driver: DriverSpec | None = None,
+            provider: Provider | None = None, max_turns: int | None = None,
+            timeout_s: int | None = None) -> TaskResult:
         ps, _ = self.kernel.project(self.project)
         if self.run_id is not None and stage in OPEN_STAGES:
             used = tasks_used(ps, self.run_id, self.session, stage)
             if used >= self.max_tasks_per_stage:
                 raise BudgetExceeded(stage, used, self.max_tasks_per_stage)
-        provider = self.provider_for(role) if self.provider_for else None
+        if provider is None and self.provider_for:
+            provider = self.provider_for(role)
+        limits = {k: v for k, v in (("max_turns", max_turns), ("timeout_s", timeout_s)) if v is not None}
         result = run_task(self.kernel, self.registry, project=self.project, role=role, instructions=instructions,
-                          inputs=inputs, output_schema=output_schema, provider=provider, tools=tools, actor=self.actor)
+                          inputs=inputs, output_schema=output_schema, driver=driver, provider=provider, tools=tools,
+                          actor=self.actor, **limits)
         record_run_task(ps, task_id=result.task_id, run_id=self.run_id, session=self.session, stage=stage,
                         attempt=attempt, actor=self.actor)
         if result.error == "rate_capped":

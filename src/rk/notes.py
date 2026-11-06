@@ -14,10 +14,10 @@ from rk.library.service import Library, fts_append
 from rk.store.events import Event, NewEvent
 from rk.store.project import ProjectStore
 from rk.store.projections import projection
-from rk.text.layer import build_norm_keys, normalize_query
+from rk.text.layer import TextLayer, build_norm_keys, normalize_query
 from rk.verify.hedge import hedge_level
 from rk.verify.paraphrase import check_paraphrase
-from rk.verify.quote import verify_quote
+from rk.verify.quote import QuoteResult, verify_quote
 
 NoteKind = Literal["quote", "paraphrase", "summary", "own"]
 RoleInSource = Literal["main", "sub", "concession", "qualification", "summary_of_other"]
@@ -53,6 +53,16 @@ class NoteRejected(Exception):
         self.details = details
 
 
+def _at_locator(layer: TextLayer, loc: Locator, text: str) -> bool:
+    """Whether the layer holds ``text`` at ``loc`` (both normalized as V-QUOTE normalizes a quote), so a quote whose
+    position is known (e.g. a kernel-chosen passage) keeps it even when the same text occurs earlier."""
+    page = next((p for p in layer.pages if p.n == loc.page), None)
+    if page is None or not 0 <= loc.start < loc.end <= len(page.text):
+        return False
+    q = normalize_query(text)
+    return bool(q) and normalize_query(page.text[loc.start:loc.end]) == q
+
+
 def add_note(ps: ProjectStore, lib: Library, note: NoteIn, *, actor: str,
              actor_kind: Literal["human", "agent"] = "agent") -> NoteResult:
     lib.get(note.source_id)
@@ -71,7 +81,10 @@ def add_note(ps: ProjectStore, lib: Library, note: NoteIn, *, actor: str,
         target = note.text if note.kind == "quote" else note.source_span
         if note.kind == "paraphrase" and not (note.source_span or "").strip():
             raise ValueError("paraphrase notes need source_span (the original passage)")
-        q = verify_quote(target, layer)
+        if note.kind == "quote" and note.locator is not None and _at_locator(layer, note.locator, target):
+            q = QuoteResult(ok=True, page=note.locator.page, start=note.locator.start, end=note.locator.end)
+        else:  # locate the text (a given locator that does not hold it is replaced)
+            q = verify_quote(target, layer)
         if not q.ok:
             raise NoteRejected("quote_not_found" if note.kind == "quote" else "span_not_found",
                                best_snippet=q.best_snippet, best_score=q.best_score, page=q.page)

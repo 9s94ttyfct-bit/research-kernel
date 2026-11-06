@@ -17,7 +17,7 @@ from rk.discovery.store import add_gap, clusters, gaps, intake_of
 from rk.fulltext import latest_snapshot
 from rk.library.service import Library
 from rk.llm.drivers import DriverSpec
-from rk.notes import NoteIn, NoteRejected, add_note
+from rk.notes import Locator, NoteIn, NoteRejected, add_note
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.orchestrator.state import stage_row
 from rk.store.project import ProjectStore
@@ -134,11 +134,11 @@ def fulltext_clusters(ctx: StageContext, clusters: list[dict], *, min_works: int
 
 
 def quote_note(ctx: StageContext, checks: Checks, name: str, source_id: str, quote: str, *, role_in_source: str,
-               keywords: list[str]) -> str | None:
-    """Keep ``quote`` as a quote note of the source (V-QUOTE); the check ``name`` records whether it passed. The note
-    id, or ``None``."""
+               keywords: list[str], locator: Locator | None = None) -> str | None:
+    """Keep ``quote`` as a quote note of the source (V-QUOTE; a ``locator`` that holds the quote is kept); the check
+    ``name`` records whether it passed. The note id, or ``None``."""
     try:
-        note = add_note(ctx.ps, ctx.lib, NoteIn(source_id=source_id, kind="quote", text=quote,
+        note = add_note(ctx.ps, ctx.lib, NoteIn(source_id=source_id, kind="quote", text=quote, locator=locator,
                                                 role_in_source=role_in_source, keywords=keywords),
                         actor=ctx.actor, actor_kind="agent")
     except NoteRejected as e:
@@ -158,8 +158,9 @@ def title_year(lib: Library, item_id: str) -> str:
 
 class SupportMiner:
     """A miner that checks a quoted statement against evidence notes with V-SUPPORT (two agreeing cross-vendor judges,
-    no ``uncertain_support`` checkpoint). ``layer1``, ``judge_drivers`` and ``judge_providers`` replace the configured
-    layer-1 model and judges (tests)."""
+    no ``uncertain_support`` checkpoint). The judge tasks run through the stage's task executor, so they count toward
+    the stage budget and a rate-capped judge pauses the run (``BudgetExceeded`` / ``RateCapped`` propagate).
+    ``layer1``, ``judge_drivers`` and ``judge_providers`` replace the configured layer-1 model and judges (tests)."""
 
     def __init__(self, layer1=None, judge_drivers: list[DriverSpec] | None = None,
                  judge_providers: dict | None = None):
@@ -170,6 +171,11 @@ class SupportMiner:
         """Store ``text`` as a gap-mining claim (written by ``generator_vendor``) with the notes as its evidence and run
         V-SUPPORT on it; records ``claim_id``, ``verdict``, ``p`` and ``opinions`` in ``data``. The check
         ``support`` is left to the caller (which verdict passes depends on the gap)."""
+
+        def run(*, role: str, instructions: str, inputs: dict, output_schema, **task):
+            return ctx.executor.run(role, instructions, inputs, output_schema, stage=ctx.stage, attempt=ctx.attempt,
+                                    **task)
+
         svc = ArgumentService(ctx.ps)
         try:
             claim = ClaimIn(text=text)
@@ -180,7 +186,7 @@ class SupportMiner:
         svc.link_evidence(EvidenceIn(claim_id=cid, note_ids=note_ids), actor=ctx.actor)
         res = verify_support(ctx.kernel, ctx.registry, ctx.ps, cid, actor=ctx.actor, layer1=self.layer1,
                              judge_drivers=self.judge_drivers, judge_providers=self.judge_providers,
-                             min_judges=SUPPORT_JUDGES, checkpoint=False)
+                             min_judges=SUPPORT_JUDGES, checkpoint=False, run=run)
         data.update(claim_id=cid, verdict=res.verdict, p=res.p,
                     opinions=[o.model_dump(mode="json") for o in res.opinions])
         return res

@@ -4,18 +4,22 @@ import pytest
 
 from rk.argument import ArgumentService
 from rk.checkpoints import list_checkpoints
-from rk.discovery.gaps import GapsWorker
+from rk.config import load_settings, save_settings
+from rk.discovery.executor import BudgetExceeded, KernelExecutor, RateCapped
+from rk.discovery.gaps import GapsWorker, distortion
 from rk.discovery.gaps.contradiction import MAX_PAIRS, ContradictionMiner
 from rk.discovery.gaps.distortion import MAX_ITEMS, DistortionMiner
-from rk.discovery.models import Cluster
-from rk.discovery.passages import top_passages
+from rk.discovery.models import Cluster, ContradictionsOut
+from rk.discovery.passages import Passage, top_passages
 from rk.discovery.store import add_cluster, gaps
 from rk.library.models import Ids, ItemIn
 from rk.llm.drivers import DriverSpec
+from rk.llm.types import Availability, TaskResult
 from rk.notes import list_notes
 from rk.orchestrator.engine import StageContext
-from rk.orchestrator.state import record_passed
+from rk.orchestrator.state import record_passed, tasks_used
 from rk.roles.prompts import build_system_prompt
+from rk.tools.builtin import build_registry
 from rk.verify.support import verify_support
 
 from .discovery_fakes import (
@@ -129,9 +133,12 @@ def test_contradiction_needs_contradicted_verdict(env):
     assert gap["details"]["claim_id"] == cid
     assert TRIAL_A.title in gap["statement"] and TRIAL_B.title in gap["statement"]
     assert QUOTE_A in gap["statement"] and QUOTE_B in gap["statement"]
-    (call,) = ex.calls
-    assert call["inputs"]["guidance"] == "Focus on older adults."
+    call, *judged = ex.calls
+    assert call["role"] == "gapminer" and call["inputs"]["guidance"] == "Focus on older adults."
     assert [w["item_id"] for w in call["inputs"]["clusters"][0]["works"]] == [a, b]
+    # the judges ran through the stage's task executor, on their own drivers
+    assert [(c["role"], c["stage"], c["attempt"], c["driver"]) for c in judged] == [
+        ("judge", "gaps", 1, str(OPENAI)), ("judge_2", "gaps", 1, str(DEEPSEEK))]
 
 
 def test_contradiction_uncertain_verdict_is_stored_unverified(env):
@@ -236,7 +243,7 @@ def test_distortion_without_fulltext_is_unverified(env):
     judges = _judges((OPENAI, "unsupported"), (DEEPSEEK, "unsupported"))
     gap, miner = _run_distortion(env, sources, ex, judges)
     assert gap["verified"] is False and gap["checks"]["fulltext"] == "missing"
-    assert gap["checks"]["citing_quote"] == gap["checks"]["cited"] == "pass"
+    assert gap["checks"]["citing_quote"] == gap["checks"]["cited"] == gap["checks"]["cited_ref"] == "pass"
     assert gap["checks"]["passages"] == gap["checks"]["support"] == "skipped"
     assert gap["checks"]["passage_note_ids"] == [] and miner.layer1.calls == []
     assert ("add", "10.1000/cited") not in sources.calls
@@ -258,6 +265,47 @@ def test_distortion_with_unknown_cited_work_is_unverified(env):
     gap, _ = _run_distortion(env, sources, ex, _judges((OPENAI, "unsupported"), (DEEPSEEK, "unsupported")))
     assert gap["verified"] is False and gap["checks"]["cited"] == "fail"
     assert gap["checks"]["fulltext"] == "skipped" and gap["evidence"]["claim_ids"] == []
+
+
+def test_distortion_needs_the_cited_work_to_pass_v_ref(env):
+    _k, _ps, _lib = env
+    _, sources, ex = _distortion_setup(env, cited={"doi": "10.1000/cited"})
+    sources.statuses = {CITED.title: "mismatch"}
+    judges = _judges((OPENAI, "unsupported"), (DEEPSEEK, "unsupported"))
+    gap, miner = _run_distortion(env, sources, ex, judges)
+    assert gap["verified"] is False and gap["checks"]["cited"] == "pass" and gap["checks"]["cited_ref"] == "fail"
+    assert gap["checks"]["ref_status"] == "mismatch" and "mismatch" in gap["checks"]["reasons"]["cited_ref"]
+    assert gap["checks"]["fulltext"] == gap["checks"]["support"] == "skipped" and miner.layer1.calls == []
+    assert all(j.inputs == [] for j in judges["judge_providers"].values())
+
+
+def test_distortion_with_a_rejected_kernel_passage_is_unverified(env, monkeypatch):
+    _k, _ps, _lib = env
+    _, sources, ex = _distortion_setup(env, cited={"doi": "10.1000/cited"})
+    real = distortion.top_passages
+    monkeypatch.setattr(distortion, "top_passages", lambda *a, **kw: [
+        *real(*a, **kw), Passage(text="A sentence the cited work never contains.", page=1, start=0, end=41)])
+    judges = _judges((OPENAI, "unsupported"), (DEEPSEEK, "unsupported"))
+    gap, miner = _run_distortion(env, sources, ex, judges)
+    assert gap["verified"] is False and gap["checks"]["passages"] == "fail"
+    assert gap["checks"]["support"] == "skipped" and miner.layer1.calls == []
+    assert [r["reason"] for r in gap["checks"]["rejected_passages"]] == ["quote_not_found"]
+    assert "1 of 4 passages" in gap["checks"]["reasons"]["passages"]
+
+
+def test_distortion_passage_notes_keep_their_kernel_positions(env):
+    _k, ps, _lib = env
+    # the cited work repeats its first page: V-QUOTE alone would locate both copies on page 1
+    _, sources, ex = _distortion_setup(env, cited={"doi": "10.1000/cited"},
+                                       fulltexts={CITED.title: [PAGES_CITED[0], PAGES_CITED[0]]})
+    gap, _ = _run_distortion(env, sources, ex, _judges((OPENAI, "unsupported"), (DEEPSEEK, "unsupported")))
+    cited = gap["details"]["cited_id"]
+    passages = top_passages(ps, cited, CITING_QUOTE, k=5)
+    assert sorted(p.page for p in passages) == [1, 2]
+    by_id = {n["id"]: n["locator"] for n in list_notes(ps)}
+    assert [by_id[i] for i in gap["checks"]["passage_note_ids"]] == [
+        {"page": p.page, "start": p.start, "end": p.end} for p in passages]
+    assert gap["checks"]["passages"] == "pass" and gap["verified"] is True
 
 
 def test_distortion_items_are_capped(env):
@@ -290,6 +338,68 @@ def test_gap_mining_opens_no_uncertain_support_checkpoint(collab):
     cid = stored[0]["evidence"]["claim_ids"][0]
     verify_support(k, None, ps, cid, actor="tester", layer1=FakeLayer1(0.5), min_judges=2, **judges)
     assert [c["kind"] for c in list_checkpoints(ps)] == ["uncertain_support"]
+
+
+class GapminerProvider:
+    """The gapminer on claude_cli, returning one scripted output."""
+    name, model, vendor, kind = "claude_cli", None, "anthropic", "chat_api"
+
+    def __init__(self, output):
+        self.output = output
+
+    def available(self):
+        return Availability(ok=True)
+
+    def run(self, spec, ctx):
+        return TaskResult(spec.task_id, True, self.output, "", "claude_cli", None, 0.0, None)
+
+
+def _kernel_executor_run(env, *, max_tasks: int = 40, calls_per_hour: dict | None = None):
+    """Contradiction mining in a D2 run session through the real ``KernelExecutor`` (fake providers)."""
+    k, ps, lib = env
+    save_settings(load_settings().model_copy(update={"calls_per_hour": calls_per_hour or {}}))
+    reg = build_registry(k)
+    a, b = _landscape(ps, lib, [TRIAL_A, TRIAL_B], [PAGES_A, PAGES_B])
+    out = ContradictionsOut.model_validate({"pairs": [{
+        "cluster_id": _cluster_id(ps), "a": {"source_id": a, "quote": QUOTE_A}, "b": {"source_id": b, "quote": QUOTE_B}}]})
+    ex = KernelExecutor(k, reg, "demo", run_id="run_g", session=1, max_tasks_per_stage=max_tasks,
+                        provider_for=lambda role: GapminerProvider(out))
+    judges = _judges((OPENAI, "contradicted"), (DEEPSEEK, "contradicted"), spans=["did not lower the stroke rate"])
+    ctx = StageContext(kernel=k, registry=reg, ps=ps, lib=lib, project="demo", stage="gaps", attempt=1, run_id="run_g",
+                       guidance="", executor=ex, sources=FakeSources({}, lib=lib), actor="tester")
+    return GapsWorker(miners=[ContradictionMiner(layer1=FakeLayer1(0.02), **judges)]), ctx
+
+
+def test_gap_judges_count_toward_the_stage_budget(env):
+    _k, ps, _lib = env
+    worker, ctx = _kernel_executor_run(env)
+    worker.run(ctx)
+    (gap,) = gaps(ps, 1)
+    assert gap["verified"] is True
+    rows = [tuple(r) for r in ps.db.execute(
+        "SELECT t.role, r.run_id, r.session, r.stage, r.attempt FROM run_tasks r JOIN tasks t ON t.id = r.task_id "
+        "ORDER BY r.rowid")]
+    assert rows == [("gapminer", "run_g", 1, "gaps", 1), ("judge", "run_g", 1, "gaps", 1),
+                    ("judge_2", "run_g", 1, "gaps", 1)]
+    assert tasks_used(ps, "run_g", 1, "gaps") == 3
+
+
+def test_gap_judge_beyond_the_stage_budget_stops_the_attempt(env):
+    _k, ps, _lib = env
+    worker, ctx = _kernel_executor_run(env, max_tasks=2)  # the gapminer and the first judge
+    with pytest.raises(BudgetExceeded) as e:
+        worker.run(ctx)
+    assert (e.value.stage, e.value.used, e.value.limit) == ("gaps", 2, 2)
+    assert gaps(ps, 1) == [] and ps.db.execute("SELECT COUNT(*) FROM verifications").fetchone()[0] == 0
+
+
+def test_rate_capped_gap_judge_pauses_instead_of_an_uncertain_verdict(env):
+    _k, ps, _lib = env
+    worker, ctx = _kernel_executor_run(env, calls_per_hour={"codex_cli": 0})  # the first judge's driver is capped
+    with pytest.raises(RateCapped) as e:
+        worker.run(ctx)
+    assert e.value.driver == "codex_cli"
+    assert gaps(ps, 1) == [] and ps.db.execute("SELECT COUNT(*) FROM verifications").fetchone()[0] == 0
 
 
 def test_gap_claims_stay_out_of_the_argument_listing(env):

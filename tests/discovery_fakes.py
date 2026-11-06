@@ -13,7 +13,7 @@ from rk.fulltext import FulltextResult, _record_snapshot, latest_snapshot
 from rk.ids import new_id
 from rk.library.models import ItemIn
 from rk.llm.drivers import DriverSpec
-from rk.llm.types import Availability, TaskResult
+from rk.llm.types import Availability, TaskResult, TaskSpec
 from rk.text.layer import Page, TextLayer
 from rk.verify.judge import JudgeVerdict
 from rk.verify.minicheck import Layer1Score, Layer1Unavailable
@@ -44,7 +44,8 @@ def add_text_layer(ps, item_id: str, pages: list[str]) -> FulltextResult:
 class ScriptedExecutor:
     """A ``TaskExecutor`` that replays scripted outputs. ``script`` maps ``(role, schema name)`` to the outputs, popped
     in order; ``drivers`` overrides the default driver per role (provider/model of the result, so ``vendor_of`` gives
-    the vendor). Every call is recorded in ``calls``."""
+    the vendor), and a ``driver`` given to ``run`` overrides both. A call that is not scripted but brings its own
+    ``provider`` (a V-SUPPORT judge) is run on that provider. Every call is recorded in ``calls``."""
 
     def __init__(self, script: dict[tuple[str, str], list[dict]], *, drivers: dict[str, str] | None = None):
         self.script = {k: list(v) for k, v in script.items()}
@@ -52,15 +53,21 @@ class ScriptedExecutor:
         self.calls: list[dict] = []
 
     def run(self, role: str, instructions: str, inputs: dict, output_schema: type[BaseModel], *, stage: str,
-            attempt: int, tools: list[str] | None = None) -> TaskResult:
+            attempt: int, tools: list[str] | None = None, driver: DriverSpec | None = None, provider=None,
+            max_turns: int | None = None, timeout_s: int | None = None) -> TaskResult:
         key = (role, output_schema.__name__)
         self.calls.append({"role": role, "schema": output_schema.__name__, "instructions": instructions,
-                           "inputs": inputs, "stage": stage, "attempt": attempt, "tools": tools})
+                           "inputs": inputs, "stage": stage, "attempt": attempt, "tools": tools,
+                           "driver": str(driver) if driver else None})
         queue = self.script.get(key)
+        if not queue and provider is not None:
+            spec = TaskSpec(task_id=new_id("tsk"), role=role, project=None, instructions=instructions, inputs=inputs,
+                            output_schema=output_schema, tools=tools or [])
+            return provider.run(spec, None)
         if not queue:
             raise AssertionError(f"no scripted output left for {key}")
         out = queue.pop(0)
-        spec = DriverSpec.parse(self.drivers[role])
+        spec = driver or DriverSpec.parse(self.drivers[role])
         return TaskResult(new_id("tsk"), True, output_schema.model_validate(out), json.dumps(out), spec.provider,
                           spec.model, 0.0, None)
 

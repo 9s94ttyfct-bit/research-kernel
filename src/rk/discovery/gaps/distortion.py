@@ -1,8 +1,8 @@
 """Citation distortion: the GapMiner quotes what a cluster work says a cited work found and names the cited work (item
-id or DOI). The kernel keeps the citing quote as a quote note (V-QUOTE), adds the cited work if needed and verifies it,
-fetches its full text and picks its passages itself (``top_passages``, Plan 4 deviation 4: the miner cannot
-cherry-pick), keeps them as quote notes and runs V-SUPPORT of the quote against them (two agreeing cross-vendor judges,
-no checkpoint). Verified when the verdict is "unsupported" or "contradicted"."""
+id or DOI). The kernel keeps the citing quote as a quote note (V-QUOTE), adds the cited work if needed and requires it
+to pass V-REF, fetches its full text and picks its passages itself (``top_passages``, Plan 4 deviation 4: the miner
+cannot cherry-pick), keeps every one as a quote note at its position and runs V-SUPPORT of the quote against them (two
+agreeing cross-vendor judges, no checkpoint). Verified when the verdict is "unsupported" or "contradicted"."""
 
 from __future__ import annotations
 
@@ -21,12 +21,13 @@ from rk.discovery.models import DistortionOut, DistortionsOut, Gap, GapEvidence
 from rk.discovery.passages import top_passages
 from rk.library.models import Ids
 from rk.llm.vendors import vendor_of
+from rk.notes import Locator
 from rk.orchestrator.engine import StageContext
 
 MAX_ITEMS = 4  # statements checked per attempt: each costs two judge tasks
 PASSAGES = 5  # passages of the cited work the statement is checked against
 DISTORTED = frozenset({"unsupported", "contradicted"})
-CHECKS = ("citing_quote", "cited", "fulltext", "passages", "support")
+CHECKS = ("citing_quote", "cited", "cited_ref", "fulltext", "passages", "support")
 
 MINE_TASK = (
     "Find statements in the given works that report what another, cited work found (for example \"Smith et al. "
@@ -97,6 +98,10 @@ def _check(ctx: StageContext, miner: SupportMiner, it: DistortionOut, of: dict[s
     cited_label = title_year(ctx.lib, cited)
     possible = f'Possible citation distortion: {citing} cites {cited_label} for "{it.quote}"'
     data["ref_status"] = ctx.sources.verify(cited)
+    if data["ref_status"] != "pass":  # V-REF: otherwise the work checked may not be the paper the source cites
+        checks.failed("cited_ref", f"V-REF of the cited work is {data['ref_status']}, not pass")
+        return result(possible, cluster_id)
+    checks.passed("cited_ref")
     passages = top_passages(ctx.ps, cited, it.quote, k=PASSAGES) if ctx.sources.fulltext(cited) else []
     if not passages:
         checks.failed("fulltext", "the cited work has no full text", value="missing")
@@ -104,10 +109,11 @@ def _check(ctx: StageContext, miner: SupportMiner, it: DistortionOut, of: dict[s
     checks.passed("fulltext")
 
     notes = []
-    for p in passages:  # every kernel-chosen passage is kept; one V-QUOTE rejects is listed in rejected_passages
+    for p in passages:  # the passages keep the positions the kernel chose them at
         passage_checks = Checks(["passage"])
         nid = quote_note(ctx, passage_checks, "passage", cited, p.text, role_in_source="main",
-                         keywords=["cited_passage", "citation_distortion"])
+                         keywords=["cited_passage", "citation_distortion"],
+                         locator=Locator(page=p.page, start=p.start, end=p.end))
         if nid is None:
             data["rejected_passages"].append({"page": p.page, "start": p.start, "end": p.end,
                                               "reason": passage_checks.reasons["passage"]})
@@ -115,8 +121,9 @@ def _check(ctx: StageContext, miner: SupportMiner, it: DistortionOut, of: dict[s
             notes.append(nid)
     data["passage_note_ids"] = notes
     evidence.note_ids += notes
-    if not notes:
-        checks.failed("passages", "no passage of the cited work passed V-QUOTE")
+    if data["rejected_passages"]:  # checking against fewer passages than the kernel chose could hide support
+        checks.failed("passages", f"{len(data['rejected_passages'])} of {len(passages)} passages of the cited work "
+                                  "failed V-QUOTE")
         return result(possible, cluster_id)
     checks.passed("passages")
 

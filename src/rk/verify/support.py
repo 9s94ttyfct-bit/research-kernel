@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from rk.argument import ArgumentService
 from rk.checkpoints import create_checkpoint
 from rk.llm.drivers import DriverSpec
-from rk.verify.judge import JudgeOpinion, run_judges
+from rk.verify.judge import JudgeOpinion, JudgeRunner, run_judges
 from rk.verify.minicheck import Layer1Unavailable, get_minicheck
 from rk.verify.numbers import Num, check_numbers
 from rk.verify.records import record_verification
@@ -82,10 +82,13 @@ def evidence_texts(claim: dict) -> list[str]:
 
 def verify_support(kernel, registry, ps, claim_id: str, *, actor: str, layer1=None,
                    judge_drivers: list[DriverSpec] | None = None, judge_providers: dict | None = None,
-                   min_judges: int | None = None, checkpoint: bool = True) -> SupportResult:
+                   min_judges: int | None = None, checkpoint: bool = True,
+                   run: JudgeRunner | None = None) -> SupportResult:
     """Check the claim against its linked evidence and record V-NUM, V-SUPPORT and the claim status. In collab mode an
     ``uncertain`` verdict opens an ``uncertain_support`` checkpoint unless ``checkpoint`` is false (the gap miners:
-    their claims are evidence checks of a candidate gap, not claims of the argument)."""
+    their claims are evidence checks of a candidate gap, not claims of the argument). ``run`` replaces ``run_task`` for
+    the judge tasks (``run_judges``), e.g. a stage's task executor; its exceptions propagate, and no verification of
+    the claim is recorded then."""
     s = kernel.settings()
     tau_hi, tau_lo = s.support_tau_hi, s.support_tau_lo
     judged = {"tau_hi_judged": s.support_tau_hi_judged, "tau_lo_judged": s.support_tau_lo_judged}
@@ -111,7 +114,7 @@ def verify_support(kernel, registry, ps, claim_id: str, *, actor: str, layer1=No
             reason = f"layer1_unavailable: {e}"
         opinions = run_judges(kernel, registry, project=_slug(ps), claim_text=claim["text"], evidence_text=doc,
                               generator_vendor=claim.get("generator_vendor"), drivers=judge_drivers,
-                              providers=judge_providers)
+                              providers=judge_providers, run=run)
         verdict = combine(p, opinions, tau_hi=tau_hi, tau_lo=tau_lo, min_judges=k, **judged)
         nums = check_numbers(claim["text"], texts)
         if verdict == "supported" and not nums.ok:

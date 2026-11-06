@@ -3,7 +3,15 @@ import pytest
 from rk.fulltext import _record_snapshot, attach_pdf
 from rk.library.models import Creator, ItemIn
 from rk.library.service import Library
-from rk.notes import NoteIn, NoteRejected, add_note, list_notes, text_find, text_read
+from rk.notes import (
+    Locator,
+    NoteIn,
+    NoteRejected,
+    add_note,
+    list_notes,
+    text_find,
+    text_read,
+)
 from rk.store.project import ProjectStore
 from rk.store.projections import rebuild
 from rk.text.layer import Page, TextLayer, normalize_query
@@ -141,3 +149,22 @@ def test_text_find_unicode_casefold(tmp_path):
     assert text_read(ps, iid, page=1, start=hit.start, end=hit.end).text == "Große Straße"
     hit = text_find(ps, iid, "σοφος")[0]  # final sigma 'ς' and 'Σ' fold to the same letter
     assert text_read(ps, iid, page=1, start=hit.start, end=hit.end).text == "ΣΟΦΟΣ"
+
+
+def test_quote_keeps_a_given_locator_that_holds_it(tmp_path):
+    ps = ProjectStore(tmp_path / "p", "prj_T")
+    lib = Library(ps)
+    iid = lib.add_item(ItemIn(title="Repeated", year=2020), added_by="human", actor="u").item_id
+    text = "Copper reduces CO2. Silver does not."
+    _record_snapshot(ps, iid, text.encode(), TextLayer(source_kind="html", pages=[Page(n=1, text=text),
+                                                                                  Page(n=2, text=text)], sha256=""),
+                     "html", None, "u")
+    second = add_note(ps, lib, NoteIn(source_id=iid, kind="quote", text="Copper reduces CO2.", role_in_source="main",
+                                      locator=Locator(page=2, start=0, end=19)), actor="a")
+    assert second.locator == Locator(page=2, start=0, end=19)  # without the locator V-QUOTE finds page 1
+    wrong = add_note(ps, lib, NoteIn(source_id=iid, kind="quote", text="Silver does not.", role_in_source="main",
+                                     locator=Locator(page=2, start=0, end=19)), actor="a")
+    assert wrong.locator == Locator(page=1, start=20, end=36)  # a locator that does not hold the quote is replaced
+    with pytest.raises(NoteRejected):
+        add_note(ps, lib, NoteIn(source_id=iid, kind="quote", text="Gold is inert.", role_in_source="main",
+                                 locator=Locator(page=2, start=0, end=19)), actor="a")
