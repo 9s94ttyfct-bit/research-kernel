@@ -1,10 +1,8 @@
 import os
 import threading
-import time
 
 import httpx
 import pytest
-import uvicorn
 from fastapi.testclient import TestClient
 
 from rk.cli.client import RkClient
@@ -47,25 +45,6 @@ def test_serve_lock(tmp_home):
     release(rt2)
     assert (tmp_home / "serve.port").read_text() == "1"
 
-
-@pytest.fixture
-def live_server(tmp_home, replay_http):
-    rt = acquire_serve_lock(tmp_home)
-    kernel = Kernel(tmp_home, http=replay_http)
-    server = uvicorn.Server(uvicorn.Config(create_app(build_registry(kernel), rt.token, tokens=kernel.tokens),
-                                           log_level="warning"))
-    t = threading.Thread(target=server.run, kwargs={"sockets": [rt.sock]}, daemon=True)
-    t.start()
-    client = RkClient.from_home(tmp_home)
-    for _ in range(100):
-        if client.healthy():
-            break
-        time.sleep(0.05)
-    yield client
-    server.should_exit = True
-    t.join(5)
-    kernel.close()
-    release(rt)
 
 
 def test_concurrent_cli_writes(live_server):

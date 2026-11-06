@@ -20,10 +20,10 @@ def _r(*roles: str) -> frozenset[str]:
 
 TOOL_ROLES: dict[str, frozenset[str]] = {
     # bibliographic metadata and abstracts: everyone who uses tools
-    **{name: _r(*_ALL_TOOL_ROLES) for name in ("rk_get_work", "rk_library_list", "rk_library_search",
-                                               "rk_flag_injection")},
-    # full text and notes: readers of sources (not screeners, not scout)
-    **{name: _r(*_FULL_READERS, "reader") for name in ("rk_text_read", "rk_text_find", "rk_note_list")},
+    **{name: _r(*_ALL_TOOL_ROLES) for name in ("rk_get_work", "rk_library_list", "rk_flag_injection")},
+    # full text and notes (rk_library_search returns note and full-text snippets): not screeners, not scout
+    **{name: _r(*_FULL_READERS, "reader") for name in ("rk_text_read", "rk_text_find", "rk_note_list",
+                                                       "rk_library_search")},
     # the argument graph and project-wide views
     **{name: _r(*_FULL_READERS) for name in ("rk_claim_get", "rk_claim_list", "rk_project_status",
                                              "rk_library_export")},
