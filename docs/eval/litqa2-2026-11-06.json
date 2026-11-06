@@ -3,18 +3,18 @@
  "driver": "omp_gateway:openai-codex/gpt-6-luna",
  "seed": 13,
  "n": 20,
- "answered": 11,
- "correct": 11,
- "accuracy": 0.55,
- "precision": 1.0,
- "coverage": 0.55,
+ "answered": 13,
+ "correct": 12,
+ "accuracy": 0.6,
+ "precision": 0.9230769230769231,
+ "coverage": 0.65,
  "rows": [
   {
    "id": "4d4cb121-9525-499a-9475-9b212465c72d",
    "ok": true,
    "answered": true,
    "correct": true,
-   "tool_calls": 8,
+   "tool_calls": 5,
    "error": null
   },
   {
@@ -22,7 +22,7 @@
    "ok": true,
    "answered": false,
    "correct": false,
-   "tool_calls": 7,
+   "tool_calls": 6,
    "error": null
   },
   {
@@ -36,25 +36,25 @@
   {
    "id": "cbe93a43-09cd-4cb4-9edd-f22fe8c28415",
    "ok": true,
-   "answered": false,
-   "correct": false,
-   "tool_calls": 4,
+   "answered": true,
+   "correct": true,
+   "tool_calls": 8,
    "error": null
   },
   {
    "id": "49d2630e-9d26-4e12-89a3-3050a609abf5",
    "ok": true,
-   "answered": false,
+   "answered": true,
    "correct": false,
-   "tool_calls": 8,
+   "tool_calls": 7,
    "error": null
   },
   {
    "id": "dbb51a1c-f9a2-4960-a93c-118957659790",
    "ok": true,
-   "answered": false,
-   "correct": false,
-   "tool_calls": 8,
+   "answered": true,
+   "correct": true,
+   "tool_calls": 6,
    "error": null
   },
   {
@@ -68,9 +68,9 @@
   {
    "id": "c47dd378-dde3-4a45-9184-6abfa6163717",
    "ok": true,
-   "answered": true,
-   "correct": true,
-   "tool_calls": 6,
+   "answered": false,
+   "correct": false,
+   "tool_calls": 5,
    "error": null
   },
   {
@@ -78,7 +78,7 @@
    "ok": true,
    "answered": false,
    "correct": false,
-   "tool_calls": 7,
+   "tool_calls": 5,
    "error": null
   },
   {
@@ -86,7 +86,7 @@
    "ok": true,
    "answered": false,
    "correct": false,
-   "tool_calls": 12,
+   "tool_calls": 8,
    "error": null
   },
   {
@@ -94,7 +94,7 @@
    "ok": true,
    "answered": true,
    "correct": true,
-   "tool_calls": 7,
+   "tool_calls": 9,
    "error": null
   },
   {
@@ -110,7 +110,7 @@
    "ok": true,
    "answered": true,
    "correct": true,
-   "tool_calls": 10,
+   "tool_calls": 8,
    "error": null
   },
   {
@@ -118,7 +118,7 @@
    "ok": true,
    "answered": false,
    "correct": false,
-   "tool_calls": 4,
+   "tool_calls": 5,
    "error": null
   },
   {
@@ -126,15 +126,15 @@
    "ok": true,
    "answered": false,
    "correct": false,
-   "tool_calls": 4,
+   "tool_calls": 7,
    "error": null
   },
   {
    "id": "0d5cf8a7-a240-4a8f-be4e-c16712f90d79",
    "ok": true,
-   "answered": false,
-   "correct": false,
-   "tool_calls": 9,
+   "answered": true,
+   "correct": true,
+   "tool_calls": 8,
    "error": null
   },
   {
@@ -142,7 +142,7 @@
    "ok": true,
    "answered": true,
    "correct": true,
-   "tool_calls": 5,
+   "tool_calls": 6,
    "error": null
   },
   {
@@ -156,9 +156,9 @@
   {
    "id": "8696273a-7fea-411a-b6c6-0e826e1e02b5",
    "ok": true,
-   "answered": true,
-   "correct": true,
-   "tool_calls": 9,
+   "answered": false,
+   "correct": false,
+   "tool_calls": 4,
    "error": null
   },
   {
@@ -166,7 +166,7 @@
    "ok": true,
    "answered": true,
    "correct": true,
-   "tool_calls": 10,
+   "tool_calls": 8,
    "error": null
   }
  ]

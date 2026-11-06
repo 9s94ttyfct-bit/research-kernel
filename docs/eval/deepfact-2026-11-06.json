@@ -1,0 +1,156 @@
+{
+ "date": "2026-11-06",
+ "driver": "omp_gateway:openai-codex/gpt-6-luna",
+ "judges": [
+  "omp_gateway:openai-codex/gpt-6-luna"
+ ],
+ "min_judges": 1,
+ "n": 10,
+ "seed": 13,
+ "accuracy": 0.1,
+ "confusion": {
+  "supported": {
+   "supported": 0,
+   "contradictory": 0,
+   "inconclusive": 7
+  },
+  "contradictory": {
+   "supported": 0,
+   "contradictory": 0,
+   "inconclusive": 2
+  },
+  "inconclusive": {
+   "supported": 0,
+   "contradictory": 0,
+   "inconclusive": 1
+  }
+ },
+ "by_domain": {
+  "control": 5,
+  "environment": 1,
+  "health": 3,
+  "construction": 1
+ },
+ "rows": [
+  {
+   "id": "control_A-Com:61",
+   "domain": "control",
+   "gold": "supported",
+   "pred": "inconclusive",
+   "verdict": "uncertain",
+   "p": 0.072239,
+   "sources": 3,
+   "notes": 2,
+   "scout_ok": true,
+   "reader_ok": true
+  },
+  {
+   "id": "environment_Bas-Lev:10",
+   "domain": "environment",
+   "gold": "supported",
+   "pred": "inconclusive",
+   "verdict": "uncertain",
+   "p": 0.13866,
+   "sources": 5,
+   "notes": 2,
+   "scout_ok": true,
+   "reader_ok": true
+  },
+  {
+   "id": "control_Dee-vs:21",
+   "domain": "control",
+   "gold": "supported",
+   "pred": "inconclusive",
+   "verdict": "uncertain",
+   "p": 0.044616,
+   "sources": 3,
+   "notes": 3,
+   "scout_ok": true,
+   "reader_ok": true
+  },
+  {
+   "id": "control_Tra-Off:34",
+   "domain": "control",
+   "gold": "supported",
+   "pred": "inconclusive",
+   "verdict": "uncertain",
+   "p": null,
+   "sources": 3,
+   "notes": 0,
+   "scout_ok": true,
+   "reader_ok": true
+  },
+  {
+   "id": "health_Glo-Adh:57",
+   "domain": "health",
+   "gold": "contradictory",
+   "pred": "inconclusive",
+   "verdict": "uncertain",
+   "p": 0.023443,
+   "sources": 4,
+   "notes": 3,
+   "scout_ok": true,
+   "reader_ok": true
+  },
+  {
+   "id": "control_Tra-Off:28",
+   "domain": "control",
+   "gold": "supported",
+   "pred": "inconclusive",
+   "verdict": "uncertain",
+   "p": 0.893855,
+   "sources": 4,
+   "notes": 3,
+   "scout_ok": true,
+   "reader_ok": true
+  },
+  {
+   "id": "control_Dee-vs:22",
+   "domain": "control",
+   "gold": "inconclusive",
+   "pred": "inconclusive",
+   "verdict": "uncertain",
+   "p": 0.027824,
+   "sources": 5,
+   "notes": 2,
+   "scout_ok": true,
+   "reader_ok": true
+  },
+  {
+   "id": "health_Glo-Adh:27",
+   "domain": "health",
+   "gold": "supported",
+   "pred": "inconclusive",
+   "verdict": "uncertain",
+   "p": 0.005234,
+   "sources": 5,
+   "notes": 2,
+   "scout_ok": true,
+   "reader_ok": true
+  },
+  {
+   "id": "health_Rea-Wor:60",
+   "domain": "health",
+   "gold": "supported",
+   "pred": "inconclusive",
+   "verdict": "uncertain",
+   "p": 0.843717,
+   "sources": 5,
+   "notes": 2,
+   "scout_ok": true,
+   "reader_ok": true
+  },
+  {
+   "id": "construction_AI-in:25",
+   "domain": "construction",
+   "gold": "contradictory",
+   "pred": "inconclusive",
+   "verdict": "uncertain",
+   "p": null,
+   "sources": 4,
+   "notes": 0,
+   "scout_ok": true,
+   "reader_ok": true
+  }
+ ]
+}
