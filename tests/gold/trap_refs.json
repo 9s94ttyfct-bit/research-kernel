@@ -1,0 +1,12 @@
+[
+  {"id": "fabricated_doi", "cited": {"identifier": "10.9999/rk-does-not-exist-2026", "title": "Neural citation integrity at scale", "first_author": "Doe", "year": 2024}, "ref": "not_found", "retraction": "unknown"},
+  {"id": "wrong_title", "cited": {"identifier": "10.7717/peerj.1364", "title": "Citation accuracy in surgical journals", "first_author": "Jergas", "year": 2015}, "ref": "mismatch", "retraction": "none"},
+  {"id": "wrong_author", "cited": {"identifier": "10.7717/peerj.1364", "title": "Quotation accuracy in medical journal articles - a systematic review and meta-analysis", "first_author": "Smith", "year": 2015}, "ref": "mismatch", "retraction": "none"},
+  {"id": "wrong_year", "cited": {"identifier": "10.7717/peerj.1364", "title": "Quotation accuracy in medical journal articles - a systematic review and meta-analysis", "first_author": "Jergas", "year": 2009}, "ref": "mismatch", "retraction": "none"},
+  {"id": "correct", "cited": {"identifier": "10.7717/peerj.1364", "title": "Quotation accuracy in medical journal articles - a systematic review and meta-analysis", "first_author": "Jergas H", "year": 2015}, "ref": "pass", "retraction": "none"},
+  {"id": "wakefield_retracted", "cited": {"identifier": "10.1016/S0140-6736(97)11096-0", "title": "Ileal-lymphoid-nodular hyperplasia, non-specific colitis, and pervasive developmental disorder in children", "first_author": "Wakefield", "year": 1998}, "ref": "pass", "retraction": "retracted"},
+  {"id": "surgisphere_retracted", "cited": {"identifier": "10.1016/S0140-6736(20)31180-6", "title": "Hydroxychloroquine or chloroquine with or without a macrolide for treatment of COVID-19: a multinational registry analysis", "first_author": "Mehra", "year": 2020}, "ref": "pass", "retraction": "retracted"},
+  {"id": "eoc", "cited": {"identifier": "10.1016/j.lungcan.2003.10.006", "title": "", "first_author": null, "year": null}, "ref": "pass", "retraction": "eoc"},
+  {"id": "corrected", "cited": {"identifier": "10.1088/1361-6595/aaebdb", "title": "", "first_author": null, "year": null}, "ref": "pass", "retraction": "corrected"},
+  {"id": "no_identifier", "cited": {"identifier": null, "title": "Some book chapter", "first_author": "Roe", "year": 2001}, "ref": "page_metadata_only", "retraction": "unknown"}
+]
