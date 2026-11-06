@@ -30,6 +30,25 @@ class Cluster(BaseModel):
     year_counts: dict[int, int] = {}
 
 
+# ---- role outputs ----
+class LandscapeQueries(BaseModel):
+    """The Scout's search queries (landscape: 3-8, checked by the worker)."""
+    queries: list[str]
+
+
+class ClusterOut(BaseModel):
+    label: str
+    description: str
+    query: str
+    item_ids: list[str]
+    representative_ids: list[str] = []
+
+
+class ClusterPlan(BaseModel):
+    """The Scout's clusters over the landscape search hits."""
+    clusters: list[ClusterOut]
+
+
 class GapEvidence(BaseModel):
     note_ids: list[str] = []
     item_ids: list[str] = []

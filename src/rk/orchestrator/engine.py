@@ -131,13 +131,20 @@ class IntakeWorker:
         return StageOutcome("failed", reason="intake incomplete: " + "; ".join(failures))
 
 
+def default_workers() -> dict[str, Worker]:
+    """The worker of every discovery stage that has one."""
+    from rk.discovery.landscape import LandscapeWorker  # the workers import this module
+
+    return {"intake": IntakeWorker(), "landscape": LandscapeWorker()}
+
+
 class Orchestrator:
     def __init__(self, kernel, registry, *, workers: dict[str, Worker] | None = None,
                  executor_factory: Callable[[str, str | None, int | None], TaskExecutor] | None = None,
                  sources_factory: Callable[[str], DiscoverySources] | None = None,
                  clock: Callable[[], float] = time.time):
         self.kernel, self.registry, self.clock = kernel, registry, clock
-        self.workers: dict[str, Worker] = {"intake": IntakeWorker(), **(workers or {})}
+        self.workers: dict[str, Worker] = {**default_workers(), **(workers or {})}
         self.executor_factory = executor_factory or (
             lambda project, run_id, session: KernelExecutor(kernel, registry, project, run_id=run_id, session=session))
         self.sources_factory = sources_factory or (lambda project: KernelSources(kernel, project))

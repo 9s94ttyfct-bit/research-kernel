@@ -56,6 +56,14 @@ def add_cluster(ps: ProjectStore, attempt: int, cluster: Cluster, *, actor: str,
     return cid
 
 
+def remove_cluster(ps: ProjectStore, cluster_id: str, *, reason: str, actor: str,
+                   actor_kind: ActorKind = "kernel") -> None:
+    """Drop a cluster (P1 degrade); the event keeps it dropped when the projections are rebuilt."""
+    row = _require(ps, "clusters", cluster_id)
+    ps.apply(NewEvent(type="cluster.removed", entity_id=cluster_id, actor_kind=actor_kind, actor=actor,
+                      payload={"attempt": row["attempt"], "reason": reason}))
+
+
 def add_gap(ps: ProjectStore, attempt: int, gap: Gap, *, verified: bool, checks: dict, actor: str,
             actor_kind: ActorKind = "agent") -> str:
     gid = new_id("gap")
@@ -216,6 +224,11 @@ def _cluster(conn: sqlite3.Connection, ev: Event) -> None:
                  "representative_ids, year_counts) VALUES (?,?,?,?,?,?,?,?)",
                  (ev.entity_id, ev.payload["attempt"], c["label"], c["description"], c["query"],
                   json.dumps(c["item_ids"]), json.dumps(c["representative_ids"]), json.dumps(c["year_counts"])))
+
+
+@projection("cluster.removed")
+def _cluster_removed(conn: sqlite3.Connection, ev: Event) -> None:
+    conn.execute("DELETE FROM clusters WHERE id=?", (ev.entity_id,))
 
 
 @projection("gap.added")

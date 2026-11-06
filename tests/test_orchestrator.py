@@ -377,6 +377,7 @@ def test_stage_without_worker_is_unavailable(project):
     k, _ps = project
     o = Orchestrator(k, None, executor_factory=lambda p, r, s: ScriptedExecutor({}),
                      sources_factory=lambda p: FakeSources({}))
+    del o.workers["landscape"]
     o.run_stage("demo", "intake", actor="tester")
     o.advance("demo", actor="tester")
     with pytest.raises(ToolError) as e:
