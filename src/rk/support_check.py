@@ -55,12 +55,14 @@ class CheckRow(BaseModel):
     evidence: list[str]
     numbers_ok: bool
     gold: str | None = None
+    reader_error: str | None = None  # the Reader task failed; "no evidence" then reflects that failure
 
 
 class CheckReport(BaseModel):
     driver: str
     vendor: str | None
     rows: list[CheckRow]
+    missing_gold: list[int] = []  # gold sentences the Arguer returned no claim for (scored as uncertain)
     confusion: dict | None = None
     accuracy: float | None = None
 
@@ -78,14 +80,17 @@ def support_check(kernel, registry, *, project: str, text: str, source_ids: list
                          tools=[], max_turns=4, timeout_s=600, actor=actor)
     if not extracted.ok:
         raise RuntimeError(f"claim extraction failed: {extracted.error}")
+    indices = [c.sentence_index for c in extracted.output.claims]
+    if len(set(indices)) != len(indices) or any(i < 0 for i in indices):
+        raise RuntimeError(f"claim extraction returned invalid sentence indices {indices}")
     svc = ArgumentService(ps)
     rows: list[CheckRow] = []
     for c in sorted(extracted.output.claims, key=lambda c: c.sentence_index):
         cid = svc.add_claim(ClaimIn(text=c.text, kind=c.kind), generator_vendor=prov.vendor, actor=actor)
         known = {n["id"] for n in list_notes(ps)}
-        run_task(kernel, registry, project=project, role="reader", instructions=READER,
-                 inputs={"claim": c.text, "source_ids": source_ids}, output_schema=QuotedEvidence, driver=driver,
-                 provider=prov, max_turns=16, timeout_s=900, actor=actor)
+        reader = run_task(kernel, registry, project=project, role="reader", instructions=READER,
+                          inputs={"claim": c.text, "source_ids": source_ids}, output_schema=QuotedEvidence,
+                          driver=driver, provider=prov, max_turns=16, timeout_s=900, actor=actor)
         # Evidence = the verified quote notes the reader actually created on the given sources in this step.
         new = [n for n in list_notes(ps) if n["id"] not in known and n["kind"] == "quote" and n["item_id"] in source_ids]
         if new:
@@ -97,10 +102,15 @@ def support_check(kernel, registry, *, project: str, text: str, source_ids: list
                                      for o in r.opinions],
                              evidence=[f"p{n['locator']['page']}[{n['locator']['start']}:{n['locator']['end']}] "
                                        f"{n['text'][:120]}" for n in new],
-                             numbers_ok=r.numbers_ok, gold=(gold or {}).get(c.sentence_index)))
-    report = CheckReport(driver=str(driver), vendor=prov.vendor, rows=rows)
-    scored = [r for r in rows if r.gold is not None]
-    if scored:
-        report.confusion = confusion([r.gold for r in scored], [r.verdict for r in scored], GOLD_LABELS, PRED_LABELS)
-        report.accuracy = sum(r.gold == r.verdict for r in scored) / len(scored)
+                             numbers_ok=r.numbers_ok, gold=(gold or {}).get(c.sentence_index),
+                             reader_error=None if reader.ok else (reader.error or "failed")))
+    report = CheckReport(driver=str(driver), vendor=prov.vendor, rows=rows,
+                         missing_gold=sorted(set(gold or {}) - set(indices)))
+    if gold:
+        # Every gold sentence is scored; one without a claim counts as an uncertain prediction.
+        by_index = {r.sentence_index: r.verdict for r in rows}
+        g = [gold[i] for i in sorted(gold)]
+        p = [by_index.get(i, "uncertain") for i in sorted(gold)]
+        report.confusion = confusion(g, p, GOLD_LABELS, PRED_LABELS)
+        report.accuracy = sum(a == b for a, b in zip(g, p, strict=True)) / len(g)
     return report

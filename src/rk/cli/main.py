@@ -542,8 +542,12 @@ def support_check_cmd(text: Path = TEXT_FILE_OPT, sources: str = typer.Option(..
             p = "-" if row["p"] is None else f"{row['p']:.3f}"
             typer.echo(f"[{row['sentence_index']}] {row['verdict'].upper():<12} p={p} nums={'ok' if row['numbers_ok'] else 'UNGROUNDED'}"
                        f"{gold_s}\n    {row['claim']}\n    judges: {'; '.join(row['judges']) or '-'}")
+            if row.get("reader_error"):
+                typer.secho(f"    reader task FAILED: {row['reader_error']} (no evidence gathered)", fg="red")
             for ev in row["evidence"]:
                 typer.echo(f"    evidence {ev}")
+        if d.get("missing_gold"):
+            typer.secho(f"no claim extracted for gold sentence(s) {d['missing_gold']} (scored as uncertain)", fg="red")
         if d.get("confusion"):
             from rk.eval.metrics import md_matrix
 

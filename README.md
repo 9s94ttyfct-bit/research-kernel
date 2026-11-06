@@ -64,7 +64,8 @@ rk eval reportbench --reports DIR   # citation precision/recall against ReportBe
 rk support check --text passage.txt --sources src_… --driver codex_cli --gold gold.json
 ```
 
-- Results land in `docs/eval/` as aggregate numbers only. Dataset sources and licences are listed in
+- Results land in `docs/eval/`. The Markdown reports hold aggregate numbers. The JSON files also hold per-item dataset
+  ids, gold and predicted labels, and scores, but never dataset text. Dataset sources and licences are listed in
   `src/rk/eval/LICENSES.md`.
 - Evaluations run on a scratch kernel with chat-API drivers. `rk support check` runs inside `rk serve`, so it can
   use any driver.

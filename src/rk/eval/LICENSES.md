@@ -1,7 +1,8 @@
 # Evaluation datasets: sources and licences
 
 The datasets are downloaded to `$RK_HOME/eval/`, used only for local evaluation, and never committed. Reports in
-`docs/eval/` contain aggregate numbers only.
+`docs/eval/` contain no dataset text. Their JSON files list per-item dataset ids, gold and predicted labels, and
+scores.
 
 | Dataset | Source | Licence |
 |---|---|---|

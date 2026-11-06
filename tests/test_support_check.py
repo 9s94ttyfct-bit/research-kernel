@@ -112,3 +112,36 @@ def test_unknown_source_rejected(env):
     k, reg, _ = env
     with pytest.raises(KeyError):
         support_check(k, reg, project="sc", text="x", source_ids=["src_nope"], driver=CODEX, provider=Driver())
+
+
+class BadArguer(Driver):
+    def __init__(self, claims, reader_fails=False):
+        super().__init__(vendor="google")
+        self.claims, self.reader_fails = claims, reader_fails
+
+    def run(self, spec, ctx):
+        if spec.role == "arguer":
+            out = ExtractedClaims(claims=[ExtractedClaim(sentence_index=i, text=t) for i, t in self.claims])
+            return TaskResult(spec.task_id, True, out, "", "d", "d", 0.0, None)
+        if self.reader_fails:
+            return TaskResult(spec.task_id, False, None, "", "d", "d", 0.0, "provider_error: quota")
+        return super().run(spec, ctx)
+
+
+def test_duplicate_sentence_indices_rejected(env):
+    k, reg, iid = env
+    with pytest.raises(RuntimeError, match="invalid sentence indices"):
+        support_check(k, reg, project="sc", text="x", source_ids=[iid], driver=CODEX,
+                      provider=BadArguer([(0, CLAIMS[0]), (0, CLAIMS[1])]))
+
+
+def test_missing_gold_scored_and_reader_failure_reported(env):
+    k, reg, iid = env
+    judge = Judge()
+    rep = support_check(k, reg, project="sc", text=" ".join(CLAIMS), source_ids=[iid], driver=CODEX,
+                        provider=BadArguer([(0, CLAIMS[0])], reader_fails=True), judge_drivers=[CODEX, LUNA_A],
+                        judge_providers={str(CODEX): judge, str(LUNA_A): judge}, layer1=L1(),
+                        gold={0: "supported", 1: "unsupported"})
+    (row,) = rep.rows
+    assert row.reader_error == "provider_error: quota" and row.evidence == [] and row.verdict == "uncertain"
+    assert rep.missing_gold == [1] and rep.confusion["unsupported"]["uncertain"] == 1 and rep.accuracy == 0.0
