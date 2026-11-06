@@ -17,7 +17,9 @@ PROJECTION_TABLES: tuple[str, ...] = (
 )
 
 # Modules that register projections; imported before replay so rebuild sees every handler.
-PROJECTION_MODULES: tuple[str, ...] = ("rk.store.project", "rk.library.service", "rk.notes", "rk.verify.records")
+PROJECTION_MODULES: tuple[str, ...] = (
+    "rk.store.project", "rk.library.service", "rk.fulltext", "rk.notes", "rk.verify.records",
+)
 
 _HANDLERS: dict[str, list[Handler]] = defaultdict(list)
 
