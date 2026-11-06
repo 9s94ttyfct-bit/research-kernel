@@ -30,6 +30,9 @@ class CallContext:
     role: str
     actor: str
     idempotency_key: str | None = None
+    task_id: str | None = None
+    project: str | None = None
+    allowed_tools: frozenset[str] | None = None  # set for agent tasks: only these tools, whatever the role allows
 
 
 @dataclass(frozen=True)
@@ -73,6 +76,8 @@ class ToolRegistry:
         tool = self.get(name)
         if ctx.role not in tool.roles:
             raise PermissionDenied(f"role {ctx.role!r} may not call {name}")
+        if ctx.allowed_tools is not None and name not in ctx.allowed_tools:
+            raise PermissionDenied(f"{name} is not granted to this task")
         inp = tool.input_model.model_validate(args or {})
         if not tool.writes:
             return tool.output_model.model_validate(tool.handler(ctx, inp)).model_dump(mode="json")
