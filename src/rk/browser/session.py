@@ -391,15 +391,18 @@ class BrowserSession:
         return self.call(self._blocked_reason(url), 30)
 
     # ---- tabs ---------------------------------------------------------------------------------------------------
-    def open_workbench(self, url: str) -> None:
+    def open_workbench(self, url: str) -> tuple[str, str]:
+        """Load the Workbench in the window's first tab; returns the loaded (url, title)."""
+
         async def go():
             human_blank = [p for t, p in self._pages.items() if self._owners[t] is HUMAN and p.url == "about:blank"]
             page = human_blank[0] if human_blank else await self._ctx.new_page()
             tid = self._ensure_registered(page, _WORKBENCH)
             self._owners[tid] = _WORKBENCH
             await page.goto(url)
+            return page.url, await page.title()
 
-        self.call(go(), 60)
+        return self.call(go(), 60)
 
     def new_tab(self, owner: str | None, url: str | None = None) -> Tab:
         async def go():

@@ -145,7 +145,15 @@ def serve(detach: bool = typer.Option(False, help="Start in the background and r
                                                       kernel=kernel, browser=lambda: service), log_level="warning"))
     signal.signal(signal.SIGTERM, lambda *_: setattr(server, "should_exit", True))
     if service is not None:  # the Workbench is the window's first tab (its request waits for uvicorn to start)
-        threading.Thread(target=service.session.open_workbench, args=(ui.login_url(),), daemon=True).start()
+        def show_workbench() -> None:
+            try:
+                url, title = service.session.open_workbench(ui.login_url())
+                typer.echo(f"Workbench open in the built-in browser: {title} ({url})", err=True)
+            except Exception as e:  # noqa: BLE001 - reported; `rk open` still gives a link
+                typer.secho(f"could not open the Workbench tab ({type(e).__name__}: {e}); run `rk open`",
+                            fg="yellow", err=True)
+
+        threading.Thread(target=show_workbench, daemon=True).start()
     else:
         typer.echo(f"Workbench: {ui.login_url()}")
     try:
