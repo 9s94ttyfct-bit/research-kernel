@@ -21,6 +21,17 @@ dependencies = [
     "mcp>=2.3,<3",
 ]
 
+[project.optional-dependencies]
+# V-SUPPORT layer 1 (MiniCheck-Flan-T5-Large, local, MPS on Apple Silicon)
+support = [
+    "torch>=2.15,<3",
+    "transformers>=5.22,<6",
+    "nltk>=3.9,<4",
+    "sentencepiece>=0.2,<1",
+]
+# evaluation datasets distributed as parquet (LitQA2)
+eval = ["pyarrow>=20"]
+
 [project.scripts]
 rk = "rk.cli.main:app"
 
@@ -43,5 +54,6 @@ testpaths = ["tests"]
 markers = [
     "live: hits the real network",
     "llm: calls a language model (default test model: omp_gateway openai-codex/gpt-6-luna)",
+    "model: loads the local MiniCheck model (needs the 'support' extra; downloads ~3 GB once)",
 ]
-addopts = "-m 'not live and not llm' -q"
+addopts = "-m 'not live and not llm and not model' -q"
