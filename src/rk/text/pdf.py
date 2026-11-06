@@ -6,7 +6,7 @@ import ctypes
 from pathlib import Path
 
 import pypdfium2 as pdfium
-import pypdfium2.raw as raw
+from pypdfium2 import raw
 
 from rk.canon import sha256_hex
 from rk.text.layer import Page, TextLayer
@@ -36,10 +36,8 @@ def _visible(tp_raw, i: int, crop: tuple[float, float, float, float]) -> bool:
     if obj and raw.FPDFTextObj_GetTextRenderMode(obj) == INVISIBLE_RENDER_MODE:
         return False
     r, g, b, a = (ctypes.c_uint() for _ in range(4))
-    if raw.FPDFText_GetFillColor(tp_raw, i, ctypes.byref(r), ctypes.byref(g), ctypes.byref(b), ctypes.byref(a)):
-        if min(r.value, g.value, b.value) >= WHITE_MIN or a.value == 0:
-            return False
-    return True
+    fill = raw.FPDFText_GetFillColor(tp_raw, i, ctypes.byref(r), ctypes.byref(g), ctypes.byref(b), ctypes.byref(a))
+    return not (fill and (min(r.value, g.value, b.value) >= WHITE_MIN or a.value == 0))
 
 
 def _page_text(page) -> str:

@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 
 import trafilatura
-from lxml import etree, html as lhtml
+from lxml import etree
+from lxml import html as lhtml
 
 from rk.text.layer import Page, TextLayer
 
@@ -18,7 +19,7 @@ _HIDDEN_DECL = re.compile(
     r"|color\s*:\s*transparent\b"
     r"|text-indent\s*:\s*-\d{3,}"
     r"|(?:left|top)\s*:\s*-\d{4,}",
-    re.I,
+    re.IGNORECASE,
 )
 _RULE = re.compile(r"([^{}]+)\{([^{}]*)\}")
 _SIMPLE_SELECTOR = re.compile(r"^([a-zA-Z][\w-]*)?((?:[.#][\w-]+)*)$")
@@ -35,7 +36,7 @@ def _hidden_selectors(doc) -> list[tuple[str | None, set[str], str | None]]:
     """
     out: list[tuple[str | None, set[str], str | None]] = []
     for st in doc.iter("style"):
-        css = re.sub(r"/\*.*?\*/", "", st.text or "", flags=re.S)
+        css = re.sub(r"/\*.*?\*/", "", st.text or "", flags=re.DOTALL)
         for sels, decls in _RULE.findall(css):
             if not _HIDDEN_DECL.search(decls):
                 continue

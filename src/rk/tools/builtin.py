@@ -90,7 +90,7 @@ def build_registry(k: Kernel) -> ToolRegistry:
     @tool("rk_project_status", "Counts and event-chain integrity for a project.", ProjectArg, False)
     def _status(ctx: CallContext, a: ProjectArg) -> Out:
         ps, lib = _project(k, a.project)
-        count = lambda t: ps.db.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]  # noqa: E731
+        count = lambda t: ps.db.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
         flagged = [i.id for i in lib.list() if i.retraction in FLAGGED]
         return Out(project=a.project, title=ps.meta("title"), items=count("items"), snapshots=count("snapshots"),
                    notes=count("notes"), verifications=count("verifications"), events=count("events"),

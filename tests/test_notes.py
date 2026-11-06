@@ -114,7 +114,7 @@ def test_quote_needs_snapshot(tmp_path):
 
 
 def test_text_find_locators_reproduce(env):
-    ps, lib, iid = env
+    ps, _, iid = env
     hits = text_find(ps, iid, "COPPER catalysts")
     assert len(hits) == 1 and hits[0].page == 2
     sl = text_read(ps, iid, page=hits[0].page, start=hits[0].start, end=hits[0].end)

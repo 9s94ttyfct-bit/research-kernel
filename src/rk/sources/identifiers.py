@@ -10,13 +10,13 @@ from pydantic import BaseModel
 IdKind = Literal["doi", "pmid", "pmcid", "arxiv", "openalex", "isbn", "url"]
 
 _DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$")
-_DOI_PREFIX_RE = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)", re.I)
+_DOI_PREFIX_RE = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)", re.IGNORECASE)
 _ARXIV_NEW = re.compile(r"^(\d{4}\.\d{4,5})(?:v\d+)?$")
 _ARXIV_OLD = re.compile(r"^([a-z][a-z\-]*(?:\.[A-Z]{2})?/\d{7})(?:v\d+)?$")
-_ARXIV_PREFIX = re.compile(r"^(?:arxiv:\s*|https?://(?:www\.)?arxiv\.org/(?:abs|pdf|html)/)", re.I)
-_PMCID_RE = re.compile(r"^(?:pmcid:\s*)?(PMC\d+)$", re.I)
-_OPENALEX_RE = re.compile(r"^(?:https?://openalex\.org/)?(W\d+)$", re.I)
-_PMID_RE = re.compile(r"^(?:pmid:\s*)?(\d{1,9})$", re.I)
+_ARXIV_PREFIX = re.compile(r"^(?:arxiv:\s*|https?://(?:www\.)?arxiv\.org/(?:abs|pdf|html)/)", re.IGNORECASE)
+_PMCID_RE = re.compile(r"^(?:pmcid:\s*)?(PMC\d+)$", re.IGNORECASE)
+_OPENALEX_RE = re.compile(r"^(?:https?://openalex\.org/)?(W\d+)$", re.IGNORECASE)
+_PMID_RE = re.compile(r"^(?:pmid:\s*)?(\d{1,9})$", re.IGNORECASE)
 
 
 class Identifier(BaseModel):
@@ -77,7 +77,7 @@ def _isbn_ok(digits: str) -> bool:
 def normalize_isbn(s: str | None) -> str | None:
     if not s:
         return None
-    d = re.sub(r"^isbn:?\s*", "", s.strip(), flags=re.I).replace("-", "").replace(" ", "")
+    d = re.sub(r"^isbn:?\s*", "", s.strip(), flags=re.IGNORECASE).replace("-", "").replace(" ", "")
     if re.fullmatch(r"\d{9}[\dXx]|\d{13}", d) and _isbn_ok(d):
         return d.upper()
     return None

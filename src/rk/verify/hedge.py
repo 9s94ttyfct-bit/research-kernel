@@ -20,7 +20,7 @@ class HedgeResult(BaseModel):
 def _patterns() -> dict[str, re.Pattern]:
     lex = tomllib.loads(files("rk.verify").joinpath("hedge_lexicon.toml").read_text(encoding="utf-8"))
     return {
-        level: re.compile(r"\b(?:" + "|".join(re.escape(t) for t in sorted(terms, key=len, reverse=True)) + r")\b", re.I)
+        level: re.compile(r"\b(?:" + "|".join(re.escape(t) for t in sorted(terms, key=len, reverse=True)) + r")\b", re.IGNORECASE)
         for level, terms in lex.items()
     }
 

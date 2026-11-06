@@ -38,7 +38,7 @@ def _fold(s: str) -> str:
 
 
 def _title_score(a: str, b: str) -> float:
-    clean = lambda s: re.sub(r"[^\w\s]", " ", _fold(s))  # noqa: E731
+    clean = lambda s: re.sub(r"[^\w\s]", " ", _fold(s))
     return float(fuzz.token_set_ratio(clean(a), clean(b)))
 
 

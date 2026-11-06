@@ -1,4 +1,5 @@
 import pytest
+from pydantic import ValidationError
 
 from rk.library.models import Creator, Ids, ItemIn
 from rk.library.service import DEFAULT_COLLECTIONS, Library
@@ -59,7 +60,7 @@ def test_update_and_validation(lib):
     assert lib.get(i).retraction == "retracted"
     with pytest.raises(ValueError):
         lib.update(i, title="nope", actor="k")
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         lib.update(i, retraction="bogus", actor="k")
 
 

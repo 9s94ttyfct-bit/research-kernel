@@ -6,7 +6,6 @@ import json
 import signal
 import sys
 from pathlib import Path
-from typing import Optional
 
 import typer
 
@@ -21,6 +20,9 @@ app.add_typer(library_app, name="library")
 app.add_typer(note_app, name="note")
 
 JSON_OPT = typer.Option(False, "--json", help="Print raw JSON")
+KEYWORD_OPT = typer.Option(None, "--keyword", help="Repeatable")
+TAG_ADD_OPT = typer.Option(None, "--add", help="Repeatable")
+TAG_REMOVE_OPT = typer.Option(None, "--remove", help="Repeatable")
 
 
 def _client():
@@ -29,7 +31,7 @@ def _client():
     return ensure_server(rk_home())
 
 
-def _project(project: Optional[str]) -> str:
+def _project(project: str | None) -> str:
     p = project or load_settings().current_project
     if not p:
         typer.secho("No project selected: pass --project or run `rk project use <slug>`.", fg="red", err=True)
@@ -112,8 +114,8 @@ def serve(detach: bool = typer.Option(False, help="Start in the background and r
 
 # ---------------- projects ----------------
 @project_app.command("create")
-def project_create(slug: str, title: str = typer.Option(..., "--title"), field: Optional[str] = None,
-                   paper_type: Optional[str] = None, use: bool = typer.Option(True, help="Make it the current project"),
+def project_create(slug: str, title: str = typer.Option(..., "--title"), field: str | None = None,
+                   paper_type: str | None = None, use: bool = typer.Option(True, help="Make it the current project"),
                    as_json: bool = JSON_OPT) -> None:
     r = _call("rk_project_create", {"slug": slug, "title": title, "field": field, "paper_type": paper_type}, write=True)
     if use:
@@ -141,7 +143,7 @@ def project_use(slug: str) -> None:
 
 
 @project_app.command("status")
-def project_status(slug: Optional[str] = typer.Argument(None), as_json: bool = JSON_OPT) -> None:
+def project_status(slug: str | None = typer.Argument(None), as_json: bool = JSON_OPT) -> None:
     r = _call("rk_project_status", {"project": _project(slug)})
 
     def render(d):
@@ -158,7 +160,7 @@ def project_status(slug: Optional[str] = typer.Argument(None), as_json: bool = J
 @app.command()
 def search(query: str, source: str = typer.Option("openalex", "--source"), limit: int = typer.Option(10, "--limit"),
            add: bool = typer.Option(False, "--add", help="Add hits to the current project's library"),
-           project: Optional[str] = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
+           project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
     """Search OpenAlex, Europe PMC, PubMed, arXiv or Semantic Scholar."""
     args = {"query": query, "source": source, "limit": limit, "add": add, "project": _project(project) if add else None}
     r = _call("rk_search_works", args, write=True)
@@ -173,8 +175,8 @@ def search(query: str, source: str = typer.Option("openalex", "--source"), limit
 
 
 @app.command()
-def add(identifiers: list[str], project: Optional[str] = typer.Option(None, "--project"),
-        stance: Optional[str] = None, no_verify: bool = False, as_json: bool = JSON_OPT) -> None:
+def add(identifiers: list[str], project: str | None = typer.Option(None, "--project"),
+        stance: str | None = None, no_verify: bool = False, as_json: bool = JSON_OPT) -> None:
     """Add works by DOI / PMID / PMCID / arXiv / OpenAlex id, with reference and retraction checks."""
     p = _project(project)
     results = []
@@ -188,7 +190,7 @@ def add(identifiers: list[str], project: Optional[str] = typer.Option(None, "--p
 
 
 @app.command()
-def fetch(item_id: str, project: Optional[str] = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
+def fetch(item_id: str, project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
     """Fetch open-access full text for an item."""
     r = _call("rk_source_fetch_fulltext", {"project": _project(project), "source_id": item_id}, write=True)
     _out(r, as_json, lambda d: typer.echo(f"{d['kind']} snapshot {d['snapshot_sha'][:12]}  pages={d['page_count']}  "
@@ -196,8 +198,8 @@ def fetch(item_id: str, project: Optional[str] = typer.Option(None, "--project")
 
 
 @app.command()
-def read(item_id: str, page: int = typer.Option(1, "--page"), start: Optional[int] = None, end: Optional[int] = None,
-         project: Optional[str] = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
+def read(item_id: str, page: int = typer.Option(1, "--page"), start: int | None = None, end: int | None = None,
+         project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
     """Print a page (or character range) of an item's text layer."""
     r = _call("rk_text_read", {"project": _project(project), "source_id": item_id, "page": page, "start": start,
                                "end": end})
@@ -205,7 +207,7 @@ def read(item_id: str, page: int = typer.Option(1, "--page"), start: Optional[in
 
 
 @app.command()
-def find(item_id: str, query: str, project: Optional[str] = typer.Option(None, "--project"),
+def find(item_id: str, query: str, project: str | None = typer.Option(None, "--project"),
          as_json: bool = JSON_OPT) -> None:
     """Find a phrase in an item's text layer (page and character locators)."""
     r = _call("rk_text_find", {"project": _project(project), "source_id": item_id, "query": query})
@@ -214,7 +216,7 @@ def find(item_id: str, query: str, project: Optional[str] = typer.Option(None, "
 
 
 @app.command()
-def verify(item_id: str, project: Optional[str] = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
+def verify(item_id: str, project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
     """Re-run reference (V-REF) and retraction (V-RETRACT) checks on an item."""
     r = _call("rk_verify", {"project": _project(project), "target_id": item_id}, write=True)
     _out(r, as_json, lambda d: typer.echo(f"ref={d['ref']['verdict']}  retraction={d['retraction']['status']}  "
@@ -224,12 +226,13 @@ def verify(item_id: str, project: Optional[str] = typer.Option(None, "--project"
 # ---------------- notes ----------------
 @note_app.command("add")
 def note_add(item_id: str, text: str = typer.Option(..., "--text"), kind: str = typer.Option("quote", "--kind"),
-             role: Optional[str] = typer.Option(None, "--role"), span: Optional[str] = typer.Option(None, "--span"),
-             keyword: list[str] = typer.Option([], "--keyword"), project: Optional[str] = typer.Option(None, "--project"),
+             role: str | None = typer.Option(None, "--role"), span: str | None = typer.Option(None, "--span"),
+             keyword: list[str] | None = KEYWORD_OPT,
+             project: str | None = typer.Option(None, "--project"),
              as_json: bool = JSON_OPT) -> None:
     """Add a note; quotes must appear verbatim in the source, paraphrases must not copy it."""
     note = {"source_id": item_id, "kind": kind, "text": text, "role_in_source": role, "source_span": span,
-            "keywords": keyword}
+            "keywords": keyword or []}
     r = _call("rk_note_add", {"project": _project(project), "note": note}, write=True)
     _out(r, as_json, lambda d: typer.echo(f"{d['note_id']}  verified"
                                           + (f"  page {d['locator']['page']} [{d['locator']['start']}:{d['locator']['end']}]"
@@ -237,7 +240,7 @@ def note_add(item_id: str, text: str = typer.Option(..., "--text"), kind: str = 
 
 
 @note_app.command("list")
-def note_list(item_id: Optional[str] = typer.Argument(None), project: Optional[str] = typer.Option(None, "--project"),
+def note_list(item_id: str | None = typer.Argument(None), project: str | None = typer.Option(None, "--project"),
               as_json: bool = JSON_OPT) -> None:
     r = _call("rk_note_list", {"project": _project(project), "source_id": item_id})
     _out(r, as_json, lambda d: [typer.echo(f"{n['id']}  {n['item_id']}  {n['kind']}: {n['text'][:100]}") for n in d["notes"]])
@@ -245,8 +248,8 @@ def note_list(item_id: Optional[str] = typer.Argument(None), project: Optional[s
 
 # ---------------- library ----------------
 @library_app.command("list")
-def library_list(collection: Optional[str] = typer.Option(None, "--collection"),
-                 project: Optional[str] = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
+def library_list(collection: str | None = typer.Option(None, "--collection"),
+                 project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
     r = _call("rk_library_list", {"project": _project(project), "collection": collection})
 
     def render(d):
@@ -258,21 +261,22 @@ def library_list(collection: Optional[str] = typer.Option(None, "--collection"),
 
 
 @library_app.command("search")
-def library_search(query: str, project: Optional[str] = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
+def library_search(query: str, project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
     r = _call("rk_library_search", {"project": _project(project), "query": query})
     _out(r, as_json, lambda d: [typer.echo(f"{h['item_id']}  {h['title'][:80]}  …{h['snippet']}…") for h in d["hits"]])
 
 
 @library_app.command("tag")
-def library_tag(item_id: str, add: list[str] = typer.Option([], "--add"), remove: list[str] = typer.Option([], "--remove"),
-                project: Optional[str] = typer.Option(None, "--project")) -> None:
-    r = _call("rk_library_tag", {"project": _project(project), "item_id": item_id, "add": add, "remove": remove},
+def library_tag(item_id: str, add: list[str] | None = TAG_ADD_OPT, remove: list[str] | None = TAG_REMOVE_OPT,
+                project: str | None = typer.Option(None, "--project")) -> None:
+    r = _call("rk_library_tag", {"project": _project(project), "item_id": item_id, "add": add or [],
+                                 "remove": remove or []},
               write=True)
     typer.echo(f"tags: {', '.join(r['tags']) or '-'}")
 
 
 @library_app.command("collect")
-def library_collect(item_id: str, collection: str, project: Optional[str] = typer.Option(None, "--project")) -> None:
+def library_collect(item_id: str, collection: str, project: str | None = typer.Option(None, "--project")) -> None:
     r = _call("rk_library_collect", {"project": _project(project), "item_id": item_id, "collection": collection},
               write=True)
     typer.echo(f"added to {collection} ({r['collection_id']})")
@@ -280,20 +284,20 @@ def library_collect(item_id: str, collection: str, project: Optional[str] = type
 
 @library_app.command("import")
 def library_import(path: Path, fmt: str = typer.Option("bibtex", "--format"),
-                   project: Optional[str] = typer.Option(None, "--project")) -> None:
+                   project: str | None = typer.Option(None, "--project")) -> None:
     r = _call("rk_library_import", {"project": _project(project), "format": fmt, "text": path.read_text()}, write=True)
     typer.echo(f"imported {len(r['item_ids'])} entries ({r['created']} new)")
 
 
 @library_app.command("export")
-def library_export(fmt: str = typer.Option("bibtex", "--format"), collection: Optional[str] = typer.Option(None, "--collection"),
-                   project: Optional[str] = typer.Option(None, "--project")) -> None:
+def library_export(fmt: str = typer.Option("bibtex", "--format"), collection: str | None = typer.Option(None, "--collection"),
+                   project: str | None = typer.Option(None, "--project")) -> None:
     r = _call("rk_library_export", {"project": _project(project), "format": fmt, "collection": collection})
     sys.stdout.write(r["text"])
 
 
 @library_app.command("attach")
-def library_attach(item_id: str, pdf: Path, project: Optional[str] = typer.Option(None, "--project")) -> None:
+def library_attach(item_id: str, pdf: Path, project: str | None = typer.Option(None, "--project")) -> None:
     r = _call("rk_library_attach", {"project": _project(project), "source_id": item_id, "path": str(pdf.resolve())},
               write=True)
     typer.echo(f"attached: {r['kind']} snapshot {r['snapshot_sha'][:12]}  pages={r['page_count']}")

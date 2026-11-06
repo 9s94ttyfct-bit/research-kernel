@@ -51,7 +51,7 @@ def _ascii(s: str) -> str:
 def _note_ids(note: str | None) -> dict[str, str]:
     out: dict[str, str] = {}
     for line in (note or "").splitlines():
-        m = re.match(r"\s*(arXiv|PMID|PMCID)\s*:\s*(\S+)", line, re.I)
+        m = re.match(r"\s*(arXiv|PMID|PMCID)\s*:\s*(\S+)", line, re.IGNORECASE)
         if m:
             out[m.group(1).lower()] = m.group(2)
     return out
