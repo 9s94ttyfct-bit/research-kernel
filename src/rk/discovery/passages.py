@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 
 from pydantic import BaseModel
-from rapidfuzz import fuzz
+from rapidfuzz import fuzz, utils
 
 from rk.fulltext import latest_snapshot
 from rk.store.project import ProjectStore
@@ -40,13 +40,14 @@ def _windows(page: int, text: str) -> list[Passage]:
 
 
 def top_passages(ps: ProjectStore, item_id: str, query: str, k: int = 5) -> list[Passage]:
-    """The ``k`` best 3-sentence windows of the item's latest text layer by ``token_set_ratio`` with ``query`` (ties by
-    position), never overlapping each other. ``[]`` without a text layer."""
+    """The ``k`` best 3-sentence windows of the item's latest text layer by ``token_set_ratio`` with ``query``
+    (case and punctuation folded; ties by position), never overlapping each other. ``[]`` without a text layer."""
     snap = latest_snapshot(ps, item_id)
     if snap is None:
         return []
     windows = [w for p in snap[1].pages for w in _windows(p.n, p.text)]
-    ranked = sorted(windows, key=lambda w: (-fuzz.token_set_ratio(query, w.text), w.page, w.start))
+    ranked = sorted(windows, key=lambda w: (-fuzz.token_set_ratio(query, w.text, processor=utils.default_process),
+                                            w.page, w.start))
     chosen: list[Passage] = []
     for w in ranked:
         if len(chosen) == k:

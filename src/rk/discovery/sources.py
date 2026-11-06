@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol
 
 from rk.discovery.store import log_search
-from rk.fulltext import fetch_fulltext, latest_snapshot
+from rk.fulltext import fulltext_with_fallback, latest_snapshot
 from rk.library.models import ItemIn
 from rk.library.service import Library
 from rk.sources import openalex, resolver
@@ -47,7 +47,7 @@ class KernelSources:
                  browser: BrowserService | Callable[[], BrowserService | None] | None = None, *,
                  actor: str = "kernel"):
         self.kernel, self.project, self.actor = kernel, project, actor
-        self._browser = browser
+        self._browser: Callable[[], BrowserService | None] = browser if callable(browser) else (lambda: browser)
 
     def _lib(self) -> tuple[ProjectStore, Library]:
         return self.kernel.project(self.project)
@@ -99,17 +99,13 @@ class KernelSources:
         ps, lib = self._lib()
         if latest_snapshot(ps, item_id) is not None:
             return True
-        if fetch_fulltext(ps, lib, self.kernel.ctx(), item_id, actor=self.actor) is not None:
-            return True
-        svc = self._browser() if callable(self._browser) else self._browser
-        if svc is None or not svc.running or not self.kernel.settings().fulltext_browser_fallback:
-            return False
-        ctx = CallContext(role="kernel", actor=self.actor, project=self.project)
+        call = CallContext(role="kernel", actor=self.actor, project=self.project)
         try:
-            svc.fetch_fulltext(ctx, self.project, item_id)
-        except ToolError:  # no PDF obtained, or the page needs you (a login_wait checkpoint is open)
+            got = fulltext_with_fallback(self.kernel, ps, lib, item_id, call=call, project=self.project,
+                                         browser=self._browser)
+        except ToolError:  # the browser got no PDF, or the page needs you (a login_wait checkpoint is open)
             return False
-        return True
+        return got is not None
 
 
 def log_and_search(ps: ProjectStore, sources: DiscoverySources, *, stage: str, attempt: int, purpose: str,

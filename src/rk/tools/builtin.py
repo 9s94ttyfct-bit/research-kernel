@@ -15,7 +15,7 @@ from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
 from rk.discovery.models import Intake
 from rk.discovery.store import record_intake
 from rk.flags import flag_injection
-from rk.fulltext import FulltextResult, attach_pdf, fetch_fulltext
+from rk.fulltext import FulltextResult, attach_pdf, fulltext_with_fallback
 from rk.library.formats import FORMATS
 from rk.library.models import ItemIn
 from rk.llm.drivers import DriverSpec, available_all
@@ -350,10 +350,8 @@ def build_registry(k: Kernel, browser: Callable[[], BrowserService | None] | Non
           "the library or publisher page in the built-in browser.", SourceArg, True)
     def _fetch(ctx: CallContext, a: SourceArg) -> Out:
         ps, lib = _project(k, a.project)
-        r: FulltextResult | None = fetch_fulltext(ps, lib, k.ctx(), a.source_id, actor=ctx.actor)
-        svc = browser()
-        if r is None and svc is not None and svc.running and k.settings().fulltext_browser_fallback:
-            r = svc.fetch_fulltext(ctx, a.project, a.source_id)  # spec §11.1: the browser channel comes last
+        r: FulltextResult | None = fulltext_with_fallback(k, ps, lib, a.source_id, call=ctx, project=a.project,
+                                                          browser=browser)
         if r is None:
             raise ToolError("no_fulltext", "no open-access full text found; attach a PDF with rk_library_attach",
                             status=404)

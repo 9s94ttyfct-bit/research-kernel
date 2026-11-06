@@ -134,6 +134,16 @@ def test_top_passages_are_verbatim(env):
     assert top_passages(ps, lib.add_item(ItemIn(title="No text"), added_by="agent", actor="t").item_id, query) == []
 
 
+def test_top_passages_ignore_case_and_punctuation(env):
+    _, _, ps, lib = env
+    iid = lib.add_item(ItemIn(title="Lipids"), added_by="agent", actor="t").item_id
+    # Without case/punctuation folding the partial match on page 1 scores 63.6 and the verbatim one on page 2 only 59.2.
+    add_text_layer(ps, iid, ["Statins reduce mortality. Costs were not reported, overall.",
+                             "statins reduce ldl cholesterol, as shown."])
+    best = top_passages(ps, iid, "Statins reduce LDL cholesterol", k=1)
+    assert [(p.page, p.text) for p in best] == [(2, "statins reduce ldl cholesterol, as shown.")]
+
+
 def test_log_and_search_logs_and_adds(env):
     _, _, ps, lib = env
     hits = [ItemIn(title="Aspirin and stroke", year=2020, ids=Ids(doi="10.1/a")),

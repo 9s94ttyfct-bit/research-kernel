@@ -8,7 +8,7 @@ import shutil
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel
 
@@ -26,6 +26,12 @@ from rk.store.projections import projection
 from rk.text.layer import TextLayer
 from rk.text.markup import bioc_to_layer, html_to_layer, jats_to_layer
 from rk.text.pdf import extract_pdf
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from rk.browser.service import BrowserService
+    from rk.tools.registry import CallContext
 
 AttachOrigin = Literal["oa_api", "library_browser", "publisher_browser", "user_upload", "import"]
 
@@ -125,6 +131,20 @@ def fetch_fulltext(ps: ProjectStore, lib: Library, ctx: SourceContext, item_id: 
                 _attach(ps, item, res.body, "oa_api", actor, "agent")
                 return result
     return None
+
+
+def fulltext_with_fallback(kernel, ps: ProjectStore, lib: Library, item_id: str, *, call: CallContext, project: str,
+                           browser: Callable[[], BrowserService | None]) -> FulltextResult | None:
+    """The full-text channel chain (spec §11.1): the open-access API channels first, then the built-in browser (library
+    or publisher page) when it runs and ``fulltext_browser_fallback`` is on. ``None`` when no channel applies; browser
+    failures raise its ``ToolError``."""
+    r = fetch_fulltext(ps, lib, kernel.ctx(), item_id, actor=call.actor)
+    if r is not None or not kernel.settings().fulltext_browser_fallback:
+        return r
+    svc = browser()
+    if svc is None or not svc.running:
+        return None
+    return svc.fetch_fulltext(call, project, item_id)
 
 
 def attach_pdf(ps: ProjectStore, lib: Library, item_id: str, path: Path, *, origin: AttachOrigin, actor: str,
