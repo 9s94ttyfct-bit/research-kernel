@@ -38,6 +38,9 @@ def _page_text(page) -> str:
         n = tp.count_chars()
         out: list[str] = []
         for i in range(n):
+            if raw.FPDFText_IsHyphen(tp.raw, i):
+                out.append("\ufffe")  # line-end hyphen marker understood by build_norm_keys
+                continue
             cp = raw.FPDFText_GetUnicode(tp.raw, i)
             ch = chr(cp) if cp else ""
             if not ch:

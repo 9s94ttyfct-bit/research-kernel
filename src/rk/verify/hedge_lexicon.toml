@@ -1,0 +1,19 @@
+# Hedge / booster strength levels (spec §9.1 V-HEDGE).
+# Rule: any level-0 term -> 0; elif any level-1 term -> 1; elif any level-3 term -> 3; else 2 (plain assertion).
+speculative = [
+  "may", "might", "could", "possibly", "perhaps", "potentially", "conceivably", "speculate", "speculated",
+  "hypothesize", "hypothesise", "hypothesized", "hypothesised", "it is possible", "plausibly",
+]
+tentative = [
+  "suggest", "suggests", "suggested", "suggesting", "indicate", "indicates", "indicated", "indicating",
+  "likely", "unlikely", "appear", "appears", "appeared", "seem", "seems", "seemed", "associated with",
+  "probably", "presumably", "tend to", "tends to", "consistent with", "preliminary",
+]
+assertive = [
+  "show", "shows", "showed", "shown", "find", "finds", "found", "demonstrate", "demonstrates", "demonstrated",
+  "observe", "observed", "report", "reported",
+]
+categorical = [
+  "prove", "proves", "proved", "proven", "establish", "establishes", "established", "always", "never", "all",
+  "definitively", "conclusively", "undoubtedly", "certainly", "unequivocally", "beyond doubt", "without exception",
+]
