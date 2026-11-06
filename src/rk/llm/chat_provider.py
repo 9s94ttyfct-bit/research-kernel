@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
-from rk.agent.loop import run_tool_loop
+import uuid
+
+from rk.agent.loop import ChatApiSession, run_tool_loop
 from rk.llm.chat.base import Msg, ToolDef, Turn
-from rk.llm.types import Availability, ProviderError, RunContext, TaskResult, TaskSpec
+from rk.llm.types import (
+    Availability,
+    ChatSpec,
+    ProviderError,
+    RunContext,
+    TaskResult,
+    TaskSpec,
+)
 from rk.llm.vendors import vendor_of
 from rk.roles.prompts import build_system_prompt
 
@@ -40,3 +49,7 @@ class ChatApiProvider:
     def run(self, spec: TaskSpec, ctx: RunContext) -> TaskResult:
         return run_tool_loop(self.backend, spec, ctx.registry, actor=self.actor(spec.role),
                              system=build_system_prompt(spec.role, spec.output_schema), provider=self.name)
+
+    def open_chat(self, spec: ChatSpec, ctx: RunContext) -> ChatApiSession:
+        return ChatApiSession(self.backend, spec, ctx.registry, actor=self.actor(spec.role),
+                              session_id=f"chat-{uuid.uuid4().hex[:12]}")

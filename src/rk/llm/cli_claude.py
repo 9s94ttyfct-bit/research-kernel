@@ -7,7 +7,7 @@ import json
 from pydantic import ValidationError
 
 from rk.llm.cli_base import AgenticCli, mcp_server_spec
-from rk.llm.types import RunContext, TaskResult, TaskSpec
+from rk.llm.types import ChatSpec, RunContext, TaskResult, TaskSpec
 from rk.llm.vendors import vendor_of
 from rk.roles.prompts import build_system_prompt, render_inputs
 
@@ -83,3 +83,8 @@ class ClaudeCliProvider(AgenticCli):
             return fail(f"invalid_output: {e.errors(include_url=False)[:3]}", raw=json.dumps(structured), **meta)
         return TaskResult(spec.task_id, True, output, json.dumps(structured), self.name, model, done.duration_s, None,
                           calls, data.get("session_id"))
+
+    def open_chat(self, spec: ChatSpec, ctx: RunContext):
+        from rk.llm.sessions import ClaudeCliSession
+
+        return ClaudeCliSession(self, spec, ctx)

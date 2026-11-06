@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import hmac
+import json
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ValidationError
 
 from rk import __version__
+from rk.server.chat import ChatManager
 from rk.server.tokens import TokenStore
 from rk.tools.registry import CallContext, PermissionDenied, ToolError, ToolRegistry
 
@@ -19,8 +21,18 @@ class ToolCall(BaseModel):
     idempotency_key: str | None = None
 
 
+class ChatOpen(BaseModel):
+    driver: str
+    role: str = "lead"
+    project: str
+
+
+class ChatSend(BaseModel):
+    text: str
+
+
 def create_app(registry: ToolRegistry, token: str, *, actor: str = "cli:user",
-                tokens: TokenStore | None = None) -> FastAPI:
+               tokens: TokenStore | None = None, chats: ChatManager | None = None) -> FastAPI:
     """The serve token acts as the human CLI (role ``cli``). Any other bearer must be a live task or lead token;
     its calls run with that grant's role, project binding and tool list."""
     app = FastAPI(title="rk serve", version=__version__)
@@ -68,5 +80,40 @@ def create_app(registry: ToolRegistry, token: str, *, actor: str = "cli:user",
             return JSONResponse(status_code=500, content={"ok": False, "error": {
                 "type": type(e).__name__, "message": str(e), "details": {}}})
         return JSONResponse(content={"ok": True, "result": result})
+
+    # ---- chat sessions (human CLI / Workbench only) ----
+    def _cli_only(authorization: str | None) -> None:
+        if _ctx(authorization).role != "cli":
+            raise HTTPException(status_code=403, detail="chat sessions are opened by the human user")
+        if chats is None:
+            raise HTTPException(status_code=503, detail="chat is not enabled on this server")
+
+    @app.post("/api/chat")
+    async def chat_open(body: ChatOpen, authorization: str | None = Header(default=None)) -> JSONResponse:
+        _cli_only(authorization)
+        try:
+            chat_id = await run_in_threadpool(chats.open, body.driver, body.role, body.project)
+        except (ValueError, LookupError) as e:
+            return JSONResponse(status_code=400, content={"ok": False, "error": {
+                "type": "chat_unavailable", "message": str(e), "details": {}}})
+        return JSONResponse(content={"ok": True, "result": {"chat_id": chat_id}})
+
+    @app.post("/api/chat/{chat_id}/send")
+    def chat_send(chat_id: str, body: ChatSend, authorization: str | None = Header(default=None)) -> StreamingResponse:
+        _cli_only(authorization)
+
+        def lines():
+            try:
+                for ev in chats.send(chat_id, body.text):
+                    yield json.dumps({"kind": ev.kind, "data": ev.data}, ensure_ascii=False, default=str) + "\n"
+            except (KeyError, RuntimeError) as e:
+                yield json.dumps({"kind": "error", "data": {"message": f"{type(e).__name__}: {e}"}}) + "\n"
+
+        return StreamingResponse(lines(), media_type="application/x-ndjson")
+
+    @app.delete("/api/chat/{chat_id}")
+    def chat_close(chat_id: str, authorization: str | None = Header(default=None)) -> dict:
+        _cli_only(authorization)
+        return {"ok": True, "result": {"closed": chats.close(chat_id)}}
 
     return app

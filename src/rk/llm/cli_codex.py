@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from rk.llm.cli_base import AgenticCli, mcp_server_spec
 from rk.llm.jsonout import extract_json
-from rk.llm.types import RunContext, TaskResult, TaskSpec
+from rk.llm.types import ChatSpec, RunContext, TaskResult, TaskSpec
 from rk.llm.vendors import vendor_of
 from rk.roles.prompts import build_system_prompt, render_inputs
 
@@ -139,3 +139,8 @@ class CodexCliProvider(AgenticCli):
             return result(True, output=spec.output_schema.model_validate(obj))
         except ValidationError as e:
             return result(False, error=f"invalid_output: {e.errors(include_url=False)[:3]}")
+
+    def open_chat(self, spec: ChatSpec, ctx: RunContext):
+        from rk.llm.sessions import CodexCliSession
+
+        return CodexCliSession(self, spec, ctx)

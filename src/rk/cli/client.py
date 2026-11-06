@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
 import time
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
 
 import httpx
@@ -64,6 +66,27 @@ class RkClient:
 
     def tools(self) -> list[dict]:
         return self._http.get("/api/tools").json()["tools"]
+
+    # ---- chat sessions ----
+    def chat_open(self, driver: str, role: str, project: str) -> str:
+        r = self._http.post("/api/chat", json={"driver": driver, "role": role, "project": project})
+        body = r.json()
+        if not body.get("ok"):
+            err = body.get("error") or {"type": f"http_{r.status_code}", "message": str(body.get("detail", body))}
+            raise RkError(err["type"], err["message"])
+        return body["result"]["chat_id"]
+
+    def chat_send(self, chat_id: str, text: str) -> Iterator[dict]:
+        with self._http.stream("POST", f"/api/chat/{chat_id}/send", json={"text": text}, timeout=None) as r:
+            if r.status_code != 200:
+                r.read()
+                raise RkError(f"http_{r.status_code}", r.text[:500])
+            for line in r.iter_lines():
+                if line.strip():
+                    yield json.loads(line)
+
+    def chat_close(self, chat_id: str) -> None:
+        self._http.delete(f"/api/chat/{chat_id}")
 
     def close(self) -> None:
         self._http.close()

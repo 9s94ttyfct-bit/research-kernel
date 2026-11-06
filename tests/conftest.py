@@ -48,13 +48,16 @@ def live_server(tmp_home, replay_http):
 
     from rk.cli.client import RkClient
     from rk.server.app import create_app
+    from rk.server.chat import ChatManager
     from rk.server.runtime import acquire_serve_lock, release
     from rk.tools.builtin import build_registry
     from rk.workspace import Kernel
 
     rt = acquire_serve_lock(tmp_home)
     kernel = Kernel(tmp_home, http=replay_http)
-    server = uvicorn.Server(uvicorn.Config(create_app(build_registry(kernel), rt.token, tokens=kernel.tokens),
+    registry = build_registry(kernel)
+    chats = ChatManager(kernel, registry)
+    server = uvicorn.Server(uvicorn.Config(create_app(registry, rt.token, tokens=kernel.tokens, chats=chats),
                                            log_level="warning"))
     t = threading.Thread(target=server.run, kwargs={"sockets": [rt.sock]}, daemon=True)
     t.start()

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import time
+from collections.abc import Iterator
 
 from pydantic import ValidationError
 
 from rk.canon import canonical_json
 from rk.llm.chat.base import ChatBackend, Msg, ToolDef
 from rk.llm.jsonout import parse_output
-from rk.llm.types import ProviderError, TaskResult, TaskSpec
+from rk.llm.types import ChatEvent, ChatSpec, ProviderError, TaskResult, TaskSpec
 from rk.roles.prompts import render_inputs, render_tool_result
 from rk.tools.registry import CallContext, PermissionDenied, ToolError
 
@@ -99,3 +100,47 @@ def run_tool_loop(backend: ChatBackend, spec: TaskSpec, registry, *, actor: str,
                          Msg(role="user", content=f"Your reply was not valid: {str(e)[:500]}\nReply with only one JSON "
                                                   "object matching the output schema.")]
     return done(False, error="max_turns")
+
+
+class ChatApiSession:
+    """Multi-turn chat over a ChatBackend: the history lives here; each ``send`` runs tool rounds until the model
+    answers in text. Tool calls go through the same scoped ``execute_tool`` as single tasks."""
+
+    MAX_ROUNDS = 12
+
+    def __init__(self, backend: ChatBackend, spec: ChatSpec, registry, *, actor: str, session_id: str):
+        self.backend, self.spec, self.registry, self.actor = backend, spec, registry, actor
+        self.session_id = session_id
+        self.tools = tool_defs(registry, spec.tools) if spec.tools else []
+        self.messages: list[Msg] = [Msg(role="system", content=spec.system)]
+        self._turn = 0
+
+    def send(self, user_message: str) -> Iterator[ChatEvent]:
+        self._turn += 1
+        self.messages.append(Msg(role="user", content=user_message))
+        for _ in range(self.MAX_ROUNDS):
+            try:
+                turn = self.backend.complete(self.messages, self.tools, None)
+            except ProviderError as e:
+                yield ChatEvent("error", {"message": str(e)})
+                return
+            if not turn.tool_calls:
+                self.messages.append(Msg(role="assistant", content=turn.text))
+                yield ChatEvent("text", {"text": turn.text})
+                yield ChatEvent("done", {"session_id": self.session_id})
+                return
+            self.messages.append(Msg(role="assistant", content=turn.text, tool_calls=turn.tool_calls))
+            if turn.text:
+                yield ChatEvent("text", {"text": turn.text})
+            for c in turn.tool_calls:
+                yield ChatEvent("tool_call", {"id": c.id, "name": c.name, "arguments": c.arguments})
+                result = execute_tool(self.registry, c.name, c.arguments, allowed=self.spec.tools,
+                                      role=self.spec.role, actor=self.actor,
+                                      task_id=f"{self.session_id}:{self._turn}", project=self.spec.project)
+                yield ChatEvent("tool_result", {"id": c.id, "content": result})
+                self.messages.append(Msg(role="tool", content=render_tool_result(result), tool_call_id=c.id,
+                                         name=c.name))
+        yield ChatEvent("error", {"message": f"stopped after {self.MAX_ROUNDS} tool rounds"})
+
+    def close(self) -> None:
+        self.messages.clear()

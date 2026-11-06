@@ -105,6 +105,7 @@ def serve(detach: bool = typer.Option(False, help="Start in the background and r
     import uvicorn
 
     from rk.server.app import create_app
+    from rk.server.chat import ChatManager
     from rk.server.runtime import AlreadyRunning, acquire_serve_lock, release
     from rk.tools.builtin import build_registry
     from rk.workspace import Kernel
@@ -115,14 +116,52 @@ def serve(detach: bool = typer.Option(False, help="Start in the background and r
         typer.secho(str(e), fg="yellow", err=True)
         raise typer.Exit(0) from e
     kernel = Kernel(home)
-    server = uvicorn.Server(uvicorn.Config(create_app(build_registry(kernel), rt.token, tokens=kernel.tokens),
+    registry = build_registry(kernel)
+    chats = ChatManager(kernel, registry)
+    server = uvicorn.Server(uvicorn.Config(create_app(registry, rt.token, tokens=kernel.tokens, chats=chats),
                                            log_level="warning"))
     signal.signal(signal.SIGTERM, lambda *_: setattr(server, "should_exit", True))
     try:
         server.run(sockets=[rt.sock])
     finally:
+        chats.close_all()
         kernel.close()
         release(rt)
+
+
+@app.command()
+def chat(driver: str = typer.Option(..., "--driver", help="e.g. claude_cli, codex_cli, "
+                                                          "omp_gateway:openai-codex/gpt-6-luna"),
+         role: str = typer.Option("lead", "--role"), project: str | None = typer.Option(None, "--project")) -> None:
+    """Multi-turn chat with a driver, using the role's tools on one project (Ctrl-D to quit)."""
+    from rk.cli.client import RkError
+
+    c = _client()
+    try:
+        chat_id = c.chat_open(driver, role, _project(project))
+    except RkError as e:
+        _fail(e)
+    typer.echo(f"chat {chat_id} ({driver}, role {role}). Ctrl-D to quit.")
+    try:
+        while True:
+            try:
+                text = input("you> ")
+            except EOFError:
+                break
+            if not text.strip():
+                continue
+            for ev in c.chat_send(chat_id, text):
+                kind, data = ev["kind"], ev["data"]
+                if kind == "text":
+                    typer.echo(data["text"])
+                elif kind == "tool_call":
+                    typer.secho(f"  [tool] {data.get('name')}({json.dumps(data.get('arguments'), ensure_ascii=False)})",
+                                fg="cyan")
+                elif kind == "error":
+                    typer.secho(f"  [error] {data.get('message')}", fg="red")
+    finally:
+        c.chat_close(chat_id)
+        c.close()
 
 
 # ---------------- projects ----------------
