@@ -206,9 +206,12 @@ class HttpClient:
             return res
 
     def get_json(self, url: str, params: dict | None = None, **kw) -> tuple[Any, HttpResult]:
+        """200 -> parsed JSON; 404 -> (None, res); any other status raises HttpError (never 'not found')."""
         res = self.get(url, params, **kw)
-        if res.status != 200:
+        if res.status == 404:
             return None, res
+        if res.status != 200:
+            raise HttpError(res.status, res.url)
         return res.json(), res
 
     def close(self) -> None:

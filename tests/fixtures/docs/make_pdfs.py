@@ -69,7 +69,34 @@ def two_pages() -> None:
     pdf.output(str(HERE / "two_pages.pdf"))
 
 
+def transformed() -> None:
+    """Text shrunk by the text matrix (Tf 12 but drawn 0.12 pt) and text placed off the page."""
+    import ctypes
+
+    import pypdfium2 as pdfium
+    import pypdfium2.raw as r
+
+    pdf = pdfium.PdfDocument.new()
+    page = r.FPDFPage_New(pdf.raw, 0, 595.0, 842.0)
+    font = r.FPDFText_LoadStandardFont(pdf.raw, b"Helvetica")
+
+    def add(text: str, scale: float, x: float, y: float) -> None:
+        obj = r.FPDFPageObj_CreateTextObj(pdf.raw, font, 12.0)
+        buf = ctypes.create_string_buffer((text + "\0").encode("utf-16-le"))
+        r.FPDFText_SetText(obj, ctypes.cast(buf, ctypes.POINTER(r.FPDF_WCHAR)))
+        r.FPDFPageObj_Transform(obj, scale, 0, 0, scale, x, y)
+        r.FPDFPage_InsertObject(page, obj)
+
+    add("Normal visible line.", 1, 72, 700)
+    add("SHRUNK HIDDEN TEXT", 0.01, 72, 650)
+    add("OFFPAGE HIDDEN TEXT", 1, 72, 2000)
+    add("Visible tail line, with punctuation - and a hyphen.", 1, 72, 600)
+    r.FPDFPage_GenerateContent(page)
+    r.FPDF_ClosePage(page)
+    pdf.save(str(HERE / "transformed.pdf"))
+
+
 if __name__ == "__main__":
-    for fn in (hyphen, ligature, hidden, two_pages):
+    for fn in (hyphen, ligature, hidden, two_pages, transformed):
         fn()
     print("ok")

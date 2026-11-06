@@ -16,12 +16,22 @@ INVISIBLE_RENDER_MODE = 3
 WHITE_MIN = 250
 
 
-def _visible(tp_raw, i: int) -> bool:
+def _visible(tp_raw, i: int, crop: tuple[float, float, float, float]) -> bool:
+    """Drop glyphs a reader cannot see: invisible render mode, white/transparent fill, a drawn height under
+    MIN_FONT_PT (font size or text-matrix scaling), or a position outside the page's crop box."""
     if raw.FPDFText_IsGenerated(tp_raw, i):
         return True
     size = raw.FPDFText_GetFontSize(tp_raw, i)
     if 0 < size < MIN_FONT_PT:
         return False
+    box = raw.FS_RECTF()
+    if raw.FPDFText_GetLooseCharBox(tp_raw, i, ctypes.byref(box)):
+        height = box.top - box.bottom
+        if 0 < height < MIN_FONT_PT:
+            return False
+        left, bottom, right, top = crop
+        if box.right < left or box.left > right or box.top < bottom or box.bottom > top:
+            return False
     obj = raw.FPDFText_GetTextObject(tp_raw, i)
     if obj and raw.FPDFTextObj_GetTextRenderMode(obj) == INVISIBLE_RENDER_MODE:
         return False
@@ -34,6 +44,7 @@ def _visible(tp_raw, i: int) -> bool:
 
 def _page_text(page) -> str:
     tp = page.get_textpage()
+    crop = tuple(page.get_cropbox())
     try:
         n = tp.count_chars()
         out: list[str] = []
@@ -45,7 +56,7 @@ def _page_text(page) -> str:
             ch = chr(cp) if cp else ""
             if not ch:
                 continue
-            if ch.isspace() or _visible(tp.raw, i):
+            if ch.isspace() or _visible(tp.raw, i, crop):
                 out.append(ch)
         return "".join(out).replace("\r\n", "\n")
     finally:

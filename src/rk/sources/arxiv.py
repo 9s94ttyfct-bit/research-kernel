@@ -5,7 +5,7 @@ from __future__ import annotations
 from lxml import etree
 
 from rk.library.models import Creator, Ids, ItemIn
-from rk.net.http import HttpClient
+from rk.net.http import HttpClient, HttpError
 from rk.sources.identifiers import normalize_arxiv
 
 API = "https://export.arxiv.org/api/query"
@@ -61,4 +61,6 @@ def query(http: HttpClient, *, search_query: str | None = None, id_list: list[st
     if id_list:
         params["id_list"] = ",".join(id_list)
     res = http.get(API, params)
-    return parse_feed(res.body) if res.status == 200 else []
+    if res.status != 200:
+        raise HttpError(res.status, res.url)
+    return parse_feed(res.body)

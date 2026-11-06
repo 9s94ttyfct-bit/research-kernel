@@ -10,31 +10,72 @@ from lxml import etree, html as lhtml
 from rk.text.layer import Page, TextLayer
 
 _ZW = re.compile("[\u200b\u200c\u200d\u2060\ufeff]")
-_HIDDEN_STYLE = re.compile(r"display\s*:\s*none|visibility\s*:\s*hidden|font-size\s*:\s*0(?:px|pt|em)?\s*(?:;|$)", re.I)
+_HIDDEN_DECL = re.compile(
+    r"display\s*:\s*none\b"
+    r"|visibility\s*:\s*(?:hidden|collapse)\b"
+    r"|opacity\s*:\s*0*(?:\.0+)?\s*(?:!important)?\s*(?:;|$)"
+    r"|font-size\s*:\s*0*(?:\.0+)?(?:px|pt|em|rem|%)?\s*(?:!important)?\s*(?:;|$)"
+    r"|color\s*:\s*transparent\b"
+    r"|text-indent\s*:\s*-\d{3,}"
+    r"|(?:left|top)\s*:\s*-\d{4,}",
+    re.I,
+)
+_RULE = re.compile(r"([^{}]+)\{([^{}]*)\}")
+_SIMPLE_SELECTOR = re.compile(r"^([a-zA-Z][\w-]*)?((?:[.#][\w-]+)*)$")
 
 
 def _norm_ws(s: str) -> str:
     return re.sub(r"[ \t\r\f\v]+", " ", s).strip()
 
 
+def _hidden_selectors(doc) -> list[tuple[str | None, set[str], str | None]]:
+    """Simple selectors (tag, .class, #id and combinations) whose <style> rules hide content.
+
+    Complex selectors (descendant, attribute, pseudo-classes) are not evaluated.
+    """
+    out: list[tuple[str | None, set[str], str | None]] = []
+    for st in doc.iter("style"):
+        css = re.sub(r"/\*.*?\*/", "", st.text or "", flags=re.S)
+        for sels, decls in _RULE.findall(css):
+            if not _HIDDEN_DECL.search(decls):
+                continue
+            for sel in sels.split(","):
+                m = _SIMPLE_SELECTOR.match(sel.strip())
+                if not m or not (m.group(1) or m.group(2)):
+                    continue
+                parts = re.findall(r"[.#][\w-]+", m.group(2) or "")
+                classes = {p[1:] for p in parts if p[0] == "."}
+                ids = [p[1:] for p in parts if p[0] == "#"]
+                out.append(((m.group(1) or "").lower() or None, classes, ids[0] if ids else None))
+    return out
+
+
+def _matches(el, sel: tuple[str | None, set[str], str | None]) -> bool:
+    tag, classes, el_id = sel
+    if tag and el.tag.lower() != tag:
+        return False
+    if el_id and el.get("id") != el_id:
+        return False
+    return classes <= set((el.get("class") or "").split())
+
+
 def sanitize_html(html: str) -> str:
     doc = lhtml.fromstring(html)
+    hidden_sels = _hidden_selectors(doc)
     for el in list(doc.iter(etree.Comment)):
         el.getparent().remove(el)
     for el in list(doc.iter()):
-        if not isinstance(el.tag, str):
+        if not isinstance(el.tag, str) or el.getparent() is None:
             continue
         tag = el.tag.lower()
-        style = el.get("style") or ""
         if (
             tag in ("script", "style", "noscript", "template")
             or el.get("hidden") is not None
             or el.get("aria-hidden") == "true"
-            or _HIDDEN_STYLE.search(style)
+            or _HIDDEN_DECL.search(el.get("style") or "")
+            or any(_matches(el, s) for s in hidden_sels)
         ):
-            parent = el.getparent()
-            if parent is not None:
-                el.drop_tree()
+            el.drop_tree()
     return _ZW.sub("", lhtml.tostring(doc, encoding="unicode"))
 
 

@@ -50,6 +50,12 @@ def test_pdf_hidden_text_removed():
         assert hidden not in txt
 
 
+def test_pdf_matrix_shrunk_and_offpage_text_removed():
+    txt = extract_pdf(DOCS / "transformed.pdf").full_text()
+    assert "Normal visible line." in txt and "Visible tail line, with punctuation - and a hyphen." in txt
+    assert "SHRUNK" not in txt and "OFFPAGE" not in txt
+
+
 def test_layer_roundtrip(tmp_path):
     layer = extract_pdf(DOCS / "two_pages.pdf")
     layer.save(tmp_path / "l.json")

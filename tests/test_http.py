@@ -47,6 +47,19 @@ def test_404_returned_not_cached(client):
 
 
 @respx.mock
+def test_get_json_non_404_errors_raise(client):
+    """A rejected key (403) must not look like a missing work (which would mark a real paper 'not_found')."""
+    from rk.sources import crossref
+
+    respx.get("https://api.crossref.org/works/10.1000/x").mock(return_value=httpx.Response(403))
+    respx.get("https://api.crossref.org/works/10.1000/gone").mock(return_value=httpx.Response(404))
+    with pytest.raises(HttpError) as ei:
+        crossref.get_work(client, "10.1000/x", None)
+    assert ei.value.status == 403
+    assert crossref.get_work(client, "10.1000/gone", None) is None
+
+
+@respx.mock
 def test_api_key_not_in_cache_key_or_url(client):
     respx.get("https://api.openalex.org/works/W1").mock(return_value=httpx.Response(200, json={}))
     res = client.get("https://api.openalex.org/works/W1", params={"api_key": "SECRET", "select": "id"})

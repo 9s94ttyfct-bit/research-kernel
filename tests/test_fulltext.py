@@ -83,6 +83,8 @@ def test_html_hidden_text_removed():
     assert "IGNORE" not in sanitize_html(html).replace("<title>", "")
     t = html_to_layer(html, "x").full_text()
     assert "IGNORE PREVIOUS" not in t and "alloying with silver" in t and "Zerowidth" in t
+    # look-alike styles that are visible must survive
+    assert "Half opacity text stays visible." in t and "Red text stays visible too." in t
 
 
 def test_user_attach_pdf_and_rebuild(ps, lib):
