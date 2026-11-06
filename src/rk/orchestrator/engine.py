@@ -62,6 +62,15 @@ class StageOutcome:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class _EdgeResult:
+    """What a use of an edge came to: taken, blocked on a ``stage_blocked`` checkpoint (P2), or degraded and then
+    passed or failed (P1)."""
+    kind: Literal["taken", "blocked", "passed", "failed"]
+    checkpoint_id: str | None = None
+    reason: str = ""
+
+
 @dataclass
 class StageContext:
     kernel: Any
@@ -81,7 +90,11 @@ class StageContext:
 class Worker(Protocol):
     def run(self, ctx: StageContext) -> StageOutcome: ...
 
-    def on_answer(self, ctx: StageContext, checkpoint: dict) -> StageOutcome: ...
+    def on_answer(self, ctx: StageContext, checkpoint: dict) -> StageOutcome:
+        """Apply the answer of the checkpoint the attempt waits on. Must be idempotent: after ``RateCapped``,
+        ``BudgetExceeded`` or a crash the wait is still linked, so the next step calls it again with the same
+        checkpoint."""
+        ...
 
     def gate(self, ps: ProjectStore, attempt: int) -> GateResult: ...
 
@@ -133,8 +146,12 @@ class Orchestrator:
     def run_stage(self, project: str, stage: str, *, run_id: str | None = None, guidance: str | None = None,
                   actor: str) -> StageOutcome:
         """Run a new attempt of the current stage. ``guidance`` is asked for this attempt; without it the stage
-        gets the guidance it was reopened with (or that of the attempt it replaces). In D1 (no ``run_id``) a
-        back-edge reopens its target at once; a run settles every outcome in ``step``."""
+        gets the guidance it was reopened with (or that of the attempt it replaces).
+
+        In D1 (no ``run_id``) running a stage that already has an attempt is a rerun, a use of the edge ``X->X``,
+        and a ``back_edge`` outcome uses its edge at once; both obey the per-project limit (§7.2): at the limit P2
+        returns ``waiting_human`` on a ``stage_blocked`` checkpoint, P1 degrades (``done`` after the gate passes,
+        else ``failed``). With a ``run_id``, ``step`` settles every outcome."""
         ps, lib = self.kernel.project(project)
         worker = self._worker(stage)
         current = current_stage(ps)
@@ -142,10 +159,36 @@ class Orchestrator:
             why = "it already passed" if current is None or DISCOVERY.index(stage) < DISCOVERY.index(current) \
                 else f"{current!r} has not passed"
             raise ToolError("stage_unavailable", f"cannot run {stage!r}: {why}", {"current": current})
-        _, outcome = self._attempt(project, ps, lib, stage, worker, run_id=run_id, guidance=guidance, actor=actor)
+        if run_id is None:
+            early = self._d1_rerun(project, ps, lib, stage, worker, actor=actor)
+            if early is not None:
+                return early
+        ctx, outcome = self._attempt(project, ps, lib, stage, worker, run_id=run_id, guidance=guidance, actor=actor)
         if outcome.status == "back_edge" and run_id is None:
-            self._take_edge(ps, stage, outcome.to, [outcome.reason] if outcome.reason else [], actor=actor)
+            return self._d1_edge(ps, worker, ctx, outcome.to, [outcome.reason] if outcome.reason else []) or outcome
         return outcome
+
+    def _d1_rerun(self, project: str, ps: ProjectStore, lib, stage: str, worker: Worker, *,
+                  actor: str) -> StageOutcome | None:
+        """Count a D1 rerun of ``stage`` as ``X->X`` (a stage reopened by an edge already counted it). Returns
+        ``None`` to go on with the attempt, else the outcome to return instead."""
+        row = stage_row(ps, stage)
+        if row is None or row["status"] == "reopened":
+            return None
+        cid = row["waiting_checkpoint"]
+        cp = get_checkpoint(ps, cid) if cid else None
+        if cp is not None and cp["kind"] == "stage_blocked":
+            if cp["status"] == "open":
+                return StageOutcome("waiting_human", checkpoint_id=cid, reason=f"checkpoint {cid} is open")
+            msg = self._resolve_blocked(ps, None, stage, row["attempt"], cp, actor=actor)
+            if current_stage(ps) != stage:
+                return StageOutcome("back_edge", to=cp["options"]["to"], reason=msg)
+            return None if stage_row(ps, stage)["status"] == "reopened" else StageOutcome("failed", reason=msg)
+        gate = row["last_gate"]
+        failures = gate["failures"] if gate and gate["attempt"] == row["attempt"] and not gate["ok"] else []
+        ctx = self._ctx(project, ps, lib, stage, row["attempt"], None, self._guidance(ps, stage, row["guidance"]),
+                        actor)
+        return self._d1_edge(ps, worker, ctx, stage, failures)
 
     def _attempt(self, project: str, ps: ProjectStore, lib, stage: str, worker: Worker, *, run_id: str | None,
                  guidance: str | None, actor: str, session: int | None = None) -> tuple[StageContext, StageOutcome]:
@@ -184,7 +227,12 @@ class Orchestrator:
             if outcome.status == "waiting_human":
                 return GateResult(False, [f"checkpoint {outcome.checkpoint_id} is open"])
             if outcome.status == "back_edge":
-                self._take_edge(ps, stage, outcome.to, [outcome.reason] if outcome.reason else [], actor=actor)
+                early = self._d1_edge(ps, worker, ctx, outcome.to, [outcome.reason] if outcome.reason else [])
+                if early is None:
+                    return GateResult(False, [f"{stage!r} sent back to {outcome.to!r}: {outcome.reason}"])
+                if early.status == "waiting_human":
+                    return GateResult(False, [f"checkpoint {early.checkpoint_id} (stage_blocked) is open"])
+                return GateResult(True, []) if early.status == "done" else GateResult(False, [early.reason])
             if outcome.status != "done":
                 return GateResult(False, [outcome.reason or f"{stage!r} answered with {outcome.status}"])
         return self._gate(ps, worker, stage, attempt, actor=actor)
@@ -295,36 +343,59 @@ class Orchestrator:
 
     def _edge(self, ps: ProjectStore, run: dict, worker: Worker, ctx: StageContext, to: str,
               failures: list[str]) -> str:
-        """Take ``stage->to`` unless its uses are spent (§7.2); then P2 asks with ``stage_blocked``, P1 degrades."""
+        res = self._use_edge(ps, worker, ctx, to, failures)
+        if res.kind == "taken":
+            return self._set_run(ps, run, "running", actor=ctx.actor)
+        if res.kind == "blocked":
+            return self._set_run(ps, run, "paused_waiting_human", actor=ctx.actor)
+        if res.kind == "passed":
+            return self._after_pass(ps, run, ctx.stage, actor=ctx.actor)
+        return self._set_run(ps, run, "failed", res.reason, actor=ctx.actor)
+
+    def _use_edge(self, ps: ProjectStore, worker: Worker, ctx: StageContext, to: str,
+                  failures: list[str]) -> _EdgeResult:
+        """Take ``stage->to`` unless its uses are spent (§7.2, in D1 and D2 alike). At the limit P2 opens a
+        ``stage_blocked`` checkpoint linked to the attempt; P1 degrades, then gates the attempt."""
         stage, actor = ctx.stage, ctx.actor
         edge = edge_name(stage, to)
         uses = edge_row(ps, edge)
         if uses["count"] < EDGE_LIMIT + uses["allowed"]:
             self._take_edge(ps, stage, to, failures, actor=actor)
-            return self._set_run(ps, run, "running", actor=actor)
+            return _EdgeResult("taken")
         intake = intake_of(ps)
         if intake is not None and intake.production_mode == "collab":
             granted = f" + {uses['allowed']} allowed" if uses["allowed"] else ""
             cid = create_checkpoint(
                 ps, "stage_blocked",
                 f"{stage!r} wants {edge} again, but it was used {uses['count']} times (limit {EDGE_LIMIT}{granted}). "
-                f"Allow one more use, or stop the run?",
+                f"Allow one more use, or stop?",
                 {"choices": BLOCKED_CHOICES, "edge": edge, "to": to, "failures": list(failures)},
                 stage=stage, actor=actor)
             record_waiting(ps, stage, ctx.attempt, cid, actor=actor)
-            return self._set_run(ps, run, "paused_waiting_human", actor=actor)
+            return _EdgeResult("blocked", checkpoint_id=cid)
         out = worker.degrade(ctx, list(failures))
         if out.status == "failed":
-            return self._set_run(ps, run, "failed", out.reason or f"{stage!r} could not degrade at {edge}",
-                                 actor=actor)
+            return _EdgeResult("failed", reason=out.reason or f"{stage!r} could not degrade at {edge}")
         if out.status != "done":
-            return self._set_run(ps, run, "failed", f"{stage!r} degrade at {edge} returned {out.status}",
-                                 actor=actor)
+            return _EdgeResult("failed", reason=f"{stage!r} degrade at {edge} returned {out.status}")
         res = self._gate(ps, worker, stage, ctx.attempt, actor=actor)
         if res.ok:
-            return self._after_pass(ps, run, stage, actor=actor)
-        return self._set_run(ps, run, "failed", f"{stage!r} failed its gate after degrading at {edge}: "
-                                                f"{'; '.join(res.failures)}", actor=actor)
+            return _EdgeResult("passed")
+        return _EdgeResult("failed", reason=f"{stage!r} failed its gate after degrading at {edge}: "
+                                            f"{'; '.join(res.failures)}")
+
+    def _d1_edge(self, ps: ProjectStore, worker: Worker, ctx: StageContext, to: str,
+                 failures: list[str]) -> StageOutcome | None:
+        """A D1 use of ``stage->to`` under the same limit; ``None`` once taken, else what the caller returns."""
+        res = self._use_edge(ps, worker, ctx, to, failures)
+        if res.kind == "blocked":
+            return StageOutcome("waiting_human", checkpoint_id=res.checkpoint_id,
+                                reason=f"{edge_name(ctx.stage, to)} reached its limit")
+        if res.kind == "passed":
+            return StageOutcome("done", reason="passed its gate after degrading")
+        if res.kind == "failed":
+            return StageOutcome("failed", reason=res.reason)
+        return None
 
     def _take_edge(self, ps: ProjectStore, stage: str, to: str, failures: list[str], *, actor: str) -> None:
         """Count a use of ``stage->to`` and reopen ``to`` (with the failures as guidance) and every later stage that

@@ -334,6 +334,28 @@ def test_rate_cap_waits_and_reruns_the_attempt(project):
     assert edge_count(ps, "landscape->landscape") == 0
 
 
+def test_on_answer_runs_again_after_a_rate_cap_and_settles_once(project):
+    k, ps = project
+
+    def review(ctx):
+        cid = create_checkpoint(ctx.ps, "topic_review", "Pick a topic", None, stage="topics", actor=ctx.actor)
+        return StageOutcome("waiting_human", checkpoint_id=cid)
+
+    topics = FakeWorker(runs=[review], answers=[RateCapped("claude_cli", 60.0)])
+    o = _orch(k, _workers(topics=topics))
+    run_id = start_run(ps, until="topics", actor="tester", clock=Clock())
+    assert _drive(o, run_id)[-1] == "paused_waiting_human"
+    [cp] = list_checkpoints(ps, "open")
+    answer_checkpoint(ps, cp["id"], {"decision": "approve"}, answered_by="human", actor="tester")
+    assert o.step("demo", run_id, actor="tester") == "waiting_rate"
+    assert run_row(ps, run_id)["status"] == "running"
+    assert {r["stage"]: r["waiting_checkpoint"] for r in stage_rows(ps)}["topics"] == cp["id"]
+    assert o.step("demo", run_id, actor="tester") == "done"
+    assert [c[:3] for c in topics.calls if c[0] == "on_answer"] == [("on_answer", 1, cp["id"])] * 2
+    assert topics.kinds() == ["run", "on_answer", "on_answer", "gate"]
+    assert [p["stage"] for p in _events(ps, "stage.passed")].count("topics") == 1
+
+
 def test_run_stage_refuses_later_and_plan5_stages(project):
     k, ps = project
     o = _orch(k, _workers())
@@ -382,8 +404,10 @@ def test_d1_advance_applies_the_answer_then_gates(project):
     res = o.advance("demo", actor="tester")
     assert res == GateResult(False, ["not yet"])
     assert landscape.kinds() == ["run", "on_answer", "gate"]
-    assert edge_count(ps, "landscape->landscape") == 0  # D1: you decide when to run the stage again
+    assert edge_count(ps, "landscape->landscape") == 0  # a gate failure takes no edge in D1 ...
     assert o.run_stage("demo", "landscape", actor="tester").status == "done"
+    assert edge_count(ps, "landscape->landscape") == 1  # ... running the stage again does
+    assert landscape.calls[-1] == ("run", 2, "not yet")  # with the gate failures as guidance
     assert o.advance("demo", actor="tester").ok
     assert current_stage(ps) == "gaps"
 
@@ -399,6 +423,77 @@ def test_d1_back_edge_reopens_its_target(project):
     assert current_stage(ps) == "gaps" and edge_count(ps, "topics->gaps") == 1
     o.run_stage("demo", "gaps", actor="tester")
     assert gaps.calls[-1] == ("run", 2, "thin")
+    assert edge_count(ps, "topics->gaps") == 1 and edge_count(ps, "gaps->gaps") == 0  # a reopened stage is no rerun
+
+
+@pytest.mark.parametrize("project", [{"production_mode": "collab"}], indirect=True)
+def test_d1_third_back_edge_opens_stage_blocked_in_p2(project):
+    k, ps = project
+    topics = FakeWorker(runs=[StageOutcome("back_edge", to="gaps", reason="thin")] * 4)
+    o = _orch(k, _workers(topics=topics))
+    for stage in ("intake", "landscape", "gaps"):
+        o.run_stage("demo", stage, actor="tester")
+        assert o.advance("demo", actor="tester").ok
+    for _ in range(2):
+        assert o.run_stage("demo", "topics", actor="tester").status == "back_edge"
+        o.run_stage("demo", "gaps", actor="tester")
+        assert o.advance("demo", actor="tester").ok
+    out = o.run_stage("demo", "topics", actor="tester")
+    assert out.status == "waiting_human"
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    assert (cp["kind"], cp["status"], cp["options"]["edge"]) == ("stage_blocked", "open", "topics->gaps")
+    assert cp["options"]["failures"] == ["thin"]
+    assert edge_count(ps, "topics->gaps") == 2 and current_stage(ps) == "topics"
+    assert {r["stage"]: r["waiting_checkpoint"] for r in stage_rows(ps)}["topics"] == cp["id"]
+    assert "open" in o.advance("demo", actor="tester").failures[0]
+
+    answer_checkpoint(ps, cp["id"], {"decision": "allow_one_more"}, answered_by="human", actor="tester")
+    assert not o.advance("demo", actor="tester").ok
+    assert edge_count(ps, "topics->gaps") == 3 and current_stage(ps) == "gaps"
+    assert [e["edge"] for e in _events(ps, "edge.allowed")] == ["topics->gaps"]
+    o.run_stage("demo", "gaps", actor="tester")
+    assert o.advance("demo", actor="tester").ok
+    out = o.run_stage("demo", "topics", actor="tester")  # the granted use is spent: ask again
+    assert out.status == "waiting_human" and get_checkpoint(ps, out.checkpoint_id)["kind"] == "stage_blocked"
+    assert edge_count(ps, "topics->gaps") == 3
+
+
+def test_d1_third_rerun_calls_degrade_in_p1(project):
+    k, ps = project
+
+    def degrade(ctx):
+        record_degraded(ctx.ps, stage=ctx.stage, attempt=ctx.attempt, removed=["cls_weak"],
+                        reason="fewer than 5 verified sources", actor=ctx.actor)
+        return StageOutcome("done")
+
+    landscape = FakeWorker(gates=[_degraded_gate] * 10, degrades=[degrade])
+    o = _orch(k, _workers(landscape=landscape))
+    o.run_stage("demo", "intake", actor="tester")
+    assert o.advance("demo", actor="tester").ok
+    for _ in range(3):
+        assert o.run_stage("demo", "landscape", actor="tester").status == "done"
+        assert not o.advance("demo", actor="tester").ok
+    assert edge_count(ps, "landscape->landscape") == 2
+    assert o.run_stage("demo", "landscape", actor="tester").status == "done"
+    assert landscape.kinds() == ["run", "gate"] * 3 + ["degrade", "gate"]
+    assert landscape.calls[6] == ("degrade", 3, ["2 clusters under 5"])
+    assert current_stage(ps) == "gaps" and list_checkpoints(ps) == []
+    assert edge_count(ps, "landscape->landscape") == 2
+
+
+def test_d1_degrade_failure_returns_failed(project):
+    k, ps = project
+    landscape = FakeWorker(gates=[GateResult(False, ["thin"])] * 10,
+                           degrades=[StageOutcome("failed", reason="no cluster with 5 verified sources")])
+    o = _orch(k, _workers(landscape=landscape))
+    o.run_stage("demo", "intake", actor="tester")
+    o.advance("demo", actor="tester")
+    for _ in range(3):
+        o.run_stage("demo", "landscape", actor="tester")
+        o.advance("demo", actor="tester")
+    out = o.run_stage("demo", "landscape", actor="tester")
+    assert (out.status, out.reason) == ("failed", "no cluster with 5 verified sources")
+    assert current_stage(ps) == "landscape" and landscape.kinds().count("run") == 3
 
 
 def test_intake_worker(project):
