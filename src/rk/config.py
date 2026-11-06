@@ -49,6 +49,27 @@ class Settings(BaseModel):
     # "lytang/MiniCheck-Flan-T5-Large" (in-process, needs the 'support' extra).
     support_model: str = "ollama:bespoke-minicheck:7b-q8_0"
     support_calibration: dict | None = None
+    # ---- built-in browser (spec §8.5) and library access ----
+    browser_enabled: bool = True
+    browser_headless: bool = False  # RK_BROWSER_HEADLESS=1 overrides (tests, agent smoke runs)
+    # {"scholar"|"pdf_domain"|"pdf_total"|"default"|<site>: {"gap": [min_s, max_s], "per_day": int | None}}
+    browser_limits: dict[str, dict] = Field(default_factory=dict)
+    browser_max_wait_s: float = 120.0
+    browser_max_steps: int = 30  # generic-navigation actions per task
+    library_name: str | None = None
+    library_portal_url: str | None = None
+    library_proxy: str | None = None  # template with {url}, e.g. https://login.ezproxy.example.edu/login?url={url}
+    library_discovery: Literal["primo", "summon"] | None = None
+    primo_base: str | None = None
+    primo_vid: str | None = None
+    primo_tab: str = "Everything"
+    primo_scope: str = "MyInst_and_CI"
+    summon_base: str | None = None
+    translation_server_url: str | None = None  # optional Zotero translation-server, e.g. http://127.0.0.1:1969
+    fulltext_browser_fallback: bool = True
+
+    def headless(self) -> bool:
+        return self.browser_headless or os.environ.get("RK_BROWSER_HEADLESS") == "1"
 
 
 def api_key(s: Settings, provider: Literal["anthropic", "openai", "ollama"]) -> str | None:

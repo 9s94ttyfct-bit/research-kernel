@@ -100,6 +100,18 @@ CREATE TABLE IF NOT EXISTS injection_flags (
     ts      TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS browse_log (
+    id              TEXT PRIMARY KEY,
+    task_id         TEXT,
+    site            TEXT NOT NULL,
+    action          TEXT NOT NULL,
+    url             TEXT NOT NULL,
+    query           TEXT,
+    result_count    INTEGER,
+    screenshot_path TEXT,
+    ts              TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS checkpoints (
     id          TEXT PRIMARY KEY,
     kind        TEXT NOT NULL,
