@@ -17,11 +17,13 @@ library_app = typer.Typer(help="Project library", no_args_is_help=True)
 note_app = typer.Typer(help="Notes", no_args_is_help=True)
 token_app = typer.Typer(help="Lead tokens for external MCP clients", no_args_is_help=True)
 checkpoint_app = typer.Typer(help="Checkpoints waiting for you", no_args_is_help=True)
+browser_app = typer.Typer(help="The built-in browser (runs inside rk serve)", no_args_is_help=True)
 app.add_typer(project_app, name="project")
 app.add_typer(library_app, name="library")
 app.add_typer(note_app, name="note")
 app.add_typer(token_app, name="token")
 app.add_typer(checkpoint_app, name="checkpoint")
+app.add_typer(browser_app, name="browser")
 
 JSON_OPT = typer.Option(False, "--json", help="Print raw JSON")
 KEYWORD_OPT = typer.Option(None, "--keyword", help="Repeatable")
@@ -422,6 +424,66 @@ def setup() -> None:
     for c in caps:
         typer.echo(f"  {c['area']:<15} {c['name']:<40} {c['status']}")
     typer.echo(f"\nSaved to {rk_home() / 'config.toml'} (mode 600).")
+
+
+# ---------------- built-in browser ----------------
+@browser_app.command("search")
+def browser_search(site: str = typer.Argument(..., help="scholar, pubmed, europepmc, primo or summon"),
+                   query: str = typer.Argument(...), max_results: int = typer.Option(10, "--max"),
+                   project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
+    """Search a site in the built-in browser at human pace (waits for the site's quota; may ask you to step in)."""
+    r = _call("rk_browser_search", {"project": _project(project), "site": site, "query": query,
+                                    "max_results": max_results}, write=True, timeout=600)
+
+    def render(d):
+        if d.get("fallback"):
+            typer.echo(f"the {site} page did not match its adapter; tab {d['tab']} is open for generic navigation")
+        for h in d["hits"]:
+            ids = "  ".join(f"{k}:{h[k]}" for k in ("doi", "pmid") if h.get(k))
+            typer.echo(f"- {h['title'][:100]}\n  {h['url']}" + (f"\n  {ids}" if ids else ""))
+
+    _out(r, as_json, render)
+
+
+@browser_app.command("open")
+def browser_open(url: str, project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
+    """Open a page in the built-in browser and show the metadata found on it."""
+    r = _call("rk_browser_open", {"project": _project(project), "url": url}, timeout=180)
+    _out(r, as_json, lambda d: typer.echo(f"{d['tab']}  {d['title']}\n{json.dumps(d.get('metadata'), indent=2)}"))
+
+
+@browser_app.command("fetch")
+def browser_fetch(source_id: str, project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
+    """Get an item's PDF through your library (or the publisher) in the built-in browser."""
+    r = _call("rk_browser_fetch_fulltext", {"project": _project(project), "source_id": source_id}, write=True,
+              timeout=600)
+    _out(r, as_json, lambda d: typer.echo(f"{d['kind']} attached ({d['origin']}, {d['page_count']} pages) from {d['url']}"))
+
+
+@browser_app.command("save")
+def browser_save(tab: str | None = typer.Option(None, "--tab"), project: str | None = typer.Option(None, "--project"),
+                 as_json: bool = JSON_OPT) -> None:
+    """Save the page you are looking at in the built-in browser to the library."""
+    r = _call("rk_browser_save_page", {"project": _project(project), "tab": tab}, write=True, timeout=300)
+    _out(r, as_json, lambda d: typer.echo(f"{d['item_id']} ({'new' if d['created'] else 'already in the library'}), "
+                                          f"reference: {d['ref_status']}, file: {(d['attachment'] or {}).get('kind')}"))
+
+
+@browser_app.command("status")
+def browser_status(project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
+    """Whether the browser runs, which sites wait for you, today's quotas and the open tabs."""
+    r = _call("rk_browser_status", {"project": _project(project)})
+
+    def render(d):
+        typer.echo("running" if d["running"] else "not running")
+        for p in d.get("paused_sites", []):
+            typer.echo(f"paused: {p['site']} ({p['reason']}) - answer checkpoint {p['checkpoint_id']}")
+        for scope, q in sorted(d.get("quotas", {}).items()):
+            typer.echo(f"today {scope}: {q['count']}" + (f"/{q['per_day']}" if q.get("per_day") else ""))
+        for t in d.get("tabs", []):
+            typer.echo(f"{t['tab']}  {t['owner']}  {t['url']}")
+
+    _out(r, as_json, render)
 
 
 # ---------------- drivers and role tasks ----------------

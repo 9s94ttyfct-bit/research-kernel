@@ -7,7 +7,7 @@ A verifiable research-agent foundation:
 - page-anchored full text
 - deterministic verifiers
 
-The design lives in `docs/superpowers/specs/2026-11-05-research-kernel-design.md`, and the current scope in `docs/superpowers/plans/2026-11-05-plan1-foundation-library.md`.
+The design lives in `docs/superpowers/specs/2026-11-05-research-kernel-design.md`, and the implementation plans in `docs/superpowers/plans/`.
 
 ## Quickstart
 
@@ -73,6 +73,28 @@ rk support check --text passage.txt --sources src_… --driver codex_cli --gold 
 - Evaluations run on a scratch kernel with chat-API drivers. `rk support check` runs inside `rk serve`, so it can
   use any driver.
 
+## Built-in browser and Workbench
+
+`rk serve` opens one Chromium window, which is the built-in browser. Its first tab is the Workbench, the local web page where you chat with the Lead agent and browse the library. You also answer checkpoints, watch progress, read drafts and change settings there. `rk open` prints a one-time link to the Workbench for another browser. The window keeps its profile in `$RK_HOME/browser-profile/`, so your library sign-in survives restarts.
+
+```bash
+uv run playwright install chromium         # once
+uv run rk serve                            # browser window + Workbench (--no-browser to run without)
+uv run rk setup                            # also: model providers, library sign-in and a test fetch
+uv run rk browser search pubmed "perovskite encapsulation damp heat" --max 5
+uv run rk browser search primo "perovskite stability"    # your library catalogue (Primo VE or Summon)
+uv run rk browser fetch <item_id>          # PDF through your library proxy or the publisher page
+uv run rk browser save                     # save the page you are looking at (metadata + PDF or snapshot)
+uv run rk browser status                   # paused sites, today's quotas, open tabs
+```
+
+- **Human pace.** Google Scholar: 20–45 s between queries, at most 60 a day. Publisher PDFs: 30 s per domain, at most 40 per domain and 150 in total a day. Other sites: 5 s. One browser task runs at a time, and the counters survive restarts. Limits are in `config.toml` (`browser_limits`).
+- **You stay in charge of logins and CAPTCHAs.** A CAPTCHA, an "unusual traffic" page or a sign-in page pauses that site and opens a `captcha_wait` or `login_wait` checkpoint. You handle the page in the window and press Done in the Workbench. The Kernel never solves CAPTCHAs, never fills in a password field and never stores your library password.
+- **Agents reach only the public web.** Agent tabs cannot open the Workbench or any loopback, private or link-local address, and every redirect hop is checked before it is sent. Frames from other hosts are not loaded, and service workers are blocked. An intranet host your library needs can be allowed in `browser_allow_hosts`. Your own tabs are not restricted.
+- **Metadata.** Pages are read through Highwire `citation_*`, JSON-LD, Dublin Core and COinS. If a DOI, PMID or arXiv id resolves through Crossref, OpenAlex or PubMed, the API record wins and the differences are logged. Otherwise the item is marked `page_metadata_only`.
+- **Full-text order.** Open-access channels come first; the browser comes last (`fulltext_browser_fallback`). A PDF fetched this way is labelled `library_browser` or `publisher_browser` with an access note, and stays in the project.
+- **Optional.** A Zotero translation-server (`translation_server_url`) improves metadata for pages without good tags.
+
 ## Drivers and roles
 
 Role tasks run on a configurable driver per role (`drivers` in `config.toml`; see `rk providers`):
@@ -103,6 +125,8 @@ rk token create --name my-client               # lead token for an external MCP 
 ```
 
 ## Tests
+
+Browser tests (`-m browser`, included by default) drive headless Chromium against local fixture sites; they are skipped when Chromium is not installed.
 
 ```bash
 uv run pytest                     # offline: recorded HTTP fixtures, generated PDFs, gold set, fake CLIs

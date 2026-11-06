@@ -553,6 +553,14 @@ class TaskResult:
 
   遇到验证码或"异常流量"页面时，立即暂停该站点并发 `captcha_wait` 检查点，由你在窗口里处理。**永远不尝试自动破解验证码。**
 - **合规：** 浏览器取得的全文只存在本机项目里，用于你个人的研究；导出包默认不包含这些 PDF，只包含元数据和快照哈希。
+- **实现记录（Plan 3，2026-11-06）：**
+  - **agent 标签页只能访问公网**（在"隔离 Workbench"之上扩展，审查后决定）：每个 agent 标签页有一个 CDP `Fetch` 拦截器，每个请求和每一跳重定向在发出前都检查目标，用 Chromium 自己的网络栈继续（出版商的人机检测看到的是正常浏览器）。禁止访问 Workbench、loopback、私有、链路本地、保留和 CGNAT 地址；不加载来自其他主机的 frame；屏蔽 service worker；弹窗的第一个页面在拦截器就位后重新加载。校园内网主机可加入 `browser_allow_hosts`。你自己的标签页不受限制。
+  - **选择器实测（2026-11-06）：**
+    - PubMed、Primo VE、Summon 按真实页面确定；
+    - Europe PMC 对 headless Chromium 返回 Cloudflare 验证页，适配器改用 `/article/<来源>/<ID>` 链接解析；
+    - Google Scholar 对 headless Chromium 返回"automated queries"页面（结果页同一 URL），检测器把它当作验证码；
+    - 隐形 reCAPTCHA v3 不算拦截。
+  - **doi.org 同样对 headless 浏览器返回 Cloudflare 验证页。** 有窗口的正常浏览器是否通过 `[推断]`：需要你实际登录后确认。
 
 ### 8.6 文献库（library/）
 
@@ -577,6 +585,11 @@ class TaskResult:
   - **设置与 key 向导**（§8.8）。
 - 只监听 `127.0.0.1`，每次启动生成一个随机访问令牌。令牌只放在 Workbench 页面里，agent 的工具接口拿不到。
 - 提供运行控制：启动 / 暂停 / 继续 / 停止某个项目的运行，与 `rk run`、`rk pause` 等价。
+- **Plan 3 的偏差（2026-11-06，已在计划中说明）：**
+  - 运行控制和阶段图随编排器放到 Plan 4；"阶段与进度"页目前显示任务、检查点和事件流。
+  - topic 审核卡片放到 Plan 4；目前检查点用通用的选项和文字回答。
+  - 草稿预览读取 `artifacts/drafts/<section>.v<N>.md`，由 Plan 5 的 `rk_draft_write` 写入。
+  - 访问令牌实现为：每次启动生成一次性登录码，换取 HttpOnly、SameSite=Strict 的会话 cookie；写操作还要求 `Origin` 一致。保存的网页快照以 `sandbox` CSP 提供。
 
 ### 8.8 首次运行向导（setup/）
 
