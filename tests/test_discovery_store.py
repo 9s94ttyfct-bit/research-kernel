@@ -143,6 +143,15 @@ def test_queries_read_one_attempt(proj):
     assert [g["id"] for g in store.gaps(ps, 2, verified=False)] == [g2]
 
 
+def test_guidance_includes_rounds_of_every_stage_newest_first(proj):
+    _, ps, _ = proj
+    assert store.guidance(ps, "topics") == ""
+    store.add_round(ps, "landscape", "exclude animal studies", actor="tester")
+    store.add_round(ps, "gaps", "prefer contradictions", actor="tester")
+    assert store.guidance(ps, "topics") == "prefer contradictions\nexclude animal studies"
+    assert store.guidance(ps, "landscape") == store.guidance(ps, "topics")
+
+
 def test_intake_tool_policy(proj):
     k, ps, _ = proj
     reg = build_registry(k)

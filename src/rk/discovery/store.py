@@ -188,8 +188,9 @@ def rounds(ps: ProjectStore) -> list[dict]:
 
 
 def guidance(ps: ProjectStore, stage: str) -> str:
-    """The feedback of every exploration round on this stage, newest first, one per line."""
-    return "\n".join(r["feedback"] for r in reversed(rounds(ps)) if r["stage"] == stage)
+    """The feedback of every exploration round, whatever stage it was given on, newest first, one per line.
+    ``stage`` is the stage about to run; feedback on one stage guides later runs of every stage."""
+    return "\n".join(r["feedback"] for r in reversed(rounds(ps)))
 
 
 # ---- projections ----
