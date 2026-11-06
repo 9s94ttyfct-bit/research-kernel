@@ -70,8 +70,8 @@ def test_default_collections_idempotent(lib):
 
 
 def test_library_rebuild_equal(lib):
-    i = lib.add_item(item(doi="10.1/x"), added_by="agent", actor="t").item_id
-    lib.add_item(item(doi="10.1/x", pmid="9"), added_by="agent", actor="t")
+    i = lib.add_item(item(doi="10.1000/x"), added_by="agent", actor="t").item_id
+    lib.add_item(item(doi="10.1000/x", pmid="9"), added_by="agent", actor="t")
     lib.tag(i, add=["x"], actor="u")
     c = lib.create_collection("C", actor="u")
     lib.collect(i, c, actor="u")
