@@ -41,7 +41,10 @@ def fts_query(text: str) -> str | None:
 class Library:
     def __init__(self, ps: ProjectStore):
         self.ps = ps
-        self.db = ps.db
+
+    @property
+    def db(self):
+        return self.ps.db  # per-thread connection
 
     # ---- reads ----
     def _find_existing(self, item: ItemIn) -> str | None:
@@ -115,16 +118,17 @@ class Library:
     ) -> AddResult:
         kind: ActorKind = actor_kind or ("human" if added_by == "human" else "agent")
         item = item.model_copy(update={"ids": item.ids.normalized()})
-        existing = self._find_existing(item)
-        if existing:
-            cur = self.get(existing)
-            new_ids = {k: v for k, v in item.ids.model_dump().items() if v and not getattr(cur.ids, k)}
-            new_urls = [u for u in item.oa_urls if u not in cur.oa_urls]
-            if new_ids or new_urls:
-                self._ev("item.merged", existing, {"ids": new_ids, "oa_urls": new_urls}, actor, kind)
-            return AddResult(item_id=existing, created=False)
-        full = Item(**item.model_dump(), id=new_id("src"), added_by=added_by)
-        self._ev("item.added", full.id, {"item": full.model_dump(mode="json")}, actor, kind)
+        with self.ps.lock:  # find-then-add must not interleave with another add of the same work
+            existing = self._find_existing(item)
+            if existing:
+                cur = self.get(existing)
+                new_ids = {k: v for k, v in item.ids.model_dump().items() if v and not getattr(cur.ids, k)}
+                new_urls = [u for u in item.oa_urls if u not in cur.oa_urls]
+                if new_ids or new_urls:
+                    self._ev("item.merged", existing, {"ids": new_ids, "oa_urls": new_urls}, actor, kind)
+                return AddResult(item_id=existing, created=False)
+            full = Item(**item.model_dump(), id=new_id("src"), added_by=added_by)
+            self._ev("item.added", full.id, {"item": full.model_dump(mode="json")}, actor, kind)
         return AddResult(item_id=full.id, created=True)
 
     def update(self, item_id: str, *, actor: str, actor_kind: ActorKind = "kernel", **fields) -> None:
@@ -149,10 +153,12 @@ class Library:
         self, name: str, parent_id: str | None = None, query: str | None = None, *, actor: str,
         actor_kind: ActorKind = "human",
     ) -> str:
-        if self.collection_by_name(name):
-            raise ValueError(f"collection exists: {name}")
-        cid = new_id("col")
-        self._ev("collection.created", cid, {"name": name, "parent_id": parent_id, "query": query}, actor, actor_kind)
+        with self.ps.lock:
+            if self.collection_by_name(name):
+                raise ValueError(f"collection exists: {name}")
+            cid = new_id("col")
+            self._ev("collection.created", cid, {"name": name, "parent_id": parent_id, "query": query}, actor,
+                     actor_kind)
         return cid
 
     def collect(self, item_id: str, collection_id: str, *, actor: str, actor_kind: ActorKind = "human") -> None:
@@ -166,8 +172,10 @@ class Library:
 
     def ensure_default_collections(self, *, actor: str) -> dict[str, str]:
         out = {}
-        for name in DEFAULT_COLLECTIONS:
-            out[name] = self.collection_by_name(name) or self.create_collection(name, actor=actor, actor_kind="kernel")
+        with self.ps.lock:
+            for name in DEFAULT_COLLECTIONS:
+                out[name] = self.collection_by_name(name) or self.create_collection(name, actor=actor,
+                                                                                    actor_kind="kernel")
         return out
 
 

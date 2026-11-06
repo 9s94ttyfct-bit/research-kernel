@@ -37,17 +37,24 @@ def _project(project: Optional[str]) -> str:
     return p
 
 
+def _fail(e) -> None:
+    typer.secho(f"error [{e.type}]: {e.message}", fg="red", err=True)
+    if e.details:
+        typer.echo(json.dumps(e.details, ensure_ascii=False, indent=2), err=True)
+    raise typer.Exit(1) from e
+
+
 def _call(name: str, args: dict, *, write: bool = False) -> dict:
     from rk.cli.client import RkError
 
-    c = _client()
+    try:
+        c = _client()
+    except RkError as e:
+        _fail(e)
     try:
         return c.call(name, args, write=write)
     except RkError as e:
-        typer.secho(f"error [{e.type}]: {e.message}", fg="red", err=True)
-        if e.details:
-            typer.echo(json.dumps(e.details, ensure_ascii=False, indent=2), err=True)
-        raise typer.Exit(1) from e
+        _fail(e)
     finally:
         c.close()
 

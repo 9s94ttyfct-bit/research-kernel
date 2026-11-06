@@ -37,10 +37,26 @@ class RkClient:
         except httpx.HTTPError:
             return False
 
-    def call(self, name: str, args: dict | None = None, *, write: bool = False, idempotency_key: str | None = None) -> dict:
+    def call(self, name: str, args: dict | None = None, *, write: bool = False, idempotency_key: str | None = None,
+             attempts: int = 3) -> dict:
+        """Transport failures (connection reset, timeout) are retried with the same idempotency key, so a write
+        that reached the server before the connection dropped is not applied twice."""
         key = idempotency_key or (uuid.uuid4().hex if write else None)
-        r = self._http.post(f"/api/tools/{name}", json={"args": args or {}, "idempotency_key": key})
-        body = r.json()
+        payload = {"args": args or {}, "idempotency_key": key}
+        for attempt in range(attempts):
+            try:
+                r = self._http.post(f"/api/tools/{name}", json=payload)
+                break
+            except httpx.TransportError as e:
+                if attempt == attempts - 1:
+                    raise RkError("transport_error", f"{type(e).__name__}: {e}") from e
+                time.sleep(0.5 * 2**attempt)
+            except httpx.HTTPError as e:
+                raise RkError("http_error", f"{type(e).__name__}: {e}") from e
+        try:
+            body = r.json()
+        except ValueError as e:
+            raise RkError(f"http_{r.status_code}", r.text[:500]) from e
         if not body.get("ok"):
             err = body.get("error") or {}
             raise RkError(err.get("type", f"http_{r.status_code}"), err.get("message", r.text), err.get("details"))

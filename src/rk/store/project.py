@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 
 from rk.blobs import BlobStore
@@ -13,27 +14,53 @@ from rk.store.projections import apply, projection
 
 
 class ProjectStore:
+    """Thread-safe: every thread gets its own SQLite connection (``db``); ``lock`` serializes read-then-write
+    sequences (dedupe, get-or-create) that a single transaction does not cover."""
+
     def __init__(self, root: Path, project_id: str):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.project_id = project_id
-        self.db = open_project_db(self.root / "rk.sqlite")
-        self.log = EventLog(self.db, project_id)
+        self.db_path = self.root / "rk.sqlite"
+        self.lock = threading.RLock()
+        self._local = threading.local()
+        self._conns: list[sqlite3.Connection] = []
+        self._conns_lock = threading.Lock()
+        self.db  # create the schema now, in the constructing thread  # noqa: B018
         self.blobs = BlobStore(self.root / "blobs")
         self.text_dir = self.root / "text"
         self.files_dir = self.root / "library" / "files"
         self.text_dir.mkdir(exist_ok=True)
         self.files_dir.mkdir(parents=True, exist_ok=True)
 
+    @property
+    def db(self) -> sqlite3.Connection:
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = open_project_db(self.db_path)
+            self._local.conn = conn
+            with self._conns_lock:
+                self._conns.append(conn)
+        return conn
+
+    @property
+    def log(self) -> EventLog:
+        return EventLog(self.db, self.project_id)
+
     def apply(self, e: NewEvent) -> Event:
-        return apply(self.db, self.log, e)
+        db = self.db
+        return apply(db, EventLog(db, self.project_id), e)
 
     def meta(self, key: str) -> str | None:
         r = self.db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
         return r["value"] if r else None
 
     def close(self) -> None:
-        self.db.close()
+        with self._conns_lock:
+            for c in self._conns:
+                c.close()
+            self._conns.clear()
+        self._local = threading.local()
 
 
 @projection("project.created")

@@ -52,7 +52,9 @@ class ToolRegistry:
             "CREATE TABLE IF NOT EXISTS idempotency (tool TEXT, key TEXT, result TEXT, PRIMARY KEY (tool, key))"
         )
         self._tools: dict[str, Tool] = {}
-        self.write_lock = threading.Lock()  # single writer: all writes.
+        self._db_lock = threading.Lock()  # guards the shared idempotency connection (short statements only)
+        self._key_locks: dict[tuple[str, str], tuple[threading.Lock, int]] = {}
+        self._key_locks_mutex = threading.Lock()
 
     def register(self, tool: Tool) -> None:
         if tool.name in self._tools:
@@ -76,12 +78,34 @@ class ToolRegistry:
             return tool.output_model.model_validate(tool.handler(ctx, inp)).model_dump(mode="json")
         if not ctx.idempotency_key:
             raise ToolError("idempotency_key_required", f"{name} writes state and needs an idempotency_key")
-        with self.write_lock:
-            r = self._db.execute("SELECT result FROM idempotency WHERE tool=? AND key=?",
-                                 (name, ctx.idempotency_key)).fetchone()
-            if r:
-                return json.loads(r[0])
-            out = tool.output_model.model_validate(tool.handler(ctx, inp)).model_dump(mode="json")
-            self._db.execute("INSERT INTO idempotency(tool, key, result) VALUES (?,?,?)",
-                             (name, ctx.idempotency_key, json.dumps(out)))
-            return out
+        slot = (name, ctx.idempotency_key)
+        lock = self._acquire_key_lock(slot)
+        try:
+            # Calls with different keys run concurrently; a retry with the same key waits for the first call and
+            # then returns its stored result instead of repeating the write.
+            with lock:
+                with self._db_lock:
+                    r = self._db.execute("SELECT result FROM idempotency WHERE tool=? AND key=?", slot).fetchone()
+                if r:
+                    return json.loads(r[0])
+                out = tool.output_model.model_validate(tool.handler(ctx, inp)).model_dump(mode="json")
+                with self._db_lock:
+                    self._db.execute("INSERT INTO idempotency(tool, key, result) VALUES (?,?,?)",
+                                     (*slot, json.dumps(out)))
+                return out
+        finally:
+            self._release_key_lock(slot)
+
+    def _acquire_key_lock(self, slot: tuple[str, str]) -> threading.Lock:
+        with self._key_locks_mutex:
+            lock, users = self._key_locks.get(slot, (threading.Lock(), 0))
+            self._key_locks[slot] = (lock, users + 1)
+            return lock
+
+    def _release_key_lock(self, slot: tuple[str, str]) -> None:
+        with self._key_locks_mutex:
+            lock, users = self._key_locks[slot]
+            if users <= 1:
+                del self._key_locks[slot]
+            else:
+                self._key_locks[slot] = (lock, users - 1)
