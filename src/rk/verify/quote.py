@@ -44,7 +44,15 @@ def verify_quote(quote: str, layer: TextLayer) -> QuoteResult:
                 return QuoteResult(ok=True, page=page.n, start=key.map[idx], end=key.map[idx + len(q) - 1] + 1,
                                    best_score=100.0, best_snippet=key.key[idx : idx + len(q)])
             al = fuzz.partial_ratio_alignment(q, key.key)
-            if al is not None and al.score > best.best_score:
-                best = QuoteResult(ok=False, page=page.n, best_score=round(al.score, 1),
-                                   best_snippet=key.key[al.dest_start : al.dest_end].strip())
+            if al is None:
+                continue
+            s, e = al.dest_start, al.dest_end
+            while s > 0 and key.key[s - 1].isalnum():  # suggest whole words, so the snippet is itself quotable
+                s -= 1
+            while e < len(key.key) and key.key[e].isalnum():
+                e += 1
+            snippet = key.key[s:e].strip()
+            score = round(fuzz.ratio(q, snippet), 1)
+            if score > best.best_score:
+                best = QuoteResult(ok=False, page=page.n, best_score=score, best_snippet=snippet)
     return best
