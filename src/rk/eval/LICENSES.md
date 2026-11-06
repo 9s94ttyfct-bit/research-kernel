@@ -11,3 +11,4 @@ scores.
 | LitQA2 (LAB-Bench, Laurent et al., 2024) | `futurehouse/lab-bench`, config `LitQA2` | CC BY-SA 4.0 |
 | ReportBench (ByteDance BandAI, 2025) | `ByteDance-BandAI/ReportBench` | Data CC0-1.0, code Apache-2.0 |
 | MiniCheck-Flan-T5-Large (Tang et al., 2024) | `lytang/MiniCheck-Flan-T5-Large` | MIT |
+| Bespoke-MiniCheck-7B (Bespoke Labs, 2024) — default layer 1 | Ollama `bespoke-minicheck:7b-q8_0` (GGUF of `bespokelabs/Bespoke-MiniCheck-7B`) | **CC BY-NC 4.0, non-commercial.** Used because rk is not commercialised (owner's decision, 2026-11-06). Commercial use would need a licence from Bespoke Labs, or a switch to the MIT-licensed Flan-T5 model (`support_model`). |

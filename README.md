@@ -43,7 +43,7 @@ State lives in `$RK_HOME`, which defaults to `~/ResearchKernel`:
 | V-QUOTE | A quote note must occur verbatim in the source's text layer after normalisation: ligatures, quote and dash styles, line-end hyphenation and whitespace. It is stored with a page and character locator. |
 | V-PARA | A paraphrase must not copy its source span. Limits: longest shared run ≤ 8 tokens, 4-gram containment ≤ 0.35, token-set ratio ≤ 85. This is a lexical flag only. |
 | V-HEDGE | A claim may not be worded more strongly than its sources. |
-| V-SUPPORT | Layer 1 is the local MiniCheck-Flan-T5-Large probability p, exactly as in the official package. Layer 2 is a set of LLM judges from vendors other than the claim's author; each must quote the evidence verbatim. **supported** needs ≥ `support_min_judges` (default 2) agreeing judges and p ≥ τ_hi, or p ≥ τ_hi_judged when at least two such judges agree. **unsupported**/**contradicted** mirror this with τ_lo / τ_lo_judged. All four thresholds come from `rk eval support` (τ_hi/τ_lo from layer 1 alone, the judged pair jointly with the judges). Everything else is **uncertain**, which in collaborative mode opens an `uncertain_support` checkpoint. |
+| V-SUPPORT | Layer 1 is the probability p from a local MiniCheck model, computed exactly as in the official package. The default is Bespoke-MiniCheck-7B in Ollama (`ollama pull bespoke-minicheck:7b-q8_0`; CC BY-NC 4.0, non-commercial use only). MiniCheck-Flan-T5-Large (MIT) is the alternative (`support_model`). Layer 2 is a set of LLM judges from vendors other than the claim's author; each must quote the evidence verbatim. **supported** needs ≥ `support_min_judges` (default 2) agreeing judges and p ≥ τ_hi, or p ≥ τ_hi_judged when at least two such judges agree. **unsupported**/**contradicted** mirror this with τ_lo / τ_lo_judged and need one shared label. All four thresholds come from `rk eval support` for the configured model; thresholds calibrated for a different model are refused. Everything else is **uncertain**, which in collaborative mode opens an `uncertain_support` checkpoint. |
 | V-NUM | Every number in a claim must occur, with the same value and unit, in its evidence. Formats are normalised: thousands separators, Unicode minus, `×10ⁿ`, `%`/percent and ranges. |
 
 Hidden text is removed before anything enters a text layer:
@@ -53,8 +53,9 @@ Hidden text is removed before anything enters a text layer:
 
 ## Evaluation
 
-V-SUPPORT layer 1 needs the optional extras: `uv sync --extra support --extra eval`. These install torch, transformers,
-nltk and pyarrow; the model downloads once to `$RK_HOME/models`.
+V-SUPPORT layer 1 needs the optional extras (`uv sync --extra support --extra eval`) and, for the default
+Bespoke-MiniCheck-7B, a local Ollama with `ollama pull bespoke-minicheck:7b-q8_0` (8.2 GB). The Flan-T5 alternative
+downloads once to `$RK_HOME/models`.
 
 ```bash
 rk eval support --write-config      # calibrate τ on SciFact train; confusion matrices on held-out SciFact dev
