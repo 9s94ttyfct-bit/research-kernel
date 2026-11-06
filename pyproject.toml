@@ -19,6 +19,7 @@ dependencies = [
     "bibtexparser>=2.0.0b8,<3",
     "rispy>=0.10,<1",
     "mcp>=2.3,<3",
+    "playwright>=1.64,<2",
 ]
 
 [project.optional-dependencies]
@@ -55,5 +56,6 @@ markers = [
     "live: hits the real network",
     "llm: calls a language model (default test model: omp_gateway openai-codex/gpt-6-luna)",
     "model: loads the local MiniCheck model (needs the 'support' extra; downloads ~3 GB once)",
+    "browser: launches headless Playwright Chromium against local fixture sites (skipped when Chromium is missing)",
 ]
 addopts = "-m 'not live and not llm and not model' -q"
