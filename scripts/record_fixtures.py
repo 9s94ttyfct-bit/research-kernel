@@ -66,7 +66,16 @@ def fulltext(h: HttpClient) -> None:
     h.get(arxiv.html_url("2404.10774"))
 
 
-GROUPS = {"core": core, "more": more, "traps": traps, "fulltext": fulltext}
+# Gold-set sources: one chemistry and one biology OA article (spec §10 domain coverage).
+GOLD_PMCIDS = {"chemistry": "PMC13614178", "biology": "PMC13434336"}
+
+
+def gold(h: HttpClient) -> None:
+    for pmcid in GOLD_PMCIDS.values():
+        assert europepmc.fulltext_xml(h, pmcid), pmcid
+
+
+GROUPS = {"core": core, "more": more, "traps": traps, "fulltext": fulltext, "gold": gold}
 
 if __name__ == "__main__":
     h = client()

@@ -25,8 +25,10 @@ def _fixture_body(url: str) -> str:
 def layer(source_id: str) -> TextLayer:
     if source_id.startswith("pdf:"):
         return extract_pdf(DOCS / source_id[4:])
-    if source_id == "jats:PMC4627914":
-        return jats_to_layer(_fixture_body("https://www.ebi.ac.uk/europepmc/webservices/rest/PMC4627914/fullTextXML").encode(), "x")
+    if source_id.startswith("jats:"):
+        pmcid = source_id[5:]
+        url = f"https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML"
+        return jats_to_layer(_fixture_body(url).encode(), "x")
     if source_id == "bioc:PMC4627914":
         doc = json.loads(_fixture_body(
             "https://www.ncbi.nlm.nih.gov/research/bionlp/RESTful/pmcoa.cgi/BioC_json/PMC4627914/unicode"))
@@ -36,5 +38,7 @@ def layer(source_id: str) -> TextLayer:
     raise KeyError(source_id)
 
 
+# Domains: synthetic PDFs (layout edge cases); medicine (PMC4627914 as JATS and BioC); computer science
+# (arXiv 2404.10774 HTML); chemistry (PMC13614178, JACS); biology (PMC13434336, Nucleic Acids Res).
 SOURCES = ("pdf:hyphen.pdf", "pdf:ligature.pdf", "pdf:two_pages.pdf", "jats:PMC4627914", "bioc:PMC4627914",
-           "html:arxiv2404.10774")
+           "html:arxiv2404.10774", "jats:PMC13614178", "jats:PMC13434336")

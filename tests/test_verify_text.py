@@ -9,7 +9,7 @@ from rk.verify.paraphrase import check_paraphrase
 from rk.verify.quote import verify_quote
 
 from .conftest import DOCS, GOLD
-from .gold_sources import layer
+from .gold_sources import SOURCES, layer
 
 
 def test_quote_hyphen_variants():
@@ -72,6 +72,6 @@ def _run(case: dict) -> bool:
 def test_gold_set_100_percent():
     cases = [json.loads(line) for line in (GOLD / "quote_cases.jsonl").read_text(encoding="utf-8").splitlines()]
     assert len(cases) >= 120
-    assert len({c["source"] for c in cases if "source" in c}) == 6
+    assert {c["source"] for c in cases if "source" in c} == set(SOURCES)
     failures = [c["id"] for c in cases if _run(c) != c["expected"]]
     assert failures == []
