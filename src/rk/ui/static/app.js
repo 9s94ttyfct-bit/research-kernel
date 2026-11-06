@@ -430,7 +430,38 @@ pages.settings = async (root) => {
     } catch (err) { toast(err.message, "error"); }
   });
   const browser = await api("/ui/api/browser/status");
+  const out = el("div", { "aria-live": "polite" });
+  const run = async (step, body) => {
+    try {
+      const r = await api(`/ui/api/setup/check/${step}`, { method: "POST", body: body || {} });
+      if (step === "capabilities") {
+        fill(out, el("table", {}, el("thead", {}, el("tr", {}, ["Area", "What", "Status"].map((h) => el("th", {}, h)))),
+          el("tbody", {}, r.capabilities.map((c) => el("tr", {}, el("td", {}, c.area), el("td", {}, c.name), el("td", {}, c.status))))));
+      } else if (step === "providers") {
+        fill(out, el("ul", {}, Object.entries(r).map(([name, p]) => el("li", {},
+          `${name} (${p.roles.join(", ")}): `, p.ok ? "ready" : `not ready — ${p.reason}. To fix: ${p.hint || "see rk providers"}`))));
+      } else if (step === "library") {
+        fill(out, el("p", {}, r.status === "ok" ? `Library access works: the PDF came through ${r.origin.replaceAll("_", " ")}.` : `Library access failed: ${r.detail}`));
+      } else {
+        fill(out, el("p", {}, r.status));
+      }
+    } catch (err) { toast(err.message, "error"); }
+  };
+  const doi = el("input", { type: "text", placeholder: "DOI of a paywalled article", "aria-label": "DOI to test", size: 30 });
+  const checks = el("div", { class: "toolbar" },
+    el("button", { type: "button", class: "secondary", onclick: () => run("email") }, "Check email"),
+    el("button", { type: "button", class: "secondary", onclick: () => run("openalex") }, "Check OpenAlex key"),
+    el("button", { type: "button", class: "secondary", onclick: () => run("s2") }, "Check Semantic Scholar key"),
+    el("button", { type: "button", class: "secondary", onclick: () => run("providers") }, "Check model providers"),
+    el("button", { type: "button", class: "secondary", onclick: () => run("capabilities") }, "Show what works"));
+  const library = el("div", { class: "toolbar" },
+    el("button", { type: "button", class: "secondary", disabled: !browser.running || !s.library_portal_url, onclick: async () => {
+      try { await api("/ui/api/browser/open-portal", { method: "POST", body: {} }); toast("Sign in to your library in the browser window"); }
+      catch (err) { toast(err.message, "error"); } } }, "Open the library start page to sign in"),
+    doi, el("button", { type: "button", class: "secondary", disabled: !browser.running, onclick: () => doi.value.trim() && run("library", { doi: doi.value.trim() }) }, "Test library access"));
   fill(root, el("h1", {}, "Settings"), form,
+    el("h2", {}, "Check your setup"), checks,
+    el("p", { class: "hint" }, "Library sign-in happens in the built-in browser window; the Kernel never sees your password."), library, out,
     el("h2", {}, "Built-in browser"),
     el("p", {}, browser.running ? `Running. Paused sites: ${(browser.paused_sites || []).map((p) => p.site).join(", ") || "none"}.` : "Not running. Start rk serve without --no-browser."));
 };

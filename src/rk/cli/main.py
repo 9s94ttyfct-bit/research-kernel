@@ -401,20 +401,26 @@ def library_attach(item_id: str, pdf: Path, project: str | None = typer.Option(N
 # ---------------- setup ----------------
 @app.command()
 def setup() -> None:
-    """Guided setup: contact email and free API keys (OpenAlex, Semantic Scholar)."""
+    """Guided setup: email, OpenAlex and Semantic Scholar keys, model providers, library sign-in in the built-in
+    browser, and the list of what works."""
     from rk import __version__
     from rk.cli.setup import run_setup
     from rk.net.http import HttpClient
 
+    try:
+        client = _client()  # the library step uses the built-in browser of rk serve
+    except Exception as e:  # noqa: BLE001 - the other steps work without the server
+        typer.secho(f"rk serve is not reachable ({e}); the library step will be skipped", fg="yellow", err=True)
+        client = None
     http = HttpClient(rk_home() / "cache" / "http.sqlite", user_agent=f"rk/{__version__} setup")
     try:
         _, caps = run_setup(http, lambda q, d: typer.prompt(q, default=d, show_default=False),
-                            lambda m: typer.echo("\n" + m))
+                            lambda m: typer.echo("\n" + m), client=client)
     finally:
         http.close()
-    typer.echo("\nCapabilities:")
-    for k, v in caps.items():
-        typer.echo(f"  {k:<17} {v}")
+    typer.echo("\nStep 6/6 - what works now:")
+    for c in caps:
+        typer.echo(f"  {c['area']:<15} {c['name']:<40} {c['status']}")
     typer.echo(f"\nSaved to {rk_home() / 'config.toml'} (mode 600).")
 
 

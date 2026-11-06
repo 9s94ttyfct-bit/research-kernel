@@ -105,9 +105,11 @@ def test_setup_wizard_with_mocks(tmp_home, tmp_path):
     http = HttpClient(tmp_path / "h.sqlite", user_agent="t", sleep=lambda s: None, transport=httpx.MockTransport(handler))
     answers = iter(["me@example.org", "OAKEY", ""])
     said: list[str] = []
-    s, caps = run_setup(http, lambda q, d: next(answers), said.append)
+    s, caps = run_setup(http, lambda q, d: next(answers), said.append, providers={})
+    status = {c["name"]: c["status"] for c in caps}
     assert s.email == "me@example.org" and s.openalex_key == "OAKEY" and s.s2_key is None
-    assert caps["semantic_scholar"].startswith("pending") and caps["openalex"].startswith("available")
+    assert status["Semantic Scholar"].startswith("pending") and status["OpenAlex"].startswith("available (daily")
+    assert status["built-in browser"].startswith("not running")  # no rk serve client: the library step is skipped
     assert any("openalex.org/settings/api" in m for m in said)
     p = tmp_home / "config.toml"
     assert oct(p.stat().st_mode & 0o777) == "0o600" and load_settings().openalex_key == "OAKEY"
