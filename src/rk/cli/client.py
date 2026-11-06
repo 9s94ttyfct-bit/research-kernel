@@ -40,14 +40,16 @@ class RkClient:
             return False
 
     def call(self, name: str, args: dict | None = None, *, write: bool = False, idempotency_key: str | None = None,
-             attempts: int = 3) -> dict:
+             attempts: int = 3, timeout: float | None = None) -> dict:
         """Transport failures (connection reset, timeout) are retried with the same idempotency key, so a write
-        that reached the server before the connection dropped is not applied twice."""
+        that reached the server before the connection dropped is not applied twice. ``timeout`` overrides the client
+        default for long calls (role tasks)."""
         key = idempotency_key or (uuid.uuid4().hex if write else None)
         payload = {"args": args or {}, "idempotency_key": key}
+        extra = {"timeout": timeout} if timeout is not None else {}
         for attempt in range(attempts):
             try:
-                r = self._http.post(f"/api/tools/{name}", json=payload)
+                r = self._http.post(f"/api/tools/{name}", json=payload, **extra)
                 break
             except httpx.TransportError as e:
                 if attempt == attempts - 1:

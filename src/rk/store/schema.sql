@@ -114,6 +114,19 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     answered_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS tasks (
+    id       TEXT PRIMARY KEY,
+    role     TEXT NOT NULL,
+    driver   TEXT NOT NULL,
+    vendor   TEXT,
+    status   TEXT NOT NULL,
+    attempts INTEGER NOT NULL,
+    output   TEXT,
+    error    TEXT,
+    created  TEXT NOT NULL,
+    finished TEXT
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(
     item_id UNINDEXED, title, abstract, creators, notes, fulltext
 );

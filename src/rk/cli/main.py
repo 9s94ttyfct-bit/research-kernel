@@ -50,7 +50,7 @@ def _fail(e) -> None:
     raise typer.Exit(1) from e
 
 
-def _call(name: str, args: dict, *, write: bool = False) -> dict:
+def _call(name: str, args: dict, *, write: bool = False, timeout: float | None = None) -> dict:
     from rk.cli.client import RkError
 
     try:
@@ -58,7 +58,7 @@ def _call(name: str, args: dict, *, write: bool = False) -> dict:
     except RkError as e:
         _fail(e)
     try:
-        return c.call(name, args, write=write)
+        return c.call(name, args, write=write, timeout=timeout)
     except RkError as e:
         _fail(e)
     finally:
@@ -375,6 +375,61 @@ def setup() -> None:
     for k, v in caps.items():
         typer.echo(f"  {k:<17} {v}")
     typer.echo(f"\nSaved to {rk_home() / 'config.toml'} (mode 600).")
+
+
+# ---------------- drivers and role tasks ----------------
+@app.command()
+def providers(as_json: bool = JSON_OPT) -> None:
+    """Show the driver configured for each role, its vendor, and whether it is usable now."""
+    r = _call("rk_providers", {})
+
+    def render(d):
+        for p in d["providers"]:
+            state = "ok" if p["ok"] else "UNAVAILABLE"
+            note = f"  ({p['reason']})" if p.get("reason") else ""
+            typer.echo(f"{p['role']:<11} {p['driver']:<38} vendor={p['vendor'] or '?':<9} {state}"
+                       f"{' ' + p['version'] if p.get('version') else ''}{note}")
+
+    _out(r, as_json, render)
+
+
+task_app = typer.Typer(help="Role tasks", no_args_is_help=True)
+app.add_typer(task_app, name="task")
+INPUT_OPT = typer.Option(None, "--input", help="key=value (repeatable; value parsed as JSON when possible)")
+
+
+@task_app.command("run")
+def task_run(role: str = typer.Option(..., "--role"), instructions: str = typer.Option(..., "--instructions"),
+             driver: str | None = typer.Option(None, "--driver", help="Override the role's configured driver"),
+             inputs: list[str] | None = INPUT_OPT,
+             schema: str | None = typer.Option(None, "--schema", help="rk.module:Class (default: free text)"),
+             timeout_s: int = typer.Option(600, "--timeout"), project: str | None = typer.Option(None, "--project"),
+             as_json: bool = JSON_OPT) -> None:
+    """Run one role task (recorded in the project's event log) and print its validated output."""
+    data: dict = {}
+    for kv in inputs or []:
+        key, sep, value = kv.partition("=")
+        if not sep:
+            typer.secho(f"--input expects key=value, got {kv!r}", fg="red", err=True)
+            raise typer.Exit(2)
+        try:
+            data[key] = json.loads(value)
+        except json.JSONDecodeError:
+            data[key] = value
+    args = {"project": _project(project), "role": role, "instructions": instructions, "inputs": data,
+            "driver": driver, "output_schema": schema, "timeout_s": timeout_s}
+    r = _call("rk_task_run", args, write=True, timeout=timeout_s * 3 + 120)
+
+    def render(d):
+        head = f"{d['task_id']}  {d['provider']}:{d['model'] or '-'}  {d['duration_s']}s  tools={d['tool_calls']}"
+        if d["ok"]:
+            typer.echo(f"{head}\n{json.dumps(d['output'], ensure_ascii=False, indent=2)}")
+        else:
+            typer.secho(f"{head}\nfailed: {d['error']}", fg="red")
+
+    _out(r, as_json, render)
+    if not r["ok"]:
+        raise typer.Exit(1)
 
 
 # ---------------- checkpoints ----------------

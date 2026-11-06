@@ -45,14 +45,45 @@ State lives in `$RK_HOME`, which defaults to `~/ResearchKernel`:
 | V-HEDGE | A claim may not be worded more strongly than its sources. |
 
 Hidden text is removed before anything enters a text layer:
-- PDF: white, sub-1 pt and invisible-render-mode glyphs
-- HTML: `display:none`, `hidden`, comments, scripts and zero-width characters
+- PDF: white, invisible-render-mode, sub-1 pt (font size or text-matrix scaling) and off-page glyphs
+- HTML: `display:none`, `visibility:hidden`, `opacity:0`, zero font size (inline or via simple `<style>` rules,
+  `!important` included), `hidden`, comments, scripts and zero-width characters
+
+## Drivers and roles
+
+Role tasks run on a configurable driver per role (`drivers` in `config.toml`; see `rk providers`):
+
+| Driver | How it runs | Kernel tools reach it through |
+|---|---|---|
+| `claude_cli` | `claude -p`, all built-in tools off (`--tools ""`), user settings off (`--setting-sources ""`) | `rk mcp` (stdio MCP proxy) with a one-time task token |
+| `codex_cli` | `codex exec`, read-only sandbox, shell/apps/browser features off, `--ignore-user-config` | `rk mcp`, tools pre-approved for that server only |
+| `anthropic_api:<model>`, `openai_api:<model>` | HTTP API with your key (`config.toml` or `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) | the in-process tool loop |
+| `ollama:<model>` | local `ollama serve` (cloud models via `:cloud`; output validated client-side) | the in-process tool loop |
+| `omp_gateway:<provider/model>` | optional, off by default (`omp_gateway = true`); `omp auth-gateway stdio` | the in-process tool loop |
+| `human` | turns the task into a checkpoint for you | — |
+
+- Every task is bound to one project and to its role's tools (`src/rk/roles/policy.py`). Agents can never answer
+  checkpoints, attach host files or manage tokens.
+- Text from sources reaches models inside `untrusted` data blocks. Agents report embedded instructions with
+  `rk_flag_injection`.
+- Every attempt (input, output, model, duration) is an event in the project log. A task gets at most 3 attempts.
+  Subscription CLIs are capped per hour (`calls_per_hour`, default claude 30, codex 20).
+- Generator and reviewer must come from different model developers (`src/rk/llm/vendors.toml`).
+
+```bash
+rk providers                                   # driver per role, vendor, availability
+rk task run --role reader --driver codex_cli --instructions "…"   # one recorded role task
+rk chat --driver claude_cli --role lead        # multi-turn chat with the role's tools
+rk checkpoint list / rk checkpoint answer <id> --json '{…}'       # questions only you can answer
+rk token create --name my-client               # lead token for an external MCP client (RK_TASK_TOKEN=… rk mcp)
+```
 
 ## Tests
 
 ```bash
-uv run pytest            # offline: recorded HTTP fixtures, generated PDFs, 691-case gold set
-uv run pytest -m live    # also hits the real APIs (citation trap set)
+uv run pytest                     # offline: recorded HTTP fixtures, generated PDFs, gold set, fake CLIs
+uv run pytest -m live             # also hits the real APIs (citation trap set)
+uv run pytest -m "live and llm"   # real models: claude, codex, and omp_gateway openai-codex/gpt-6-luna (test model)
 uv run python scripts/record_fixtures.py   # re-record fixtures
 uv run python scripts/make_gold.py         # regenerate the construction-labelled gold set
 ```

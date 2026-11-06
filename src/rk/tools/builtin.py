@@ -1,7 +1,8 @@
-"""Plan-1 tools: projects, search, library, full text, notes, verification."""
+"""Built-in tools: projects, search, library, full text, notes, verification, checkpoints, tokens, role tasks."""
 
 from __future__ import annotations
 
+import importlib
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -11,8 +12,11 @@ from rk.flags import flag_injection
 from rk.fulltext import FulltextResult, attach_pdf, fetch_fulltext
 from rk.library.formats import FORMATS
 from rk.library.models import ItemIn
+from rk.llm.drivers import DriverSpec, available_all
+from rk.llm.runner import FreeText, run_task
+from rk.llm.vendors import vendor_of
 from rk.notes import NoteIn, NoteRejected, add_note, list_notes, text_find, text_read
-from rk.roles.policy import tool_roles
+from rk.roles.policy import ROLES, tool_roles
 from rk.sources import openalex
 from rk.sources.identifiers import Identifier, parse_identifier
 from rk.sources.resolver import resolve, search
@@ -434,4 +438,55 @@ def build_registry(k: Kernel) -> ToolRegistry:
             raise ToolError("not_found", f"no active token {a.name!r}", status=404)
         return Out(revoked=n)
 
+    # ---- role tasks and drivers ----
+    class TaskRunArgs(BaseModel):
+        project: str
+        role: str
+        instructions: str = Field(min_length=1)
+        inputs: dict = {}
+        driver: str | None = None
+        output_schema: str | None = Field(None, description="'rk.module:Class' (rk modules only); default FreeText")
+        max_turns: int = Field(12, ge=1, le=60)
+        timeout_s: int = Field(600, ge=10, le=7200)
+
+    @tool("rk_task_run", "Run one role task on a driver and record it (human only).", TaskRunArgs, True)
+    def _task_run(ctx: CallContext, a: TaskRunArgs) -> Out:
+        _project(k, a.project)
+        if a.role not in ROLES:
+            raise ToolError("invalid", f"unknown role {a.role!r}")
+        try:
+            schema = _resolve_schema(a.output_schema)
+            driver = DriverSpec.parse(a.driver) if a.driver else None
+        except ValueError as e:
+            raise ToolError("invalid", str(e)) from e
+        r = run_task(k, reg, project=a.project, role=a.role, instructions=a.instructions, inputs=a.inputs,
+                     output_schema=schema, driver=driver, max_turns=a.max_turns, timeout_s=a.timeout_s,
+                     actor=ctx.actor)
+        return Out(task_id=r.task_id, ok=r.ok, error=r.error, provider=r.provider, model=r.model,
+                   output=r.output.model_dump(mode="json") if r.output else None, tool_calls=r.tool_calls,
+                   duration_s=r.duration_s)
+
+    @tool("rk_providers", "Driver per role, its vendor and availability.", Empty, False)
+    def _providers(ctx: CallContext, a: Empty) -> Out:
+        rows = []
+        for role, (spec, avail) in available_all(k.settings()).items():
+            rows.append({"role": role, "driver": str(spec), "vendor": vendor_of(spec.provider, spec.model),
+                         **avail.model_dump()})
+        return Out(providers=rows)
+
     return reg
+
+
+def _resolve_schema(ref: str | None) -> type[BaseModel]:
+    if not ref:
+        return FreeText
+    module, _, name = ref.partition(":")
+    if not (module == "rk" or module.startswith("rk.")) or not name:
+        raise ValueError("output_schema must be 'rk.<module>:<Class>'")
+    try:
+        obj = getattr(importlib.import_module(module), name)
+    except (ImportError, AttributeError) as e:
+        raise ValueError(f"cannot load output schema {ref}: {e}") from e
+    if not (isinstance(obj, type) and issubclass(obj, BaseModel)):
+        raise ValueError(f"{ref} is not a pydantic model")  # noqa: TRY004 - invalid user input, caught as ValueError
+    return obj
