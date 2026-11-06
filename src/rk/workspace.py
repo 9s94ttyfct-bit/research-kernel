@@ -11,6 +11,7 @@ from rk.config import Settings, load_settings, rk_home
 from rk.ids import new_id
 from rk.library.service import Library
 from rk.net.http import HttpClient
+from rk.server.tokens import TokenStore
 from rk.sources.resolver import SourceContext
 from rk.store.events import NewEvent
 from rk.store.project import ProjectStore
@@ -26,6 +27,7 @@ class Kernel:
         self._http = http
         self._open: dict[str, tuple[ProjectStore, Library]] = {}
         self._lock = threading.Lock()
+        self.tokens = TokenStore(self.home / "kernel.sqlite")
 
     def settings(self) -> Settings:
         return load_settings()
@@ -94,3 +96,4 @@ class Kernel:
             self._open.clear()
         if self._http is not None:
             self._http.close()
+        self.tokens.close()

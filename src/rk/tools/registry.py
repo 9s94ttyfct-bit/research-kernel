@@ -69,8 +69,8 @@ class ToolRegistry:
             raise ToolError("unknown_tool", f"no such tool: {name}", status=404)
         return self._tools[name]
 
-    def list(self, role: str) -> list[Tool]:
-        return [t for t in self._tools.values() if role in t.roles]
+    def list(self, role: str, allowed: frozenset[str] | None = None) -> list[Tool]:
+        return [t for t in self._tools.values() if role in t.roles and (allowed is None or t.name in allowed)]
 
     def call(self, name: str, args: dict, ctx: CallContext) -> dict:
         tool = self.get(name)
@@ -78,7 +78,14 @@ class ToolRegistry:
             raise PermissionDenied(f"role {ctx.role!r} may not call {name}")
         if ctx.allowed_tools is not None and name not in ctx.allowed_tools:
             raise PermissionDenied(f"{name} is not granted to this task")
-        inp = tool.input_model.model_validate(args or {})
+        args = dict(args or {})
+        if ctx.project is not None:
+            # A project-bound caller (task token) works on its own project only, and only through tools that take one.
+            if "project" not in tool.input_model.model_fields:
+                raise PermissionDenied(f"{name} is not project-scoped; not available to a project-bound caller")
+            if args.setdefault("project", ctx.project) != ctx.project:
+                raise PermissionDenied(f"this caller is bound to project {ctx.project!r}")
+        inp = tool.input_model.model_validate(args)
         if not tool.writes:
             return tool.output_model.model_validate(tool.handler(ctx, inp)).model_dump(mode="json")
         if not ctx.idempotency_key:

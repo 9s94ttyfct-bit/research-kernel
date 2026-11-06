@@ -365,4 +365,30 @@ def build_registry(k: Kernel) -> ToolRegistry:
             raise ToolError("invalid", str(e)) from e
         return Out(**r.model_dump())
 
+    # ---- tokens for external MCP clients (cli only) ----
+    class TokenName(BaseModel):
+        name: str = Field(min_length=1, max_length=64)
+
+    # writes=False on purpose: the idempotency store keeps results, and a raw token must never be stored.
+    # A retried create fails on the duplicate name instead of minting a second token.
+    @tool("rk_token_create", "Create a long-lived lead token for an external MCP client (shown once).", TokenName,
+          False, roles=frozenset({"cli"}))
+    def _token_create(ctx: CallContext, a: TokenName) -> Out:
+        try:
+            return Out(name=a.name, token=k.tokens.issue_lead(a.name))
+        except ValueError as e:
+            raise ToolError("exists", str(e), status=409) from e
+
+    @tool("rk_token_list", "List lead tokens (names only).", Empty, False, roles=frozenset({"cli"}))
+    def _token_list(ctx: CallContext, a: Empty) -> Out:
+        return Out(tokens=k.tokens.list_lead())
+
+    @tool("rk_token_revoke", "Revoke a lead token by name (or a task's token by task id).", TokenName, False,
+          roles=frozenset({"cli"}))
+    def _token_revoke(ctx: CallContext, a: TokenName) -> Out:
+        n = k.tokens.revoke(a.name)
+        if not n:
+            raise ToolError("not_found", f"no active token {a.name!r}", status=404)
+        return Out(revoked=n)
+
     return reg

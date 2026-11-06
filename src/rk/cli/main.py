@@ -15,9 +15,11 @@ app = typer.Typer(help="Research Kernel CLI", no_args_is_help=True, add_completi
 project_app = typer.Typer(help="Projects", no_args_is_help=True)
 library_app = typer.Typer(help="Project library", no_args_is_help=True)
 note_app = typer.Typer(help="Notes", no_args_is_help=True)
+token_app = typer.Typer(help="Lead tokens for external MCP clients", no_args_is_help=True)
 app.add_typer(project_app, name="project")
 app.add_typer(library_app, name="library")
 app.add_typer(note_app, name="note")
+app.add_typer(token_app, name="token")
 
 JSON_OPT = typer.Option(False, "--json", help="Print raw JSON")
 KEYWORD_OPT = typer.Option(None, "--keyword", help="Repeatable")
@@ -103,7 +105,8 @@ def serve(detach: bool = typer.Option(False, help="Start in the background and r
         typer.secho(str(e), fg="yellow", err=True)
         raise typer.Exit(0) from e
     kernel = Kernel(home)
-    server = uvicorn.Server(uvicorn.Config(create_app(build_registry(kernel), rt.token), log_level="warning"))
+    server = uvicorn.Server(uvicorn.Config(create_app(build_registry(kernel), rt.token, tokens=kernel.tokens),
+                                           log_level="warning"))
     signal.signal(signal.SIGTERM, lambda *_: setattr(server, "should_exit", True))
     try:
         server.run(sockets=[rt.sock])
@@ -321,6 +324,29 @@ def setup() -> None:
     for k, v in caps.items():
         typer.echo(f"  {k:<17} {v}")
     typer.echo(f"\nSaved to {rk_home() / 'config.toml'} (mode 600).")
+
+
+# ---------------- tokens ----------------
+@token_app.command("create")
+def token_create(name: str = typer.Option(..., "--name", help="Label, e.g. the MCP client's name")) -> None:
+    """Create a lead token for an external MCP client. It is shown once; only its hash is stored."""
+    r = _call("rk_token_create", {"name": name})
+    typer.echo(f"lead token '{r['name']}' (store it now; it is not shown again):\n{r['token']}")
+    typer.echo(f"Use with: RK_TASK_TOKEN=<token> rk mcp --project <slug>   (revoke: rk token revoke --name {name})")
+
+
+@token_app.command("list")
+def token_list(as_json: bool = JSON_OPT) -> None:
+    r = _call("rk_token_list", {})
+    _out(r, as_json, lambda d: [typer.echo(f"{t['name']}{'  (revoked)' if t['revoked'] else ''}") for t in d["tokens"]]
+         or typer.echo("(no lead tokens)"))
+
+
+@token_app.command("revoke")
+def token_revoke(name: str = typer.Option(..., "--name")) -> None:
+    _call("rk_token_revoke", {"name": name})
+    typer.echo(f"revoked {name}")
+
 
 
 if __name__ == "__main__":
