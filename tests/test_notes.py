@@ -1,12 +1,12 @@
 import pytest
 
-from rk.fulltext import attach_pdf
+from rk.fulltext import _record_snapshot, attach_pdf
 from rk.library.models import Creator, ItemIn
 from rk.library.service import Library
 from rk.notes import NoteIn, NoteRejected, add_note, list_notes, text_find, text_read
 from rk.store.project import ProjectStore
 from rk.store.projections import rebuild
-from rk.text.layer import normalize_query
+from rk.text.layer import Page, TextLayer, normalize_query
 
 from .conftest import DOCS
 
@@ -128,3 +128,16 @@ def test_notes_rebuild(env):
     before = list_notes(ps), lib.search("ingress")
     rebuild(ps.db)
     assert (list_notes(ps), lib.search("ingress")) == before
+
+
+def test_text_find_unicode_casefold(tmp_path):
+    ps = ProjectStore(tmp_path / "p", "prj_T")
+    lib = Library(ps)
+    iid = lib.add_item(ItemIn(title="Straße", year=2020), added_by="human", actor="u").item_id
+    text = "Die Große Straße führt zum ΣΟΦΟΣ-Institut."
+    _record_snapshot(ps, iid, text.encode(), TextLayer(source_kind="html", pages=[Page(n=1, text=text)], sha256=""),
+                     "html", None, "u")
+    hit = text_find(ps, iid, "GROSSE STRASSE")[0]  # 'ß' casefolds to 'ss'; lower() would not match
+    assert text_read(ps, iid, page=1, start=hit.start, end=hit.end).text == "Große Straße"
+    hit = text_find(ps, iid, "σοφος")[0]  # final sigma 'ς' and 'Σ' fold to the same letter
+    assert text_read(ps, iid, page=1, start=hit.start, end=hit.end).text == "ΣΟΦΟΣ"

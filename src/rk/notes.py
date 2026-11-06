@@ -142,19 +142,20 @@ def text_read(ps: ProjectStore, source_id: str, page: int | None = None, start: 
 
 
 def _folded(key) -> tuple[str, list[int]]:
-    """Lower-case a norm key character by character, keeping the offset map aligned."""
+    """Unicode-casefold a norm key character by character, keeping the offset map aligned ('ß' -> 'ss' maps both
+    characters back to the one source character)."""
     chars: list[str] = []
     mp: list[int] = []
     for c, m in zip(key.key, key.map, strict=True):
-        for lc in c.lower():
-            chars.append(lc)
+        for fc in c.casefold():
+            chars.append(fc)
             mp.append(m)
     return "".join(chars), mp
 
 
 def text_find(ps: ProjectStore, source_id: str, query: str, limit: int = 10) -> list[TextMatch]:
     _, layer = _layer(ps, source_id)
-    q = normalize_query(query).lower()
+    q = normalize_query(query).casefold()
     if not q:
         return []
     out: list[TextMatch] = []
