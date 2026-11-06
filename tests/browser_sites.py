@@ -42,10 +42,11 @@ def pdf(raw: bytes) -> Response:
 def tiny_pdf(text: str = "Fixture PDF text about perovskite stability.") -> bytes:
     from fpdf import FPDF
 
-    doc = FPDF()
+    doc = FPDF(unit="pt", format="A4")  # as tests/fixtures/docs/make_pdfs.py: glyphs inside the page box
     doc.add_page()
-    doc.set_font("helvetica", size=12)
-    doc.multi_cell(0, 8, text)
+    doc.add_font("U", fname="/System/Library/Fonts/Supplemental/Arial Unicode.ttf")
+    doc.set_font("U", size=12)
+    doc.text(72, 100, text)
     return bytes(doc.output())
 
 

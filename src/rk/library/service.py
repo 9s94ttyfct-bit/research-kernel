@@ -114,8 +114,10 @@ class Library:
         return self.ps.apply(NewEvent(type=t, entity_id=entity, payload=payload, actor_kind=kind, actor=actor))
 
     def add_item(
-        self, item: ItemIn, *, added_by: Literal["human", "agent"], actor: str, actor_kind: ActorKind | None = None
+        self, item: ItemIn, *, added_by: Literal["human", "agent"], actor: str, actor_kind: ActorKind | None = None,
+        provenance: dict | None = None,
     ) -> AddResult:
+        """``provenance`` is kept in the ``item.added`` event (e.g. the browser's ``page_metadata_diff``)."""
         kind: ActorKind = actor_kind or ("human" if added_by == "human" else "agent")
         item = item.model_copy(update={"ids": item.ids.normalized()})
         with self.ps.lock:  # find-then-add must not interleave with another add of the same work
@@ -128,7 +130,7 @@ class Library:
                     self._ev("item.merged", existing, {"ids": new_ids, "oa_urls": new_urls}, actor, kind)
                 return AddResult(item_id=existing, created=False)
             full = Item(**item.model_dump(), id=new_id("src"), added_by=added_by)
-            self._ev("item.added", full.id, {"item": full.model_dump(mode="json")}, actor, kind)
+            self._ev("item.added", full.id, {"item": full.model_dump(mode="json"), **(provenance or {})}, actor, kind)
         return AddResult(item_id=full.id, created=True)
 
     def update(self, item_id: str, *, actor: str, actor_kind: ActorKind = "kernel", **fields) -> None:

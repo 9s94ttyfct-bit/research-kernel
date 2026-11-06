@@ -42,11 +42,11 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-def attachment_filename(item: Item, sha256: str) -> str:
-    """Readable, filesystem-safe name; the short content hash keeps different PDFs of one item apart."""
+def attachment_filename(item: Item, sha256: str, ext: str = ".pdf") -> str:
+    """Readable, filesystem-safe name; the short content hash keeps different files of one item apart."""
     first = item.creators[0].family if item.creators else "Anon"
     short = re.sub(r"\s+", " ", re.sub(r"[^\w\s-]", "", item.title)).strip()[:60].rstrip()
-    name = f"{first} {item.year or 'n.d.'} - {short} [{sha256[:8]}].pdf"
+    name = f"{first} {item.year or 'n.d.'} - {short} [{sha256[:8]}]{ext}"
     return re.sub(r"[/\\:]", "-", name)
 
 
@@ -63,16 +63,16 @@ def _record_snapshot(ps: ProjectStore, item_id: str, raw: bytes, layer: TextLaye
 
 
 def _attach(ps: ProjectStore, item: Item, raw: bytes, origin: AttachOrigin, actor: str,
-            actor_kind: Literal["human", "agent"], access_note: str | None = None) -> str:
+            actor_kind: Literal["human", "agent"], access_note: str | None = None, kind: str = "pdf") -> str:
     sha = ps.blobs.put(raw)
-    fname = attachment_filename(item, sha)
+    fname = attachment_filename(item, sha, ".html" if kind == "html_snapshot" else ".pdf")
     dest = ps.files_dir / item.id / fname
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(ps.blobs.path(sha), dest)
     att_id = new_id("att")
     ps.apply(NewEvent(
         type="attachment.added", entity_id=item.id, actor_kind=actor_kind, actor=actor,
-        payload={"id": att_id, "kind": "pdf", "filename": fname, "sha256": sha, "origin": origin,
+        payload={"id": att_id, "kind": kind, "filename": fname, "sha256": sha, "origin": origin,
                  "access_note": access_note, "fetched_at": _now()},
     ))
     return att_id
@@ -129,14 +129,35 @@ def fetch_fulltext(ps: ProjectStore, lib: Library, ctx: SourceContext, item_id: 
 
 def attach_pdf(ps: ProjectStore, lib: Library, item_id: str, path: Path, *, origin: AttachOrigin, actor: str,
                actor_kind: Literal["human", "agent"] = "human", access_note: str | None = None) -> FulltextResult:
-    item = lib.get(item_id)
     raw = Path(path).read_bytes()
     if raw[:5] != b"%PDF-":
         raise ValueError(f"not a PDF: {path}")
+    return attach_pdf_bytes(ps, lib, item_id, raw, origin=origin, actor=actor, actor_kind=actor_kind,
+                            access_note=access_note)
+
+
+def attach_pdf_bytes(ps: ProjectStore, lib: Library, item_id: str, raw: bytes, *, origin: AttachOrigin, actor: str,
+                     actor_kind: Literal["human", "agent"], access_note: str | None = None,
+                     url: str | None = None) -> FulltextResult:
+    """Attach a PDF obtained outside the API channels (upload, built-in browser) and build its text layer."""
+    item = lib.get(item_id)
+    if raw[:5] != b"%PDF-":
+        raise ValueError("not a PDF")
     layer = extract_pdf(None, data=raw)
     _attach(ps, item, raw, origin, actor, actor_kind, access_note)
-    res = _record_snapshot(ps, item.id, raw, layer, "pdf", None, actor)
+    res = _record_snapshot(ps, item.id, raw, layer, "pdf", url, actor)
     return res.model_copy(update={"origin": origin})
+
+
+def attach_html_snapshot(ps: ProjectStore, lib: Library, item_id: str, html: str, *, origin: AttachOrigin, actor: str,
+                         actor_kind: Literal["human", "agent"], url: str, access_note: str | None = None
+                         ) -> tuple[str, FulltextResult]:
+    """Keep a web page as an ``html_snapshot`` attachment and as the item's text layer (hidden text removed)."""
+    item = lib.get(item_id)
+    raw = html.encode()
+    att = _attach(ps, item, raw, origin, actor, actor_kind, access_note, kind="html_snapshot")
+    res = _record_snapshot(ps, item.id, raw, html_to_layer(html, ""), "html", url, actor)
+    return att, res.model_copy(update={"origin": origin})
 
 
 def latest_snapshot(ps: ProjectStore, item_id: str) -> tuple[str, TextLayer] | None:

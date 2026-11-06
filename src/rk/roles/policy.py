@@ -39,7 +39,13 @@ TOOL_ROLES: dict[str, frozenset[str]] = {
                                      "rk_library_tag", "rk_library_collect", "rk_library_import", "rk_providers")},
     # human only: host file paths, credentials, answering checkpoints, launching tasks
     **{name: _r() for name in ("rk_library_attach", "rk_token_create", "rk_token_list", "rk_token_revoke",
-                               "rk_checkpoint_answer", "rk_task_run", "rk_support_check")},
+                               "rk_checkpoint_answer", "rk_task_run", "rk_support_check", "rk_browser_save_page")},
+    # built-in browser (spec §8.1: Scout searches, Reader fetches full text; the Lead uses both in D1)
+    "rk_browser_search": _r("lead", "scout"),
+    "rk_browser_fetch_fulltext": _r("lead", "reader"),
+    **{name: _r("lead", "scout", "reader") for name in ("rk_browser_open", "rk_browser_snapshot", "rk_browser_act",
+                                                        "rk_browser_tabs", "rk_browser_request_human",
+                                                        "rk_browser_status")},
 }
 
 

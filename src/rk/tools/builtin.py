@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import importlib
+from collections.abc import Callable
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from rk.argument import ArgumentService, ClaimIn, EdgeIn, EvidenceIn, ObjectionIn
+from rk.browser.service import BrowserService
+from rk.browser.tools import register_browser_tools
 from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
 from rk.flags import flag_injection
 from rk.fulltext import FulltextResult, attach_pdf, fetch_fulltext
@@ -66,8 +69,10 @@ class ProjectArg(BaseModel):
     project: str
 
 
-def build_registry(k: Kernel) -> ToolRegistry:
+def build_registry(k: Kernel, browser: Callable[[], BrowserService | None] | None = None) -> ToolRegistry:
+    """``browser()`` returns the running built-in browser service (``rk serve``), or None."""
     reg = ToolRegistry(k.home / "kernel.sqlite")
+    browser = browser or (lambda: None)
 
     def tool(name: str, summary: str, inp: type[BaseModel], writes: bool):
         def deco(fn):
@@ -75,6 +80,8 @@ def build_registry(k: Kernel) -> ToolRegistry:
                               writes=writes, handler=fn))
             return fn
         return deco
+
+    register_browser_tools(tool, browser)
 
     # ---- projects ----
     class ProjectCreate(BaseModel):
@@ -326,10 +333,14 @@ def build_registry(k: Kernel) -> ToolRegistry:
         project: str
         source_id: str
 
-    @tool("rk_source_fetch_fulltext", "Fetch open-access full text into a verified text layer.", SourceArg, True)
+    @tool("rk_source_fetch_fulltext", "Fetch full text into a verified text layer: open-access channels first, then "
+          "the library or publisher page in the built-in browser.", SourceArg, True)
     def _fetch(ctx: CallContext, a: SourceArg) -> Out:
         ps, lib = _project(k, a.project)
         r: FulltextResult | None = fetch_fulltext(ps, lib, k.ctx(), a.source_id, actor=ctx.actor)
+        svc = browser()
+        if r is None and svc is not None and svc.running and k.settings().fulltext_browser_fallback:
+            r = svc.fetch_fulltext(ctx, a.project, a.source_id)  # spec §11.1: the browser channel comes last
         if r is None:
             raise ToolError("no_fulltext", "no open-access full text found; attach a PDF with rk_library_attach",
                             status=404)

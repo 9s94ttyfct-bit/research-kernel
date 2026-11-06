@@ -34,6 +34,8 @@ def test_every_tool_has_policy(reg):
     ("skeptic", "rk_note_add"), ("writer", "rk_source_add"), ("lead", "rk_library_attach"),
     ("lead", "rk_token_create"), ("screener_a", "rk_note_list"), ("simreader", "rk_note_add"),
     ("screener_b", "rk_library_search"), ("scout", "rk_library_search"),
+    ("reader", "rk_browser_search"), ("scout", "rk_browser_fetch_fulltext"), ("lead", "rk_browser_save_page"),
+    ("screener_a", "rk_browser_open"), ("writer", "rk_browser_act"), ("skeptic", "rk_browser_snapshot"),
 ])
 def test_role_cannot_call_tool_outside_policy(reg, role, forbidden):
     with pytest.raises(PermissionDenied):

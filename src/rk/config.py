@@ -56,6 +56,9 @@ class Settings(BaseModel):
     browser_limits: dict[str, dict] = Field(default_factory=dict)
     browser_max_wait_s: float = 120.0
     browser_max_steps: int = 30  # generic-navigation actions per task
+    # hosts agent tabs may reach although they are on a local/private network ("host" or "host:port"), e.g. an
+    # intranet library proxy; otherwise agent tabs reach only the public web
+    browser_allow_hosts: list[str] = Field(default_factory=list)
     library_name: str | None = None
     library_portal_url: str | None = None
     library_proxy: str | None = None  # template with {url}, e.g. https://login.ezproxy.example.edu/login?url={url}

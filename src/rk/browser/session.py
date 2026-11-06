@@ -386,6 +386,10 @@ class BrowserSession:
     def _page(self, tab_id: str):
         return self._pages[tab_id]
 
+    def check_url(self, url: str) -> str | None:
+        """Why an agent may not send the browser to ``url`` (None: allowed). For URLs an agent hands to a human tab."""
+        return self.call(self._blocked_reason(url), 30)
+
     # ---- tabs ---------------------------------------------------------------------------------------------------
     def open_workbench(self, url: str) -> None:
         async def go():
