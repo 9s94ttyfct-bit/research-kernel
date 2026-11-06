@@ -133,9 +133,10 @@ class IntakeWorker:
 
 def default_workers() -> dict[str, Worker]:
     """The worker of every discovery stage that has one."""
-    from rk.discovery.landscape import LandscapeWorker  # the workers import this module
+    from rk.discovery.gaps import GapsWorker  # the workers import this module
+    from rk.discovery.landscape import LandscapeWorker
 
-    return {"intake": IntakeWorker(), "landscape": LandscapeWorker()}
+    return {"intake": IntakeWorker(), "landscape": LandscapeWorker(), "gaps": GapsWorker()}
 
 
 class Orchestrator:

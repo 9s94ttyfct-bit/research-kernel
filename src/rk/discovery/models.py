@@ -49,6 +49,43 @@ class ClusterPlan(BaseModel):
     clusters: list[ClusterOut]
 
 
+class LimitationOut(BaseModel):
+    source_id: str
+    quote: str  # verbatim from the source's text layer
+    later_query: str  # English search query for later work that may have addressed the limitation
+
+
+class LimitationsOut(BaseModel):
+    """The GapMiner's stated limitations (gaps: stated_limitation)."""
+    items: list[LimitationOut]
+
+
+class LaterWorkOut(BaseModel):
+    """Triage: which of the given later works address the limitation, each with a verbatim quote from its title or
+    abstract."""
+    addressed: list[str] = []
+    basis: dict[str, str] = {}
+
+
+class Dim(BaseModel):
+    name: str
+    values: list[str]
+
+
+class MapPlan(BaseModel):
+    """The GapMiner's evidence map: exactly two dimensions, each given work's value on both, and a search query per
+    empty cell keyed ``"<value of dim 1>|<value of dim 2>"`` (gaps: evidence_map_hole)."""
+    dims: list[Dim]
+    cells: dict[str, list[str]] = {}
+    empty_cell_queries: dict[str, str] = {}
+
+
+class CellMatchOut(BaseModel):
+    """Triage: which of the given works fall into the empty cell."""
+    matches: list[str] = []
+
+
+
 class GapEvidence(BaseModel):
     note_ids: list[str] = []
     item_ids: list[str] = []

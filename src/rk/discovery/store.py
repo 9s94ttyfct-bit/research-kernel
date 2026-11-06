@@ -40,11 +40,13 @@ def intake_of(ps: ProjectStore) -> Intake | None:
 
 # ---- writes ----
 def log_search(ps: ProjectStore, *, stage: str, attempt: int, purpose: str, source: str, query: str, limit: int,
-               item_ids: list[str], actor: str, actor_kind: ActorKind = "kernel") -> str:
+               item_ids: list[str], actor: str, actor_kind: ActorKind = "kernel", after_year: int | None = None) -> str:
+    """One discovery search; ``after_year`` is the year the search was limited to works published after (or None)."""
     sid = new_id("sch")
     ps.apply(NewEvent(type="search.logged", entity_id=sid, actor_kind=actor_kind, actor=actor,
                       payload={"stage": stage, "attempt": attempt, "purpose": purpose, "source": source,
-                               "query": query, "limit": limit, "item_ids": list(item_ids)}))
+                               "query": query, "limit": limit, "after_year": after_year,
+                               "item_ids": list(item_ids)}))
     return sid
 
 

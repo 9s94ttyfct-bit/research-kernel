@@ -24,7 +24,7 @@ HITS_COLLECTION = "Search hits"
 
 
 class DiscoverySources(Protocol):
-    def search(self, query: str, source: str, limit: int = 25) -> list[ItemIn]: ...
+    def search(self, query: str, source: str, limit: int = 25, after_year: int | None = None) -> list[ItemIn]: ...
 
     def sources(self) -> list[str]: ...
 
@@ -57,8 +57,9 @@ class KernelSources:
         s2 = ["s2"] if self.kernel.settings().s2_key else []
         return ["openalex", *s2, "europepmc", "pubmed", "arxiv"]
 
-    def search(self, query: str, source: str, limit: int = 25) -> list[ItemIn]:
-        return resolver.search(self.kernel.ctx(), query, source, limit)
+    def search(self, query: str, source: str, limit: int = 25, after_year: int | None = None) -> list[ItemIn]:
+        """Hits of one source; with ``after_year`` only works published in a later year."""
+        return resolver.search(self.kernel.ctx(), query, source, limit, after_year=after_year)
 
     def year_counts(self, query: str) -> dict[int, int]:
         ctx = self.kernel.ctx()
@@ -87,7 +88,8 @@ class KernelSources:
         return openalex.cited_by(ctx.http, oa_id, api_key=ctx.settings.openalex_key, after_year=after_year)
 
     def retraction(self, item_id: str) -> RetractionInfo:
-        """V-RETRACT (Crossref update notices and OpenAlex ``is_retracted``) without writing anything."""
+        """V-RETRACT (Crossref update notices and OpenAlex ``is_retracted``) without writing anything; ``date`` is the
+        Crossref notice date when there is one."""
         _, lib = self._lib()
         ident = best_identifier(lib.get(item_id).ids)
         resolved = resolver.resolve(self.kernel.ctx(), parse_identifier(ident)) if ident else None
@@ -109,11 +111,12 @@ class KernelSources:
 
 
 def log_and_search(ps: ProjectStore, sources: DiscoverySources, *, stage: str, attempt: int, purpose: str,
-                   query: str, source: str, limit: int, actor: str) -> list[str]:
-    """Search one source, add the hits to the library (collection "Search hits"), log the search with the hit item
-    ids (event ``search.logged``) and return those ids in rank order."""
+                   query: str, source: str, limit: int, actor: str, after_year: int | None = None) -> list[str]:
+    """Search one source (with ``after_year``, only works published in a later year), add the hits to the library
+    (collection "Search hits"), log the search with the hit item ids (event ``search.logged``) and return those ids in
+    rank order."""
     lib = Library(ps)
-    hits = sources.search(query, source, limit)
+    hits = sources.search(query, source, limit, after_year=after_year)
     col = lib.ensure_default_collections(actor=actor)[HITS_COLLECTION]
     ids: list[str] = []
     for it in hits:
@@ -123,5 +126,5 @@ def log_and_search(ps: ProjectStore, sources: DiscoverySources, *, stage: str, a
             lib.collect(iid, col, actor=actor, actor_kind="kernel")
             ids.append(iid)
     log_search(ps, stage=stage, attempt=attempt, purpose=purpose, source=source, query=query, limit=limit,
-               item_ids=ids, actor=actor)
+               item_ids=ids, actor=actor, after_year=after_year)
     return ids

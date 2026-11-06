@@ -157,7 +157,21 @@ def test_log_and_search_logs_and_adds(env):
     rows = searches(ps, "landscape", 1)
     assert [(r["query"], r["source"], r["limit_n"], r["purpose"], r["item_ids"]) for r in rows] == \
         [("Aspirin stroke", "openalex", 25, "landscape", ids)]
-    assert fake.calls == [("search", "Aspirin stroke", "openalex", 25)]
+    assert fake.calls == [("search", "Aspirin stroke", "openalex", 25, None)]
+    assert next(e for e in ps.log.iter() if e.type == "search.logged").payload["after_year"] is None
+
+
+def test_log_and_search_after_year_filters_and_logs(env):
+    _, _, ps, lib = env
+    hits = [ItemIn(title="Old trial", year=2014, ids=Ids(doi="10.1/old")),
+            ItemIn(title="New trial", year=2020, ids=Ids(doi="10.1/new")), ItemIn(title="Undated trial")]
+    fake = FakeSources({"trial": hits}, lib=lib)
+    ids = log_and_search(ps, fake, stage="gaps", attempt=1, purpose="gap_check", query="trial", source="openalex",
+                         limit=10, actor="kernel", after_year=2015)
+    assert [lib.get(i).title for i in ids] == ["New trial"]
+    assert fake.calls == [("search", "trial", "openalex", 10, 2015)]
+    [ev] = [e for e in ps.log.iter() if e.type == "search.logged"]
+    assert ev.payload["after_year"] == 2015 and ev.payload["item_ids"] == ids
 
 
 def _mock_kernel(tmp_home, tmp_path, handler):
@@ -196,6 +210,33 @@ def test_kernel_sources_year_counts_and_cited_by_after_year(tmp_home, tmp_path):
         no_ids = lib.add_item(ItemIn(title="Unknown work"), added_by="agent", actor="t").item_id
         n = len(seen)
         assert src.cited_by(no_ids, after_year=None) == [] and len(seen) == n  # nothing to look up
+    finally:
+        k.close()
+
+
+def test_kernel_sources_search_after_year(tmp_home, tmp_path):
+    seen: list[tuple[str, dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.url.host, dict(request.url.params)))
+        if "openalex" in request.url.host:
+            return httpx.Response(200, json={"results": [
+                {"id": "https://openalex.org/W1", "title": "Old", "publication_year": 2012},
+                {"id": "https://openalex.org/W2", "title": "New", "publication_year": 2021}]})
+        return httpx.Response(200, json={"resultList": {"result": [
+            {"title": "Old EPMC", "pubYear": "2012"}, {"title": "New EPMC", "pubYear": "2021"},
+            {"title": "Undated EPMC"}]}})
+
+    k = _mock_kernel(tmp_home, tmp_path, handler)
+    try:
+        src = KernelSources(k, "demo")
+        assert [i.title for i in src.search("aspirin", "openalex", 10, after_year=2015)] == ["New"]
+        assert seen[-1][1]["filter"] == "publication_year:>2015" and seen[-1][1]["search"] == "aspirin"
+        assert [i.title for i in src.search("aspirin", "openalex", 10)] == ["Old", "New"]
+        assert "filter" not in seen[-1][1]
+        # Europe PMC has no year filter here: the hits are filtered by year after the search
+        assert [i.title for i in src.search("aspirin", "europepmc", 10, after_year=2015)] == ["New EPMC"]
+        assert [i.title for i in src.search("aspirin", "europepmc", 10)] == ["Old EPMC", "New EPMC", "Undated EPMC"]
     finally:
         k.close()
 

@@ -81,3 +81,13 @@ def test_partial_retraction_is_flagged_and_ranked():
     assert retraction_status(_resolved("correction", "partial_retraction")).status == "partial_retraction"
     assert retraction_status(_resolved("partial_retraction", "retraction")).status == "retracted"
     assert "partial_retraction" in FLAGGED and "corrected" not in FLAGGED
+
+
+def test_retraction_date_comes_from_the_crossref_notice():
+    resolved = ResolvedWork(item=ItemIn(title="t"), sources_used=["crossref", "openalex"], retraction_updates=[
+        Update(type="correction", source="publisher", doi="10.1/c", date="2012-01-02"),
+        Update(type="retraction", source="publisher", doi="10.1/r", date="2016-05-03"),
+        Update(type="retraction", source="retraction-watch", doi="10.1/r", date="2016-04-30")])
+    info = retraction_status(resolved)
+    assert (info.status, info.notice_doi, info.date) == ("retracted", "10.1/r", "2016-04-30")
+    assert retraction_status(_resolved("retraction")).date is None  # the notice carries no date

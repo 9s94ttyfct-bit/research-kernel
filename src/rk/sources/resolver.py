@@ -83,10 +83,21 @@ def resolve(ctx: SourceContext, ident: Identifier) -> ResolvedWork | None:
     return None
 
 
-def search(ctx: SourceContext, query: str, source: SearchSource, limit: int = 25) -> list[ItemIn]:
+def search(ctx: SourceContext, query: str, source: SearchSource, limit: int = 25, *,
+           after_year: int | None = None) -> list[ItemIn]:
+    """Search one source. With ``after_year`` only works published in a later year are returned: OpenAlex filters on
+    the server; the other sources' hits are filtered here, so fewer than ``limit`` may be left (undated hits drop)."""
+    hits = _search(ctx, query, source, limit, after_year)
+    if after_year is None:
+        return hits
+    return [h for h in hits if h.year is not None and h.year > after_year]
+
+
+def _search(ctx: SourceContext, query: str, source: SearchSource, limit: int, after_year: int | None) -> list[ItemIn]:
     http, st = ctx.http, ctx.settings
     if source == "openalex":
-        return openalex.search(http, query, api_key=st.openalex_key, per_page=limit)
+        filters = {"publication_year": f">{after_year}"} if after_year is not None else None
+        return openalex.search(http, query, api_key=st.openalex_key, per_page=limit, filters=filters)
     if source == "europepmc":
         return europepmc.search(http, query, page_size=limit)
     if source == "pubmed":

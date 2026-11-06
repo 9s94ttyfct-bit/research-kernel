@@ -29,24 +29,27 @@ class RetractionInfo(BaseModel):
     status: RetractionStatus
     sources: list[str] = []
     notice_doi: str | None = None
+    date: str | None = None  # the earliest Crossref notice date of this status ("YYYY[-MM[-DD]]"); OpenAlex has none
 
 
 def retraction_status(resolved: ResolvedWork | None) -> RetractionInfo:
     if resolved is None or not ({"crossref", "openalex"} & set(resolved.sources_used)):
         return RetractionInfo(status="unknown")
-    found: dict[RetractionStatus, tuple[list[str], str | None]] = {}
+    found: dict[RetractionStatus, tuple[list[str], str | None, list[str]]] = {}
     for u in resolved.retraction_updates:
         st = _UPDATE_MAP.get(u.type)
         if st:
-            srcs, doi = found.get(st, ([], None))
+            srcs, doi, dates = found.get(st, ([], None, []))
             srcs.append(f"crossref:{u.source}")
-            found[st] = (srcs, doi or u.doi)
+            dates += [u.date] if u.date else []
+            found[st] = (srcs, doi or u.doi, dates)
     if resolved.openalex is not None and resolved.openalex.is_retracted:
-        srcs, doi = found.get("retracted", ([], None))
+        srcs, doi, dates = found.get("retracted", ([], None, []))
         srcs.append("openalex")
-        found["retracted"] = (srcs, doi)
+        found["retracted"] = (srcs, doi, dates)
     for st in _PRIORITY:
         if st in found:
-            srcs, doi = found[st]
-            return RetractionInfo(status=st, sources=sorted(set(srcs)), notice_doi=doi)
+            srcs, doi, dates = found[st]
+            return RetractionInfo(status=st, sources=sorted(set(srcs)), notice_doi=doi,
+                                  date=min(dates) if dates else None)
     return RetractionInfo(status="none", sources=[s for s in resolved.sources_used if s in ("crossref", "openalex")])
