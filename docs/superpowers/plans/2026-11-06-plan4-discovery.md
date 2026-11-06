@@ -21,17 +21,16 @@
 
 **Deviations (decided here, flagged to the user):**
 1. **Roles do not call `gap_add` / `topic_add` / `rq_propose` / `hypothesis_add`.** GapMiner and Ideator return structured output; the kernel runs the checks and writes the entities. A role cannot bypass a check.
-2. **Back-edge limit in discovery asks you in both modes.** Spec §7.2 says P1 then degrades by deleting or narrowing content. Before `protocol` there is no content to delete, so the run pauses with a `stage_blocked` checkpoint (options `allow_one_more`, `stop`).
-3. **Clusters are formed by the Scout from titles and abstracts (LLM), not by embeddings.** Trends come from OpenAlex `group_by=publication_year` counts for each cluster's query.
-4. **Stated limitations: "last pages" means the quote starts in the last 40% of the text layer.**
-5. **Citation distortion: the evidence from the cited work B is chosen by the kernel** (top-5 passages by lexical similarity to the claim), not by the miner, so a miner cannot cherry-pick.
+2. **Clusters are formed by the Scout from titles and abstracts (LLM), not by embeddings.** Trends come from OpenAlex `group_by=publication_year` counts for each cluster's query.
+3. **Stated limitations: "last pages" means the quote starts in the last 40% of the text layer.**
+4. **Citation distortion: the evidence from the cited work B is chosen by the kernel** (top-5 passages by lexical similarity to the claim), not by the miner, so a miner cannot cherry-pick.
 
 ## Global Constraints
 
 - All Plan 1–3 constraints. Git identity repo-local `9s94ttyfct-bit`; no personal paths or hostnames in commits or fixtures.
 - **Tests:** no network and no models. Role tasks go through `TaskExecutor` (tests use `ScriptedExecutor`); sources go through `DiscoverySources` (tests use `FakeSources`). Real drivers and APIs only in the Task 12 demo.
 - **Stage order** (§7.3): `intake → landscape → gaps → topics → question` for every paper type. The later stages per type are listed in the stage graph and shown as "Plan 5", never runnable.
-- **Back-edges** (§7.1): `gaps → landscape`, `topics → gaps`, `question → topics`; a rerun of the same stage counts as the edge `X → X`. Each edge is allowed **2** times per project (§7.2); the third opens `stage_blocked`.
+- **Back-edges** (§7.1): `gaps → landscape`, `topics → gaps`, `question → topics`; a rerun of the same stage counts as the edge `X → X`. Each edge is allowed **2** times per project (§7.2). The third: P2 → `stage_blocked` checkpoint for you; P1 → the stage's `degrade` (delete or narrow content, re-validate, continue; recorded as `stage.degraded` for the limitations section).
 - **Budgets** (§7.2): role-task retries 3 (already in `run_task`); at most **40 role tasks per open stage (landscape, gaps, topics) per run session**; wall clock **12 h per run session** → `paused_budget`. `rk run resume` starts a new session. One run per project at a time. D1 calls have no budget.
 - **Run states:** `running`, `waiting_human` (a task waits; other work continues), `paused_waiting_human` (nothing else to do), `paused_budget`, `paused` (you paused), `done`, `failed`, `cancelled`.
 - **Checkpoints:** `topic_review` in every mode, D1 and D2 (hard, human only). `rq_approval`: D1 always; D2 only in P2 (`production_mode = "collab"`). In D2 P1 the RQ is adopted automatically and `rq.frozen` records `adopted_by = "agent"` for the disclosure ("RQ selected by agent"). Already-done disagreement in P2 → `significance_novelty` (hard). Agents can never answer hard kinds (existing policy).
@@ -46,8 +45,8 @@
 
 1. **`rk serve` restarts while a D2 run waits on `topic_review`.** After the restart the run is `paused_waiting_human`, and your answer resumes it at `question`: no landscape or gap task runs again. Test: Task 9 `test_run_resumes_after_restart_without_rerunning_passed_stages`.
 2. **A miner returns a quote that is not verbatim, or an item id that is not in the library.** The gap is stored with `verified = false` and the failed check named, and topics never cite it. Tests: Task 5 `test_unverbatim_limitation_quote_is_not_verified`, Task 7 `test_topics_drop_unverified_gap_ids`.
-3. **You answer `topic_review` with "revise" three times.** The third revise exceeds the `topics → topics` limit. The run pauses on `stage_blocked` and does not loop. Test: Task 7 `test_third_revise_opens_stage_blocked`.
-4. **Only one judge vendor is available (codex missing).** "Not found" needs both vendors, so in P1 the RQ is treated as already done and goes back to `topics` (and hits the limit, then `stage_blocked`). In P2 you get a `significance_novelty` checkpoint. The run never claims "not found". Test: Task 8 `test_single_judge_vendor_never_clears_already_done`.
+3. **You answer `topic_review` with "revise" three times.** The third revise exceeds the `topics → topics` limit. In P2 the run pauses on `stage_blocked`; in P1 `degrade` drops the revised topics and asks again with the rest. It never loops. Tests: Task 7 `test_third_revise_opens_stage_blocked`, `test_p1_degrade_reopens_review_without_rejected_topics`.
+4. **Only one judge vendor is available (codex missing).** "Not found" needs both vendors. In P1 the split counts as already done and goes back to `topics`; at the limit `degrade` narrows the RQ once, and if it is still not cleared the run fails with that reason. In P2 you get a `significance_novelty` checkpoint. The run never claims "not found". Tests: Task 8 `test_single_judge_vendor_never_clears_already_done`, `test_p1_degrade_narrows_the_rq_once_then_fails`.
 5. **No S2 key.** V-NOVELTY and the already-done check fall back to OpenAlex + Europe PMC and record which sources were used. Test: Task 7 `test_novelty_without_s2_uses_two_other_sources`.
 
 ---
@@ -183,7 +182,7 @@ New tables (all `CREATE TABLE IF NOT EXISTS`, all in `PROJECTION_TABLES`):
 - `engine.py`:
   - `StageContext(kernel, registry, ps, lib, project, stage, attempt, run_id, guidance, executor: TaskExecutor, sources: DiscoverySources, actor)`
   - `StageOutcome(status: Literal["done","waiting_human","rerun","back_edge","failed"], checkpoint_id: str | None = None, to: str | None = None, reason: str = "")`
-  - `Worker` (Protocol): `run(ctx) -> StageOutcome`; `on_answer(ctx, checkpoint: dict) -> StageOutcome`; `gate(ps, attempt) -> GateResult(ok: bool, failures: list[str])`
+  - `Worker` (Protocol): `run(ctx) -> StageOutcome`; `on_answer(ctx, checkpoint: dict) -> StageOutcome`; `gate(ps, attempt) -> GateResult(ok: bool, failures: list[str])`; `degrade(ctx, failures: list[str]) -> StageOutcome` (P1 only)
   - `Orchestrator(kernel, registry, *, workers: dict[str, Worker] | None = None, executor_factory, sources_factory)`:
     - `run_stage(project, stage, *, run_id=None, guidance=None, actor) -> StageOutcome`: writes `stage.attempt` (attempt + 1) and calls the worker. Refuses a stage before the current one, and a stage that is not in `DISCOVERY` (`ToolError("stage_unavailable")`).
     - `advance(project, *, actor) -> GateResult`: applies answered checkpoints of the current attempt through `on_answer`, then gates; on pass writes `stage.passed`.
@@ -192,7 +191,9 @@ New tables (all `CREATE TABLE IF NOT EXISTS`, all in `PROJECTION_TABLES`):
     - Open checkpoint for the current attempt → `paused_waiting_human`.
     - Answered checkpoint → `on_answer`.
     - `done` → gate. A gate failure becomes a rerun with the failures as guidance (edge `X→X`).
-    - `rerun` / `back_edge` → `edge.taken`, unless the count is already 2 and no `edge.allowed` is left. Then a `stage_blocked` checkpoint (options `allow_one_more`, `stop`): `allow_one_more` writes `edge.allowed`; `stop` sets the run `failed`.
+    - `rerun` / `back_edge` → `edge.taken`, unless the count is already 2 and no `edge.allowed` is left. Then:
+      - P2 (`collab`): a `stage_blocked` checkpoint (options `allow_one_more`, `stop`): `allow_one_more` writes `edge.allowed`; `stop` sets the run `failed`.
+      - P1 (`auto`): `worker.degrade(ctx, failures)` (spec §5.3/§7.2: delete or narrow, re-validate, continue). It writes `stage.degraded(stage, attempt, removed, reason)` for the disclosure/limitations; `done` → gate; `failed` → run `failed` with the reason.
     - A back-edge reopens the target and every later stage (`stage.reopened`).
     - `BudgetExceeded` or more than 12 h since `session_started` → `paused_budget`.
     - `RateCapped(driver, wait_s)` (a role task came back `rate_capped`, spec §7.2 hourly caps) → status stays `running`, `step` returns `"waiting_rate"`, and the attempt reruns on the next step. Test `test_rate_cap_waits_and_reruns_the_attempt` in Step 1.
@@ -203,7 +204,8 @@ New tables (all `CREATE TABLE IF NOT EXISTS`, all in `PROJECTION_TABLES`):
   - `test_d2_runs_stages_in_order_until`: `step` until `done` with `until="gaps"`; `stage.passed` for intake, landscape, gaps; topics never attempted.
   - `test_gate_failure_reruns_with_failures_as_guidance`: the landscape gate fails once; the second attempt's `guidance` contains the failure text; it then passes.
   - `test_back_edge_reopens_downstream`: topics returns `back_edge(to="gaps")`; gaps and topics are no longer passed; `edge_count("topics->gaps") == 1`.
-  - `test_third_use_of_an_edge_opens_stage_blocked`: the third back-edge creates `stage_blocked` and the status is `paused_waiting_human`; answering `allow_one_more` lets exactly one more pass; `stop` → `failed`.
+  - `test_third_use_of_an_edge_opens_stage_blocked` (P2): the third use creates `stage_blocked` and the status is `paused_waiting_human`; answering `allow_one_more` lets exactly one more pass; `stop` → `failed`.
+  - `test_p1_limit_calls_degrade`: with `production_mode = "auto"` the third use calls `worker.degrade`; a `done` outcome goes to the gate; a `failed` outcome sets the run `failed` with the reason; no checkpoint is created.
   - `test_open_checkpoint_pauses_and_answer_resumes`: a worker returns `waiting_human` with a `topic_review` id; `step` → `paused_waiting_human`; after `answer_checkpoint`, `step` calls `on_answer`.
   - `test_budget_and_wall_clock_pause`: a worker raising `BudgetExceeded` → `paused_budget`; with a clock 12 h + 1 s after `session_started` → `paused_budget` before any worker call.
   - `test_run_stage_refuses_later_and_plan5_stages`: `run_stage("protocol")` → `stage_unavailable`; `run_stage("topics")` while gaps has not passed → `stage_unavailable`.
@@ -227,11 +229,13 @@ New tables (all `CREATE TABLE IF NOT EXISTS`, all in `PROJECTION_TABLES`):
   6. Fill `year_counts(cluster.query)`.
   7. Add the clusters and return `done`.
 - Gate: at least 1 cluster; every cluster has ≥ 5 items with `ref_status == "pass"`; every cluster item is in `searches(ps, "landscape", attempt)`. Failures name the cluster and the count, e.g. `"cluster 'X': 3 verified sources (need 5)"`.
+- `degrade` (P1): drop the clusters that fail the gate (event `stage.degraded`); `done` if ≥ 1 cluster remains, else `failed("no cluster with 5 verified sources")`.
 
 - [ ] **Step 1: Failing tests:**
   - `test_landscape_builds_clusters_from_logged_searches`: with `ScriptedExecutor` + `FakeSources`, 2 clusters are stored, and every query was searched on 2 sources and logged.
   - `test_cluster_items_outside_the_search_are_dropped`: an invented id in the plan is not stored.
   - `test_gate_needs_five_verified_per_cluster`: 4 pass + 1 mismatch fails with the named message; 5 pass passes.
+  - `test_p1_degrade_drops_weak_clusters`: two clusters, one with 3 verified sources; `degrade` removes it (`stage.degraded` names it) and the gate then passes; with no cluster left → `failed`.
 - [ ] **Step 2–4:** FAIL, implement, PASS (file and full suite).
 - [ ] **Step 5: Commit** `feat(discovery): landscape stage`
 
@@ -255,6 +259,7 @@ New tables (all `CREATE TABLE IF NOT EXISTS`, all in `PROJECTION_TABLES`):
   - The kernel counts studies per cell. For each empty cell it runs the targeted search (purpose `gap_check`); `triage` returns `CellMatchOut(matches: list[item_id])`.
   - Verified when the search ran and matched nothing.
 - Gate (`GapsWorker.gate`): ≥ 1 verified gap in the latest attempt.
+- `degrade` (P1): nothing can be narrowed into a verified gap → `failed("no verified gap within the searched scope")`.
 
 - [ ] **Step 1: Failing tests:**
   - `test_unverbatim_limitation_quote_is_not_verified` (Review Focus 2): the gap is stored with `verified = false` and `checks["quote_note"] == "fail"`.
@@ -263,6 +268,7 @@ New tables (all `CREATE TABLE IF NOT EXISTS`, all in `PROJECTION_TABLES`):
   - `test_retracted_cited_after_retraction_is_a_gap`: a citation from before the retraction year does not count.
   - `test_empty_cell_needs_a_targeted_search_with_no_match`: one empty cell is confirmed; a second gets a triage match and is not a gap.
   - `test_gaps_gate_needs_one_verified`.
+  - `test_gaps_degrade_fails_with_reason` (P1).
 - [ ] **Step 2–4:** FAIL, implement, PASS.
 - [ ] **Step 5: Commit** `feat(discovery): limitation, retraction and evidence-map gap miners`
 
@@ -310,6 +316,7 @@ New tables (all `CREATE TABLE IF NOT EXISTS`, all in `PROJECTION_TABLES`):
   - `{"decision": "approve", "topic_id"}` → approved, `done`;
   - `{"decision": "revise", "target": "topics" | "gaps", "comment"}` → `rerun` (guidance = comment) or `back_edge(to="gaps")`; the comment is also recorded with `add_round`;
   - `{"decision": "reject"}` → `rerun`.
+- `degrade` (P1, edge limit used up): drop the topics you rejected or asked to revise; if any remain, open a new `topic_review` with them (`waiting_human`: the review is human in every mode); else `failed("no topics left")`.
 - Gate:
   - one approved topic in the latest attempt;
   - D2: ≥ `topics_n` candidates, each with ≥ 1 verified gap and 5 closest works (fewer only when the searches returned fewer, recorded);
@@ -319,7 +326,8 @@ New tables (all `CREATE TABLE IF NOT EXISTS`, all in `PROJECTION_TABLES`):
   - `test_topics_drop_unverified_gap_ids` (Review Focus 2).
   - `test_topics_open_topic_review_in_auto_mode_too`: with `production_mode = "auto"` the worker still returns `waiting_human` with `topic_review`.
   - `test_approve_passes_gate_and_revise_reruns`.
-  - `test_third_revise_opens_stage_blocked` (Review Focus 3, through `Orchestrator.step`).
+  - `test_third_revise_opens_stage_blocked` (Review Focus 3, through `Orchestrator.step`, P2).
+  - `test_p1_degrade_reopens_review_without_rejected_topics`: in P1, after the limit, `degrade` opens a new `topic_review` with only the topics you did not reject or ask to revise, and `stage.degraded` lists the removed ids.
   - `test_novelty_without_s2_uses_two_other_sources` (Review Focus 5): `sources_used == ["openalex", "europepmc"]`; `note` says reference only; no field reads "novel".
   - `test_d2_gate_needs_topics_n_candidates`: 5 of 6 → fail naming "5 of 6 topics".
 - [ ] **Step 2–4:** FAIL, implement, PASS.
@@ -353,12 +361,14 @@ New tables (all `CREATE TABLE IF NOT EXISTS`, all in `PROJECTION_TABLES`):
   - `not_found_in_scope`: D1, or D2 with P2 → `rq_approval` checkpoint (the prompt renders the three-step sentence and the hypotheses); D2 with P1 → `freeze_rq(adopted_by="agent")` → `done`.
 - `on_answer(rq_approval)`: `{"decision": "approve"}` → `freeze_rq(adopted_by="human")` → `done`; `{"decision": "revise", "comment"}` → `rerun`.
 - Gate: a frozen RQ in the latest attempt whose `already_done.result` is `not_found_in_scope` or which you sent on with `proceed`, plus ≥ 2 hypotheses.
+- `degrade` (P1, after `question → topics` is used up): the ideator rewrites the RQ narrower and weaker (inputs: the RQ and the works judged as answering it). Then the structural check and the already-done check run again. `not_found_in_scope` → freeze with `adopted_by="agent"`; anything else → `failed("RQ could not be narrowed past prior work")`. Writes `stage.degraded`.
 
 - [ ] **Step 1: Failing tests:**
   - `test_structural_failures_are_named`: one consequence and one hypothesis → both failures listed and `rerun`.
   - `test_already_done_by_both_vendors_backs_to_topics_in_d2`.
   - `test_split_in_collab_opens_significance_novelty`; `test_split_in_auto_is_treated_as_done`.
   - `test_single_judge_vendor_never_clears_already_done` (Review Focus 4).
+  - `test_p1_degrade_narrows_the_rq_once_then_fails`: `degrade` asks the ideator for a narrower RQ (inputs contain the prior works judged as answering); if the new already-done result is again not `not_found_in_scope`, the outcome is `failed`.
   - `test_unverbatim_judge_quote_is_invalid`.
   - `test_d2_auto_freezes_with_agent_adoption`: `adopted_by == "agent"` and the hash is in the event log.
   - `test_d1_always_asks_rq_approval`: with `production_mode = "auto"` and `discovery_mode = "d1"` → `rq_approval`.
