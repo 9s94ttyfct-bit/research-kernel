@@ -42,10 +42,11 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-def attachment_filename(item: Item) -> str:
+def attachment_filename(item: Item, sha256: str) -> str:
+    """Readable, filesystem-safe name; the short content hash keeps different PDFs of one item apart."""
     first = item.creators[0].family if item.creators else "Anon"
     short = re.sub(r"\s+", " ", re.sub(r"[^\w\s-]", "", item.title)).strip()[:60].rstrip()
-    name = f"{first} {item.year or 'n.d.'} - {short}.pdf"
+    name = f"{first} {item.year or 'n.d.'} - {short} [{sha256[:8]}].pdf"
     return re.sub(r"[/\\:]", "-", name)
 
 
@@ -64,7 +65,7 @@ def _record_snapshot(ps: ProjectStore, item_id: str, raw: bytes, layer: TextLaye
 def _attach(ps: ProjectStore, item: Item, raw: bytes, origin: AttachOrigin, actor: str,
             actor_kind: Literal["human", "agent"], access_note: str | None = None) -> str:
     sha = ps.blobs.put(raw)
-    fname = attachment_filename(item)
+    fname = attachment_filename(item, sha)
     dest = ps.files_dir / item.id / fname
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(ps.blobs.path(sha), dest)
@@ -159,9 +160,10 @@ def _snapshot_created(conn: sqlite3.Connection, ev: Event) -> None:
         (p["sha256"], ev.entity_id, p["kind"], p["url"], p["fetched_at"], p["page_count"], ev.seq),
     )
     layer_path = _project_root(conn) / "text" / f"{p['sha256']}.json"
-    if layer_path.exists():
-        text = " ".join(pg["text"] for pg in json.loads(layer_path.read_text(encoding="utf-8"))["pages"])
-        fts_append(conn, ev.entity_id, "fulltext", text)
+    if not layer_path.exists():  # silently skipping would drop the item's full text from search after a rebuild
+        raise FileNotFoundError(f"text layer for snapshot {p['sha256']} is missing: {layer_path}")
+    text = " ".join(pg["text"] for pg in json.loads(layer_path.read_text(encoding="utf-8"))["pages"])
+    fts_append(conn, ev.entity_id, "fulltext", text)
 
 
 @projection("attachment.added")

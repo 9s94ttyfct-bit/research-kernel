@@ -32,6 +32,20 @@ def _project(k: Kernel, slug: str):
         raise ToolError("not_found", str(e), status=404) from e
 
 
+def _collection(lib, name_or_id: str | None) -> str | None:
+    """Resolve a collection name or id; unknown collections are an error, never 'the whole library'."""
+    if not name_or_id:
+        return None
+    if name_or_id.startswith("col_"):
+        known = {c["id"] for c in lib.collections()}
+        col = name_or_id if name_or_id in known else None
+    else:
+        col = lib.collection_by_name(name_or_id)
+    if col is None:
+        raise ToolError("not_found", f"no collection {name_or_id}", status=404)
+    return col
+
+
 class Empty(BaseModel):
     pass
 
@@ -47,9 +61,9 @@ class ProjectArg(BaseModel):
 def build_registry(k: Kernel) -> ToolRegistry:
     reg = ToolRegistry(k.home / "kernel.sqlite")
 
-    def tool(name: str, summary: str, inp: type[BaseModel], writes: bool):
+    def tool(name: str, summary: str, inp: type[BaseModel], writes: bool, roles: frozenset[str] = ROLES):
         def deco(fn):
-            reg.register(Tool(name=name, summary=summary, input_model=inp, output_model=Out, roles=ROLES,
+            reg.register(Tool(name=name, summary=summary, input_model=inp, output_model=Out, roles=roles,
                               writes=writes, handler=fn))
             return fn
         return deco
@@ -269,11 +283,7 @@ def build_registry(k: Kernel) -> ToolRegistry:
     @tool("rk_library_list", "List library items (optionally one collection, by name or id).", ListArgs, False)
     def _llist(ctx: CallContext, a: ListArgs) -> Out:
         _, lib = _project(k, a.project)
-        col = None
-        if a.collection:
-            col = a.collection if a.collection.startswith("col_") else lib.collection_by_name(a.collection)
-            if col is None:
-                raise ToolError("not_found", f"no collection {a.collection}", status=404)
+        col = _collection(lib, a.collection)
         return Out(items=[i.model_dump(mode="json") for i in lib.list(col)], collections=lib.collections())
 
     class LSearch(BaseModel):
@@ -335,9 +345,7 @@ def build_registry(k: Kernel) -> ToolRegistry:
     @tool("rk_library_export", "Export the library (or a collection) as BibTeX, RIS or CSL-JSON.", ExportArgs, False)
     def _export(ctx: CallContext, a: ExportArgs) -> Out:
         _, lib = _project(k, a.project)
-        col = None
-        if a.collection:
-            col = a.collection if a.collection.startswith("col_") else lib.collection_by_name(a.collection)
+        col = _collection(lib, a.collection)
         return Out(text=FORMATS[a.format][0](lib.list(col)))
 
     class AttachArgs(BaseModel):
@@ -345,7 +353,9 @@ def build_registry(k: Kernel) -> ToolRegistry:
         source_id: str
         path: str
 
-    @tool("rk_library_attach", "Attach a local PDF to an item (builds its text layer).", AttachArgs, True)
+    # CLI only: the path is read on the server host, so agents must not be able to point it at arbitrary files.
+    @tool("rk_library_attach", "Attach a local PDF to an item (builds its text layer).", AttachArgs, True,
+          roles=frozenset({"cli"}))
     def _attach(ctx: CallContext, a: AttachArgs) -> Out:
         ps, lib = _project(k, a.project)
         try:

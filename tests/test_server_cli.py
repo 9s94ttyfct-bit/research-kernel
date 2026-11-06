@@ -1,3 +1,4 @@
+import os
 import threading
 import time
 
@@ -34,14 +35,17 @@ def test_serve_lock(tmp_home):
     rt = acquire_serve_lock(tmp_home)
     try:
         assert oct((tmp_home / "serve.token").stat().st_mode & 0o777) == "0o600"
-        (tmp_home / "serve.lock").write_text("1")  # pid 1 (launchd) is alive -> a second server must refuse
-        with pytest.raises(AlreadyRunning):
+        with pytest.raises(AlreadyRunning) as ei:  # lock is held -> a second server must refuse
             acquire_serve_lock(tmp_home)
-        (tmp_home / "serve.lock").write_text("999999")  # stale pid -> taken over
-        rt2 = acquire_serve_lock(tmp_home)
-        release(rt2)
+        assert ei.value.pid == os.getpid()
     finally:
         release(rt)
+    assert not (tmp_home / "serve.port").exists()
+    (tmp_home / "serve.lock").write_text("1")  # leftover pid of a dead/other process does not matter
+    rt2 = acquire_serve_lock(tmp_home)
+    (tmp_home / "serve.port").write_text("1")  # a newer server took over the port file
+    release(rt2)
+    assert (tmp_home / "serve.port").read_text() == "1"
 
 
 @pytest.fixture

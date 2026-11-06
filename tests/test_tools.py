@@ -37,6 +37,21 @@ def test_registry_permission_and_idempotency(reg):
         reg.call("rk_project_create", {"slug": "p1", "title": "T"}, cli("k2"))  # exists
 
 
+def test_slug_traversal_unknown_collection_and_attach_role(reg, tmp_path):
+    for bad in ("../outside", "/abs", "UP"):
+        with pytest.raises(ToolError) as ei:
+            reg.call("rk_library_list", {"project": bad}, cli())
+        assert ei.value.type == "not_found"
+    reg.call("rk_project_create", {"slug": "p2", "title": "T"}, cli("c"))
+    for col in ("No Such Collection", "col_doesnotexist"):
+        with pytest.raises(ToolError) as ei:
+            reg.call("rk_library_export", {"project": "p2", "format": "bibtex", "collection": col}, cli())
+        assert ei.value.type == "not_found"
+    with pytest.raises(PermissionDenied):
+        reg.call("rk_library_attach", {"project": "p2", "source_id": "src_x", "path": "/etc/hosts"},
+                 CallContext(role="lead", actor="agent", idempotency_key="k"))
+
+
 def test_end_to_end_tools_offline(reg):
     reg.call("rk_project_create", {"slug": "smoke", "title": "Smoke"}, cli("c"))
     wake = reg.call("rk_source_add", {"project": "smoke", "identifier": "10.1016/S0140-6736(97)11096-0"}, cli("a1"))

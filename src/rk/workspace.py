@@ -56,19 +56,21 @@ class Kernel:
                        actor: str) -> ProjectStore:
         if not SLUG_RE.match(slug):
             raise ValueError("slug must be 2-63 chars of lowercase letters, digits and dashes")
-        if (self.project_dir(slug) / "rk.sqlite").exists():
-            raise FileExistsError(f"project exists: {slug}")
-        pid = new_id("prj")
-        ps = ProjectStore(self.project_dir(slug), pid)
-        ps.apply(NewEvent(type="project.created", entity_id=pid, actor_kind="human", actor=actor,
-                          payload={"slug": slug, "title": title, "field": field, "paper_type": paper_type}))
-        lib = Library(ps)
-        lib.ensure_default_collections(actor="kernel")
-        with self._lock:
+        with self._lock:  # exists-check and creation must not interleave with another create of the same slug
+            if (self.project_dir(slug) / "rk.sqlite").exists():
+                raise FileExistsError(f"project exists: {slug}")
+            pid = new_id("prj")
+            ps = ProjectStore(self.project_dir(slug), pid)
+            ps.apply(NewEvent(type="project.created", entity_id=pid, actor_kind="human", actor=actor,
+                              payload={"slug": slug, "title": title, "field": field, "paper_type": paper_type}))
+            lib = Library(ps)
+            lib.ensure_default_collections(actor="kernel")
             self._open[slug] = (ps, lib)
         return ps
 
     def project(self, slug: str) -> tuple[ProjectStore, Library]:
+        if not SLUG_RE.match(slug):  # slugs become directory names: never let '../x' or '/abs' through
+            raise LookupError(f"invalid project slug: {slug!r}")
         with self._lock:
             if slug in self._open:
                 return self._open[slug]

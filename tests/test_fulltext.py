@@ -64,7 +64,7 @@ def test_pdf_fallback_creates_attachment(ps, lib, tmp_path):
     r = fetch_fulltext(ps, lib, ctx, iid, actor="t")
     assert r.kind == "pdf" and r.page_count == 2
     files = list((ps.files_dir / iid).iterdir())
-    assert [f.name for f in files] == ["Li 2021 - Copper catalysts.pdf"]
+    assert [f.name for f in files] == [f"Li 2021 - Copper catalysts [{r.snapshot_sha[:8]}].pdf"]
     att = ps.db.execute("SELECT origin, sha256 FROM attachments WHERE item_id=?", (iid,)).fetchone()
     assert att["origin"] == "oa_api" and att["sha256"] == r.snapshot_sha
 
@@ -98,3 +98,23 @@ def test_user_attach_pdf_and_rebuild(ps, lib):
     assert lib.search("catalysts") == before
     with pytest.raises(ValueError):
         attach_pdf(ps, lib, iid, DOCS / "hidden.html", origin="user_upload", actor="u")
+
+
+def test_two_pdfs_of_one_item_keep_separate_files(ps, lib):
+    iid = lib.add_item(ItemIn(title="Same item", year=2020, creators=[Creator(family="Wu")]), added_by="human",
+                       actor="u").item_id
+    attach_pdf(ps, lib, iid, DOCS / "two_pages.pdf", origin="user_upload", actor="u")
+    attach_pdf(ps, lib, iid, DOCS / "hyphen.pdf", origin="user_upload", actor="u")
+    rows = ps.db.execute("SELECT filename, sha256 FROM attachments WHERE item_id=?", (iid,)).fetchall()
+    assert len({r["filename"] for r in rows}) == 2
+    for r in rows:
+        assert (ps.files_dir / iid / r["filename"]).read_bytes() == ps.blobs.path(r["sha256"]).read_bytes()
+
+
+def test_rebuild_fails_loudly_when_text_layer_missing(ps, lib):
+    iid = lib.add_item(ItemIn(title="Gone", year=2020), added_by="human", actor="u").item_id
+    r = attach_pdf(ps, lib, iid, DOCS / "two_pages.pdf", origin="user_upload", actor="u")
+    (ps.text_dir / f"{r.snapshot_sha}.json").unlink()
+    with pytest.raises(FileNotFoundError):
+        rebuild(ps.db)
+    assert lib.search("catalysts")[0].item_id == iid  # failed rebuild rolled back; old projections intact

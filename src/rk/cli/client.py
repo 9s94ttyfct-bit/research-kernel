@@ -79,8 +79,8 @@ def ensure_server(home: Path, timeout_s: float = 20.0) -> RkClient:
     (home / "logs").mkdir(exist_ok=True)
     log = open(home / "logs" / "serve.log", "ab")  # noqa: SIM115 - handed to the child process
     env = {**os.environ, "RK_HOME": str(home)}
-    for stale in ("serve.port",):
-        (home / stale).unlink(missing_ok=True)
+    # A stale serve.port (crashed server) is left in place: the new server replaces it atomically once bound,
+    # and deleting it here could remove the port file of a server another client just started.
     subprocess.Popen([sys.executable, "-m", "rk.cli.main", "serve"], stdout=log, stderr=log, stdin=subprocess.DEVNULL,
                      env=env, start_new_session=True)
     deadline = time.monotonic() + timeout_s
