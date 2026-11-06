@@ -105,7 +105,7 @@
 | `claude -p` 的用法 | 必须用非 `--bare` 模式，否则不读 OAuth 凭据；官方计划把 `--bare` 设为默认值，所以要固定 CLI 版本。用 `--strict-mcp-config --mcp-config`、`--allowedTools`、干净的工作目录来隔离 | 尽调 C14 |
 | `codex exec` | 用 `--output-schema`、`--json`、`--sandbox read-only`、`--ephemeral`；当前是 alpha 版，flag 可能变化 | 尽调 C15 |
 | Ollama Cloud | **不强制 JSON schema**，结果要先解析、再用 Pydantic 校验，失败就重试；本地模型支持 `format` schema | 尽调 C16 |
-| omp auth-gateway（只作可选适配器） | 实测 `omp auth-gateway stdio` 能用本机的 omp 登录调用 `anthropic/claude-haiku-4-5`（200）和 `openai-codex/gpt-5.6-luna`（200，工具调用正常），但同样不保证按 JSON schema 输出。**系统不依赖它**：不装 omp 时整个系统照常工作 | 本机实测 |
+| omp auth-gateway（只作可选适配器） | 实测 `omp auth-gateway stdio` 能用本机的 omp 登录调用 `anthropic/claude-haiku-4-5`（200）和 `openai-codex/gpt-6-luna`（2026-11-05 实测 200，工具调用正常），但同样不保证按 JSON schema 输出。**系统不依赖它**：不装 omp 时整个系统照常工作 | 本机实测 |
 | 浏览器自动化 | Playwright 1.60（Python），使用持久化 profile 的 Chromium，可以有界面运行。Google Scholar 禁止自动化查询，会触发验证码；出版商的许可协议禁止系统性批量下载，下载过多可能导致整个学校的 IP 被封。因此浏览器检索必须保持人类节奏，并设每日上限 | 本机实测（版本）；`[推断]`（站点行为） |
 | 元数据抓取 | Zotero translation-server（Node；Zotero 本体是 AGPL，该仓库的许可证字段 `[待核实]`），不用 Docker 也能 `npm start` 启动，端口 1969，提供 `/web`、`/search`、`/export`、`/import`；本机已有 Node | GitHub README |
 | OpenAlex | 2026 年起免费 key 每天额度 1 美元，不带 key 时同一 IP 共享每天 0.10 美元；按 DOI 单条查询免费，搜索每千次 1 美元；申请 key 需要真实邮箱并点击激活 | 尽调 A1 |
@@ -696,7 +696,7 @@ DeepResearch Bench、DeepFact 的官方分数和 ReportBench 的事实性部分�
 **已确认（2026-11-05 你的答复）：**
 - 仓库私有（GitHub 私有仓库，账号 `9s94ttyfct-bit`）；**只在本仓库设置局部 git 身份** `9s94ttyfct-bit <273716724+9s94ttyfct-bit@users.noreply.github.com>`，不使用全局 `git config` 中的身份。
 - 系统引导你申请 key（§8.8）。
-- 不依赖 omp：omp 只作为可选适配器。**开发测试中需要 LLM 的部分，使用 omp_gateway 适配器调用 `openai-codex/gpt-5.6-luna`**（仅限测试，产品运行时不需要 omp）。
+- 不依赖 omp：omp 只作为可选适配器。**开发测试中需要 LLM 的部分，使用 omp_gateway 适配器调用 `openai-codex/gpt-6-luna`**（仅限测试，产品运行时不需要 omp）。
 - 内置浏览器（§8.5），可以登录图书馆，也可以像人一样检索。
 - 支持度校准只用外部人工标注数据（DeepFactBench、SciFact）。
 - 论文只用英文，交互中英文都可以。
