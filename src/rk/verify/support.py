@@ -1,10 +1,12 @@
-"""V-SUPPORT (spec §9.1): does the linked evidence support the claim?
+"""V-SUPPORT (spec §9.1, rule amended 2026-11-06): does the linked evidence support the claim?
 
-supported      p ≥ τ_hi and ≥ min_judges cross-vendor judges, all "supported" (with verbatim quotes)
-unsupported /  p ≤ τ_lo and ≥ min_judges judges, all "unsupported"/"contradicted"
-contradicted
+supported      ≥ min_judges cross-vendor judges, all "supported" (with verbatim quotes), and p ≥ τ_hi —
+               or p ≥ τ_hi_judged when at least two such judges agree
+unsupported /  ≥ min_judges judges, all "unsupported"/"contradicted", and p ≤ τ_lo —
+contradicted   or p ≤ τ_lo_judged when at least two such judges agree
 uncertain      everything else, including a missing layer 1, missing evidence, or too few eligible judges
 
+τ_hi/τ_lo are calibrated on layer 1 alone; τ_*_judged jointly on layer 1 plus two judges (``rk eval support``).
 V-NUM runs alongside: a number in the claim that its evidence does not contain keeps the claim from "supported".
 """
 
@@ -35,19 +37,30 @@ class SupportResult(BaseModel):
     ungrounded_numbers: list[Num] = []
     tau_hi: float
     tau_lo: float
+    tau_hi_judged: float | None = None
+    tau_lo_judged: float | None = None
     min_judges: int
     reason: str | None = None
 
 
-def combine(p: float | None, opinions: list[JudgeOpinion], *, tau_hi: float, tau_lo: float,
-            min_judges: int) -> Verdict:
+def combine(p: float | None, opinions: list[JudgeOpinion], *, tau_hi: float, tau_lo: float, min_judges: int,
+            tau_hi_judged: float | None = None, tau_lo_judged: float | None = None) -> Verdict:
+    """Spec §9.1 (rule amended 2026-11-06): when at least two valid judges (each from a vendor other than the claim's
+    author, and distinct from each other) agree, layer 1 only has to clear the lower jointly calibrated thresholds
+    ``tau_*_judged``; otherwise the layer-1-only thresholds apply. A judged threshold never makes the rule stricter."""
     valid = [o for o in opinions if o.error is None]
     labels = {o.label for o in valid}
-    if p is None or len(valid) < min_judges:
+    if p is None or not valid or len(valid) < min_judges:
         return "uncertain"
-    if p >= tau_hi and labels == {"supported"}:
+    hi, lo = tau_hi, tau_lo
+    if len(valid) >= 2:
+        if tau_hi_judged is not None:
+            hi = min(tau_hi, tau_hi_judged)
+        if tau_lo_judged is not None:
+            lo = max(tau_lo, tau_lo_judged)
+    if p >= hi and labels == {"supported"}:
         return "supported"
-    if p <= tau_lo and labels and labels <= {"unsupported", "contradicted"}:
+    if p <= lo and labels <= {"unsupported", "contradicted"}:
         return "contradicted" if labels == {"contradicted"} else "unsupported"
     return "uncertain"
 
@@ -71,11 +84,12 @@ def verify_support(kernel, registry, ps, claim_id: str, *, actor: str, layer1=No
                    min_judges: int | None = None) -> SupportResult:
     s = kernel.settings()
     tau_hi, tau_lo = s.support_tau_hi, s.support_tau_lo
+    judged = {"tau_hi_judged": s.support_tau_hi_judged, "tau_lo_judged": s.support_tau_lo_judged}
     k = s.support_min_judges if min_judges is None else min_judges
     svc = ArgumentService(ps)
     claim = svc.get_claim(claim_id)
     texts = evidence_texts(claim)
-    base = {"tau_hi": tau_hi, "tau_lo": tau_lo, "min_judges": k}
+    base = {"tau_hi": tau_hi, "tau_lo": tau_lo, "min_judges": k, **judged}
     if not texts:
         result = SupportResult(verdict="uncertain", p=None, reason="no_evidence", **base)
     else:
@@ -89,7 +103,7 @@ def verify_support(kernel, registry, ps, claim_id: str, *, actor: str, layer1=No
         opinions = run_judges(kernel, registry, project=_slug(ps), claim_text=claim["text"], evidence_text=doc,
                               generator_vendor=claim.get("generator_vendor"), drivers=judge_drivers,
                               providers=judge_providers)
-        verdict = combine(p, opinions, tau_hi=tau_hi, tau_lo=tau_lo, min_judges=k)
+        verdict = combine(p, opinions, tau_hi=tau_hi, tau_lo=tau_lo, min_judges=k, **judged)
         nums = check_numbers(claim["text"], texts)
         if verdict == "supported" and not nums.ok:
             verdict = "uncertain"

@@ -1,9 +1,8 @@
-import json
-
 import pytest
 
 from rk.eval.data import SupportPair
 from rk.eval.metrics import (
+    calibrate_joint,
     calibrate_thresholds,
     confusion,
     layer1_predict,
@@ -43,20 +42,26 @@ def test_calibrate_unreachable_returns_one():
 
 
 class FakeL1:
+    """Layer 1 that cannot separate: every true claim and a quarter of the false ones score 0.6."""
+
     model_id = "fake/minicheck"
 
     def score_batch(self, pairs):
-        return [Layer1Score(p=0.97 if "true" in claim else 0.03, chunk_index=0, n_chunks=1, model="f")
-                for _, claim in pairs]
+        return [Layer1Score(p=0.6 if ("true" in c or "decoy" in c) else 0.05, chunk_index=0, n_chunks=1, model="f")
+                for _, c in pairs]
 
 
 class FakeJudge:
     kind, model, vendor = "chat_api", "f", "openai"
 
+    def __init__(self):
+        self.calls = 0
+
     def available(self):
         return Availability(ok=True)
 
     def run(self, spec, ctx):
+        self.calls += 1
         true = "true" in spec.inputs["claim"]
         v = JudgeVerdict(label="supported" if true else "unsupported", quoted_spans=["Evidence text"] if true else [])
         return TaskResult(spec.task_id, True, v, "", "f", "f", 0.0, None)
@@ -64,22 +69,41 @@ class FakeJudge:
 
 def _loader(split):
     pairs = []
-    for i in range(12):
-        true = i % 3 != 0
-        pairs.append(SupportPair(id=f"{split}{i}", claim=f"claim {chr(97 + i)} is {'true' if true else 'false'}",
-                                 evidence="Evidence text for the claim.", label="supported" if true else "unsupported"))
+    for i in range(40):
+        kind = "true" if i % 2 else ("decoy" if i % 4 == 0 else "false")
+        pairs.append(SupportPair(id=f"{split}{i}", claim=f"claim {chr(65 + i)} is {kind}",
+                                 evidence="Evidence text for the claim.",
+                                 label="supported" if kind == "true" else "unsupported"))
     return pairs
 
 
-def test_eval_support_report_written(tmp_home, tmp_path):
+def test_joint_calibration_report_and_opinion_cache(tmp_home, tmp_path):
     luna = DriverSpec("omp_gateway", "openai-codex/gpt-6-luna")
-    r = run_support_eval(judges=[luna], min_judges=1, limit=6, loader=_loader, layer1=FakeL1(),
-                         providers={str(luna): FakeJudge()}, report_dir=tmp_path / "eval",
-                         score_cache_dir=tmp_path)
-    assert r["calibration"]["hi_reached"] and r["layer1"]["precision_supported"] == 1.0
-    assert r["two_layer"]["sample"] == 6 and r["two_layer"]["precision_supported"] == 1.0
+    sonnet = DriverSpec("omp_gateway", "anthropic/claude-sonnet-5")
+    judge = FakeJudge()
+    args = {"judges": [luna, sonnet], "min_judges": 2, "limit": 20, "calib_limit": 20, "loader": _loader,
+            "layer1": FakeL1(), "providers": {str(luna): judge, str(sonnet): judge}, "report_dir": tmp_path / "eval",
+            "cache_dir": tmp_path, "workers": 1}
+    r = run_support_eval(**args)
+    assert not r["calibration"]["hi_reached"]  # layer 1 alone cannot reach 95% precision here
+    j = r["joint_calibration"]
+    assert j["tau_hi_judged"] == 0.6 and j["tau_lo_judged"] == 0.6 and j["n_agree_supported"] > 0
+    d = r["dev_sample"]
+    assert d["old_rule"]["predicted_supported"] == 0 and d["old_rule"]["coverage"] < 0.5
+    assert d["amended_rule"]["precision_supported"] == 1.0 and d["amended_rule"]["coverage"] == 1.0
     md = (tmp_path / "eval" / f"support-{r['date']}.md").read_text()
-    assert "## Layer 1 only" in md and "## Two layers" in md and "MET" in md and "test configuration" in md
-    assert json.loads((tmp_path / "eval" / f"support-{r['date']}.json").read_text())["two_layer"]["min_judges"] == 1
-    cached = (tmp_path / "scores-dev.jsonl").read_text().splitlines()
-    assert len(cached) == 12  # layer-1 scores are cached for reruns
+    assert "## Joint calibration" in md and "### Amended rule" in md and "### Old rule" in md
+    assert len((tmp_path / "scores-fake_minicheck-dev.jsonl").read_text().splitlines()) == 40
+    calls = judge.calls
+    assert calls == 2 * (20 + 20)
+    run_support_eval(**args)
+    assert judge.calls == calls  # every judge opinion came from the cache
+
+
+def test_calibrate_joint_unreachable_and_empty():
+    rows = [(0.9, ["supported", "supported"], "unsupported"), (0.8, ["supported"], "supported"),
+            (0.1, ["unsupported", "contradicted"], "supported")]
+    j = calibrate_joint(rows, target_precision=0.95)
+    assert j["tau_hi_judged"] is None and j["tau_lo_judged"] is None  # agreement exists but is wrong
+    assert j["n_agree_supported"] == 1 and j["n_agree_negative"] == 1  # single-judge rows never count
+    assert calibrate_joint([], target_precision=0.95)["tau_hi_judged"] is None

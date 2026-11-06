@@ -40,6 +40,10 @@ class Settings(BaseModel):
     # ---- V-SUPPORT (spec §9.1); calibrated values and their record replace the initial thresholds ----
     support_tau_hi: float = 0.85
     support_tau_lo: float = 0.15
+    # Lower layer-1 thresholds used when ≥2 cross-vendor judges agree (joint calibration); None = not calibrated, so
+    # the layer-1-only thresholds above apply in every case.
+    support_tau_hi_judged: float | None = None
+    support_tau_lo_judged: float | None = None
     support_min_judges: int = 2  # spec §8.1: one cross-vendor vote is not enough to pass
     support_model: str = "lytang/MiniCheck-Flan-T5-Large"
     support_calibration: dict | None = None

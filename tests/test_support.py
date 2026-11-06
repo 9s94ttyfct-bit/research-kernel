@@ -47,6 +47,27 @@ def test_failed_judges_do_not_count():
     assert combine(0.95, ops, tau_hi=0.85, tau_lo=0.15, min_judges=2) == "uncertain"
 
 
+@pytest.mark.parametrize(("p", "labels", "k", "expected"), [
+    (0.5, ["supported", "supported"], 2, "supported"),      # two agreeing judges: τ_hi_judged = 0.4 applies
+    (0.3, ["supported", "supported"], 2, "uncertain"),      # still below the judged threshold
+    (0.5, ["supported"], 1, "uncertain"),                   # one judge: layer-1-only τ_hi = 0.85 applies
+    (0.5, ["supported", "partial"], 2, "uncertain"),        # judges disagree: no verdict at any p
+    (0.55, ["unsupported", "contradicted"], 2, "unsupported"),  # τ_lo_judged = 0.6
+    (0.55, ["unsupported"], 1, "uncertain"),
+    (0.7, ["contradicted", "contradicted"], 2, "uncertain"),
+])
+def test_combine_judged_tier(p, labels, k, expected):
+    assert combine(p, [op(lbl) for lbl in labels], tau_hi=0.85, tau_lo=0.15, min_judges=k,
+                   tau_hi_judged=0.4, tau_lo_judged=0.6) == expected
+
+
+def test_judged_thresholds_never_tighten():
+    ops = [op("supported"), op("supported")]
+    assert combine(0.9, ops, tau_hi=0.85, tau_lo=0.15, min_judges=2, tau_hi_judged=0.95) == "supported"
+    neg = [op("unsupported"), op("unsupported")]
+    assert combine(0.1, neg, tau_hi=0.85, tau_lo=0.15, min_judges=2, tau_lo_judged=0.05) == "unsupported"
+
+
 class FakeLayer1:
     def __init__(self, p=None, fail=False):
         self.p, self.fail = p, fail
@@ -111,6 +132,15 @@ def test_supported_end_to_end_with_records(env):
     before = svc.get_claim(cid)
     rebuild(ps.db)
     assert svc.get_claim(cid) == before
+
+
+def test_calibrated_judged_thresholds_apply_in_verify_support(env):
+    k, reg, ps, _, claim = env
+    cid = claim("Copper catalysts are studied for CO2 reduction.", vendor="google")
+    assert verify_support(k, reg, ps, cid, actor="t", layer1=FakeLayer1(0.6), **judges()).verdict == "uncertain"
+    save_settings(Settings(email="rk-fixtures@users.noreply.github.com", support_tau_hi_judged=0.5))
+    r = verify_support(k, reg, ps, cid, actor="t", layer1=FakeLayer1(0.6), **judges())
+    assert r.verdict == "supported" and r.tau_hi_judged == 0.5 and r.tau_hi == 0.85
 
 
 def test_single_judge_never_supported(env):
