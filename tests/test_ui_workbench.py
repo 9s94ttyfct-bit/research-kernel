@@ -153,6 +153,35 @@ def test_ws_pushes_new_events(ui, project, kernel):
     assert {"item.added", "attachment.added"} <= seen
 
 
+def test_library_search_within_collection(ui, project, kernel):
+    _ps, lib = project
+    a = lib.add_item(ItemIn(title="Humidity aging of films A", ids=Ids(doi="10.5555/a")), added_by="human", actor="t").item_id
+    lib.add_item(ItemIn(title="Humidity aging of films B", ids=Ids(doi="10.5555/b")), added_by="human", actor="t")
+    included = lib.collection_by_name("Included")
+    lib.collect(a, included, actor="t")
+    hits = ui.get("/ui/api/library", params={"project": "demo", "q": "humidity"}).json()["result"]["items"]
+    assert len(hits) == 2
+    inside = ui.get("/ui/api/library", params={"project": "demo", "q": "humidity", "collection": included}).json()
+    assert [i["id"] for i in inside["result"]["items"]] == [a]
+
+
+def test_setup_check_routes(ui, project, monkeypatch):
+    monkeypatch.setattr("rk.ui.api.check_providers", lambda s: {
+        "claude_cli": {"roles": ["lead"], "ok": False, "reason": "not logged in", "hint": "run `claude`"}})
+    prov = post(ui, "/ui/api/setup/check/providers").json()["result"]
+    assert prov["claude_cli"]["hint"] == "run `claude`"
+    caps = post(ui, "/ui/api/setup/check/capabilities").json()["result"]["capabilities"]
+    assert {"area": "full text", "name": "built-in browser",
+            "status": "not running (start rk serve without --no-browser)"} in caps
+    lib = post(ui, "/ui/api/setup/check/library", {"doi": "10.5555/x"}).json()["result"]
+    assert lib["status"] == "failed" and "browser_unavailable" in lib["detail"]
+    assert post(ui, "/ui/api/setup/check/nope").status_code == 404
+
+
+def test_open_portal_needs_browser_and_portal(ui, project):
+    assert post(ui, "/ui/api/browser/open-portal").status_code == 503  # no browser in this server
+
+
 def test_ws_pushes_checkpoint_updates(ui, project):
     ps, _ = project
     with ui.websocket_connect("/ui/ws?project=demo", headers=W) as ws:

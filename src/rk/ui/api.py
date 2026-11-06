@@ -23,6 +23,14 @@ from fastapi.responses import (
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from rk.checkpoints import get_checkpoint, list_checkpoints
+from rk.cli.setup import (
+    capabilities,
+    check_crossref,
+    check_openalex,
+    check_providers,
+    check_s2,
+    library_fetch_test,
+)
 from rk.config import check_library_proxy, load_settings, save_settings
 from rk.tools.registry import CallContext, PermissionDenied, ToolError
 from rk.ui.auth import COOKIE, UiAuth
@@ -210,16 +218,15 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
     def library(request: Request, collection: str | None = None, q: str | None = None) -> JSONResponse:
         ctx_dep(request)
         ps, lib = project(request.query_params.get("project", ""))
-        if q:
-            ids = [h.item_id for h in lib.search(q, 100)]
-            items = [lib.get(i) for i in ids]
-        else:
-            col = None
-            if collection:
-                col = collection if collection.startswith("col_") else lib.collection_by_name(collection)
-                if col is None:
-                    raise HTTPException(status_code=404, detail=f"no collection {collection}")
-            items = lib.list(col)
+        col = None
+        if collection:
+            col = collection if collection.startswith("col_") else lib.collection_by_name(collection)
+            if col is None:
+                raise HTTPException(status_code=404, detail=f"no collection {collection}")
+        items = lib.list(col)
+        if q:  # full-text search, kept in rank order, within the chosen collection
+            members = {i.id: i for i in items}
+            items = [members[h.item_id] for h in lib.search(q, 200) if h.item_id in members]
         return ok({"items": [{**i.model_dump(mode="json"), "badges": badges(ps, lib, i)} for i in items],
                    "collections": lib.collections()})
 
@@ -344,6 +351,50 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
         changes = patch.model_dump(exclude_unset=True)
         save_settings(load_settings().model_copy(update=changes))
         return ok({"saved": sorted(changes)})
+
+    @r.post("/ui/api/setup/check/{step}")
+    async def setup_check(step: str, request: Request) -> JSONResponse:
+        """The checks of `rk setup` (spec §8.8), run from the settings page."""
+        ctx = ctx_dep(request)
+        body = await request.json() if (await request.body()) else {}
+        s = load_settings()
+        if step == "email":
+            okay = await run_in_threadpool(check_crossref, kernel.http, str(body.get("email") or s.email or ""))
+            return ok({"status": "available (polite pool)" if okay else "check failed"})
+        if step == "openalex":
+            info = await run_in_threadpool(check_openalex, kernel.http, str(body.get("key") or s.openalex_key or ""))
+            return ok({"status": f"available (daily budget remaining {info['remaining']})" if info else "key rejected"})
+        if step == "s2":
+            okay = await run_in_threadpool(check_s2, kernel.http, str(body.get("key") or s.s2_key or ""))
+            return ok({"status": "available" if okay else "key rejected or missing"})
+        if step == "providers":
+            return ok(await run_in_threadpool(check_providers, s))
+        if step == "capabilities":
+            svc = browser()
+            providers = await run_in_threadpool(check_providers, s)
+            return ok({"capabilities": capabilities(s, browser_running=bool(svc and svc.running),
+                                                    providers=providers)})
+        if step == "library":
+            def as_call(name: str, args: dict, *, write: bool = False) -> dict:
+                return call(name, args, ctx)
+
+            doi = str(body.get("doi") or "").strip()
+            if not doi:
+                raise HTTPException(status_code=422, detail="give the DOI of a paywalled article to test")
+            return ok(await run_in_threadpool(library_fetch_test, as_call, doi))
+        raise HTTPException(status_code=404, detail=f"no setup step {step}")
+
+    @r.post("/ui/api/browser/open-portal")
+    def open_portal(request: Request) -> JSONResponse:
+        """Open your library's start page (from Settings) in a browser tab of yours, for signing in."""
+        ctx_dep(request)
+        svc = browser()
+        if svc is None or not svc.running:
+            raise HTTPException(status_code=503, detail="the built-in browser is not running")
+        portal = load_settings().library_portal_url
+        if not portal:
+            raise HTTPException(status_code=422, detail="set the library start page first")
+        return ok({"tab": svc.session.new_tab(None, portal).id})
 
     @r.get("/ui/api/browser/status")
     def browser_status(request: Request) -> JSONResponse:
