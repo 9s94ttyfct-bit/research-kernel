@@ -75,6 +75,18 @@ class Settings(BaseModel):
         return self.browser_headless or os.environ.get("RK_BROWSER_HEADLESS") == "1"
 
 
+def check_library_proxy(value: str | None) -> str | None:
+    """A library proxy template must be https and contain ``{url}`` (raw, EZproxy) or ``{url_enc}`` (encoded,
+    OpenAthens redirector)."""
+    if not value:
+        return None
+    v = value.strip()
+    if not v.startswith("https://") or ("{url}" not in v and "{url_enc}" not in v):
+        raise ValueError("the library proxy must be an https URL containing {url} or {url_enc}, e.g. "
+                         "https://login.ezproxy.example.edu/login?url={url}")
+    return v
+
+
 def api_key(s: Settings, provider: Literal["anthropic", "openai", "ollama"]) -> str | None:
     """Key from config.toml, else from the environment. Resolved at use time so an environment key is never
     written back into config.toml by a load/save cycle."""

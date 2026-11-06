@@ -155,6 +155,6 @@ def create_app(registry: ToolRegistry, token: str, *, actor: str = "cli:user",
     if ui is not None:
         from rk.ui.api import ui_router
 
-        app.include_router(ui_router(ui))
+        app.include_router(ui_router(ui, kernel=kernel, registry=registry, chats=chats, browser=browser))
         app.mount("/ui", StaticFiles(directory=STATIC, html=True), name="ui")
     return app
