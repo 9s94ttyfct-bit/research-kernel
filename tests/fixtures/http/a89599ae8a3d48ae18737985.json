@@ -1,0 +1,28 @@
+{
+ "method": "GET",
+ "url": "https://api.crossref.org/works",
+ "params": [
+  [
+   "filter",
+   "update-type:correction"
+  ],
+  [
+   "mailto",
+   "rk-fixtures@users.noreply.github.com"
+  ],
+  [
+   "rows",
+   "1"
+  ],
+  [
+   "select",
+   "DOI,update-to"
+  ]
+ ],
+ "status": 200,
+ "headers": {
+  "content-type": "application/json"
+ },
+ "body": "{\"status\":\"ok\",\"message-type\":\"work-list\",\"message-version\":\"1.0.0\",\"message\":{\"facets\":{},\"total-results\":217806,\"items\":[{\"DOI\":\"10.1088\\/1361-6595\\/ab245f\",\"update-to\":[{\"DOI\":\"10.1088\\/1361-6595\\/aaebdb\",\"type\":\"correction\",\"label\":\"Correction\",\"source\":\"publisher\",\"updated\":{\"date-parts\":[[2019,7,11]],\"date-time\":\"2019-07-11T00:00:00Z\",\"timestamp\":1562803200000}}]}],\"items-per-page\":1,\"query\":{\"start-index\":0,\"search-terms\":null}}}",
+ "encoding": "text"
+}

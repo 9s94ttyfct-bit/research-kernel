@@ -1,0 +1,13 @@
+{
+ "method": "GET",
+ "url": "https://api.openalex.org/works/https://doi.org/10.9999/rk-does-not-exist-2026",
+ "params": [],
+ "status": 404,
+ "headers": {
+  "content-type": "text/html; charset=utf-8",
+  "x-ratelimit-remaining": "1000",
+  "x-ratelimit-reset": "85725"
+ },
+ "body": "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n",
+ "encoding": "text"
+}

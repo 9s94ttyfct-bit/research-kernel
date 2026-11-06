@@ -1,0 +1,16 @@
+{
+ "method": "GET",
+ "url": "https://api.crossref.org/works/10.9999/rk-does-not-exist-2026",
+ "params": [
+  [
+   "mailto",
+   "rk-fixtures@users.noreply.github.com"
+  ]
+ ],
+ "status": 404,
+ "headers": {
+  "content-type": "text/plain"
+ },
+ "body": "Resource not found.",
+ "encoding": "text"
+}

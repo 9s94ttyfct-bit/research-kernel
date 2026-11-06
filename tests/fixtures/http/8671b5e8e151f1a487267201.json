@@ -1,0 +1,28 @@
+{
+ "method": "GET",
+ "url": "https://api.crossref.org/works",
+ "params": [
+  [
+   "filter",
+   "update-type:expression_of_concern"
+  ],
+  [
+   "mailto",
+   "rk-fixtures@users.noreply.github.com"
+  ],
+  [
+   "rows",
+   "1"
+  ],
+  [
+   "select",
+   "DOI,update-to"
+  ]
+ ],
+ "status": 200,
+ "headers": {
+  "content-type": "application/json"
+ },
+ "body": "{\"status\":\"ok\",\"message-type\":\"work-list\",\"message-version\":\"1.0.0\",\"message\":{\"facets\":{},\"total-results\":4444,\"items\":[{\"DOI\":\"10.1016\\/j.lungcan.2026.109332\",\"update-to\":[{\"DOI\":\"10.1016\\/j.lungcan.2003.10.006\",\"type\":\"expression_of_concern\",\"label\":\"Expression of concern\",\"source\":\"publisher\",\"updated\":{\"date-parts\":[[2026,5,1]],\"date-time\":\"2026-05-01T00:00:00Z\",\"timestamp\":1777593600000}}]}],\"items-per-page\":1,\"query\":{\"start-index\":0,\"search-terms\":null}}}",
+ "encoding": "text"
+}

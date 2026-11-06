@@ -1,0 +1,98 @@
+"""Identifier resolution and multi-source search."""
+
+from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict
+
+from rk.config import Settings
+from rk.library.models import Ids, ItemIn
+from rk.net.http import HttpClient
+from rk.sources import arxiv, biorxiv, crossref, europepmc, openalex, pubmed, s2
+from rk.sources.crossref import CrossrefWork, Update
+from rk.sources.identifiers import Identifier
+from rk.sources.openalex import OpenAlexWork
+
+SearchSource = Literal["openalex", "europepmc", "pubmed", "arxiv", "s2"]
+
+
+class SourceContext(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    http: HttpClient
+    settings: Settings
+
+
+class ResolvedWork(BaseModel):
+    item: ItemIn
+    retraction_updates: list[Update] = []
+    openalex: OpenAlexWork | None = None
+    crossref: CrossrefWork | None = None
+    sources_used: list[str] = []
+
+
+def _merge(base: ItemIn, other: ItemIn) -> ItemIn:
+    ids = {**{k: v for k, v in other.ids.model_dump().items() if v}, **{k: v for k, v in base.ids.model_dump().items() if v}}
+    upd = {
+        "ids": Ids(**ids),
+        "oa_urls": base.oa_urls + [u for u in other.oa_urls if u not in base.oa_urls],
+        "abstract": base.abstract or other.abstract,
+        "venue": base.venue or other.venue,
+        "year": base.year or other.year,
+        "creators": base.creators or other.creators,
+    }
+    return base.model_copy(update=upd)
+
+
+def resolve(ctx: SourceContext, ident: Identifier) -> ResolvedWork | None:
+    http, st = ctx.http, ctx.settings
+    key = st.openalex_key
+    if ident.kind == "doi":
+        cr = crossref.get_work(http, ident.value, st.email)
+        oa = openalex.get_work(http, ident, key)
+        used = [n for n, v in (("crossref", cr), ("openalex", oa)) if v]
+        if cr is None and oa is None:
+            if ident.value.startswith("10.1101/") and (bx := biorxiv.details(http, ident.value)):
+                return ResolvedWork(item=bx, sources_used=["biorxiv"])
+            return None
+        item = cr.item if cr else oa.item
+        if cr and oa:
+            item = _merge(cr.item, oa.item)
+        return ResolvedWork(item=item, retraction_updates=cr.updates if cr else [], openalex=oa, crossref=cr,
+                            sources_used=used)
+    if ident.kind in ("pmid", "pmcid", "openalex"):
+        oa = openalex.get_work(http, ident, key)
+        if oa:
+            cr = crossref.get_work(http, oa.item.ids.doi, st.email) if oa.item.ids.doi else None
+            item = _merge(cr.item, oa.item) if cr else oa.item
+            return ResolvedWork(item=item, retraction_updates=cr.updates if cr else [], openalex=oa, crossref=cr,
+                                sources_used=["openalex"] + (["crossref"] if cr else []))
+        if ident.kind == "pmid":
+            items = pubmed.esummary(http, [ident.value])
+            return ResolvedWork(item=items[0], sources_used=["pubmed"]) if items else None
+        return None
+    if ident.kind == "arxiv":
+        items = arxiv.query(http, id_list=[ident.value], max_results=1)
+        if not items:
+            return None
+        item = items[0]
+        oa = openalex.get_work(http, Identifier(kind="doi", value=f"10.48550/arxiv.{ident.value}"), key)
+        if oa:
+            item = _merge(item, oa.item)
+        return ResolvedWork(item=item, openalex=oa, sources_used=["arxiv"] + (["openalex"] if oa else []))
+    return None
+
+
+def search(ctx: SourceContext, query: str, source: SearchSource, limit: int = 25) -> list[ItemIn]:
+    http, st = ctx.http, ctx.settings
+    if source == "openalex":
+        return openalex.search(http, query, api_key=st.openalex_key, per_page=limit)
+    if source == "europepmc":
+        return europepmc.search(http, query, page_size=limit)
+    if source == "pubmed":
+        return pubmed.esummary(http, pubmed.esearch(http, query, retmax=limit))
+    if source == "arxiv":
+        return arxiv.query(http, search_query=f"all:{query}", max_results=limit)
+    if source == "s2":
+        return s2.search(http, query, api_key=st.s2_key, limit=limit)
+    raise ValueError(f"unknown source {source}")

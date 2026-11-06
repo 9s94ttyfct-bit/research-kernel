@@ -1,0 +1,29 @@
+{
+ "method": "GET",
+ "url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
+ "params": [
+  [
+   "db",
+   "pubmed"
+  ],
+  [
+   "retmax",
+   "3"
+  ],
+  [
+   "retmode",
+   "json"
+  ],
+  [
+   "term",
+   "quotation accuracy medical journal meta-analysis"
+  ]
+ ],
+ "status": 200,
+ "headers": {
+  "content-type": "application/json; charset=UTF-8",
+  "x-ratelimit-remaining": "2"
+ },
+ "body": "{\"header\":{\"type\":\"esearch\",\"version\":\"0.3\"},\"esearchresult\":{\"count\":\"2\",\"retmax\":\"2\",\"retstart\":\"0\",\"idlist\":[\"40696441\",\"26528420\"],\"translationset\":[{\"from\":\"quotation\",\"to\":\"\\\"quotation\\\"[All Fields] OR \\\"quotational\\\"[All Fields] OR \\\"quotations\\\"[All Fields]\"},{\"from\":\"accuracy\",\"to\":\"\\\"accuracies\\\"[All Fields] OR \\\"accuracy\\\"[All Fields]\"},{\"from\":\"medical journal\",\"to\":\"\\\"Med J (Ft Sam Houst Tex)\\\"[Journal:__jid101772861] OR \\\"Cooper Rowan Med J\\\"[Journal:__jid101753311] OR (\\\"medical\\\"[All Fields] AND \\\"journal\\\"[All Fields]) OR \\\"medical journal\\\"[All Fields]\"},{\"from\":\"meta-analysis\",\"to\":\"\\\"meta-analysis\\\"[Publication Type] OR \\\"meta-analysis as topic\\\"[MeSH Terms] OR \\\"meta-analysis\\\"[All Fields]\"}],\"querytranslation\":\"(\\\"quotation\\\"[All Fields] OR \\\"quotational\\\"[All Fields] OR \\\"quotations\\\"[All Fields]) AND (\\\"accuracies\\\"[All Fields] OR \\\"accuracy\\\"[All Fields]) AND (\\\"med j ft sam houst tex\\\"[Journal] OR \\\"cooper rowan med j\\\"[Journal] OR (\\\"medical\\\"[All Fields] AND \\\"journal\\\"[All Fields]) OR \\\"medical journal\\\"[All Fields]) AND (\\\"meta analysis\\\"[Publication Type] OR \\\"meta analysis as topic\\\"[MeSH Terms] OR \\\"meta analysis\\\"[All Fields])\"}}\n",
+ "encoding": "text"
+}
