@@ -432,6 +432,60 @@ def task_run(role: str = typer.Option(..., "--role"), instructions: str = typer.
         raise typer.Exit(1)
 
 
+# ---------------- evaluation (local; scratch kernel, never the live project database) ----------------
+eval_app = typer.Typer(help="Evaluations on external human-labelled datasets", no_args_is_help=True)
+app.add_typer(eval_app, name="eval")
+JUDGES_OPT = typer.Option(None, "--judges", help="Comma-separated driver specs (default: config judge, judge_2)")
+EVAL_OUT_OPT = typer.Option(Path("docs/eval"), "--out", help="Report directory")
+
+
+def _judges(text: str | None) -> list:
+    from rk.llm.drivers import DriverSpec
+    from rk.verify.judge import judge_drivers
+
+    return [DriverSpec.parse(t) for t in text.split(",")] if text else judge_drivers(load_settings(), None)
+
+
+@eval_app.command("support")
+def eval_support(limit: int = typer.Option(100, "--limit", help="Two-layer sample size"),
+                 judges: str | None = JUDGES_OPT, min_judges: int | None = typer.Option(None, "--min-judges"),
+                 layer1_only: bool = typer.Option(False, "--layer1-only"),
+                 write_config: bool = typer.Option(False, "--write-config", help="Store calibrated τ in config.toml"),
+                 out: Path = EVAL_OUT_OPT) -> None:
+    """Calibrate V-SUPPORT on SciFact train; report confusion matrices on held-out SciFact dev."""
+    from rk.eval.support_eval import run_support_eval
+
+    k = min_judges if min_judges is not None else load_settings().support_min_judges
+    r = run_support_eval(judges=_judges(judges), min_judges=k, limit=limit, layer1_only=layer1_only,
+                         write_config=write_config, report_dir=out)
+    typer.echo(Path(r["report"]).read_text())
+
+
+REPORTS_OPT = typer.Option(..., "--reports", help="Directory of {arxiv_id}.json reports")
+GT_OPT = typer.Option(None, "--gt", help="Local ReportBench_v1.1_GT directory (default: download per report)")
+
+
+@eval_app.command("reportbench")
+def eval_reportbench(reports: Path = REPORTS_OPT, gt: Path | None = GT_OPT, as_json: bool = JSON_OPT) -> None:
+    """Citation precision/recall of reports against ReportBench ground-truth references."""
+    from rk import __version__
+    from rk.eval.data import eval_dir
+    from rk.eval.reportbench import resolver_titles, score_reports
+    from rk.net.http import HttpClient
+    from rk.sources.resolver import SourceContext
+
+    s = load_settings()
+    ua = f"rk/{__version__}" + (f" (mailto:{s.email})" if s.email else "")
+    http = HttpClient(eval_dir() / "http.sqlite", user_agent=ua)
+    try:
+        r = score_reports(reports, resolver_titles(SourceContext(http=http, settings=s)), gt_dir=gt)
+    finally:
+        http.close()
+    _out(r, as_json, lambda d: typer.echo(
+        f"micro P={d['micro']['precision']:.3f} R={d['micro']['recall']:.3f}  macro P={d['macro']['precision']:.3f} "
+        f"R={d['macro']['recall']:.3f}  ({len(d['reports'])} reports, {d['n_match']}/{d['n_gt']} references found)"))
+
+
 # ---------------- checkpoints ----------------
 @checkpoint_app.command("list")
 def checkpoint_list(project: str | None = typer.Option(None, "--project"), status: str | None = typer.Option(
