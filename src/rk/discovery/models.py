@@ -4,12 +4,18 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from rk.orchestrator.graph import STAGE_TASK_BUDGET
 
 PaperType = Literal["systematic_review", "scoping_review", "critical_review", "research_proposal"]
 GapKind = Literal["contradiction", "stated_limitation", "citation_distortion", "retracted_still_cited",
                   "evidence_map_hole"]
 TopicStatus = Literal["candidate", "approved", "rejected"]
+
+TASKS_PER_TOPIC = 3  # V-NOVELTY of a topic: 1 scout + 2 judges
+MAX_TOPICS_N = 12  # a topics attempt: 1 ideator + 12 x 3 = 37 role tasks, within the stage budget
+assert 1 + TASKS_PER_TOPIC * MAX_TOPICS_N < STAGE_TASK_BUDGET
 
 
 class Intake(BaseModel):
@@ -18,7 +24,16 @@ class Intake(BaseModel):
     discovery_mode: Literal["d1", "d2"]
     production_mode: Literal["auto", "collab"]  # P1 = auto, P2 = collab
     language: str = Field("en", min_length=2, max_length=20)
-    topics_n: int = Field(6, ge=1, le=20)
+    topics_n: int = Field(6, description=f"candidate topics, 1 to {MAX_TOPICS_N}",
+                          json_schema_extra={"minimum": 1, "maximum": MAX_TOPICS_N})
+
+    @field_validator("topics_n")
+    @classmethod
+    def _topics_n_fits_the_budget(cls, v: int) -> int:
+        if not 1 <= v <= MAX_TOPICS_N:
+            raise ValueError(f"topics_n must be 1 to {MAX_TOPICS_N}: each topic costs {TASKS_PER_TOPIC} role tasks "
+                             f"and a topics attempt has {STAGE_TASK_BUDGET}")
+        return v
 
 
 class Cluster(BaseModel):

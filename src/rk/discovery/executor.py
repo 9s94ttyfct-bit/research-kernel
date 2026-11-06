@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from rk.llm.drivers import DriverSpec
 from rk.llm.runner import run_task
 from rk.llm.types import Provider, TaskResult
-from rk.orchestrator.graph import OPEN_STAGES
+from rk.orchestrator.graph import OPEN_STAGES, STAGE_TASK_BUDGET
 from rk.orchestrator.state import record_run_task, tasks_used
 
 
@@ -48,7 +48,7 @@ class KernelExecutor:
     ``run`` takes precedence."""
 
     def __init__(self, kernel, registry, project: str, *, run_id: str | None, session: int | None,
-                 max_tasks_per_stage: int = 40, provider_for: Callable[[str], Provider] | None = None,
+                 max_tasks_per_stage: int = STAGE_TASK_BUDGET, provider_for: Callable[[str], Provider] | None = None,
                  actor: str = "kernel"):
         self.kernel, self.registry, self.project = kernel, registry, project
         self.run_id, self.session, self.max_tasks_per_stage = run_id, session, max_tasks_per_stage

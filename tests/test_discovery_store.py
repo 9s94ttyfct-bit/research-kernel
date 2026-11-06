@@ -182,3 +182,39 @@ def test_cli_intake_maps_production_modes(live_server):
     r = CliRunner().invoke(app, ["project", "intake", "--project", "cli-intake", "--audience", "nurses",
                                  "--paper-type", "scoping_review", "--mode", "d1", "--production", "p3"])
     assert r.exit_code == 2 and ps.meta("production_mode") == "collab"
+
+
+def test_intake_refuses_topics_n_beyond_the_stage_budget(proj):
+    from pydantic import ValidationError
+
+    from rk.discovery.models import MAX_TOPICS_N, TASKS_PER_TOPIC
+    from rk.orchestrator.graph import STAGE_TASK_BUDGET
+
+    _, ps, _ = proj
+    assert MAX_TOPICS_N == 12 and 1 + TASKS_PER_TOPIC * MAX_TOPICS_N < STAGE_TASK_BUDGET
+    base = {"audience": "nurses", "paper_type": "scoping_review", "discovery_mode": "d1", "production_mode": "auto"}
+    assert Intake(**base, topics_n=12).topics_n == 12
+    for bad in (0, 13):
+        with pytest.raises(ValidationError, match="topics_n must be 1 to 12"):
+            Intake(**base, topics_n=bad)
+    reg = build_registry(proj[0])
+    with pytest.raises(ValidationError, match="topics_n must be 1 to 12"):
+        reg.call("rk_project_intake", {"project": "demo", **base, "topics_n": 13},
+                 CallContext(role="cli", actor="me", idempotency_key="t13"))
+    assert ps.meta("topics_n") == "6"  # unchanged
+    schema = reg.get("rk_project_intake").input_model.model_json_schema()["properties"]["topics_n"]
+    assert (schema["minimum"], schema["maximum"]) == (1, 12)
+
+
+def test_cli_intake_refuses_topics_n_13(live_server):
+    from typer.testing import CliRunner
+
+    from rk.cli.main import app
+
+    live_server.call("rk_project_create", {"slug": "cli-topics", "title": "C"}, write=True)
+    ps, _ = live_server.kernel.project("cli-topics")
+    r = CliRunner().invoke(app, ["project", "intake", "--project", "cli-topics", "--audience", "nurses",
+                                 "--paper-type", "scoping_review", "--mode", "d2", "--production", "p1",
+                                 "--topics-n", "13"])
+    assert r.exit_code != 0 and "topics_n must be 1 to 12" in r.output
+    assert ps.meta("topics_n") is None

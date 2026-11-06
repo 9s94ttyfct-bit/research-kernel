@@ -10,8 +10,8 @@ Answers (``options.topic_ids`` lists the topics under review):
 ``topic_ids`` (or ``topic_id``) names the topics a revise or reject is about; without it, every topic under review. An
 answer that cannot be applied opens a new ``topic_review`` that says why.
 
-Budget per attempt: 1 ideator task, then per topic 1 scout + 2 judge tasks (V-NOVELTY); at most ``MAX_TOPICS`` topics,
-so an attempt stays within the 40 role tasks of the stage budget (the default 6 topics: 19 tasks).
+Budget per attempt: 1 ideator task, then per topic 1 scout + 2 judge tasks (V-NOVELTY); the intake caps ``topics_n`` at
+``MAX_TOPICS_N`` (12: 37 tasks) so an attempt stays within the stage budget (the default 6 topics: 19 tasks).
 
 Gate: exactly one approved topic in the latest attempt; D2 also needs ``topics_n`` topics, each with a verified gap and
 its 5 closest works (fewer only when its searches found fewer, as recorded with the topic); D1 needs one."""
@@ -38,9 +38,6 @@ from rk.store.project import ProjectStore
 from rk.verify.novelty import novelty_reference
 
 CLOSEST_K = 5
-TASKS_PER_TOPIC = 3  # V-NOVELTY: 1 scout + 2 judges
-STAGE_TASKS = 40  # the stage's role-task budget of a run session (KernelExecutor.max_tasks_per_stage)
-MAX_TOPICS = (STAGE_TASKS - 1) // TASKS_PER_TOPIC  # 13: 1 ideator + 13 x 3 = 40 tasks
 DECISIONS = ("approve", "revise", "reject")
 TARGETS = ("topics", "gaps")
 
@@ -156,9 +153,6 @@ class TopicsWorker:
         if not verified:
             return StageOutcome("back_edge", to="gaps", reason="no verified gap to build topics on")
         wanted = intake.topics_n
-        if wanted > MAX_TOPICS:
-            return StageOutcome("failed", reason=f"topics_n {wanted} is more than the {MAX_TOPICS} topics an attempt "
-                                                 f"can check within its {STAGE_TASKS} role tasks")
         context: dict = {
             "project": {"title": ctx.ps.meta("title"), "field": ctx.ps.meta("field")},
             "intake": intake.model_dump(mode="json", include={"audience", "paper_type", "discovery_mode",

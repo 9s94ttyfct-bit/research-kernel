@@ -21,8 +21,9 @@ _LATER: dict[str, tuple[str, ...]] = {
 BACK_EDGES: frozenset[tuple[str, str]] = frozenset({("gaps", "landscape"), ("topics", "gaps"), ("question", "topics")})
 EDGE_LIMIT = 2  # uses of each edge per project before P2 asks and P1 degrades (§7.2)
 
-# Stages whose role tasks count against the per-session budget (§7.2).
+# Stages whose role tasks count against the per-session budget (§7.2), and that budget per stage.
 OPEN_STAGES: frozenset[str] = frozenset({"landscape", "gaps", "topics"})
+STAGE_TASK_BUDGET = 40  # role tasks per open stage per run session
 
 
 def stages_for(paper_type: str) -> list[str]:

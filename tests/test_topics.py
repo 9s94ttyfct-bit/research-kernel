@@ -31,6 +31,7 @@ from rk.orchestrator.state import (
     current_stage,
     degradations,
     edge_count,
+    record_edge_taken,
     run_row,
     stage_row,
     start_run,
@@ -385,6 +386,31 @@ def test_novelty_skips_a_judge_of_the_generator_vendor(env):
     assert report.skipped == {"judge": "same_or_unknown_vendor"} and report.judged == ["deepseek"]
     assert [c["role"] for c in ex.calls] == ["scout", "judge_2"]
     assert set(report.closest[0].differences) == {"deepseek"}
+
+
+@pytest.mark.parametrize("env", [{"discovery_mode": "d1"}], indirect=True)
+def test_d1_advance_names_the_review_a_p1_degrade_opened(env):
+    k, ps, lib = env
+    sources, _, _ = _sources(lib)
+    g: dict = {}
+    ex = _executor()
+    o = _orch(k, ps, lib, ex, sources, g)
+    for stage in ("intake", "landscape", "gaps"):
+        o.run_stage("demo", stage, actor="tester")
+        assert o.advance("demo", actor="tester").ok
+    ex.script[("ideator", "TopicsOut")] = [{"topics": [_topic("Topic A", [g["verified"]]),
+                                                       _topic("Topic B", [g["verified"]])]}]
+    out = o.run_stage("demo", "topics", actor="tester")
+    review = get_checkpoint(ps, out.checkpoint_id)
+    a, b = review["options"]["topic_ids"]
+    for n in (1, 2):  # the edge topics->gaps is used up
+        record_edge_taken(ps, "topics->gaps", n, actor="tester")
+    _answer(ps, review, {"decision": "revise", "target": "gaps", "comment": "Not A.", "topic_ids": [a]})
+    res = o.advance("demo", actor="tester")
+    reopened = _waiting(ps)
+    assert reopened["kind"] == "topic_review" and reopened["options"]["topic_ids"] == [b]
+    assert res.failures == [f"checkpoint {reopened['id']} (topic_review) is open"]
+    assert current_stage(ps) == "topics" and edge_count(ps, "topics->gaps") == 2
 
 
 # ---- gate ----

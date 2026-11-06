@@ -247,7 +247,8 @@ class Orchestrator:
                 if early is None:
                     return GateResult(False, [f"{stage!r} sent back to {outcome.to!r}: {outcome.reason}"])
                 if early.status == "waiting_human":
-                    return GateResult(False, [f"checkpoint {early.checkpoint_id} (stage_blocked) is open"])
+                    kind = get_checkpoint(ps, early.checkpoint_id)["kind"]
+                    return GateResult(False, [f"checkpoint {early.checkpoint_id} ({kind}) is open"])
                 return GateResult(True, []) if early.status == "done" else GateResult(False, [early.reason])
             if outcome.status != "done":
                 return GateResult(False, [outcome.reason or f"{stage!r} answered with {outcome.status}"])
