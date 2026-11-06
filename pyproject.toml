@@ -20,6 +20,7 @@ dependencies = [
     "rispy>=0.10,<1",
     "mcp>=2.3,<3",
     "playwright>=1.64,<2",
+    "websockets>=15,<18",
 ]
 
 [project.optional-dependencies]

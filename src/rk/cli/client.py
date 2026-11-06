@@ -90,6 +90,21 @@ class RkClient:
     def chat_close(self, chat_id: str) -> None:
         self._http.delete(f"/api/chat/{chat_id}")
 
+    def _post_plain(self, path: str, json_body: dict | None = None) -> dict:
+        r = self._http.post(path, json=json_body)
+        body = r.json()
+        if r.status_code != 200 or not body.get("ok"):
+            raise RkError(f"http_{r.status_code}", str(body.get("detail") or body.get("error") or body))
+        return body["result"]
+
+    def ui_link(self) -> str:
+        """A one-time Workbench login URL."""
+        return self._post_plain("/api/ui/link")["url"]
+
+    def open_human(self, url: str) -> str:
+        """Open ``url`` in a tab of the built-in browser that belongs to you (not to an agent)."""
+        return self._post_plain("/api/browser/open-human", {"url": url})["tab"]
+
     def close(self) -> None:
         self._http.close()
 

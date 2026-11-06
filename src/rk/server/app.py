@@ -4,16 +4,23 @@ from __future__ import annotations
 
 import hmac
 import json
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
 from rk import __version__
 from rk.server.chat import ChatManager
 from rk.server.tokens import TokenStore
 from rk.tools.registry import CallContext, PermissionDenied, ToolError, ToolRegistry
+from rk.ui.auth import UiAuth
+
+STATIC = Path(__file__).resolve().parent.parent / "ui" / "static"
 
 
 class ToolCall(BaseModel):
@@ -31,11 +38,19 @@ class ChatSend(BaseModel):
     text: str
 
 
+class OpenHuman(BaseModel):
+    url: str
+
+
+
 def create_app(registry: ToolRegistry, token: str, *, actor: str = "cli:user",
-               tokens: TokenStore | None = None, chats: ChatManager | None = None) -> FastAPI:
+               tokens: TokenStore | None = None, chats: ChatManager | None = None, ui: UiAuth | None = None,
+               kernel=None, browser: Callable[[], Any] | None = None) -> FastAPI:
     """The serve token acts as the human CLI (role ``cli``). Any other bearer must be a live task or lead token;
-    its calls run with that grant's role, project binding and tool list."""
+    its calls run with that grant's role, project binding and tool list. With ``ui`` the Workbench is served under
+    ``/ui`` with its own session cookie (``rk.ui.auth``)."""
     app = FastAPI(title="rk serve", version=__version__)
+    browser = browser or (lambda: None)
 
     def _ctx(authorization: str | None, idempotency_key: str | None = None) -> CallContext:
         if not authorization or not authorization.startswith("Bearer "):
@@ -75,7 +90,7 @@ def create_app(registry: ToolRegistry, token: str, *, actor: str = "cli:user",
         except ValidationError as e:
             return JSONResponse(status_code=422, content={"ok": False, "error": {
                 "type": "validation_error", "message": "invalid arguments", "details": {"errors": e.errors(
-                    include_url=False, include_context=False)}}})
+                    include_url=False, include_context=False, include_input=False)}}})
         except Exception as e:  # noqa: BLE001 - reported to the client, never swallowed
             return JSONResponse(status_code=500, content={"ok": False, "error": {
                 "type": type(e).__name__, "message": str(e), "details": {}}})
@@ -116,4 +131,30 @@ def create_app(registry: ToolRegistry, token: str, *, actor: str = "cli:user",
         _cli_only(authorization)
         return {"ok": True, "result": {"closed": chats.close(chat_id)}}
 
+    # ---- Workbench hand-off (human CLI only) ----
+    def _human_cli(authorization: str | None) -> None:
+        if _ctx(authorization).role != "cli":
+            raise HTTPException(status_code=403, detail="only the human CLI may do this")
+
+    @app.post("/api/ui/link")
+    def ui_link(authorization: str | None = Header(default=None)) -> dict:
+        _human_cli(authorization)
+        if ui is None:
+            raise HTTPException(status_code=503, detail="the Workbench is not enabled on this server")
+        return {"ok": True, "result": {"url": ui.login_url()}}
+
+    @app.post("/api/browser/open-human")
+    async def open_human(body: OpenHuman, authorization: str | None = Header(default=None)) -> dict:
+        _human_cli(authorization)
+        svc = browser()
+        if svc is None or not svc.running:
+            raise HTTPException(status_code=503, detail="the built-in browser is not running")
+        tab = await run_in_threadpool(svc.session.new_tab, None, body.url)
+        return {"ok": True, "result": {"tab": tab.id}}
+
+    if ui is not None:
+        from rk.ui.api import ui_router
+
+        app.include_router(ui_router(ui))
+        app.mount("/ui", StaticFiles(directory=STATIC, html=True), name="ui")
     return app

@@ -97,19 +97,26 @@ def mcp(project: str = typer.Option(..., "--project"),
 
 # ---------------- daemon ----------------
 @app.command()
-def serve(detach: bool = typer.Option(False, help="Start in the background and return")) -> None:
-    """Run the single-writer daemon (normally auto-started by other commands)."""
+def serve(detach: bool = typer.Option(False, help="Start in the background and return"),
+          no_browser: bool = typer.Option(False, "--no-browser", help="Do not start the built-in browser")) -> None:
+    """Run the single-writer daemon with the Workbench and the built-in browser (normally auto-started)."""
     home = rk_home()
     if detach:
         c = _client()
         typer.echo(f"rk serve running at {c.base_url}")
         return
+    import threading
+
     import uvicorn
 
+    from rk.browser.pacing import Pacer
+    from rk.browser.service import BrowserService
+    from rk.browser.session import BrowserSession
     from rk.server.app import create_app
     from rk.server.chat import ChatManager
     from rk.server.runtime import AlreadyRunning, acquire_serve_lock, release
     from rk.tools.builtin import build_registry
+    from rk.ui.auth import UiAuth
     from rk.workspace import Kernel
 
     try:
@@ -118,17 +125,43 @@ def serve(detach: bool = typer.Option(False, help="Start in the background and r
         typer.secho(str(e), fg="yellow", err=True)
         raise typer.Exit(0) from e
     kernel = Kernel(home)
-    registry = build_registry(kernel)
+    settings = kernel.settings()
+    origin = f"http://127.0.0.1:{rt.port}"
+    ui = UiAuth(origin)
+    service: BrowserService | None = None
+    if settings.browser_enabled and not no_browser:
+        session = BrowserSession(home / "browser-profile", headless=settings.headless(), workbench_origin=origin,
+                                 allow_hosts=settings.browser_allow_hosts)
+        try:
+            session.start()
+            service = BrowserService(kernel, session, Pacer(home / "kernel.sqlite", settings.browser_limits,
+                                                            max_wait_s=settings.browser_max_wait_s))
+        except Exception as e:  # noqa: BLE001 - reported; the Kernel runs without the browser
+            typer.secho(f"built-in browser not started ({type(e).__name__}: {e}); run `uv run playwright install "
+                        "chromium` or start with --no-browser", fg="yellow", err=True)
+    registry = build_registry(kernel, browser=lambda: service)
     chats = ChatManager(kernel, registry)
-    server = uvicorn.Server(uvicorn.Config(create_app(registry, rt.token, tokens=kernel.tokens, chats=chats),
-                                           log_level="warning"))
+    server = uvicorn.Server(uvicorn.Config(create_app(registry, rt.token, tokens=kernel.tokens, chats=chats, ui=ui,
+                                                      kernel=kernel, browser=lambda: service), log_level="warning"))
     signal.signal(signal.SIGTERM, lambda *_: setattr(server, "should_exit", True))
+    if service is not None:  # the Workbench is the window's first tab (its request waits for uvicorn to start)
+        threading.Thread(target=service.session.open_workbench, args=(ui.login_url(),), daemon=True).start()
+    else:
+        typer.echo(f"Workbench: {ui.login_url()}")
     try:
         server.run(sockets=[rt.sock])
     finally:
         chats.close_all()
+        if service is not None:
+            service.session.close()
         kernel.close()
         release(rt)
+
+
+@app.command("open")
+def open_workbench() -> None:
+    """Print a one-time link that opens the Workbench (for a browser other than the built-in window)."""
+    typer.echo(_client().ui_link())
 
 
 @app.command()
