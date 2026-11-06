@@ -78,6 +78,30 @@ def test_login_and_navigate_all_pages(page):
     assert page.errors == []
 
 
+def test_slow_page_does_not_render_over_a_newer_one(page, monkeypatch):
+    """A page still awaiting its API when the user navigates on must not draw itself over the newer page."""
+    import rk.ui.api as ui_api
+
+    gate, real_rows = threading.Event(), ui_api._event_rows
+
+    def rows(ps, after, limit=500):
+        if limit == 200:  # only the Progress page's request
+            gate.wait(10)
+        return real_rows(ps, after, limit)
+
+    monkeypatch.setattr(ui_api, "_event_rows", rows)
+    base = page.url.split("#")[0]
+    page.goto(base + "#/progress")
+    page.goto(base + "#/library")
+    page.wait_for_function("document.querySelector('main h1')?.textContent === 'Library'")
+    with page.expect_response("**/ui/api/progress*"):
+        gate.set()
+    page.wait_for_timeout(300)  # let the stale render's continuation run
+    assert page.locator("main h1").text_content() == "Library"
+    assert page.locator('.rail a[data-page="library"]').get_attribute("aria-current") == "page"
+    assert page.errors == []
+
+
 def test_answer_checkpoint_from_ui(page, workbench):
     kernel, _ = workbench
     ps, _ = kernel.project("demo")

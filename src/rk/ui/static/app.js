@@ -187,7 +187,7 @@ pages.chat = async (root) => {
   const ref = ++chatOpens;
   state.chat = null;  // until this render's own chat.opened arrives
   const add = (node) => { transcript.append(node); node.scrollIntoView({ block: "end" }); return node; };
-  unlisten = listen((msg) => {
+  root.listen((msg) => {
     if (msg.type === "chat.opened" && msg.ref === ref) { state.chat = msg.chat_id; status.textContent = `Talking to ${msg.driver}.`; }
     if (msg.type === "chat.error" && msg.ref === ref) { status.textContent = `Chat unavailable: ${msg.message}`; }
     if (msg.type !== "chat" || msg.chat_id !== state.chat) return;
@@ -346,7 +346,7 @@ pages.progress = async (root) => {
   const feed = el("ul", { class: "feed", "aria-live": "polite" });
   const row = (e) => el("li", {}, el("time", { datetime: e.ts }, e.ts.replace("T", " ").slice(0, 19)), `${e.type} `, el("span", { class: "hint" }, `${e.actor}${e.entity_id ? ` · ${e.entity_id}` : ""}`));
   feed.append(...p.events.map(row));
-  unlisten = listen((msg) => { if (msg.type === "event") feed.prepend(row(msg.event)); });
+  root.listen((msg) => { if (msg.type === "event") feed.prepend(row(msg.event)); });
   fill(root, el("h1", {}, "Progress"),
     el("p", { class: "lead" }, "What the agents and you did in this project, newest first. The stage graph and run controls come with the orchestrator."),
     el("h2", {}, "Tasks"),
@@ -473,15 +473,25 @@ pages.settings = async (root) => {
 // ---------------------------------------------------------------------------------------------------------------
 // router
 
+let renders = 0;
+
 async function route() {
   if (unlisten) { unlisten(); unlisten = null; }
+  const render = ++renders;
+  const current = () => render === renders;
   const [path, query] = location.hash.replace(/^#\/?/, "").split("?");
   const name = pages[path] ? path : state.project ? "chat" : "projects";
   document.querySelectorAll(".rail a").forEach((a) => { if (a.dataset.page !== name) a.removeAttribute("aria-current"); else a.setAttribute("aria-current", "page"); });
-  const root = $("#page");
+  // Pages draw and subscribe through this root, so a page still awaiting its data when the user has moved on to
+  // another page neither draws over that page nor takes its live updates.
+  const page = $("#page");
+  const root = {
+    replaceChildren: (...nodes) => { if (current()) page.replaceChildren(...nodes); },
+    listen: (fn) => { if (current()) unlisten = listen(fn); },
+  };
   try {
     await pages[name](root, new URLSearchParams(query || ""));
-    document.title = `${name[0].toUpperCase()}${name.slice(1)} — Research Kernel`;
+    if (current()) document.title = `${name[0].toUpperCase()}${name.slice(1)} — Research Kernel`;
   } catch (err) {
     if (err.message !== "signed out") fill(root, el("h1", {}, "Something went wrong"), el("p", {}, err.message));
   }
