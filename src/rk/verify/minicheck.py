@@ -93,10 +93,19 @@ class MiniCheck:
         except LookupError:
             nltk.download("punkt_tab", download_dir=str(nltk_dir), quiet=True)
         device = self._device or ("mps" if torch.backends.mps.is_available() else "cpu")
+        hf = self.cache_dir / "hf"
+
+        def load(local_only: bool):
+            tok = AutoTokenizer.from_pretrained(self.model_id, cache_dir=hf, local_files_only=local_only)
+            mdl = AutoModelForSeq2SeqLM.from_pretrained(self.model_id, cache_dir=hf, dtype=torch.float32,
+                                                        local_files_only=local_only)
+            return tok, mdl
+
         try:
-            hf = self.cache_dir / "hf"
-            self._tok = AutoTokenizer.from_pretrained(self.model_id, cache_dir=hf)
-            model = AutoModelForSeq2SeqLM.from_pretrained(self.model_id, cache_dir=hf, torch_dtype=torch.float32)
+            try:
+                self._tok, model = load(True)  # cached: no network round trip, works offline
+            except OSError:
+                self._tok, model = load(False)  # first use: download once
         except Exception as e:  # network, disk and format problems all mean "layer 1 unavailable"
             raise Layer1Unavailable(f"cannot load {self.model_id}: {type(e).__name__}: {e}") from e
         self._model = model.to(device).eval()
