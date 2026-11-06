@@ -83,6 +83,16 @@ def _fmt_item(it: dict) -> str:
     return f"{head}{who} {it.get('year') or 'n.d.'} - {it['title'][:90]}  {ident}  {' '.join(flags)}".rstrip()
 
 
+# ---------------- MCP proxy ----------------
+@app.command()
+def mcp(project: str = typer.Option(..., "--project"),
+        role: str | None = typer.Option(None, "--role", help="Label only; the token decides the role")) -> None:
+    """MCP stdio server for agentic CLIs and external MCP clients (token in RK_TASK_TOKEN)."""
+    from rk.mcp_proxy import run_proxy
+
+    run_proxy(project, role)
+
+
 # ---------------- daemon ----------------
 @app.command()
 def serve(detach: bool = typer.Option(False, help="Start in the background and return")) -> None:
