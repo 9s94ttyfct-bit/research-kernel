@@ -47,6 +47,11 @@ def test_library_step_validates_proxy_template():
     assert local.library_proxy.startswith("http://127.0.0.1")  # a proxy on this computer may use plain http
 
 
+def test_library_step_rejects_unknown_discovery_system():
+    with pytest.raises(ValueError, match="primo, summon or none"):
+        library_settings(Settings(), name="x", portal_url="https://l.example", proxy=None, discovery="primoo")
+
+
 class InProcessClient:
     """What `rk setup` talks to (an RkClient), backed directly by the registry and the browser service."""
 

@@ -78,6 +78,8 @@ def library_settings(s: Settings, *, name: str, portal_url: str, proxy: str | No
     else:
         checked = check_library_proxy(proxy)
     discovery = None if discovery in (None, "", "none") else discovery
+    if discovery not in (None, "primo", "summon"):
+        raise ValueError(f"discovery system must be primo, summon or none, not {discovery!r}")
     if discovery == "primo" and not (primo_base and primo_vid):
         raise ValueError("primo needs its address and view id (vid), e.g. https://uni.primo.exlibrisgroup.com and "
                          "UNI:VIEW")
