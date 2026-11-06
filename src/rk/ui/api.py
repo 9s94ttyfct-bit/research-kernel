@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 import uuid
 from collections.abc import Callable
@@ -36,6 +37,7 @@ from rk.tools.registry import CallContext, PermissionDenied, ToolError
 from rk.ui.auth import COOKIE, UiAuth
 from rk.ui.drafts import list_drafts, read_draft, render_draft
 
+log = logging.getLogger(__name__)
 UI_ACTOR = "ui:user"
 _SAFE = frozenset({"GET", "HEAD", "OPTIONS"})
 SECRET_FIELDS = ("openalex_key", "s2_key", "anthropic_api_key", "openai_api_key", "ollama_api_key")
@@ -110,6 +112,7 @@ class ImportBody(BaseModel):
 class SavePage(BaseModel):
     project: str
     tab: str | None = None
+    collection: str | None = None
 
 
 def ui_context(auth: UiAuth):
@@ -429,19 +432,24 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
             nonlocal last
             shown = None
             while True:
-                for ev in await run_in_threadpool(_event_rows, ps, last):
-                    last = ev["seq"]
-                    await send({"type": "event", "event": ev})
-                    if ev["type"].startswith("checkpoint.") and ev["entity_id"]:
-                        cp, open_cps = await run_in_threadpool(
-                            lambda cid=ev["entity_id"]: (get_checkpoint(ps, cid), list_checkpoints(ps, "open")))
-                        await send({"type": "checkpoint", "checkpoint": cp, "open_count": len(open_cps)})
-                svc = browser()
-                status = (await run_in_threadpool(svc.status, ctx)) if svc is not None and svc.running else \
-                    {"running": False}
-                if status != shown:
-                    shown = status
-                    await send({"type": "browser", "status": status})
+                try:
+                    for ev in await run_in_threadpool(_event_rows, ps, last):
+                        last = ev["seq"]
+                        await send({"type": "event", "event": ev})
+                        if ev["type"].startswith("checkpoint.") and ev["entity_id"]:
+                            cp, open_cps = await run_in_threadpool(
+                                lambda cid=ev["entity_id"]: (get_checkpoint(ps, cid), list_checkpoints(ps, "open")))
+                            await send({"type": "checkpoint", "checkpoint": cp, "open_count": len(open_cps)})
+                    svc = browser()
+                    status = (await run_in_threadpool(svc.status, ctx)) if svc is not None and svc.running else \
+                        {"running": False}
+                    if status != shown:
+                        shown = status
+                        await send({"type": "browser", "status": status})
+                except (WebSocketDisconnect, RuntimeError):
+                    return  # the socket closed
+                except Exception as e:  # noqa: BLE001 — one failed poll (browser closing, a locked db) must not end the updates
+                    log.warning("ui websocket update failed: %s", e)
                 await asyncio.sleep(1.0)
 
         async def stream(chat_id: str, text: str) -> None:

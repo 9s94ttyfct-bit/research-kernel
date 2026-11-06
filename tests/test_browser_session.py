@@ -219,3 +219,50 @@ def test_human_tab_is_tracked(session, sites):
     human = session.new_tab(None, sites.url("/form"))  # a tab the user opened (or rk setup opened for the user)
     assert session.active_human_tab().id == human.id
     assert agent.id != human.id and session.get_tab(human.id, None).url.endswith("/form")
+
+
+REAL_FORM = """<html><head><title>Form page</title></head><body><form id="f" action="/submitted" method="post">
+<input id="q2" name="q"><button id="sub">Post</button>
+<button id="noop" type="button" onclick="document.title = 'noop'">Preview</button>
+<button id="sneaky" type="button" onclick="document.getElementById('f').requestSubmit()">Next</button>
+</form></body></html>"""
+
+
+def test_agent_cannot_submit_forms_outside_search_hosts(session, sites):
+    sites.route("/real-form", lambda r: html(REAL_FORM))
+    t = session.new_tab("tsk_A", sites.url("/real-form"))
+    session.act(t.id, "tsk_A", {"kind": "fill", "selector": "#q2", "text": "x"})  # typing is fine
+    for action in ({"kind": "click", "selector": "#sub"}, {"kind": "press", "selector": "#q2", "key": "Enter"}):
+        with pytest.raises(ToolError) as e:
+            session.act(t.id, "tsk_A", action, allow_submit=False)
+        assert e.value.type == "forbidden_action"
+    assert session.act(t.id, "tsk_A", {"kind": "click", "selector": "#noop"}, allow_submit=False).title == "noop"
+    with pytest.raises(ToolError):  # a page script submitting the form: refused at the request, not the click
+        session.act(t.id, "tsk_A", {"kind": "click", "selector": "#sneaky"}, allow_submit=False)
+    assert sites.posts == []  # no POST ever reached the site
+    session.submit_hosts = {host_of(sites)}  # a search site may receive its search forms
+    session.goto(t.id, "tsk_A", sites.url("/real-form"))
+    session.act(t.id, "tsk_A", {"kind": "click", "selector": "#sub"}, allow_submit=True)
+    assert sites.posts == ["/submitted"]
+
+
+def test_refused_first_navigation_leaves_no_tab(session, sites, intranet):
+    sites.route("/to-intranet", lambda r: redirect(intranet.url("/admin")))
+    with pytest.raises(ToolError):
+        session.new_tab("tsk_A", sites.url("/to-intranet"))
+    assert session.tabs("tsk_A") == []
+
+
+def test_tabs_tolerates_a_tab_closing_meanwhile(session, sites):
+    t = session.new_tab("tsk_A", sites.url("/page"))
+    session._owners.pop(t.id)  # the close event removed the owner first
+    assert all(x.id != t.id for x in session.tabs(None))
+
+
+def test_active_human_tab_is_the_last_one_viewed(session, sites):
+    a = session.new_tab(None, sites.url("/page"))
+    session.new_tab(None, sites.url("/form"))  # opened later, but you go back to reading the first one
+    session.call(session._page(a.id).mouse.click(20, 20), 30)
+    workbench = next(p for t, p in session._pages.items() if session._owners.get(t) == "__workbench__")
+    session.call(workbench.mouse.click(20, 20), 30)  # you click "Save" in the Workbench
+    assert session.active_human_tab().id == a.id

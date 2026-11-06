@@ -462,9 +462,11 @@ def browser_fetch(source_id: str, project: str | None = typer.Option(None, "--pr
 
 @browser_app.command("save")
 def browser_save(tab: str | None = typer.Option(None, "--tab"), project: str | None = typer.Option(None, "--project"),
+                 collection: str | None = typer.Option(None, "--collection", help="collection id (default: Search hits)"),
                  as_json: bool = JSON_OPT) -> None:
     """Save the page you are looking at in the built-in browser to the library."""
-    r = _call("rk_browser_save_page", {"project": _project(project), "tab": tab}, write=True, timeout=300)
+    r = _call("rk_browser_save_page", {"project": _project(project), "tab": tab, "collection": collection},
+              write=True, timeout=300)
     _out(r, as_json, lambda d: typer.echo(f"{d['item_id']} ({'new' if d['created'] else 'already in the library'}), "
                                           f"reference: {d['ref_status']}, file: {(d['attachment'] or {}).get('kind')}"))
 

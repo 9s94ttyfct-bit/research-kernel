@@ -283,7 +283,8 @@ async function showItem(id, box) {
 async function savePage() {
   if (!state.project) return toast("Create a project first", "error");
   try {
-    const r = await api("/ui/api/library/save-page", { method: "POST", body: { project: state.project } });
+    const collection = location.hash.startsWith("#/library") ? document.querySelector('select[name="collection"]')?.value : "";
+    const r = await api("/ui/api/library/save-page", { method: "POST", body: { project: state.project, ...(collection ? { collection } : {}) } });
     toast(r.created ? `Saved to the library (${r.attachment?.kind === "pdf" ? "with PDF" : "page snapshot"})` : "Already in the library; file added");
     if (location.hash.startsWith("#/library")) route();
   } catch (err) { toast(err.message, "error"); }

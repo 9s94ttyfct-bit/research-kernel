@@ -27,11 +27,12 @@ class SitePaused(ToolError):
 
 
 class HumanRequired(ToolError):
-    """A login or CAPTCHA page: the browser task stops and you handle it in the browser window."""
+    """A login or CAPTCHA page: the browser task stops and you handle it in the browser window, in ``tab``."""
 
-    def __init__(self, kind: str, checkpoint_id: str, url: str, reason: str):
+    def __init__(self, kind: str, checkpoint_id: str, url: str, reason: str, tab: str | None = None):
         super().__init__("human_required", f"{kind}: {reason} — handle it in the browser window ({url})",
-                         {"kind": kind, "checkpoint_id": checkpoint_id, "url": url, "reason": reason}, status=409)
+                         {"kind": kind, "checkpoint_id": checkpoint_id, "url": url, "reason": reason, "tab": tab},
+                         status=409)
 
 
 class BrowserUnavailable(ToolError):

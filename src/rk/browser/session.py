@@ -112,6 +112,17 @@ def _forbidden(url: str, reason: str) -> ToolError:
                      status=403)
 
 
+# a control that submits its form when clicked
+_IS_SUBMIT = ("el => { const f = el.closest('form'); if (!f) return false; const t = (el.getAttribute('type') || '')"
+              ".toLowerCase(); return (el.tagName === 'BUTTON' && (t === '' || t === 'submit')) || "
+              "(el.tagName === 'INPUT' && (t === 'submit' || t === 'image')); }")
+
+
+def _no_submit() -> ToolError:
+    return ToolError("forbidden_action", "agents submit forms only on search sites (spec §9.3: no payments, posts or "
+                     "account changes); ask the human with rk_browser_request_human", status=403)
+
+
 class BrowserSession:
     def __init__(self, profile_dir: Path, *, headless: bool, workbench_origin: str | None = None,
                  allow_hosts: Iterable[str] = ()):
@@ -129,6 +140,8 @@ class BrowserSession:
         self._refused: dict[str, tuple[str, str]] = {}  # tab id -> (url, reason) of a refused main-frame hop
         self._armed: set[str] = set()  # agent tabs whose CDP interceptor is active
         self._arming: set[str] = set()
+        self._seen: dict[str, float] = {}  # tab id -> when it was last visible (for "save the page you look at")
+        self.submit_hosts: set[str] = set()  # host[:port] where agents may send POST and similar (search sites)
         self._ids = itertools.count(1)
         self._lock = threading.Lock()
 
@@ -159,6 +172,13 @@ class BrowserSession:
             await self._pw.stop()
             self._pw = None
             raise
+        # which of your tabs you used last: "save the page you are looking at" saves that one
+        await self._ctx.expose_binding("__rkVisible", self._on_visible)
+        await self._ctx.add_init_script(
+            "for (const e of ['pointerdown', 'keydown']) addEventListener(e, () => window.__rkVisible(), true);"
+            "addEventListener('focus', () => window.__rkVisible());"
+            "document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') "
+            "window.__rkVisible(); });")
         await self._ctx.route("**/*", self._route)
         self._ctx.on("page", self._on_page)
         for p in self._ctx.pages:  # the window's initial blank tab: the human's until the Workbench claims it
@@ -288,6 +308,12 @@ class BrowserSession:
                 doc = ev.get("resourceType") == "Document"
                 if not reason and doc and ev.get("frameId") != main_id and not frame_allowed(url, page.main_frame.url):
                     reason = "frames from other hosts are not loaded in agent tabs"
+                method = ev["request"].get("method", "GET").upper()
+                # §9.3: while an agent owns the tab, nothing it triggers may post (forms, scripts behind a button:
+                # account changes, payments) except on search sites; a tab handed to you can sign in
+                if not reason and method not in ("GET", "HEAD", "OPTIONS") and self._is_agent(self._owners.get(tid)) \
+                        and urlsplit(url).netloc.lower() not in self.submit_hosts:
+                    reason = "agents submit forms only on search sites"
                 if reason:
                     if doc and ev.get("frameId") == main_id:
                         self._refused[tid] = (url, reason)
@@ -360,6 +386,11 @@ class BrowserSession:
                 self._arming.discard(tid)
         return tid
 
+    async def _on_visible(self, source) -> None:
+        tid = self._tid_of(source["page"])
+        if tid and self._owners.get(tid, _WORKBENCH) is HUMAN:  # your own tabs; agent clicks do not count
+            self._seen[tid] = time.monotonic()
+
     def _forget(self, tid: str) -> None:
         with self._lock:
             self._pages.pop(tid, None)
@@ -386,10 +417,6 @@ class BrowserSession:
     def _page(self, tab_id: str):
         return self._pages[tab_id]
 
-    def check_url(self, url: str) -> str | None:
-        """Why an agent may not send the browser to ``url`` (None: allowed). For URLs an agent hands to a human tab."""
-        return self.call(self._blocked_reason(url), 30)
-
     # ---- tabs ---------------------------------------------------------------------------------------------------
     def open_workbench(self, url: str) -> tuple[str, str]:
         """Load the Workbench in the window's first tab; returns the loaded (url, title)."""
@@ -413,39 +440,45 @@ class BrowserSession:
             self._owners[tid] = owner  # the 'page' event may have registered it as the human's first
             await self._adopt(page, owner)
             if url:
-                await self._goto(page, url, "domcontentloaded", 45)
-                if self._is_agent(owner):
-                    await self._settle(tid, page)
+                try:
+                    await self._goto(page, url, "domcontentloaded", 45)
+                    if self._is_agent(owner):
+                        await self._settle(tid, page)
+                except ToolError:
+                    await page.close()  # a refused or failed first navigation leaves no empty tab behind
+                    raise
             return Tab(tid, owner, page.url)
 
         return self.call(go(), 120)
 
     def tabs(self, owner: str | None) -> list[Tab]:
         with self._lock:
-            items = list(self._pages.items())
-        return [Tab(t, self._owners[t], p.url) for t, p in items
-                if self._owners.get(t) != _WORKBENCH and (owner is HUMAN or self._owners.get(t) == owner)]
+            items = [(t, p, self._owners.get(t, _WORKBENCH)) for t, p in self._pages.items()]
+        return [Tab(t, o, p.url) for t, p, o in items if o != _WORKBENCH and (owner is HUMAN or o == owner)]
 
     def get_tab(self, tab_id: str, owner: str | None) -> Tab:
         page = self._check_owner(tab_id, owner)
         return Tab(tab_id, self._owners[tab_id], page.url)
 
     def active_human_tab(self) -> Tab | None:
-        """The tab you are looking at: the visible non-Workbench tab, else the most recently opened human tab."""
+        """The tab you looked at last (other than the Workbench), else the most recently opened human tab."""
 
         async def find():
-            candidates = [(t, p) for t, p in self._pages.items() if self._owners.get(t) != _WORKBENCH]
-            for t, p in reversed(candidates):
-                try:
-                    if await p.evaluate("document.visibilityState === 'visible' && document.hasFocus()"):
-                        return t
-                except PwError:  # page closed or navigating: not the active tab
-                    continue
-            human = [t for t, _ in candidates if self._owners.get(t) is HUMAN]
+            candidates = [t for t in self._pages if self._owners.get(t, _WORKBENCH) != _WORKBENCH]
+            seen = [t for t in candidates if t in self._seen]
+            if seen:
+                return max(seen, key=lambda t: self._seen[t])
+            human = [t for t in candidates if self._owners.get(t) is HUMAN]
             return human[-1] if human else None
 
         tid = self.call(find(), 30)
-        return Tab(tid, self._owners[tid], self._pages[tid].url) if tid else None
+        return Tab(tid, self._owners.get(tid), self._pages[tid].url) if tid else None
+
+    def hand_over(self, tab_id: str, owner: str | None) -> None:
+        """Give an agent's tab to the human. Its request interceptor stays, so what an agent opened stays on the
+        public web even after the hand-over."""
+        self._check_owner(tab_id, owner)
+        self._owners[tab_id] = HUMAN
 
     def close_tab(self, tab_id: str, owner: str | None) -> None:
         page = self._check_owner(tab_id, owner)
@@ -519,7 +552,9 @@ class BrowserSession:
 
         return self.call(go(), 90)
 
-    def act(self, tab_id: str, owner: str | None, action: dict) -> PageState:
+    def act(self, tab_id: str, owner: str | None, action: dict, *, allow_submit: bool = False) -> PageState:
+        """``allow_submit``: agents may submit forms only on search sites (spec §9.3); every other form submission is
+        refused here (submit controls, Enter in a form field) and, for POST and similar, again at the request."""
         kind = action.get("kind")
         if kind not in _ACTIONS:
             raise ToolError("bad_action", f"action kind must be one of {sorted(_ACTIONS)}", {"action": action})
@@ -531,7 +566,10 @@ class BrowserSession:
         async def go():
             try:
                 if kind == "click":
-                    await page.locator(sel).first.click(timeout=10000)
+                    loc = page.locator(sel).first
+                    if self._is_agent(owner) and not allow_submit and await loc.evaluate(_IS_SUBMIT, timeout=10000):
+                        raise _no_submit()
+                    await loc.click(timeout=10000)
                 elif kind == "fill":
                     loc = page.locator(sel).first
                     if (await loc.get_attribute("type", timeout=10000) or "").lower() == "password":
@@ -539,8 +577,17 @@ class BrowserSession:
                                         "with rk_browser_request_human", {"selector": sel}, status=403)
                     await loc.fill(action.get("text") or "", timeout=10000)
                 elif kind == "press":
+                    key = action.get("key") or "Enter"
+                    if self._is_agent(owner) and not allow_submit and key in ("Enter", "NumpadEnter"):
+                        handle = page.locator(sel).first if sel else None
+                        js = "el => !!(el && el.closest('form') && el.tagName === 'INPUT')"
+                        in_form = await (handle.evaluate(js) if handle else page.evaluate(
+                            "(() => { const el = document.activeElement; "
+                            "return !!(el && el.closest('form') && el.tagName === 'INPUT'); })()"))
+                        if in_form:
+                            raise _no_submit()
                     target = page.locator(sel).first if sel else page.keyboard
-                    await target.press(action.get("key") or "Enter")
+                    await target.press(key)
                 elif kind == "scroll":
                     await page.mouse.wheel(0, 800)
                 else:

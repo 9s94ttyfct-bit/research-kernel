@@ -64,6 +64,7 @@ class HumanArgs(BaseModel):
 class SaveArgs(BaseModel):
     project: str
     tab: str | None = None
+    collection: str | None = None  # collection id; default "Search hits"
 
 
 def register_browser_tools(tool: Callable, browser: Callable[[], BrowserService | None]) -> None:
@@ -114,6 +115,6 @@ def register_browser_tools(tool: Callable, browser: Callable[[], BrowserService 
         return svc().status(ctx)
 
     @tool("rk_browser_save_page", "Save the page you are looking at in the built-in browser to the library (metadata, "
-          "PDF or page snapshot).", SaveArgs, True)
+          "PDF or page snapshot), into the chosen collection or 'Search hits'.", SaveArgs, True)
     def _save(ctx: CallContext, a: SaveArgs) -> dict:
-        return svc().save_page(ctx, a.project, a.tab)
+        return svc().save_page(ctx, a.project, a.tab, a.collection)

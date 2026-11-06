@@ -57,6 +57,11 @@ class Library:
             r = self.db.execute("SELECT id FROM items WHERE title_norm=? AND year=?", (tn, item.year)).fetchone()
             if r:
                 return r["id"]
+        if not item.ids.pairs() and item.ids.url:  # a web page with no identifier: the page address is its identity
+            r = self.db.execute("SELECT id FROM items WHERE json_extract(data, '$.ids.url')=?",
+                                (item.ids.url,)).fetchone()
+            if r:
+                return r["id"]
         return None
 
     def get(self, item_id: str) -> Item:

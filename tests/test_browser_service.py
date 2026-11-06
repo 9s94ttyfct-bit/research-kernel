@@ -1,4 +1,5 @@
 import dataclasses
+import time
 from urllib.parse import quote
 
 import pytest
@@ -65,6 +66,10 @@ def sites():
     s.close()
 
 
+REAL_FORM = """<html><head><title>Form page</title></head><body><form action="/post" method="post">
+<input id="q" name="q"><button id="sub">Post</button></form></body></html>"""
+
+
 @pytest.fixture
 def kernel(tmp_home, replay_http, sites):
     save_settings(Settings(email="rk-fixtures@users.noreply.github.com", library_name="Fixture University Library",
@@ -76,8 +81,26 @@ def kernel(tmp_home, replay_http, sites):
 
 
 @pytest.fixture
-def service(kernel, tmp_path, sites):
-    session = BrowserSession(tmp_path / "profile", headless=True, allow_hosts=[sites.base.removeprefix("http://")])
+def scholar_site():
+    s = Sites()  # its own host, so the service can tell Scholar pages from other sites
+    s.route("/scholar", lambda r: html(SCHOLAR_BLOCK))
+    s.route("/about", lambda r: html("<html><head><title>About Scholar</title></head><body><p>About</p></body></html>"))
+    yield s
+    s.close()
+
+
+@pytest.fixture
+def plain():
+    s = Sites()  # a site that is not a search site
+    s.route("/form", lambda r: html(REAL_FORM))
+    yield s
+    s.close()
+
+
+@pytest.fixture
+def service(kernel, tmp_path, sites, scholar_site, plain):
+    hosts = [x.base.removeprefix("http://") for x in (sites, scholar_site, plain)]
+    session = BrowserSession(tmp_path / "profile", headless=True, allow_hosts=hosts)
     try:
         session.start()
     except Exception as e:
@@ -88,7 +111,8 @@ def service(kernel, tmp_path, sites):
                 "pubmed": dataclasses.replace(ADAPTERS["pubmed"], search_url=lambda q, s, p=0: sites.url("/pubmed?term=" + quote(q))),
                 "pubmed_broken": dataclasses.replace(ADAPTERS["pubmed"], name="pubmed_broken",
                                                      search_url=lambda q, s, p=0: sites.url("/pubmed-broken")),
-                "scholar": dataclasses.replace(ADAPTERS["scholar"], search_url=lambda q, s, p=0: sites.url("/scholar"))}
+                "scholar": dataclasses.replace(ADAPTERS["scholar"],
+                                               search_url=lambda q, s, p=0: scholar_site.url("/scholar"))}
     svc = BrowserService(kernel, session, Pacer(tmp_path / "pacer.sqlite", FAST, max_wait_s=5), adapters=adapters,
                          doi_base=sites.url("/doi/"))
     yield svc
@@ -120,19 +144,26 @@ def test_invalid_markup_returns_generic_fallback(service):
     assert out["fallback"] == "generic" and out["hits"] == [] and "ax" in out["snapshot"]
 
 
-def test_captcha_pauses_site_until_answered(service, kernel, sites):
+def test_captcha_pauses_site_until_answered(service, kernel, scholar_site, sites):
+    reader_tab = service.open(READER, "demo", scholar_site.url("/about"))["tab"]  # a Scholar page, before the CAPTCHA
     with pytest.raises(HumanRequired) as e:
         service.search(SCOUT, "demo", "scholar", "perovskite")
     chk = e.value.details["checkpoint_id"]
     ps, _ = kernel.project("demo")
     assert get_checkpoint(ps, chk)["kind"] == "captcha_wait"
-    assert [r["action"] for r in list_browse(ps)] == ["captcha_wait"]
-    hits_before = len(sites.hits)
+    assert [(r["site"], r["action"]) for r in list_browse(ps)] == [("scholar", "open"), ("scholar", "captcha_wait")]
+    hits_before = len(scholar_site.hits)
     with pytest.raises(SitePaused):
         service.search(SCOUT, "demo", "scholar", "perovskite")
-    assert len(sites.hits) == hits_before  # paused: the site was not contacted again
+    with pytest.raises(SitePaused):  # the pause holds whichever tool reaches Scholar
+        service.open(READER, "demo", scholar_site.url("/scholar?q=perovskite"))
+    with pytest.raises(SitePaused):
+        service.act(READER, "demo", reader_tab, {"kind": "back"})
+    assert len(scholar_site.hits) == hits_before  # paused: the site was not contacted again
+    assert service.open(READER, "demo", sites.url("/blog"))["title"]  # other sites are not paused
+    assert e.value.details["tab"] in {t["tab"] for t in service.tabs(HUMAN)} and not service.tabs(SCOUT)
     answer_checkpoint(ps, chk, {"choice": "done"}, answered_by="human", actor="ui:user")
-    sites.route("/scholar", lambda r: html((FIXTURES / "scholar_results.html").read_text()))
+    scholar_site.route("/scholar", lambda r: html((FIXTURES / "scholar_results.html").read_text()))
     assert len(service.search(SCOUT, "demo", "scholar", "perovskite")["hits"]) == 2
 
 
@@ -233,3 +264,89 @@ def test_browser_tools_unavailable_without_browser(kernel):
     reg = build_registry(kernel)
     with pytest.raises(BrowserUnavailable):
         reg.call("rk_browser_status", {"project": "demo"}, SCOUT)
+
+
+def test_request_human_url_is_checked_like_an_agent_tab(service, kernel, sites):
+    intranet = Sites()  # not an allowed host: stands in for a private address
+    try:
+        sites.route("/to-intranet", lambda r: redirect(intranet.url("/")))
+        for call in (lambda: service.request_human(SCOUT, "demo", "please look", sites.url("/to-intranet")),
+                     lambda: service.open(SCOUT, "demo", sites.url("/to-intranet"))):
+            with pytest.raises(ToolError) as e:
+                call()
+            assert e.value.type == "forbidden_url"
+        assert intranet.hits == [] and service.tabs(SCOUT) == []  # a refused first page leaves no tab
+        ps, _ = kernel.project("demo")
+        assert ps.db.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 0
+    finally:
+        intranet.close()
+    sites.route("/form", lambda r: html(REAL_FORM))
+    out = service.request_human(SCOUT, "demo", "please sign in", sites.url("/form"))
+    assert service.tabs(SCOUT) == []
+    assert next(t for t in service.tabs(HUMAN) if t["tab"] == out["tab"])["owner"] == "human"
+    service.act(HUMAN, "demo", out["tab"], {"kind": "click", "selector": "#sub"})  # now yours: you can sign in
+    assert sites.posts == ["/post"]
+
+
+def test_agent_keeps_at_most_five_tabs(service, sites):
+    opened = [service.open(SCOUT, "demo", sites.url("/blog"))["tab"] for _ in range(7)]
+    assert [t["tab"] for t in service.tabs(SCOUT)] == opened[-5:]
+
+
+def test_blocked_page_becomes_your_tab(service, kernel, sites):
+    iid = add_item(kernel, doi="10.5555/ok")
+    with pytest.raises(HumanRequired) as e:
+        service.fetch_fulltext(READER, "demo", iid)
+    tab = e.value.details["tab"]
+    assert service.tabs(READER) == []  # the agent no longer holds it
+    assert next(t for t in service.tabs(HUMAN) if t["tab"] == tab)["owner"] == "human"
+    service.act(HUMAN, "demo", tab, {"kind": "fill", "selector": "input[name=username]", "text": "me"})
+    service.act(HUMAN, "demo", tab, {"kind": "click", "selector": "button"})  # your sign-in form posts
+    assert any(p.startswith("/idp/") for p in sites.posts)
+
+
+def test_step_limit_without_task_is_per_tab(service, kernel, sites):
+    save_settings(kernel.settings().model_copy(update={"browser_max_steps": 1}))
+    lead = CallContext(role="lead", actor="agent:lead", idempotency_key="k7")
+    a, b = (service.open(lead, "demo", sites.url("/blog"))["tab"] for _ in range(2))
+    service.act(lead, "demo", a, {"kind": "scroll"})
+    service.act(lead, "demo", b, {"kind": "scroll"})
+    with pytest.raises(ToolError) as e:
+        service.act(lead, "demo", a, {"kind": "scroll"})
+    assert e.value.type == "step_limit"
+
+
+def test_agents_submit_forms_only_on_search_sites(service, plain):
+    plain.route("/jsform", lambda r: html(REAL_FORM.replace('<button id="sub">', '<button id="sub" type="button" '
+                                                            'onclick="document.forms[0].submit()">')))
+    tab = service.open(SCOUT, "demo", plain.url("/form"))["tab"]
+    for action in ({"kind": "click", "selector": "#sub"}, {"kind": "press", "selector": "#q", "key": "Enter"}):
+        with pytest.raises(ToolError) as e:
+            service.act(SCOUT, "demo", tab, action)
+        assert e.value.type == "forbidden_action"
+    tab = service.open(SCOUT, "demo", plain.url("/jsform"))["tab"]  # a script submits it: refused at the request
+    with pytest.raises(ToolError):
+        service.act(SCOUT, "demo", tab, {"kind": "click", "selector": "#sub"})
+    plain.route("/xhr", lambda r: html("<html><head><title>ready</title></head><body><button id='b' onclick=\""
+                                       "fetch('/post', {method: 'POST'}).then(() => document.title = 'sent', "
+                                       "() => document.title = 'refused')\">Like</button></body></html>"))
+    tab = service.open(SCOUT, "demo", plain.url("/xhr"))["tab"]  # a button whose script posts
+    service.act(SCOUT, "demo", tab, {"kind": "click", "selector": "#b"})
+    for _ in range(50):
+        if (title := service.session.content(tab, SCOUT.task_id).title) != "ready":
+            break
+        time.sleep(0.1)
+    assert title == "refused" and plain.posts == []
+
+
+def test_save_page_again_keeps_reference_check_and_text_layer(service, kernel, sites):
+    service.session.new_tab(None, sites.url("/blog"))
+    first = service.save_page(HUMAN, "demo")
+    ps, lib = kernel.project("demo")
+    lib.update(first["item_id"], ref_status="pass", actor="t", actor_kind="human")
+    sha = latest_snapshot(ps, first["item_id"])[0]
+    col = lib.create_collection("Humidity", actor="t")
+    again = service.save_page(HUMAN, "demo", collection=col)
+    assert (again["item_id"], again["created"], again["ref_status"]) == (first["item_id"], False, "pass")
+    assert again["attachment"]["snapshot_sha"] is None and latest_snapshot(ps, first["item_id"])[0] == sha
+    assert col in lib.get(first["item_id"]).collection_ids

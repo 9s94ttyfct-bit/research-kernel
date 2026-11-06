@@ -108,6 +108,23 @@ def test_new_day_resets_count(tmp_path):
     p.acquire(["site:scholar"])
 
 
+def test_partial_limit_override_keeps_default_gap(tmp_path):
+    clock = Clock(noon())
+    p = Pacer(tmp_path / "k.sqlite", {"scholar": {"per_day": 2}}, max_wait_s=1, clock=clock, sleep=clock.sleep,
+              rand=lambda lo, hi: lo)
+    p.acquire(["site:scholar"])
+    with pytest.raises(Paced):  # the 20 s minimum gap still applies although only per_day was overridden
+        p.acquire(["site:scholar"])
+
+
+def test_waiting_for_another_browser_task_is_bounded(tmp_path):
+    from rk.browser import pacing
+
+    p = make(tmp_path, Clock(noon()), max_wait_s=0.2)
+    with pacing._LOCK, pytest.raises(Paced):  # another browser task holds the browser
+        p.acquire(["site:pubmed"])
+
+
 def test_browse_log_projection(tmp_path):
     ps = ProjectStore(tmp_path / "proj", "prj_T")
     bid = record_browse(ps, task_id="tsk_1", site="pubmed", action="search", url="https://pubmed.example/?term=x",

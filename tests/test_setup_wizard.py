@@ -14,7 +14,7 @@ from rk.llm.types import Availability
 from rk.tools.builtin import build_registry
 from rk.tools.registry import CallContext
 
-from .test_browser_service import kernel, service, sites  # noqa: F401 - fixtures
+from .test_browser_service import kernel, plain, scholar_site, service, sites  # noqa: F401 - fixtures
 
 
 def test_providers_step_hints():

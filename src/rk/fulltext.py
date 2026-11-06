@@ -150,12 +150,15 @@ def attach_pdf_bytes(ps: ProjectStore, lib: Library, item_id: str, raw: bytes, *
 
 
 def attach_html_snapshot(ps: ProjectStore, lib: Library, item_id: str, html: str, *, origin: AttachOrigin, actor: str,
-                         actor_kind: Literal["human", "agent"], url: str, access_note: str | None = None
-                         ) -> tuple[str, FulltextResult]:
-    """Keep a web page as an ``html_snapshot`` attachment and as the item's text layer (hidden text removed)."""
+                         actor_kind: Literal["human", "agent"], url: str, access_note: str | None = None,
+                         text_layer: bool = True) -> tuple[str, FulltextResult | None]:
+    """Keep a web page as an ``html_snapshot`` attachment and, with ``text_layer``, as the item's text layer (hidden
+    text removed). Without it the file is kept only, so a page snapshot never replaces a better text layer."""
     item = lib.get(item_id)
     raw = html.encode()
     att = _attach(ps, item, raw, origin, actor, actor_kind, access_note, kind="html_snapshot")
+    if not text_layer:
+        return att, None
     res = _record_snapshot(ps, item.id, raw, html_to_layer(html, ""), "html", url, actor)
     return att, res.model_copy(update={"origin": origin})
 

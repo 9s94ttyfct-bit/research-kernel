@@ -84,13 +84,14 @@ uv run rk setup                            # also: model providers, library sign
 uv run rk browser search pubmed "perovskite encapsulation damp heat" --max 5
 uv run rk browser search primo "perovskite stability"    # your library catalogue (Primo VE or Summon)
 uv run rk browser fetch <item_id>          # PDF through your library proxy or the publisher page
-uv run rk browser save                     # save the page you are looking at (metadata + PDF or snapshot)
+uv run rk browser save [--collection ID]   # save the page you used last (metadata + PDF or snapshot)
 uv run rk browser status                   # paused sites, today's quotas, open tabs
 ```
 
 - **Human pace.** Google Scholar: 20–45 s between queries, at most 60 a day. Publisher PDFs: 30 s per domain, at most 40 per domain and 150 in total a day. Other sites: 5 s. One browser task runs at a time, and the counters survive restarts. Limits are in `config.toml` (`browser_limits`).
 - **You stay in charge of logins and CAPTCHAs.** A CAPTCHA, an "unusual traffic" page or a sign-in page pauses that site and opens a `captcha_wait` or `login_wait` checkpoint. You handle the page in the window and press Done in the Workbench. The Kernel never solves CAPTCHAs, never fills in a password field and never stores your library password.
 - **Agents reach only the public web.** Agent tabs cannot open the Workbench or any loopback, private or link-local address, and every redirect hop is checked before it is sent. Frames from other hosts are not loaded, and service workers are blocked. An intranet host your library needs can be allowed in `browser_allow_hosts`. Your own tabs are not restricted.
+- **Agents read, they do not post.** Outside the search sites, an agent cannot submit a form: a submit button or Enter in a form field fails with `forbidden_action`, and every POST (or similar) request from an agent's tab is refused, including one sent by a page script. So agents make no purchases, posts or account changes. A page an agent asks you to handle (`rk_browser_request_human`) opens under the same checks and then becomes your tab, where you can sign in. Each agent keeps at most 5 tabs.
 - **Metadata.** Pages are read through Highwire `citation_*`, JSON-LD, Dublin Core and COinS. If a DOI, PMID or arXiv id resolves through Crossref, OpenAlex or PubMed, the API record wins and the differences are logged. Otherwise the item is marked `page_metadata_only`.
 - **Full-text order.** Open-access channels come first; the browser comes last (`fulltext_browser_fallback`). A PDF fetched this way is labelled `library_browser` or `publisher_browser` with an access note, and stays in the project.
 - **Optional.** A Zotero translation-server (`translation_server_url`) improves metadata for pages without good tags.
