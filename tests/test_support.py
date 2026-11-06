@@ -185,6 +185,17 @@ def test_contradicted(env):
     assert list_checkpoints(ps) == []
 
 
+def test_thresholds_for_another_model_are_not_used(env, monkeypatch):
+    k, reg, ps, _, claim = env
+    save_settings(Settings(email="rk-fixtures@users.noreply.github.com", support_tau_hi=0.5,
+                           support_model="ollama:bespoke-minicheck:7b-q8_0",
+                           support_calibration={"model": "lytang/MiniCheck-Flan-T5-Large"}))
+    monkeypatch.setattr("rk.verify.support.get_minicheck", lambda *a: FakeLayer1(0.99))
+    cid = claim("Copper catalysts are studied for CO2 reduction.", vendor="google")
+    r = verify_support(k, reg, ps, cid, actor="t", **judges())
+    assert r.verdict == "uncertain" and r.p is None and "calibrated for lytang/MiniCheck-Flan-T5-Large" in r.layer1_reason
+
+
 def test_rk_verify_claim_tool_reports_layer1_state(env, monkeypatch):
     _k, reg, _ps, _, claim = env
     cid = claim("Copper catalysts are studied for CO2 reduction.", vendor="google")

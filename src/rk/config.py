@@ -45,7 +45,9 @@ class Settings(BaseModel):
     support_tau_hi_judged: float | None = None
     support_tau_lo_judged: float | None = None
     support_min_judges: int = 2  # spec §8.1: one cross-vendor vote is not enough to pass
-    support_model: str = "lytang/MiniCheck-Flan-T5-Large"
+    # Layer 1: Bespoke-MiniCheck-7B in local Ollama (CC BY-NC 4.0; rk is non-commercial). Alternative, MIT-licensed:
+    # "lytang/MiniCheck-Flan-T5-Large" (in-process, needs the 'support' extra).
+    support_model: str = "ollama:bespoke-minicheck:7b-q8_0"
     support_calibration: dict | None = None
 
 

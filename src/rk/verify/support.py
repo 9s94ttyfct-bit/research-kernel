@@ -96,7 +96,12 @@ def verify_support(kernel, registry, ps, claim_id: str, *, actor: str, layer1=No
     else:
         doc = "\n\n".join(texts)
         p = n_chunks = reason = None
+        calibrated_for = (s.support_calibration or {}).get("model")
         try:
+            if layer1 is None and calibrated_for and calibrated_for != s.support_model:
+                # τ are model-specific: thresholds fitted to another layer-1 model would mean nothing here
+                raise Layer1Unavailable(f"thresholds were calibrated for {calibrated_for}, not {s.support_model}; "
+                                        "run `rk eval support --write-config`")
             score = (layer1 or get_minicheck(kernel.home / "models", s.support_model)).score(doc, claim["text"])
             p, n_chunks = score.p, score.n_chunks
         except Layer1Unavailable as e:

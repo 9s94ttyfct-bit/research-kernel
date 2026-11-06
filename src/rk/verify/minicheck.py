@@ -68,6 +68,21 @@ def chunk_document(doc: str, max_words: int = CHUNK_WORDS, split: Callable[[str]
     return [c for c in chunks if c]
 
 
+def ensure_nltk(cache_dir: Path) -> None:
+    """Make nltk's sentence splitter data (punkt_tab) available from ``<cache_dir>/nltk``, downloading it once."""
+    try:
+        import nltk
+    except ImportError as e:
+        raise Layer1Unavailable(f"install the 'support' extra (uv sync --extra support): {e}") from e
+    nltk_dir = Path(cache_dir) / "nltk"
+    if str(nltk_dir) not in nltk.data.path:
+        nltk.data.path.insert(0, str(nltk_dir))
+    try:
+        nltk.data.find("tokenizers/punkt_tab")
+    except LookupError:
+        nltk.download("punkt_tab", download_dir=str(nltk_dir), quiet=True)
+
+
 class MiniCheck:
     def __init__(self, cache_dir: Path, model_id: str = MODEL_ID, device: str | None = None, batch_size: int = 8):
         self.cache_dir, self.model_id, self.batch_size = Path(cache_dir), model_id, batch_size
@@ -80,18 +95,11 @@ class MiniCheck:
         if self._model is not None:
             return
         try:
-            import nltk
             import torch
             from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
         except ImportError as e:
             raise Layer1Unavailable(f"install the 'support' extra (uv sync --extra support): {e}") from e
-        nltk_dir = self.cache_dir / "nltk"
-        if str(nltk_dir) not in nltk.data.path:
-            nltk.data.path.insert(0, str(nltk_dir))
-        try:
-            nltk.data.find("tokenizers/punkt_tab")
-        except LookupError:
-            nltk.download("punkt_tab", download_dir=str(nltk_dir), quiet=True)
+        ensure_nltk(self.cache_dir)
         device = self._device or ("mps" if torch.backends.mps.is_available() else "cpu")
         hf = self.cache_dir / "hf"
 
@@ -150,14 +158,21 @@ class MiniCheck:
         return self.score_batch([(doc, claim)])[0]
 
 
-_instances: dict[tuple[str, str], MiniCheck] = {}
+_instances: dict[tuple[str, str], object] = {}
 _instances_lock = threading.Lock()
 
 
-def get_minicheck(cache_dir: Path, model_id: str = MODEL_ID) -> MiniCheck:
-    """One loaded model per process (it is ~3 GB in memory)."""
+def get_minicheck(cache_dir: Path, model_id: str = MODEL_ID):
+    """One layer-1 scorer per process and model. ``ollama:…`` ids (Bespoke-MiniCheck-7B) run in local Ollama; other
+    ids are Hugging Face checkpoints of MiniCheck-Flan-T5 run in-process."""
     key = (str(cache_dir), model_id)
     with _instances_lock:
         if key not in _instances:
-            _instances[key] = MiniCheck(cache_dir, model_id)
+            if model_id.startswith("ollama:"):
+                from rk.config import load_settings
+                from rk.verify.minicheck_bespoke import BespokeMiniCheck
+
+                _instances[key] = BespokeMiniCheck(model_id, load_settings().ollama_url, cache_dir=cache_dir)
+            else:
+                _instances[key] = MiniCheck(cache_dir, model_id)
         return _instances[key]
