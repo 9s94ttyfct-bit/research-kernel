@@ -5,19 +5,32 @@ tool handlers (which run in FastAPI's thread pool) can use the browser safely.
 
 Tabs belong to an owner: an agent task (``task_id``, or the actor for in-process callers), the human (``None``: tabs
 you opened yourself, or that ``rk setup`` opened for you) or the Workbench. Agent tools reach only their own tabs; the
-human view lists every tab except the Workbench. Requests from agent tabs to the Workbench origin are aborted."""
+human view lists every tab except the Workbench. Popups inherit their opener's owner.
+
+Agent tabs reach only the public web (spec §8.5 isolation, extended to the local network): no Workbench origin, no
+non-http(s) schemes, no loopback / private / link-local / reserved / CGNAT address, whether written as an IP or
+resolved from a host name. Hosts in ``allow_hosts`` (``host`` or ``host:port``, e.g. an intranet library proxy) are
+exempt; the Workbench never is. Each agent tab gets a CDP ``Fetch`` interceptor that pauses every request and every
+redirect hop before it is sent, checks its destination and lets Chromium's own network stack continue it (so
+publisher bot checks see a normal browser). A context-wide route stops requests of agent pages that are not armed yet
+(a popup's first document is dropped and loaded again once its interceptor is in place) and checks the first request
+of cross-site iframes. WebSockets from agent tabs are checked, service workers are blocked. The route disables
+Chromium's HTTP cache for the window; the human's own tabs are otherwise passed through unchanged."""
 
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import itertools
 import re
+import socket
 import threading
-from collections.abc import Coroutine
+import time
+from collections.abc import Coroutine, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from playwright.async_api import Error as PwError
 
@@ -26,6 +39,9 @@ from rk.tools.registry import ToolError
 HUMAN = None
 _WORKBENCH = "__workbench__"
 _ACTIONS = frozenset({"click", "fill", "press", "scroll", "back"})
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")
+_DNS_TTL_S = 60.0
+_MAX_HOPS = 10
 
 
 @dataclass
@@ -49,17 +65,66 @@ def _loopback_variants(origin: str) -> set[str]:
     return {f"{p.scheme}://{h}{port}" for h in ("127.0.0.1", "localhost", "[::1]")}
 
 
+def _non_public(ip: str) -> bool:
+    try:
+        a = ipaddress.ip_address(ip.strip("[]").split("%")[0])
+    except ValueError:
+        return False
+    if isinstance(a, ipaddress.IPv6Address) and a.ipv4_mapped:
+        a = a.ipv4_mapped
+    return (a.is_private or a.is_loopback or a.is_link_local or a.is_reserved or a.is_multicast or a.is_unspecified
+            or (isinstance(a, ipaddress.IPv4Address) and a in _CGNAT))
+
+
+def _is_ip(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host.strip("[]").split("%")[0])
+        return True
+    except ValueError:
+        return False
+
+
+_SECOND_LEVEL = frozenset({"ac", "co", "com", "edu", "gov", "net", "org", "or", "ne", "go"})
+
+
+def registrable_domain(host: str) -> str:
+    """Approximate eTLD+1 (``www.sciencedirect.com`` -> ``sciencedirect.com``, ``x.ac.uk`` -> ``x.ac.uk``)."""
+    host = host.lower().strip(".")
+    if _is_ip(host):
+        return host
+    labels = host.split(".")
+    if len(labels) >= 3 and labels[-2] in _SECOND_LEVEL and len(labels[-1]) == 2:
+        return ".".join(labels[-3:])
+    return ".".join(labels[-2:])
+
+
+def site_of(url: str) -> str:
+    p = urlsplit(url)
+    return f"{p.scheme}://{registrable_domain(p.hostname or '')}"
+
+
+def _forbidden(url: str, reason: str) -> ToolError:
+    return ToolError("forbidden_url", f"agent tabs cannot open {url}: {reason}", {"url": url, "reason": reason},
+                     status=403)
+
+
 class BrowserSession:
-    def __init__(self, profile_dir: Path, *, headless: bool, workbench_origin: str | None = None):
+    def __init__(self, profile_dir: Path, *, headless: bool, workbench_origin: str | None = None,
+                 allow_hosts: Iterable[str] = ()):
         self.profile_dir = Path(profile_dir)
         self.headless = headless
-        self._blocked = _loopback_variants(workbench_origin) if workbench_origin else set()
+        self._workbench = _loopback_variants(workbench_origin) if workbench_origin else set()
+        self._allow = {h.strip().lower() for h in allow_hosts if h.strip()}
+        self._dns: dict[str, tuple[float, bool]] = {}
         self._loop = asyncio.new_event_loop()
         self._thread: threading.Thread | None = None
         self._pw = None
         self._ctx = None
         self._pages: dict[str, Any] = {}  # tab id -> Page
         self._owners: dict[str, str | None] = {}
+        self._refused: dict[str, tuple[str, str]] = {}  # tab id -> (url, reason) of a refused main-frame hop
+        self._armed: set[str] = set()  # agent tabs whose CDP interceptor is active
+        self._arming: set[str] = set()
         self._ids = itertools.count(1)
         self._lock = threading.Lock()
 
@@ -84,17 +149,16 @@ class BrowserSession:
         self._pw = await async_playwright().start()
         try:
             self._ctx = await self._pw.chromium.launch_persistent_context(
-                str(self.profile_dir), headless=self.headless, accept_downloads=True, no_viewport=not self.headless)
+                str(self.profile_dir), headless=self.headless, accept_downloads=True, no_viewport=not self.headless,
+                service_workers="block", args=["--site-per-process"])  # isolation as in desktop Chrome, everywhere
         except BaseException:
             await self._pw.stop()
             self._pw = None
             raise
-        if self._blocked:
-            await self._ctx.route(re.compile(r"^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?/"),
-                                  self._guard_workbench)
+        await self._ctx.route("**/*", self._route)
         self._ctx.on("page", self._on_page)
         for p in self._ctx.pages:  # the window's initial blank tab: the human's until the Workbench claims it
-            self._register(p, HUMAN)
+            self._ensure_registered(p, HUMAN)
 
     def close(self) -> None:
         if self._ctx is not None:
@@ -110,6 +174,16 @@ class BrowserSession:
 
     def _stop_loop(self) -> None:
         if self._thread and self._thread.is_alive():
+            async def drain():
+                tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+                for t in tasks:
+                    t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+            try:
+                asyncio.run_coroutine_threadsafe(drain(), self._loop).result(10)
+            except (TimeoutError, RuntimeError):
+                pass
             self._loop.call_soon_threadsafe(self._loop.stop)
             self._thread.join(10)
 
@@ -120,44 +194,183 @@ class BrowserSession:
             raise ToolError("browser_unavailable", "the browser is not running", status=503)
         return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout_s)
 
-    # ---- ownership and isolation --------------------------------------------------------------------------------
-    def _register(self, page, owner: str | None) -> str:
+    # ---- destinations -------------------------------------------------------------------------------------------
+    async def _resolves_non_public(self, host: str) -> bool:
+        now = time.monotonic()
+        hit = self._dns.get(host)
+        if hit and hit[0] > now:
+            return hit[1]
+        try:
+            infos = await asyncio.get_running_loop().getaddrinfo(host, None, type=socket.SOCK_STREAM)
+            bad = any(_non_public(i[4][0]) for i in infos)
+        except OSError:  # unresolvable: the browser cannot reach it either
+            bad = False
+        self._dns[host] = (now + _DNS_TTL_S, bad)
+        return bad
+
+    async def _blocked_reason(self, url: str) -> str | None:
+        """Why an agent tab may not load ``url`` (None: allowed)."""
+        p = urlsplit(url)
+        scheme = {"ws": "http", "wss": "https"}.get(p.scheme, p.scheme)
+        if scheme not in ("http", "https"):
+            return f"scheme {p.scheme or '(none)'} is not allowed"
+        if f"{scheme}://{p.netloc}".lower() in self._workbench:
+            return "the Workbench is not reachable from agent tabs"
+        host = (p.hostname or "").lower()
+        if not host:
+            return "no host"
+        port = p.port or (443 if scheme == "https" else 80)
+        if host in self._allow or f"{host}:{port}" in self._allow:
+            return None
+        if host == "localhost" or host.endswith(".localhost") or _non_public(host):
+            return "local or private network address"
+        if not _is_ip(host) and await self._resolves_non_public(host):
+            return "host resolves to a local or private network address"
+        return None
+
+    # ---- request gating ------------------------------------------------------------------------------------------
+    async def _route(self, route, request) -> None:
+        """Context-wide gate (Playwright route). An armed agent tab is checked hop by hop by its CDP interceptor
+        before a request reaches this route; here we only stop what an unarmed agent page (a popup in its first
+        moments) would send, and check first hops of frames the page interceptor cannot see (cross-site iframes)."""
+        try:
+            page = request.frame.page
+        except PwError:  # no frame: be strict
+            page = None
+        tid = self._tid_of(page) if page is not None else None
+        was_armed = tid in self._armed
+        if page is not None and tid is None:
+            tid = await self._owner_tid(page)  # registers (and arms) a popup on its first request
+        if tid is not None and not self._is_agent(self._owners.get(tid)):
+            await route.fallback()
+            return
+        url = request.url
+        if urlsplit(url).scheme in ("data", "blob"):
+            await route.fallback()
+            return
+        if await self._blocked_reason(url) is not None:
+            await route.abort("accessdenied")
+            return
+        if (page is not None and request.resource_type == "document" and request.frame != page.main_frame
+                and site_of(url) != site_of(page.main_frame.url)):
+            await route.abort("accessdenied")  # cross-site frame: it would run outside the tab's interceptor
+            return
+        if not was_armed and page is not None and request.is_navigation_request() and request.frame == page.main_frame:
+            # sent before the tab's interceptor existed: drop it and load it again once every hop is checked
+            await route.abort("aborted")
+            asyncio.ensure_future(self._replay(tid, page, url))
+            return
+        await route.fallback()
+
+    async def _replay(self, tid: str, page, url: str) -> None:
+        while tid not in self._armed and tid in self._pages:
+            await asyncio.sleep(0.02)
+        try:
+            await page.goto(url)
+        except PwError:
+            pass
+
+    async def _arm(self, page, tid: str) -> None:
+        """Give an agent tab its CDP request interceptor: every request and every redirect hop is paused, checked and
+        continued on Chromium's own network stack (or refused)."""
+        cdp = await self._ctx.new_cdp_session(page)
+        tree = await cdp.send("Page.getFrameTree")
+        main_id = tree["frameTree"]["frame"]["id"]
+
+        async def paused(ev: dict) -> None:
+            url = ev["request"]["url"]
+            try:
+                reason = None if urlsplit(url).scheme in ("data", "blob") else await self._blocked_reason(url)
+                doc = ev.get("resourceType") == "Document"
+                if not reason and doc and ev.get("frameId") != main_id and site_of(url) != site_of(page.main_frame.url):
+                    reason = "cross-site frames are not loaded in agent tabs"
+                if reason:
+                    if doc and ev.get("frameId") == main_id:
+                        self._refused[tid] = (url, reason)
+                    await cdp.send("Fetch.failRequest", {"requestId": ev["requestId"], "errorReason": "AccessDenied"})
+                else:
+                    await cdp.send("Fetch.continueRequest", {"requestId": ev["requestId"]})
+            except PwError:  # the tab closed meanwhile
+                pass
+
+        cdp.on("Fetch.requestPaused", lambda ev: asyncio.ensure_future(paused(ev)))
+        await cdp.send("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]})
+        await page.route_web_socket(re.compile(r".*"), self._guard_ws)
+        self._armed.add(tid)
+
+    async def _guard_ws(self, ws) -> None:
+        if await self._blocked_reason(ws.url):
+            await ws.close(code=1008, reason="blocked by rk")
+            return
+        ws.connect_to_server()
+
+    async def _blank(self, page) -> None:
+        """Leave a refused page: wait out Chromium's own error navigation, then load about:blank."""
+        for _ in range(3):
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=5000)
+                await page.goto("about:blank", timeout=10000)
+                return
+            except PwError:
+                await asyncio.sleep(0.1)
+
+    async def _settle(self, tid: str, page) -> None:
+        """After an agent action: let the document load, then fail if a main-frame hop was refused."""
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=15000)
+        except PwError:
+            pass
+        if refused := self._refused.pop(tid, None):
+            await self._blank(page)
+            raise _forbidden(*refused)
+
+    # ---- ownership ----------------------------------------------------------------------------------------------
+    def _ensure_registered(self, page, owner: str | None) -> str:
+        """Register a page once (runs on the browser thread, no await inside: atomic there)."""
         with self._lock:
+            tid = next((t for t, p in self._pages.items() if p is page), None)
+            if tid is not None:
+                return tid
             tid = f"tab_{next(self._ids)}"
             self._pages[tid] = page
             self._owners[tid] = owner
         page.on("close", lambda _p, tid=tid: self._forget(tid))
         return tid
 
+    async def _owner_tid(self, page) -> str:
+        tid = self._tid_of(page)
+        if tid is not None:
+            return tid
+        opener = await page.opener()  # a popup: it belongs to its opener's owner
+        owner = self._owners.get(self._tid_of(opener)) if opener else HUMAN
+        return await self._adopt(page, HUMAN if owner == _WORKBENCH else owner)
+
+    async def _adopt(self, page, owner: str | None) -> str:
+        tid = self._ensure_registered(page, owner)
+        self._owners[tid] = owner
+        if self._is_agent(owner) and tid not in self._armed and tid not in self._arming:
+            self._arming.add(tid)
+            try:
+                await self._arm(page, tid)
+            finally:
+                self._arming.discard(tid)
+        return tid
+
     def _forget(self, tid: str) -> None:
         with self._lock:
             self._pages.pop(tid, None)
             self._owners.pop(tid, None)
+        self._refused.pop(tid, None)
+        self._armed.discard(tid)
 
     def _tid_of(self, page) -> str | None:
         return next((t for t, p in self._pages.items() if p is page), None)
 
+    def _is_agent(self, owner: str | None) -> bool:
+        return owner is not HUMAN and owner != _WORKBENCH
+
     async def _on_page(self, page) -> None:
-        if self._tid_of(page) is not None:
-            return
-        opener = await page.opener()
-        owner = self._owners.get(self._tid_of(opener)) if opener else HUMAN
-        self._register(page, HUMAN if owner == _WORKBENCH else owner)  # popups inherit their opener's owner
-
-    def _origin_blocked(self, url: str) -> bool:
-        p = urlsplit(url)
-        return f"{p.scheme}://{p.netloc}" in self._blocked
-
-    async def _guard_workbench(self, route, request) -> None:
-        if self._origin_blocked(request.url):
-            try:
-                owner = self._owners.get(self._tid_of(request.frame.page), "?")
-            except PwError:  # service worker or detached frame: no page to vouch for it
-                owner = "?"
-            if owner not in (_WORKBENCH, HUMAN):
-                await route.abort("accessdenied")
-                return
-        await route.fallback()
+        await self._owner_tid(page)
 
     def _check_owner(self, tab_id: str, owner: str | None):
         page = self._pages.get(tab_id)
@@ -174,25 +387,27 @@ class BrowserSession:
         async def go():
             human_blank = [p for t, p in self._pages.items() if self._owners[t] is HUMAN and p.url == "about:blank"]
             page = human_blank[0] if human_blank else await self._ctx.new_page()
-            tid = self._tid_of(page) or self._register(page, _WORKBENCH)
+            tid = self._ensure_registered(page, _WORKBENCH)
             self._owners[tid] = _WORKBENCH
             await page.goto(url)
 
         self.call(go(), 60)
 
     def new_tab(self, owner: str | None, url: str | None = None) -> Tab:
-        if url and owner is not HUMAN and self._origin_blocked(url):
-            raise ToolError("forbidden_url", "agent tabs cannot open the Workbench", {"url": url}, status=403)
-
         async def go():
+            if url and self._is_agent(owner) and (reason := await self._blocked_reason(url)):
+                raise _forbidden(url, reason)
             page = await self._ctx.new_page()
-            tid = self._tid_of(page) or self._register(page, owner)
-            self._owners[tid] = owner
+            tid = self._ensure_registered(page, owner)
+            self._owners[tid] = owner  # the 'page' event may have registered it as the human's first
+            await self._adopt(page, owner)
             if url:
                 await self._goto(page, url, "domcontentloaded", 45)
+                if self._is_agent(owner):
+                    await self._settle(tid, page)
             return Tab(tid, owner, page.url)
 
-        return self.call(go(), 90)
+        return self.call(go(), 120)
 
     def tabs(self, owner: str | None) -> list[Tab]:
         with self._lock:
@@ -221,33 +436,46 @@ class BrowserSession:
         tid = self.call(find(), 30)
         return Tab(tid, self._owners[tid], self._pages[tid].url) if tid else None
 
+    def close_tab(self, tab_id: str, owner: str | None) -> None:
+        page = self._check_owner(tab_id, owner)
+        self.call(page.close(), 30)
+
     # ---- page operations ----------------------------------------------------------------------------------------
     async def _goto(self, page, url: str, wait: str, timeout_s: float):
         try:
             return await page.goto(url, wait_until=wait, timeout=timeout_s * 1000)
         except PwError as e:
+            tid = self._tid_of(page)
+            if tid and (refused := self._refused.pop(tid, None)):
+                await self._blank(page)
+                raise _forbidden(*refused) from None
             raise ToolError("navigation_failed", f"could not load {url}: {str(e).splitlines()[0]}",
                             {"url": url}, status=502) from None
 
-    async def _state(self, page, response=None) -> PageState:
+    async def _state(self, page, status: int | None = None) -> PageState:
         try:
             content = await page.content()
         except PwError:  # navigation still in progress
             await page.wait_for_load_state("domcontentloaded", timeout=15000)
             content = await page.content()
-        return PageState(page.url, await page.title(), content, response.status if response else None)
+        return PageState(page.url, await page.title(), content, status)
+
+    async def _checked_state(self, tab_id: str, owner: str | None, page, status: int | None = None) -> PageState:
+        if self._is_agent(owner):
+            await self._settle(tab_id, page)
+        return await self._state(page, status)
 
     def goto(self, tab_id: str, owner: str | None, url: str, *, wait: str = "domcontentloaded",
              timeout_s: float = 45) -> PageState:
         page = self._check_owner(tab_id, owner)
-        if owner is not HUMAN and self._origin_blocked(url):
-            raise ToolError("forbidden_url", "agent tabs cannot open the Workbench", {"url": url}, status=403)
 
         async def go():
+            if self._is_agent(owner) and (reason := await self._blocked_reason(url)):
+                raise _forbidden(url, reason)
             resp = await self._goto(page, url, wait, timeout_s)
-            return await self._state(page, resp)
+            return await self._checked_state(tab_id, owner, page, resp.status if resp else None)
 
-        return self.call(go(), timeout_s + 30)
+        return self.call(go(), timeout_s + 60)
 
     def wait_for(self, tab_id: str, owner: str | None, selector: str, timeout_s: float = 20) -> bool:
         page = self._check_owner(tab_id, owner)
@@ -263,12 +491,14 @@ class BrowserSession:
 
     def content(self, tab_id: str, owner: str | None) -> PageState:
         page = self._check_owner(tab_id, owner)
-        return self.call(self._state(page), 30)
+        return self.call(self._checked_state(tab_id, owner, page), 60)
 
     def snapshot(self, tab_id: str, owner: str | None, *, screenshot_to: Path | None = None) -> dict:
         page = self._check_owner(tab_id, owner)
 
         async def go():
+            if self._is_agent(owner):
+                await self._settle(tab_id, page)
             ax = await page.locator("body").aria_snapshot(timeout=15000)
             if screenshot_to:
                 Path(screenshot_to).parent.mkdir(parents=True, exist_ok=True)
@@ -276,7 +506,7 @@ class BrowserSession:
             return {"tab": tab_id, "url": page.url, "title": await page.title(), "ax": ax,
                     "screenshot_path": str(screenshot_to) if screenshot_to else None}
 
-        return self.call(go(), 60)
+        return self.call(go(), 90)
 
     def act(self, tab_id: str, owner: str | None, action: dict) -> PageState:
         kind = action.get("kind")
@@ -310,32 +540,38 @@ class BrowserSession:
                 await page.wait_for_load_state("domcontentloaded", timeout=10000)
             except PwError:
                 pass
-            if self._origin_blocked(page.url) and owner is not HUMAN:
-                await page.goto("about:blank")
-                raise ToolError("forbidden_url", "agent tabs cannot open the Workbench", status=403)
-            return await self._state(page)
+            return await self._checked_state(tab_id, owner, page)
 
-        return self.call(go(), 90)
+        return self.call(go(), 120)
 
     def fetch_bytes(self, tab_id: str, owner: str | None, url: str, *, referer: str | None = None,
                     timeout_s: float = 60) -> tuple[int, str, bytes, str]:
         """GET with the browser's cookies (library proxy and publisher sessions): (status, content type, body,
-        final URL)."""
+        final URL). Redirects are followed here, hop by hop, so each hop is checked for agent owners."""
         self._check_owner(tab_id, owner)
-        if owner is not HUMAN and self._origin_blocked(url):
-            raise ToolError("forbidden_url", "agent tabs cannot open the Workbench", {"url": url}, status=403)
 
         async def go():
-            try:
-                r = await self._ctx.request.get(url, headers={"Referer": referer} if referer else None,
-                                                timeout=timeout_s * 1000, max_redirects=10)
-                return (r.status, (r.headers.get("content-type") or "").split(";")[0].strip(), await r.body(), r.url)
-            except PwError as e:
-                raise ToolError("download_failed", str(e).splitlines()[0], {"url": url}, status=502) from None
+            current = url
+            for _ in range(_MAX_HOPS + 1):
+                if self._is_agent(owner) and (reason := await self._blocked_reason(current)):
+                    raise _forbidden(current, reason)
+                try:
+                    r = await self._ctx.request.get(current, headers={"Referer": referer} if referer else None,
+                                                    timeout=timeout_s * 1000, max_redirects=0)
+                except PwError as e:
+                    raise ToolError("download_failed", str(e).splitlines()[0], {"url": current}, status=502) from None
+                location = r.headers.get("location")
+                if 300 <= r.status < 400 and location:
+                    current = urljoin(current, location)
+                    continue
+                return (r.status, (r.headers.get("content-type") or "").split(";")[0].strip(), await r.body(),
+                        current)
+            raise ToolError("download_failed", "too many redirects", {"url": url}, status=502)
 
         return self.call(go(), timeout_s + 30)
 
     def click_download(self, tab_id: str, owner: str | None, selector: str, *, timeout_s: float = 60) -> bytes | None:
+        """Click a link that starts a download (the request goes through the route, so it is checked)."""
         page = self._check_owner(tab_id, owner)
 
         async def go():
@@ -349,7 +585,3 @@ class BrowserSession:
                 return None
 
         return self.call(go(), timeout_s + 30)
-
-    def close_tab(self, tab_id: str, owner: str | None) -> None:
-        page = self._check_owner(tab_id, owner)
-        self.call(page.close(), 30)

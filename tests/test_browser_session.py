@@ -3,7 +3,7 @@ import pytest
 from rk.browser.session import BrowserSession
 from rk.tools.registry import ToolError
 
-from .browser_sites import Sites, html, pdf, tiny_pdf
+from .browser_sites import Sites, html, pdf, redirect, tiny_pdf
 
 pytestmark = pytest.mark.browser
 
@@ -22,6 +22,8 @@ def sites():
             lambda r: html("<title>cookie</title>", headers={"Set-Cookie": "sess=ok; Path=/; Max-Age=3600"}))
     s.route("/needs-cookie.pdf",
             lambda r: pdf(tiny_pdf()) if r.cookies.get("sess") == "ok" else html("<p>forbidden</p>", 403))
+    s.route("/needs-hop-cookie",
+            lambda r: html("ok") if r.cookies.get("hop") == "1" else html("<p>no cookie</p>", 403))
     yield s
     s.close()
 
@@ -34,8 +36,8 @@ def workbench():
     w.close()
 
 
-def launch(profile, workbench_origin=None) -> BrowserSession:
-    s = BrowserSession(profile, headless=True, workbench_origin=workbench_origin)
+def launch(profile, workbench_origin=None, allow=()) -> BrowserSession:
+    s = BrowserSession(profile, headless=True, workbench_origin=workbench_origin, allow_hosts=allow)
     try:
         s.start()
     except Exception as e:  # Chromium not installed for this Playwright version
@@ -45,12 +47,87 @@ def launch(profile, workbench_origin=None) -> BrowserSession:
     return s
 
 
+def host_of(site: Sites) -> str:
+    return site.base.removeprefix("http://")
+
+
 @pytest.fixture
-def session(tmp_path, workbench):
-    s = launch(tmp_path / "profile", workbench.base)
+def session(tmp_path, workbench, sites):
+    # fixture sites live on 127.0.0.1, which agent tabs may not reach unless the host is explicitly allowed
+    s = launch(tmp_path / "profile", workbench.base,
+               allow=[host_of(sites), host_of(sites).replace("127.0.0.1", "localhost"), host_of(workbench)])
     s.open_workbench(workbench.url("/ui/api/secret"))
     yield s
     s.close()
+
+
+@pytest.fixture
+def intranet():
+    i = Sites()
+    i.route("/admin", lambda r: html("<title>router admin</title>INTRANET"))
+    yield i
+    i.close()
+
+
+def test_agent_tab_refuses_cross_site_iframes(session, sites, intranet):
+    # localhost and 127.0.0.1 are different sites: with site isolation the iframe runs in its own renderer process,
+    # out of reach of the tab's request interceptor, so agent tabs refuse cross-site frames at every hop.
+    other = sites.base.replace("127.0.0.1", "localhost")
+    sites.route("/frame-redir", lambda r: redirect(intranet.url("/admin?frame")))
+    sites.route("/frame-inner", lambda r: html("<title>inner</title><img src='/img-redir'>"))
+    sites.route("/img-redir", lambda r: redirect(intranet.url("/pixel")))
+    sites.route("/hop-to-other", lambda r: redirect(other + "/frame-inner"))
+    sites.route("/frame-page", lambda r: html(
+        f"<title>framed</title><iframe src='{other}/frame-redir'></iframe><iframe src='{other}/frame-inner'></iframe>"
+        f"<iframe src='/hop-to-other'></iframe><iframe src='/form'></iframe>"))
+    t = session.new_tab("tsk_A", sites.url("/frame-page"))
+    session.call(session._page(t.id).wait_for_timeout(1000), 30)
+    frames = [f.url for f in session._page(t.id).frames]
+    assert intranet.hits == []
+    assert not any(u.startswith(other) for u in frames)  # no cross-site frame was committed
+    assert any(u.endswith("/form") for u in frames)  # same-site frames still load
+
+
+def test_agent_tab_blocks_private_destinations(session, sites, intranet):
+    t = session.new_tab("tsk_A", sites.url("/page"))
+    for url in [intranet.url("/admin"), intranet.url("/admin").replace("127.0.0.1", "localhost"), "http://10.1.2.3/",
+                "http://169.254.169.254/latest/meta-data/", "http://[::1]:9/", "file:///etc/hosts",
+                "chrome://settings"]:
+        with pytest.raises(ToolError) as e:
+            session.goto(t.id, "tsk_A", url)
+        assert e.value.type == "forbidden_url", url
+    with pytest.raises(ToolError):
+        session.new_tab("tsk_A", intranet.url("/admin"))
+    page = session._page(t.id)
+    session.call(page.evaluate("u => fetch(u, {mode: 'no-cors'}).catch(e => 0)", intranet.url("/admin")), 30)
+    session.call(page.wait_for_timeout(300), 30)
+    assert intranet.hits == []  # subresource requests from agent pages are aborted
+    sites.route("/redir", lambda r: redirect(sites.url("/redir2")))  # public -> public -> private
+    sites.route("/redir2", lambda r: redirect(intranet.url("/admin")))
+    with pytest.raises(ToolError) as e:
+        session.goto(t.id, "tsk_A", sites.url("/redir"))
+    assert e.value.type == "forbidden_url" and session.get_tab(t.id, "tsk_A").url == "about:blank"
+    with pytest.raises(ToolError) as e:
+        session.fetch_bytes(t.id, "tsk_A", sites.url("/redir"))
+    assert e.value.type == "forbidden_url"
+    sites.route("/img-page", lambda r: html("<title>img</title><img src='/redir'><iframe src='/redir'></iframe>"))
+    session.goto(t.id, "tsk_A", sites.url("/img-page"))
+    session.call(page.evaluate("u => { window.open(u); }", intranet.url("/admin?popup")), 30)
+    session.call(page.wait_for_timeout(800), 30)
+    assert intranet.hits == []  # no hop of any redirect chain, subresource or popup reached the private server
+    human = session.new_tab(None, intranet.url("/admin"))  # your own browsing is not restricted
+    assert session.content(human.id, None).title == "router admin"
+
+
+def test_agent_redirect_chain_to_public_page_works(session, sites):
+    sites.route("/hop", lambda r: redirect(sites.url("/hop2"), headers={"Set-Cookie": "hop=1; Path=/"}))
+    sites.route("/hop2", lambda r: redirect(sites.url("/form")))
+    t = session.new_tab("tsk_A", sites.url("/hop"))
+    state = session.content(t.id, "tsk_A")
+    assert (state.url, state.title) == (sites.url("/form"), "Form")
+    assert session.goto(t.id, "tsk_A", sites.url("/hop")).title == "Form"
+    status, *_ = session.fetch_bytes(t.id, "tsk_A", sites.url("/needs-hop-cookie"))
+    assert status == 200  # the cookie set on a redirect hop is kept
 
 
 def test_tabs_are_owned(session, sites):
@@ -113,10 +190,10 @@ def test_fetch_bytes_shares_cookies(session, sites):
 
 
 def test_profile_persists_cookie(tmp_path, sites):
-    s = launch(tmp_path / "p2")
+    s = launch(tmp_path / "p2", allow=[host_of(sites)])
     t = s.new_tab("tsk_A", sites.url("/set-cookie"))
     s.close()
-    s2 = launch(tmp_path / "p2")
+    s2 = launch(tmp_path / "p2", allow=[host_of(sites)])
     try:
         t = s2.new_tab("tsk_A", sites.url("/page"))
         status, *_ = s2.fetch_bytes(t.id, "tsk_A", sites.url("/needs-cookie.pdf"), referer=sites.url("/page"))
