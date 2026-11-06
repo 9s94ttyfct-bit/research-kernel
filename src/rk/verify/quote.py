@@ -24,12 +24,29 @@ def _boundary_ok(key: str, idx: int, q: str) -> bool:
     return (not q[0].isalnum() or not before.isalnum()) and (not q[-1].isalnum() or not after.isalnum())
 
 
-def find_verbatim(q: str, key: str) -> int:
-    """Index of the first word-bounded occurrence of normalized ``q`` in ``key``, or -1."""
-    idx = key.find(q)
+def find_verbatim(q: str, key: str, start: int = 0) -> int:
+    """Index of the first word-bounded occurrence of normalized ``q`` in ``key`` at or after ``start``, or -1."""
+    idx = key.find(q, start)
     while idx >= 0 and not _boundary_ok(key, idx, q):
         idx = key.find(q, idx + 1)
     return idx
+
+
+def verify_quote_at(quote: str, layer: TextLayer, page: int, start: int, end: int) -> QuoteResult:
+    """V-QUOTE at a known position: ok only when an occurrence ``verify_quote`` would accept (same normalization, line-end
+    hyphen keys and word boundaries) spans exactly ``[start:end]`` of the page text."""
+    q = normalize_query(quote)
+    pg = next((p for p in layer.pages if p.n == page), None)
+    if not q or pg is None:
+        return QuoteResult(ok=False)
+    for key in build_norm_keys(pg.text):
+        idx = find_verbatim(q, key.key)
+        while idx >= 0:
+            if (key.map[idx], key.map[idx + len(q) - 1] + 1) == (start, end):
+                return QuoteResult(ok=True, page=page, start=start, end=end, best_score=100.0,
+                                   best_snippet=key.key[idx: idx + len(q)])
+            idx = find_verbatim(q, key.key, idx + 1)
+    return QuoteResult(ok=False)
 
 
 def verify_quote(quote: str, layer: TextLayer) -> QuoteResult:

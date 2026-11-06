@@ -162,9 +162,50 @@ def test_quote_keeps_a_given_locator_that_holds_it(tmp_path):
     second = add_note(ps, lib, NoteIn(source_id=iid, kind="quote", text="Copper reduces CO2.", role_in_source="main",
                                       locator=Locator(page=2, start=0, end=19)), actor="a")
     assert second.locator == Locator(page=2, start=0, end=19)  # without the locator V-QUOTE finds page 1
+    assert list_notes(ps)[0]["verified"]["quote"] == {"ok": True, "page": 2, "located": "given"}
     wrong = add_note(ps, lib, NoteIn(source_id=iid, kind="quote", text="Silver does not.", role_in_source="main",
                                      locator=Locator(page=2, start=0, end=19)), actor="a")
     assert wrong.locator == Locator(page=1, start=20, end=36)  # a locator that does not hold the quote is replaced
     with pytest.raises(NoteRejected):
         add_note(ps, lib, NoteIn(source_id=iid, kind="quote", text="Gold is inert.", role_in_source="main",
                                  locator=Locator(page=2, start=0, end=19)), actor="a")
+
+
+def _one_page(tmp_path, text: str):
+    ps = ProjectStore(tmp_path / "p", "prj_T")
+    lib = Library(ps)
+    iid = lib.add_item(ItemIn(title="One page", year=2020), added_by="human", actor="u").item_id
+    _record_snapshot(ps, iid, text.encode(), TextLayer(source_kind="html", pages=[Page(n=1, text=text)], sha256=""),
+                     "html", None, "u")
+    return ps, lib, iid
+
+
+def _quote(ps, lib, iid, text, loc=None):
+    return add_note(ps, lib, NoteIn(source_id=iid, kind="quote", text=text, role_in_source="main", locator=loc),
+                    actor="a")
+
+
+def test_a_given_locator_cannot_cut_into_a_word(tmp_path):
+    ps, lib, iid = _one_page(tmp_path, "The drug was ineffective in trials.")
+    for loc in (None, Locator(page=1, start=15, end=35)):  # 'effective in trials.' inside 'ineffective'
+        with pytest.raises(NoteRejected) as e:
+            _quote(ps, lib, iid, "effective in trials.", loc)
+        assert e.value.reason == "quote_not_found"
+    with pytest.raises(NoteRejected):  # nor end inside one: 'The drug was ineff' at [0:18]
+        _quote(ps, lib, iid, "The drug was ineff", Locator(page=1, start=0, end=18))
+    assert list_notes(ps) == []
+
+
+def test_a_given_locator_with_the_wrong_quote_text_is_relocated(tmp_path):
+    ps, lib, iid = _one_page(tmp_path, "Aspirin works. Aspirin works in trials.")
+    r = _quote(ps, lib, iid, "Aspirin works.", Locator(page=1, start=15, end=29))  # [15:29] is 'Aspirin works '
+    assert r.locator == Locator(page=1, start=0, end=14) and r.verified["quote"]["located"] == "search"
+
+
+def test_a_given_locator_accepts_a_line_end_hyphen_like_v_quote(tmp_path):
+    text = "The treat-\nment works well."
+    ps, lib, iid = _one_page(tmp_path, text)
+    found = _quote(ps, lib, iid, "treatment works well.")  # V-QUOTE's own span for the dehyphenated quote
+    assert found.locator == Locator(page=1, start=4, end=len(text))
+    kept = _quote(ps, lib, iid, "treatment works well.", Locator(page=1, start=4, end=len(text)))
+    assert kept.locator == found.locator and kept.verified["quote"]["located"] == "given"

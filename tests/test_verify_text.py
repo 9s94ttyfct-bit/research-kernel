@@ -6,7 +6,7 @@ from rk.text.layer import normalize_query
 from rk.text.pdf import extract_pdf
 from rk.verify.hedge import check_hedge, hedge_level
 from rk.verify.paraphrase import check_paraphrase
-from rk.verify.quote import verify_quote
+from rk.verify.quote import verify_quote, verify_quote_at
 
 from .conftest import DOCS, GOLD
 from .gold_sources import SOURCES, layer
@@ -35,6 +35,28 @@ def test_quote_locator_points_to_text():
 
 def test_empty_quote_not_ok():
     assert not verify_quote("   ", extract_pdf(DOCS / "two_pages.pdf")).ok
+
+
+@pytest.mark.parametrize(("doc", "quote"), [
+    ("hyphen.pdf", "fact-checking"), ("hyphen.pdf", "evidence"), ("hyphen.pdf", '"quoted" claims'),
+    ("hyphen.pdf", "matter - and errors persist"), ("ligature.pdf", "The finding was robust"),
+    ("two_pages.pdf", "contains the target phrase about copper catalysts"),
+])
+def test_quote_at_accepts_exactly_the_span_verify_quote_finds(doc, quote):
+    L = extract_pdf(DOCS / doc)
+    r = verify_quote(quote, L)
+    assert r.ok and verify_quote_at(quote, L, r.page, r.start, r.end).ok
+    assert not verify_quote_at(quote, L, r.page, r.start + 1, r.end).ok  # a shifted span is not the occurrence
+    assert not verify_quote_at(quote, L, r.page + 1, r.start, r.end).ok
+
+
+def test_quote_at_keeps_the_word_boundary_rule():
+    from rk.text.layer import Page, TextLayer
+
+    L = TextLayer(source_kind="html", pages=[Page(n=1, text="The drug was ineffective in trials.")], sha256="")
+    assert not verify_quote("effective in trials.", L).ok
+    assert not verify_quote_at("effective in trials.", L, 1, 15, 35).ok
+    assert verify_quote_at("ineffective in trials.", L, 1, 13, 35).ok
 
 
 def test_paraphrase_thresholds():
