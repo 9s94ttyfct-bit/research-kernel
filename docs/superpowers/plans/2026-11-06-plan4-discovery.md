@@ -28,7 +28,7 @@
 ## Global Constraints
 
 - All Plan 1–3 constraints. Git identity repo-local `9s94ttyfct-bit`; no personal paths or hostnames in commits or fixtures.
-- **Tests:** no network and no models. Role tasks go through `TaskExecutor` (tests use `ScriptedExecutor`); sources go through `DiscoverySources` (tests use `FakeSources`). Real drivers and APIs only in the Task 12 demo.
+- **Tests:** no network and no models. Role tasks go through `TaskExecutor` (tests use `ScriptedExecutor`); sources go through `DiscoverySources` (tests use `FakeSources`). Real drivers and APIs only in the Task 12 demo and other live runs. There, the models under test use **Claude Haiku 5.5** for the Anthropic-vendor roles (user rule 2026-11-06: cost); judges stay on other vendors.
 - **Stage order** (§7.3): `intake → landscape → gaps → topics → question` for every paper type. The later stages per type are listed in the stage graph and shown as "Plan 5", never runnable.
 - **Back-edges** (§7.1): `gaps → landscape`, `topics → gaps`, `question → topics`; a rerun of the same stage counts as the edge `X → X`. Each edge is allowed **2** times per project (§7.2). The third: P2 → `stage_blocked` checkpoint for you; P1 → the stage's `degrade` (delete or narrow content, re-validate, continue; recorded as `stage.degraded` for the limitations section).
 - **Budgets** (§7.2): role-task retries 3 (already in `run_task`); at most **40 role tasks per open stage (landscape, gaps, topics) per run session**; wall clock **12 h per run session** → `paused_budget`. `rk run resume` starts a new session. One run per project at a time. D1 calls have no budget.
@@ -467,7 +467,7 @@ New tables (all `CREATE TABLE IF NOT EXISTS`, all in `PROJECTION_TABLES`):
 **Files:** Create `docs/demo/plan4-discovery.md`. Modify `README.md`.
 
 - [ ] **Step 1:**
-  1. Check `rk providers`, and set drivers to available ones (the generator vendor must differ from both judges).
+  1. Check `rk providers`, and set drivers to available ones. Anthropic-vendor roles (lead, scout, reader, gapminer, ideator) run on Claude Haiku 5.5 to save cost (user rule 2026-11-06), e.g. `omp_gateway:anthropic/claude-haiku-5-5` with `omp_gateway = true`. Judges stay on other vendors, so the generator vendor differs from both judges.
   2. Live D2 on a scratch project: intake (critical_review, d2, collab), then `rk run perovskite --until question` with the query "perovskite solar cell stability".
   3. Record:
      - the clusters (counts, verified sources);
