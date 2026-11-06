@@ -37,6 +37,12 @@ class Settings(BaseModel):
     drivers: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_DRIVERS))
     calls_per_hour: dict[str, int] = Field(default_factory=lambda: {"claude_cli": 30, "codex_cli": 20})
     cli_paths: dict[str, str] = Field(default_factory=dict)
+    # ---- V-SUPPORT (spec §9.1); calibrated values and their record replace the initial thresholds ----
+    support_tau_hi: float = 0.85
+    support_tau_lo: float = 0.15
+    support_min_judges: int = 2  # spec §8.1: one cross-vendor vote is not enough to pass
+    support_model: str = "lytang/MiniCheck-Flan-T5-Large"
+    support_calibration: dict | None = None
 
 
 def api_key(s: Settings, provider: Literal["anthropic", "openai", "ollama"]) -> str | None:

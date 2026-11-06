@@ -24,6 +24,7 @@ from rk.sources.resolver import resolve, search
 from rk.tools.registry import CallContext, Tool, ToolError, ToolRegistry
 from rk.verify.records import verify_item
 from rk.verify.retract import FLAGGED, retraction_status
+from rk.verify.support import verify_support
 from rk.workspace import Kernel
 
 
@@ -389,10 +390,17 @@ def build_registry(k: Kernel) -> ToolRegistry:
     class VerifyArgs(BaseModel):
         project: str
         target_id: str
+        target_type: Literal["item", "claim"] = "item"
 
-    @tool("rk_verify", "Run V-REF and V-RETRACT on a library item.", VerifyArgs, True)
+    @tool("rk_verify", "Verify a library item (V-REF, V-RETRACT) or a claim (V-SUPPORT, V-NUM).", VerifyArgs, True)
     def _verify(ctx: CallContext, a: VerifyArgs) -> Out:
         ps, lib = _project(k, a.project)
+        if a.target_type == "claim":
+            try:
+                r = verify_support(k, reg, ps, a.target_id, actor=ctx.actor)
+            except KeyError as e:
+                raise ToolError("not_found", f"no claim {a.target_id}", status=404) from e
+            return Out(support=r.model_dump(mode="json"))
         ref, ret = verify_item(ps, lib, k.ctx(), a.target_id, actor=ctx.actor)
         return Out(ref=ref.model_dump(mode="json"), retraction=ret.model_dump())
 
