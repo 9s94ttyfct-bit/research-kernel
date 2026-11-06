@@ -142,7 +142,7 @@ def project_status(slug: Optional[str] = typer.Argument(None), as_json: bool = J
         typer.echo(f"{d['project']}: {d['title']}\n  items={d['items']} snapshots={d['snapshots']} notes={d['notes']} "
                    f"verifications={d['verifications']} events={d['events']}\n  event chain: {chain}")
         if d["flagged_items"]:
-            typer.echo(f"  flagged (retracted/withdrawn/EoC): {', '.join(d['flagged_items'])}")
+            typer.echo(f"  flagged (retracted/withdrawn/partial/EoC): {', '.join(d['flagged_items'])}")
 
     _out(r, as_json, render)
 

@@ -14,7 +14,7 @@ from rk.store.events import Event, NewEvent
 from rk.store.project import ProjectStore
 from rk.store.projections import projection
 from rk.verify.ref import CitedRef, RefResult, compare
-from rk.verify.retract import RetractionInfo, retraction_status
+from rk.verify.retract import FLAGGED, RetractionInfo, retraction_status
 
 FLAG_COLLECTION = "Retracted / EoC"
 
@@ -53,7 +53,7 @@ def verify_item(ps: ProjectStore, lib: Library, ctx: SourceContext, item_id: str
     lib.update(item_id, ref_status=ref.verdict, retraction=ret.status, actor=actor)
     record_verification(ps, "item", item_id, "V-REF", ref.verdict, ref.details, actor=actor)
     record_verification(ps, "item", item_id, "V-RETRACT", ret.status, ret.model_dump(), actor=actor)
-    if ret.status in ("retracted", "withdrawn", "eoc"):
+    if ret.status in FLAGGED:
         cols = lib.ensure_default_collections(actor=actor)
         lib.collect(item_id, cols[FLAG_COLLECTION], actor=actor, actor_kind="kernel")
     return ref, ret

@@ -74,7 +74,8 @@ class Item(ItemIn):
     added_by: Literal["human", "agent"]
     src_type: Literal["primary", "secondary", "tertiary", "unknown"] = "unknown"
     stance: Literal["supports", "challenges", "neutral", "unknown"] = "unknown"
-    retraction: Literal["none", "retracted", "withdrawn", "eoc", "corrected", "unknown"] = "unknown"
+    retraction: Literal["none", "retracted", "withdrawn", "partial_retraction", "eoc", "corrected", "unknown"] = \
+        "unknown"
     ref_status: Literal["unverified", "pass", "mismatch", "not_found", "page_metadata_only"] = "unverified"
     tags: list[str] = Field(default_factory=list)
     collection_ids: list[str] = Field(default_factory=list)

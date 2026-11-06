@@ -8,18 +8,21 @@ from pydantic import BaseModel
 
 from rk.sources.resolver import ResolvedWork
 
-RetractionStatus = Literal["none", "retracted", "withdrawn", "eoc", "corrected", "unknown"]
+RetractionStatus = Literal["none", "retracted", "withdrawn", "partial_retraction", "eoc", "corrected", "unknown"]
 
 _UPDATE_MAP: dict[str, RetractionStatus] = {
     "retraction": "retracted",
     "withdrawal": "withdrawn",
     "removal": "withdrawn",
+    "partial_retraction": "partial_retraction",
     "expression_of_concern": "eoc",
     "correction": "corrected",
     "erratum": "corrected",
     "corrigendum": "corrected",
 }
-_PRIORITY: list[RetractionStatus] = ["retracted", "withdrawn", "eoc", "corrected"]
+_PRIORITY: list[RetractionStatus] = ["retracted", "withdrawn", "partial_retraction", "eoc", "corrected"]
+# statuses that put an item into the flag collection and project-status warnings
+FLAGGED: frozenset[str] = frozenset({"retracted", "withdrawn", "partial_retraction", "eoc"})
 
 
 class RetractionInfo(BaseModel):

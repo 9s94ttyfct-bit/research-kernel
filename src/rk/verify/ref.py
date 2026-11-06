@@ -43,9 +43,20 @@ def _title_score(a: str, b: str) -> float:
 
 
 def _author_match(cited: str, family: str) -> bool:
-    fam = re.sub(r"[^a-z]", "", _fold(family))
-    tokens = {re.sub(r"[^a-z]", "", t) for t in re.split(r"[\s,]+", _fold(cited))}
-    return bool(fam) and fam in tokens
+    """True when the record's family name appears in the cited author string: as a contiguous run of word tokens
+    ('van der Berg' in 'J. van der Berg'), joined ('vanderberg'), or — for scripts written without spaces (CJK) —
+    as a substring."""
+    fam = re.findall(r"\w+", _fold(family))
+    if not fam:
+        return False
+    toks = re.findall(r"\w+", _fold(cited))
+    n = len(fam)
+    if any(toks[i : i + n] == fam for i in range(len(toks) - n + 1)):
+        return True
+    joined = "".join(fam)
+    if joined in toks:
+        return True
+    return not joined.isascii() and joined in "".join(toks)
 
 
 def compare(cited: CitedRef, resolved: ResolvedWork | None) -> RefResult:

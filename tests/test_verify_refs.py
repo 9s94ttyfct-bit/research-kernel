@@ -8,11 +8,12 @@ from rk.config import Settings
 from rk.library.models import Creator, Ids, ItemIn
 from rk.library.service import Library
 from rk.net.http import HttpClient
-from rk.sources.resolver import SourceContext
+from rk.sources.crossref import Update
+from rk.sources.resolver import ResolvedWork, SourceContext
 from rk.store.project import ProjectStore
 from rk.verify.records import FLAG_COLLECTION, verify_item
-from rk.verify.ref import CitedRef, verify_reference
-from rk.verify.retract import retraction_status
+from rk.verify.ref import CitedRef, _author_match, verify_reference
+from rk.verify.retract import FLAGGED, retraction_status
 
 from .conftest import GOLD
 
@@ -56,3 +57,27 @@ def test_verify_item_flags_wakefield(tmp_path, source_ctx):
     assert lib.collection_by_name(FLAG_COLLECTION) in item.collection_ids
     rows = ps.db.execute("SELECT verifier, verdict FROM verifications WHERE target_id=? ORDER BY verifier", (iid,)).fetchall()
     assert [tuple(r) for r in rows] == [("V-REF", "pass"), ("V-RETRACT", "retracted")]
+
+
+@pytest.mark.parametrize(("cited", "family", "ok"), [
+    ("J. van der Berg", "van der Berg", True),
+    ("Vanderberg, J.", "van der Berg", True),
+    ("Müller, K.", "Muller", True),
+    ("王小明", "王", True),
+    ("Berg, J.", "van der Berg", False),
+    ("Li, X.", "Lin", False),
+    ("Smithson", "Smith", False),
+])
+def test_author_match(cited, family, ok):
+    assert _author_match(cited, family) is ok
+
+
+def _resolved(*types: str) -> ResolvedWork:
+    return ResolvedWork(item=ItemIn(title="t"), sources_used=["crossref"],
+                        retraction_updates=[Update(type=t, source="publisher", doi="10.1/x") for t in types])
+
+
+def test_partial_retraction_is_flagged_and_ranked():
+    assert retraction_status(_resolved("correction", "partial_retraction")).status == "partial_retraction"
+    assert retraction_status(_resolved("partial_retraction", "retraction")).status == "retracted"
+    assert "partial_retraction" in FLAGGED and "corrected" not in FLAGGED

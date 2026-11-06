@@ -15,7 +15,7 @@ from rk.sources.identifiers import Identifier, parse_identifier
 from rk.sources.resolver import resolve, search
 from rk.tools.registry import CallContext, Tool, ToolError, ToolRegistry
 from rk.verify.records import verify_item
-from rk.verify.retract import retraction_status
+from rk.verify.retract import FLAGGED, retraction_status
 from rk.workspace import Kernel
 
 ROLES = frozenset({"cli", "lead"})
@@ -77,7 +77,7 @@ def build_registry(k: Kernel) -> ToolRegistry:
     def _status(ctx: CallContext, a: ProjectArg) -> Out:
         ps, lib = _project(k, a.project)
         count = lambda t: ps.db.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]  # noqa: E731
-        flagged = [i.id for i in lib.list() if i.retraction in ("retracted", "withdrawn", "eoc")]
+        flagged = [i.id for i in lib.list() if i.retraction in FLAGGED]
         return Out(project=a.project, title=ps.meta("title"), items=count("items"), snapshots=count("snapshots"),
                    notes=count("notes"), verifications=count("verifications"), events=count("events"),
                    flagged_items=flagged, chain=ps.log.verify_chain().model_dump())
