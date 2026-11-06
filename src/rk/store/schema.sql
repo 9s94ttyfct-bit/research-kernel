@@ -246,6 +246,15 @@ CREATE TABLE IF NOT EXISTS exploration_rounds (
     created  TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS run_tasks (
+    task_id TEXT PRIMARY KEY,
+    run_id  TEXT,
+    session INTEGER,
+    stage   TEXT NOT NULL,
+    attempt INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS run_tasks_stage ON run_tasks(run_id, session, stage);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(
     item_id UNINDEXED, title, abstract, creators, notes, fulltext
 );

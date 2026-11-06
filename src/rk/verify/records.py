@@ -30,7 +30,8 @@ def record_verification(ps: ProjectStore, target_type: str, target_id: str, veri
     return vid
 
 
-def _best_identifier(ids) -> str | None:
+def best_identifier(ids) -> str | None:
+    """The identifier an item resolves by: DOI, then PMID, arXiv, PMCID, OpenAlex."""
     for k in ("doi", "pmid", "arxiv", "pmcid", "openalex"):
         v = getattr(ids, k)
         if v:
@@ -41,7 +42,7 @@ def _best_identifier(ids) -> str | None:
 def verify_item(ps: ProjectStore, lib: Library, ctx: SourceContext, item_id: str, *,
                 actor: str) -> tuple[RefResult, RetractionInfo]:
     item = lib.get(item_id)
-    ident = _best_identifier(item.ids)
+    ident = best_identifier(item.ids)
     cited = CitedRef(identifier=ident, title=item.title, first_author=item.creators[0].family if item.creators else None,
                      year=item.year)
     if ident is None:

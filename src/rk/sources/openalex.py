@@ -125,9 +125,20 @@ def search(http: HttpClient, query: str, *, api_key: str | None, per_page: int =
     return [work_to_item(w) for w in _list(http, _params(api_key, search=query, per_page=per_page, filter=flt))]
 
 
-def cited_by(http: HttpClient, openalex_id: str, *, api_key: str | None, per_page: int = 25) -> list[ItemIn]:
-    rows = _list(http, _params(api_key, filter=f"cites:{openalex_id}", per_page=per_page))
+def cited_by(http: HttpClient, openalex_id: str, *, api_key: str | None, per_page: int = 25,
+             after_year: int | None = None) -> list[ItemIn]:
+    """Works citing ``openalex_id``; with ``after_year``, only those published in a later year."""
+    flt = f"cites:{openalex_id}" + (f",publication_year:>{after_year}" if after_year is not None else "")
+    rows = _list(http, _params(api_key, filter=flt, per_page=per_page))
     return [work_to_item(w).model_copy(update={"discovered_via": "forward"}) for w in rows]
+
+
+def year_counts(http: HttpClient, query: str, *, api_key: str | None) -> dict[int, int]:
+    """Works matching ``query`` per publication year (``group_by=publication_year``); unknown years are left out."""
+    data, _ = http.get_json(f"{BASE}/works", _params(api_key, search=query, group_by="publication_year"),
+                            budget_key=BUDGET)
+    counts = {int(g["key"]): int(g["count"]) for g in (data or {}).get("group_by", []) if str(g["key"]).isdigit()}
+    return dict(sorted(counts.items()))
 
 
 def referenced(http: HttpClient, work: OpenAlexWork, *, api_key: str | None, limit: int = 50) -> list[ItemIn]:

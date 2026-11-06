@@ -25,6 +25,14 @@ class CallCaps:
             return self._db.execute("SELECT COUNT(*) FROM call_log WHERE driver=? AND ts>?",
                                     (driver, self._clock() - WINDOW_S)).fetchone()[0]
 
+    def wait_s(self, driver: str) -> float:
+        """Seconds until the driver's oldest call in the window leaves it (0 when the window holds none)."""
+        with self._lock:
+            now = self._clock()
+            oldest = self._db.execute("SELECT MIN(ts) FROM call_log WHERE driver=? AND ts>?",
+                                      (driver, now - WINDOW_S)).fetchone()[0]
+        return 0.0 if oldest is None else max(0.0, oldest + WINDOW_S - now)
+
     def acquire(self, driver: str, cap: int | None) -> bool:
         """Record one call if the driver is under its cap for the last hour; uncapped drivers always pass."""
         if cap is None:
