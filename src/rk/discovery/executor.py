@@ -10,10 +10,8 @@ from pydantic import BaseModel
 
 from rk.llm.runner import run_task
 from rk.llm.types import Provider, TaskResult
+from rk.orchestrator.graph import OPEN_STAGES
 from rk.orchestrator.state import record_run_task, tasks_used
-
-# Stages whose role tasks count against the per-session budget (spec §7.2).
-OPEN_STAGES = frozenset({"landscape", "gaps", "topics"})
 
 
 class BudgetExceeded(Exception):

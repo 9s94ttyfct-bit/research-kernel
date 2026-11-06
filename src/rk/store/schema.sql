@@ -255,6 +255,37 @@ CREATE TABLE IF NOT EXISTS run_tasks (
 );
 CREATE INDEX IF NOT EXISTS run_tasks_stage ON run_tasks(run_id, session, stage);
 
+-- Orchestrator (spec §7): one row per discovery stage, back-edge and run. `guidance` is the guidance requested for
+-- the current attempt (kept to rerun it when interrupted) or, once reopened, for the next one; `waiting_checkpoint`
+-- the checkpoint the current attempt waits on (checkpoints have no attempt).
+CREATE TABLE IF NOT EXISTS stages (
+    stage              TEXT PRIMARY KEY,
+    status             TEXT NOT NULL,          -- running | waiting | reopened | passed
+    attempt            INTEGER NOT NULL,
+    passed_attempt     INTEGER,
+    last_gate          TEXT,                   -- JSON {attempt, ok, failures}
+    waiting_checkpoint TEXT,
+    guidance           TEXT,
+    updated            TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS back_edges (
+    edge    TEXT PRIMARY KEY,                  -- "from->to"
+    count   INTEGER NOT NULL DEFAULT 0,
+    allowed INTEGER NOT NULL DEFAULT 0         -- extra uses granted past the limit
+);
+
+CREATE TABLE IF NOT EXISTS runs (
+    id              TEXT PRIMARY KEY,
+    status          TEXT NOT NULL,
+    until           TEXT NOT NULL,
+    session         INTEGER NOT NULL,
+    session_started REAL NOT NULL,             -- epoch seconds
+    started         REAL NOT NULL,
+    ended           REAL,
+    reason          TEXT
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(
     item_id UNINDEXED, title, abstract, creators, notes, fulltext
 );

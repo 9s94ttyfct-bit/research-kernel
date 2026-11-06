@@ -15,7 +15,8 @@ PROJECTION_TABLES: tuple[str, ...] = (
     "meta", "items", "item_ids", "tags", "collections", "collection_items",
     "attachments", "snapshots", "notes", "verifications", "items_fts", "injection_flags", "checkpoints", "tasks",
     "claims", "evidence", "edges", "objections", "browse_log",
-    "search_log", "clusters", "gaps", "topics", "rqs", "hypotheses", "exploration_rounds", "run_tasks",
+    "search_log", "clusters", "gaps", "topics", "rqs", "hypotheses", "exploration_rounds", "run_tasks", "stages",
+    "back_edges", "runs",
 )
 
 # Modules that register projections; imported before replay so rebuild sees every handler.
