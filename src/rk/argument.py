@@ -19,6 +19,9 @@ from rk.verify.hedge import hedge_level
 
 ClaimKind = Literal["fact", "definition", "cause", "evaluation", "policy"]
 ClaimStatus = Literal["draft", "supported", "uncertain", "unsupported", "contradicted", "withdrawn"]
+# Which part of the kernel wrote a claim: the argument (the default), or gap mining, whose claims are evidence checks
+# of a candidate gap (a quoted finding checked against another source) and stay out of the argument's listings.
+ClaimOrigin = Literal["argument", "gaps"]
 EdgeType = Literal["reason_of", "evidence_of", "warrant_of", "objection_to", "response_to"]
 ObjectionCategory = Literal["problem", "soundness", "alternative", "other_cause", "counterexample", "definition"]
 CRITERIA = ("accurate", "precise", "sufficient", "representative", "authoritative", "clear", "relevant")
@@ -104,9 +107,13 @@ class ArgumentService:
             "SELECT data FROM objections WHERE target_id=? ORDER BY id", (claim_id,))]
         return c
 
-    def list_claims(self, status: str | None = None) -> list[dict]:
-        q = "SELECT data FROM claims" + (" WHERE status=?" if status else "") + " ORDER BY id"
-        return [json.loads(r["data"]) for r in self.ps.db.execute(q, (status,) if status else ())]
+    def list_claims(self, status: str | None = None, origin: ClaimOrigin = "argument") -> list[dict]:
+        """Claims of one origin (claims written before origins existed are argument claims), optionally by status."""
+        q = "SELECT data FROM claims WHERE COALESCE(json_extract(data, '$.origin'), 'argument')=?"
+        params: tuple = (origin,)
+        if status:
+            q, params = q + " AND status=?", (origin, status)
+        return [json.loads(r["data"]) for r in self.ps.db.execute(q + " ORDER BY id", params)]
 
     def generator_vendor(self, task_id: str | None, role: str) -> str | None:
         """Vendor of the model that wrote a claim: the task's driver vendor, ``human`` for the CLI, else unknown."""
@@ -121,10 +128,11 @@ class ArgumentService:
     def _ev(self, type_: str, entity: str, payload: dict, actor: str, kind: str) -> None:
         self.ps.apply(NewEvent(type=type_, entity_id=entity, actor_kind=kind, actor=actor, payload=payload))
 
-    def add_claim(self, c: ClaimIn, *, generator_vendor: str | None, actor: str, actor_kind: str = "agent") -> str:
+    def add_claim(self, c: ClaimIn, *, generator_vendor: str | None, actor: str, actor_kind: str = "agent",
+                  origin: ClaimOrigin = "argument") -> str:
         cid = new_id("clm")
         data = {**c.model_dump(), "id": cid, "hedge_level": hedge_level(c.text), "status": "draft",
-                "generator_vendor": generator_vendor}
+                "generator_vendor": generator_vendor, "origin": origin}
         self._ev("claim.added", cid, {"claim": data}, actor, actor_kind)
         return cid
 

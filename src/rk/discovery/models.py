@@ -85,6 +85,39 @@ class CellMatchOut(BaseModel):
     matches: list[str] = []
 
 
+class QuotedSource(BaseModel):
+    source_id: str
+    quote: str  # verbatim from the source's text layer
+
+
+class ContradictionOut(BaseModel):
+    cluster_id: str
+    a: QuotedSource
+    b: QuotedSource  # a finding that contradicts a's, from another work of the same cluster
+
+
+class ContradictionsOut(BaseModel):
+    """The GapMiner's contradicting pairs (gaps: contradiction)."""
+    pairs: list[ContradictionOut]
+
+
+class CitedWork(BaseModel):
+    """The cited work: its item id when it is one of the given works, else its DOI."""
+    item_id: str | None = None
+    doi: str | None = None
+
+
+class DistortionOut(BaseModel):
+    citing_source_id: str
+    quote: str  # verbatim from the citing source's text layer: what it says the cited work found
+    cited: CitedWork
+
+
+class DistortionsOut(BaseModel):
+    """The GapMiner's statements about cited works (gaps: citation_distortion). The kernel picks the cited work's
+    passages itself (Plan 4 deviation 4), so the output carries no text from it."""
+    items: list[DistortionOut]
+
 
 class GapEvidence(BaseModel):
     note_ids: list[str] = []

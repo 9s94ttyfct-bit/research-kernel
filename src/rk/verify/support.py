@@ -82,7 +82,10 @@ def evidence_texts(claim: dict) -> list[str]:
 
 def verify_support(kernel, registry, ps, claim_id: str, *, actor: str, layer1=None,
                    judge_drivers: list[DriverSpec] | None = None, judge_providers: dict | None = None,
-                   min_judges: int | None = None) -> SupportResult:
+                   min_judges: int | None = None, checkpoint: bool = True) -> SupportResult:
+    """Check the claim against its linked evidence and record V-NUM, V-SUPPORT and the claim status. In collab mode an
+    ``uncertain`` verdict opens an ``uncertain_support`` checkpoint unless ``checkpoint`` is false (the gap miners:
+    their claims are evidence checks of a candidate gap, not claims of the argument)."""
     s = kernel.settings()
     tau_hi, tau_lo = s.support_tau_hi, s.support_tau_lo
     judged = {"tau_hi_judged": s.support_tau_hi_judged, "tau_lo_judged": s.support_tau_lo_judged}
@@ -120,7 +123,7 @@ def verify_support(kernel, registry, ps, claim_id: str, *, actor: str, layer1=No
     vid = record_verification(ps, "claim", claim_id, "V-SUPPORT", result.verdict, result.model_dump(mode="json"),
                               actor=actor)
     svc.set_claim_status(claim_id, result.verdict, verification_id=vid, actor=actor)
-    if result.verdict == "uncertain" and (ps.meta("production_mode") or "collab") == "collab":
+    if checkpoint and result.verdict == "uncertain" and (ps.meta("production_mode") or "collab") == "collab":
         create_checkpoint(ps, "uncertain_support", f"Is this claim supported by its evidence?\n\n{claim['text']}",
                           {"claim_id": claim_id, "p": result.p, "opinions": [o.model_dump() for o in result.opinions],
                            "reason": result.reason or result.layer1_reason}, stage="argue", actor=actor)

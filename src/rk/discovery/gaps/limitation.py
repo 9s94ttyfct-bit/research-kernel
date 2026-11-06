@@ -6,8 +6,11 @@ from __future__ import annotations
 
 from rk.discovery.gaps import (
     FAIL,
+    READ_TOOLS,
     Checks,
     MinerResult,
+    cluster_of,
+    fulltext_clusters,
     gap_check_search,
     gap_check_sources,
     in_record,
@@ -28,7 +31,6 @@ from rk.store.project import ProjectStore
 
 MAX_LIMITATIONS = 6
 POSITION_MIN = 0.6  # the quote starts at >= 60% of the text layer
-READ_TOOLS = ["rk_text_read", "rk_text_find"]
 CHECKS = ("quote_note", "position", "later_search", "later_judgement")
 
 MINE_TASK = (
@@ -132,21 +134,7 @@ def _check(ctx: StageContext, it: LimitationOut, cluster_of: dict[str, str]) -> 
 
 
 def mine(ctx: StageContext, clusters: list[dict]) -> MinerResult:
-    cluster_of: dict[str, str] = {}
-    for c in clusters:
-        for iid in c["item_ids"]:
-            cluster_of.setdefault(iid, c["id"])
-    sources = []
-    for c in clusters:
-        items = []
-        for iid in c["representative_ids"]:
-            snap = latest_snapshot(ctx.ps, iid)
-            if snap is not None:
-                it = ctx.lib.get(iid)
-                items.append({"item_id": iid, "title": it.title, "year": it.year, "pages": len(snap[1].pages)})
-        if items:
-            sources.append({"cluster_id": c["id"], "label": c["label"], "description": c["description"],
-                            "works": items})
+    sources = fulltext_clusters(ctx, clusters)
     if not sources:
         return MinerResult(problems=["no representative work has a full text for the limitation miner"])
 
@@ -154,4 +142,5 @@ def mine(ctx: StageContext, clusters: list[dict]) -> MinerResult:
                            stage=ctx.stage, attempt=ctx.attempt, tools=READ_TOOLS)
     if not res.ok or res.output is None:
         return MinerResult(problems=[f"the gapminer gave no limitations ({res.error})"])
-    return MinerResult(gaps=[_check(ctx, it, cluster_of) for it in res.output.items[:MAX_LIMITATIONS]])
+    of = cluster_of(clusters)
+    return MinerResult(gaps=[_check(ctx, it, of) for it in res.output.items[:MAX_LIMITATIONS]])

@@ -6,18 +6,17 @@ from rk.config import Settings, save_settings
 from rk.fulltext import attach_pdf
 from rk.library.models import Creator, ItemIn
 from rk.llm.drivers import DriverSpec
-from rk.llm.types import Availability, TaskResult
 from rk.notes import NoteIn, add_note
 from rk.store.projections import rebuild
 from rk.tools.builtin import build_registry
 from rk.tools.registry import CallContext
 from rk.verify import support
-from rk.verify.judge import JudgeOpinion, JudgeVerdict
-from rk.verify.minicheck import Layer1Score, Layer1Unavailable
+from rk.verify.judge import JudgeOpinion
 from rk.verify.support import combine, verify_support
 from rk.workspace import Kernel
 
 from .conftest import DOCS
+from .discovery_fakes import FakeJudge, FakeLayer1
 
 QUOTE = "about copper catalysts for CO2 reduction"
 CODEX, LUNA_A = DriverSpec("codex_cli"), DriverSpec("omp_gateway", "anthropic/claude-haiku-4-5")
@@ -69,31 +68,6 @@ def test_judged_thresholds_never_tighten():
     assert combine(0.9, ops, tau_hi=0.85, tau_lo=0.15, min_judges=2, tau_hi_judged=0.95) == "supported"
     neg = [op("unsupported"), op("unsupported")]
     assert combine(0.1, neg, tau_hi=0.85, tau_lo=0.15, min_judges=2, tau_lo_judged=0.05) == "unsupported"
-
-
-class FakeLayer1:
-    def __init__(self, p=None, fail=False):
-        self.p, self.fail = p, fail
-
-    def score(self, doc, claim):
-        if self.fail:
-            raise Layer1Unavailable("no torch")
-        return Layer1Score(p=self.p, chunk_index=0, n_chunks=1, model="fake")
-
-
-class FakeJudge:
-    kind = "chat_api"
-    model = "fake"
-    vendor = "x"
-
-    def __init__(self, label, spans):
-        self.v = JudgeVerdict(label=label, quoted_spans=spans)
-
-    def available(self):
-        return Availability(ok=True)
-
-    def run(self, spec, ctx):
-        return TaskResult(spec.task_id, True, self.v, "", "fake", "fake", 0.1, None)
 
 
 @pytest.fixture

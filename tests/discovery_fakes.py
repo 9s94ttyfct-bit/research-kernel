@@ -13,8 +13,10 @@ from rk.fulltext import FulltextResult, _record_snapshot, latest_snapshot
 from rk.ids import new_id
 from rk.library.models import ItemIn
 from rk.llm.drivers import DriverSpec
-from rk.llm.types import TaskResult
+from rk.llm.types import Availability, TaskResult
 from rk.text.layer import Page, TextLayer
+from rk.verify.judge import JudgeVerdict
+from rk.verify.minicheck import Layer1Score, Layer1Unavailable
 from rk.verify.retract import RetractionInfo
 from rk.workspace import Kernel
 
@@ -63,6 +65,38 @@ class ScriptedExecutor:
                           spec.model, 0.0, None)
 
 
+class FakeLayer1:
+    """A V-SUPPORT layer 1 that returns ``p`` (or is unavailable with ``fail``); the scored inputs are in ``calls``."""
+
+    def __init__(self, p=None, fail=False):
+        self.p, self.fail = p, fail
+        self.calls: list[tuple[str, str]] = []
+
+    def score(self, doc, claim):
+        self.calls.append((doc, claim))
+        if self.fail:
+            raise Layer1Unavailable("no torch")
+        return Layer1Score(p=self.p, chunk_index=0, n_chunks=1, model="fake")
+
+
+class FakeJudge:
+    """A judge provider that always returns ``label`` with ``spans``; the task inputs it saw are in ``inputs``."""
+    kind = "chat_api"
+    model = "fake"
+    vendor = "x"
+
+    def __init__(self, label, spans):
+        self.v = JudgeVerdict(label=label, quoted_spans=spans)
+        self.inputs: list[dict] = []
+
+    def available(self):
+        return Availability(ok=True)
+
+    def run(self, spec, ctx):
+        self.inputs.append(spec.inputs)
+        return TaskResult(spec.task_id, True, self.v, "", "fake", "fake", 0.1, None)
+
+
 class FakeSources:
     """A deterministic ``DiscoverySources``. ``search`` returns, for every key of ``items`` that occurs in the query
     (case-insensitive), its items, in key order, de-duplicated by title, with ``after_year`` only those with
@@ -70,17 +104,18 @@ class FakeSources:
     by item title and need ``lib`` (the project library): ``statuses`` (``verify`` result, also written to the item's
     ``ref_status``; default ``default_status``), ``retractions``, ``citing`` (``cited_by``, filtered to
     ``year > after_year``) and ``fulltexts`` (pages recorded as the text layer by ``fulltext``). ``year_counts`` is keyed
-    by query. Every call is recorded in ``calls``."""
+    by query. ``resolvable`` maps an identifier to the work ``add`` adds to the library (unknown: ``None``). Every call
+    is recorded in ``calls``."""
 
     def __init__(self, items: dict[str, list[ItemIn]], *, lib=None, s2: bool = False,
                  statuses: dict[str, str] | None = None, default_status: str = "pass",
                  year_counts: dict[str, dict[int, int]] | None = None,
                  retractions: dict[str, RetractionInfo] | None = None, citing: dict[str, list[ItemIn]] | None = None,
-                 fulltexts: dict[str, list[str]] | None = None):
+                 fulltexts: dict[str, list[str]] | None = None, resolvable: dict[str, ItemIn] | None = None):
         self.items, self.lib, self.s2 = items, lib, s2
         self.statuses, self.default_status = statuses or {}, default_status
         self.counts, self.retractions = year_counts or {}, retractions or {}
-        self.citing, self.fulltexts = citing or {}, fulltexts or {}
+        self.citing, self.fulltexts, self.resolvable = citing or {}, fulltexts or {}, resolvable or {}
         self.calls: list[tuple] = []
 
     def _title(self, item_id: str) -> str:
@@ -129,3 +164,11 @@ class FakeSources:
             return False
         add_text_layer(self.lib.ps, item_id, pages)
         return True
+
+    def add(self, identifier: str) -> str | None:
+        self.calls.append(("add", identifier))
+        item = self.resolvable.get(identifier)
+        if item is None:
+            return None
+        return self.lib.add_item(item.model_copy(update={"discovered_via": "backward"}), added_by="agent",
+                                 actor="fake-sources").item_id

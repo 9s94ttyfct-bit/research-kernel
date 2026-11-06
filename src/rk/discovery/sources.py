@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from rk.discovery.store import log_search
 from rk.fulltext import fulltext_with_fallback, latest_snapshot
+from rk.library.add import add_source
 from rk.library.models import ItemIn
 from rk.library.service import Library
 from rk.sources import openalex, resolver
@@ -38,6 +39,8 @@ class DiscoverySources(Protocol):
     def retraction(self, item_id: str) -> RetractionInfo: ...
 
     def fulltext(self, item_id: str) -> bool: ...
+
+    def add(self, identifier: str) -> str | None: ...
 
 
 class KernelSources:
@@ -110,6 +113,17 @@ class KernelSources:
         except ToolError:  # the browser got no PDF, or the page needs you (a login_wait checkpoint is open)
             return False
         return got is not None
+
+    def add(self, identifier: str) -> str | None:
+        """Add a cited work by its identifier (the ``rk_source_add`` path, ``discovered_via="backward"``, not verified
+        here); its item id, or ``None`` when the identifier is malformed or resolves to nothing."""
+        _, lib = self._lib()
+        try:
+            res = add_source(self.kernel.ctx(), lib, identifier=identifier, item=None, discovered_via="backward",
+                             added_by="agent", actor=self.actor)
+        except ToolError:
+            return None
+        return res.item_id
 
 
 def _add_and_log(ps: ProjectStore, hits: list[ItemIn], *, discovered_via: str, stage: str, attempt: int,

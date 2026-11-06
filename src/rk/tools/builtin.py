@@ -8,7 +8,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from rk.argument import ArgumentService, ClaimIn, EdgeIn, EvidenceIn, ObjectionIn
+from rk.argument import (
+    ArgumentService,
+    ClaimIn,
+    ClaimOrigin,
+    EdgeIn,
+    EvidenceIn,
+    ObjectionIn,
+)
 from rk.browser.service import BrowserService
 from rk.browser.tools import register_browser_tools
 from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
@@ -16,6 +23,7 @@ from rk.discovery.models import Intake
 from rk.discovery.store import record_intake
 from rk.flags import flag_injection
 from rk.fulltext import FulltextResult, attach_pdf, fulltext_with_fallback
+from rk.library.add import add_source
 from rk.library.formats import FORMATS
 from rk.library.models import ItemIn
 from rk.llm.drivers import DriverSpec, available_all
@@ -233,10 +241,12 @@ def build_registry(k: Kernel, browser: Callable[[], BrowserService | None] | Non
     class ClaimList(BaseModel):
         project: str
         status: Literal["draft", "supported", "uncertain", "unsupported", "contradicted", "withdrawn"] | None = None
+        origin: ClaimOrigin = "argument"
 
-    @tool("rk_claim_list", "List claims, optionally by status.", ClaimList, False)
+    @tool("rk_claim_list", "List the argument's claims (origin 'gaps': gap-mining checks), optionally by status.",
+          ClaimList, False)
     def _claim_list(ctx: CallContext, a: ClaimList) -> Out:
-        return Out(claims=_arg(a.project).list_claims(a.status))
+        return Out(claims=_arg(a.project).list_claims(a.status, a.origin))
 
     # ---- search & resolve ----
     class SearchArgs(BaseModel):
@@ -293,22 +303,8 @@ def build_registry(k: Kernel, browser: Callable[[], BrowserService | None] | Non
     @tool("rk_source_add", "Add a work to the project library (by identifier or metadata) and verify it.", SourceAdd, True)
     def _add(ctx: CallContext, a: SourceAdd) -> Out:
         ps, lib = _project(k, a.project)
-        item = a.item
-        if a.identifier:
-            try:
-                ident = parse_identifier(a.identifier)
-            except ValueError as e:
-                raise ToolError("invalid", str(e)) from e
-            r = resolve(k.ctx(), ident) if ident.kind not in ("url", "isbn") else None
-            if r is None and item is None:
-                raise ToolError("not_found", f"{a.identifier} not found; supply item metadata to add it anyway",
-                                status=404)
-            if r is not None:
-                item = r.item
-        if item is None:
-            raise ToolError("invalid", "need identifier or item")
-        res = lib.add_item(item.model_copy(update={"discovered_via": a.discovered_via}), added_by=_added_by(ctx),
-                           actor=ctx.actor)
+        res = add_source(k.ctx(), lib, identifier=a.identifier, item=a.item, discovered_via=a.discovered_via,
+                         added_by=_added_by(ctx), actor=ctx.actor)
         if a.stance:
             lib.update(res.item_id, stance=a.stance, actor=ctx.actor)
         verdict: dict[str, Any] = {}

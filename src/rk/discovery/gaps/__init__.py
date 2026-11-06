@@ -1,26 +1,35 @@
 """The gaps stage: the GapsWorker fetches the full text of each landscape cluster's representative works, runs every
 gap miner over the clusters and stores each gap with its checks (``verified`` only when every check passed). Gate: at
-least one verified gap in the attempt. A verified gap means the evidence chain was checked, worded "not found within
-the searched scope", never "novel"."""
+least one verified gap in the attempt. A verified gap means the evidence chain was checked; a claim of absence is
+worded "not found within the searched scope", never "novel"."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
+from pydantic import ValidationError
+
+from rk.argument import ArgumentService, ClaimIn, EvidenceIn
 from rk.discovery.models import Gap
 from rk.discovery.sources import log_and_search
 from rk.discovery.store import add_gap, clusters, gaps, intake_of
+from rk.fulltext import latest_snapshot
 from rk.library.service import Library
+from rk.llm.drivers import DriverSpec
+from rk.notes import NoteIn, NoteRejected, add_note
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.orchestrator.state import stage_row
 from rk.store.project import ProjectStore
 from rk.verify.judge import span_in
+from rk.verify.support import SupportResult, verify_support
 
 FULLTEXT_PER_CLUSTER = 3  # representative works per cluster whose full text is fetched before mining
 GAP_CHECK_SOURCES = 2  # a gap-check search runs on the first two sources
 GAP_CHECK_LIMIT = 10
 ABSTRACT_CHARS = 600
+READ_TOOLS = ["rk_text_read", "rk_text_find"]  # the gapminer reads the full texts it mines
+SUPPORT_JUDGES = 2  # V-SUPPORT in gap mining needs two agreeing cross-vendor judges
 PASS, FAIL, SKIPPED = "pass", "fail", "skipped"
 
 
@@ -47,8 +56,9 @@ class Checks:
     def passed(self, name: str) -> None:
         self.values[name] = PASS
 
-    def failed(self, name: str, reason: str) -> None:
-        self.values[name] = FAIL
+    def failed(self, name: str, reason: str, *, value: str = FAIL) -> None:
+        """``value`` names the failure when a more specific word fits (e.g. ``"missing"``); never ``"pass"``."""
+        self.values[name] = value
         self.reasons[name] = reason
 
     @property
@@ -98,15 +108,96 @@ def gap_check_search(ctx: StageContext, query: str, *, after_year: int | None = 
     return found
 
 
+def cluster_of(clusters: list[dict]) -> dict[str, str]:
+    """Each cluster item's (first) cluster id."""
+    out: dict[str, str] = {}
+    for c in clusters:
+        for iid in c["item_ids"]:
+            out.setdefault(iid, c["id"])
+    return out
+
+
+def fulltext_clusters(ctx: StageContext, clusters: list[dict], *, min_works: int = 1) -> list[dict]:
+    """Clusters as role-task input with their representative works that have a text layer (id, title, year, page
+    count); only clusters with at least ``min_works`` such works."""
+    out = []
+    for c in clusters:
+        items = []
+        for iid in c["representative_ids"]:
+            snap = latest_snapshot(ctx.ps, iid)
+            if snap is not None:
+                it = ctx.lib.get(iid)
+                items.append({"item_id": iid, "title": it.title, "year": it.year, "pages": len(snap[1].pages)})
+        if len(items) >= min_works:
+            out.append({"cluster_id": c["id"], "label": c["label"], "description": c["description"], "works": items})
+    return out
+
+
+def quote_note(ctx: StageContext, checks: Checks, name: str, source_id: str, quote: str, *, role_in_source: str,
+               keywords: list[str]) -> str | None:
+    """Keep ``quote`` as a quote note of the source (V-QUOTE); the check ``name`` records whether it passed. The note
+    id, or ``None``."""
+    try:
+        note = add_note(ctx.ps, ctx.lib, NoteIn(source_id=source_id, kind="quote", text=quote,
+                                                role_in_source=role_in_source, keywords=keywords),
+                        actor=ctx.actor, actor_kind="agent")
+    except NoteRejected as e:
+        checks.failed(name, e.reason)
+        return None
+    except (KeyError, ValueError) as e:  # an unknown source or an empty quote
+        checks.failed(name, str(e))
+        return None
+    checks.passed(name)
+    return note.note_id
+
+
+def title_year(lib: Library, item_id: str) -> str:
+    it = lib.get(item_id)
+    return f"{it.title} ({it.year or 'n.d.'})"
+
+
+class SupportMiner:
+    """A miner that checks a quoted statement against evidence notes with V-SUPPORT (two agreeing cross-vendor judges,
+    no ``uncertain_support`` checkpoint). ``layer1``, ``judge_drivers`` and ``judge_providers`` replace the configured
+    layer-1 model and judges (tests)."""
+
+    def __init__(self, layer1=None, judge_drivers: list[DriverSpec] | None = None,
+                 judge_providers: dict | None = None):
+        self.layer1, self.judge_drivers, self.judge_providers = layer1, judge_drivers, judge_providers
+
+    def check_support(self, ctx: StageContext, text: str, note_ids: list[str], *, generator_vendor: str | None,
+                      checks: Checks, data: dict) -> SupportResult | None:
+        """Store ``text`` as a gap-mining claim (written by ``generator_vendor``) with the notes as its evidence and run
+        V-SUPPORT on it; records ``claim_id``, ``verdict``, ``p`` and ``opinions`` in ``data``. The check
+        ``support`` is left to the caller (which verdict passes depends on the gap)."""
+        svc = ArgumentService(ctx.ps)
+        try:
+            claim = ClaimIn(text=text)
+        except ValidationError as e:  # longer than a claim may be
+            checks.failed("support", f"the quote cannot be checked as a claim ({e.errors()[0]['msg']})")
+            return None
+        cid = svc.add_claim(claim, generator_vendor=generator_vendor, actor=ctx.actor, origin="gaps")
+        svc.link_evidence(EvidenceIn(claim_id=cid, note_ids=note_ids), actor=ctx.actor)
+        res = verify_support(ctx.kernel, ctx.registry, ctx.ps, cid, actor=ctx.actor, layer1=self.layer1,
+                             judge_drivers=self.judge_drivers, judge_providers=self.judge_providers,
+                             min_judges=SUPPORT_JUDGES, checkpoint=False)
+        data.update(claim_id=cid, verdict=res.verdict, p=res.p,
+                    opinions=[o.model_dump(mode="json") for o in res.opinions])
+        return res
+
+
 def default_miners() -> list[Miner]:
     """The gap miners in the order the worker runs them."""
     from rk.discovery.gaps import (  # the miners import this module
+        contradiction,
+        distortion,
         limitation,
         maphole,
         retraction,
     )
 
-    return [limitation.mine, retraction.mine, maphole.mine]
+    return [limitation.mine, retraction.mine, maphole.mine, contradiction.ContradictionMiner(),
+            distortion.DistortionMiner()]
 
 
 class GapsWorker:

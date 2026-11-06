@@ -47,11 +47,18 @@ class Library:
         return self.ps.db  # per-thread connection
 
     # ---- reads ----
-    def _find_existing(self, item: ItemIn) -> str | None:
-        for kind, value in item.ids.pairs():
+    def find_by_ids(self, ids: Ids) -> str | None:
+        """The item holding any of these identifiers (normalized), or ``None``."""
+        for kind, value in ids.normalized().pairs():
             r = self.db.execute("SELECT item_id FROM item_ids WHERE kind=? AND value=?", (kind, value)).fetchone()
             if r:
                 return r["item_id"]
+        return None
+
+    def _find_existing(self, item: ItemIn) -> str | None:
+        found = self.find_by_ids(item.ids)
+        if found:
+            return found
         tn = normalize_title(item.title)
         if tn and item.year is not None:
             r = self.db.execute("SELECT id FROM items WHERE title_norm=? AND year=?", (tn, item.year)).fetchone()

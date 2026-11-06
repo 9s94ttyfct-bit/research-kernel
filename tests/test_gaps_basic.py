@@ -2,7 +2,15 @@ import json
 
 import pytest
 
-from rk.discovery.gaps import GapsWorker, MinerResult, limitation, maphole, retraction
+from rk.discovery.gaps import (
+    GapsWorker,
+    MinerResult,
+    contradiction,
+    distortion,
+    limitation,
+    maphole,
+    retraction,
+)
 from rk.discovery.models import Cluster, Gap, GapEvidence
 from rk.discovery.store import add_cluster, add_gap, gaps, searches
 from rk.library.models import Ids, ItemIn
@@ -330,8 +338,9 @@ def test_gaps_degrade_fails_with_reason(env):
     assert w.on_answer(_ctx(k, ps, lib, ScriptedExecutor({}), FakeSources({})), {"id": "chk_x"}).status == "done"
 
 
-def test_gaps_is_a_default_worker_with_three_miners(env):
+def test_gaps_is_a_default_worker_with_five_miners(env):
     k, _, _ = env
     w = Orchestrator(k, None).workers["gaps"]
     assert isinstance(w, GapsWorker)
-    assert w.miners == [limitation.mine, retraction.mine, maphole.mine]
+    assert w.miners[:3] == [limitation.mine, retraction.mine, maphole.mine]
+    assert [type(m) for m in w.miners[3:]] == [contradiction.ContradictionMiner, distortion.DistortionMiner]
