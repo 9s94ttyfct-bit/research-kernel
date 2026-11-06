@@ -88,6 +88,18 @@ def test_agent_tab_refuses_cross_site_iframes(session, sites, intranet):
     assert any(u.endswith("/form") for u in frames)  # same-site frames still load
 
 
+@pytest.mark.parametrize("frame,top,ok", [
+    ("https://bar.github.io/x", "https://foo.github.io/", False),  # different sites (private PSL suffix)
+    ("https://cdn.publisher.example/x", "https://www.publisher.example/a", False),  # same site, other host: refused
+    ("https://www.publisher.example/viewer", "https://www.publisher.example/a", True),
+    ("http://www.publisher.example/viewer", "https://www.publisher.example/a", False),  # scheme differs
+])
+def test_agent_frame_rule_is_same_host(frame, top, ok):
+    from rk.browser.session import frame_allowed
+
+    assert frame_allowed(frame, top) is ok
+
+
 def test_agent_tab_blocks_private_destinations(session, sites, intranet):
     t = session.new_tab("tsk_A", sites.url("/page"))
     for url in [intranet.url("/admin"), intranet.url("/admin").replace("127.0.0.1", "localhost"), "http://10.1.2.3/",

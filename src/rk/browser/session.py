@@ -88,7 +88,9 @@ _SECOND_LEVEL = frozenset({"ac", "co", "com", "edu", "gov", "net", "org", "or", 
 
 
 def registrable_domain(host: str) -> str:
-    """Approximate eTLD+1 (``www.sciencedirect.com`` -> ``sciencedirect.com``, ``x.ac.uk`` -> ``x.ac.uk``)."""
+    """Approximate eTLD+1 (``www.sciencedirect.com`` -> ``sciencedirect.com``, ``x.ac.uk`` -> ``x.ac.uk``). Used to
+    key per-publisher download quotas only, never for a security decision (it does not know private suffixes such
+    as ``github.io``)."""
     host = host.lower().strip(".")
     if _is_ip(host):
         return host
@@ -98,9 +100,11 @@ def registrable_domain(host: str) -> str:
     return ".".join(labels[-2:])
 
 
-def site_of(url: str) -> str:
-    p = urlsplit(url)
-    return f"{p.scheme}://{registrable_domain(p.hostname or '')}"
+def frame_allowed(frame_url: str, top_url: str) -> bool:
+    """Agent tabs load subframe documents only from the top-level page's own scheme and host: such frames are always
+    same-site, so they stay in the tab's renderer process and inside its request interceptor."""
+    f, t = urlsplit(frame_url), urlsplit(top_url)
+    return f.scheme == t.scheme and (f.hostname or "").lower() == (t.hostname or "").lower()
 
 
 def _forbidden(url: str, reason: str) -> ToolError:
@@ -252,8 +256,8 @@ class BrowserSession:
             await route.abort("accessdenied")
             return
         if (page is not None and request.resource_type == "document" and request.frame != page.main_frame
-                and site_of(url) != site_of(page.main_frame.url)):
-            await route.abort("accessdenied")  # cross-site frame: it would run outside the tab's interceptor
+                and not frame_allowed(url, page.main_frame.url)):
+            await route.abort("accessdenied")  # frame from another host: it could run outside the tab's interceptor
             return
         if not was_armed and page is not None and request.is_navigation_request() and request.frame == page.main_frame:
             # sent before the tab's interceptor existed: drop it and load it again once every hop is checked
@@ -282,8 +286,8 @@ class BrowserSession:
             try:
                 reason = None if urlsplit(url).scheme in ("data", "blob") else await self._blocked_reason(url)
                 doc = ev.get("resourceType") == "Document"
-                if not reason and doc and ev.get("frameId") != main_id and site_of(url) != site_of(page.main_frame.url):
-                    reason = "cross-site frames are not loaded in agent tabs"
+                if not reason and doc and ev.get("frameId") != main_id and not frame_allowed(url, page.main_frame.url):
+                    reason = "frames from other hosts are not loaded in agent tabs"
                 if reason:
                     if doc and ev.get("frameId") == main_id:
                         self._refused[tid] = (url, reason)
