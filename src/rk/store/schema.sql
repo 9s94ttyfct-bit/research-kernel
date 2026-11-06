@@ -127,6 +127,32 @@ CREATE TABLE IF NOT EXISTS tasks (
     finished TEXT
 );
 
+CREATE TABLE IF NOT EXISTS claims (
+    id     TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    data   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS evidence (
+    id       TEXT PRIMARY KEY,
+    claim_id TEXT NOT NULL,
+    data     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS evidence_claim ON evidence(claim_id);
+
+CREATE TABLE IF NOT EXISTS edges (
+    id      TEXT PRIMARY KEY,
+    from_id TEXT NOT NULL,
+    to_id   TEXT NOT NULL,
+    data    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS objections (
+    id        TEXT PRIMARY KEY,
+    target_id TEXT NOT NULL,
+    data      TEXT NOT NULL
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(
     item_id UNINDEXED, title, abstract, creators, notes, fulltext
 );

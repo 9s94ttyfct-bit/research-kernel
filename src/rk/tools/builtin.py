@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from rk.argument import ArgumentService, ClaimIn, EdgeIn, EvidenceIn, ObjectionIn
 from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
 from rk.flags import flag_injection
 from rk.fulltext import FulltextResult, attach_pdf, fetch_fulltext
@@ -144,6 +145,76 @@ def build_registry(k: Kernel) -> ToolRegistry:
         except ValueError as e:
             raise ToolError("invalid", str(e), status=409) from e
         return Out(checkpoint=get_checkpoint(ps, a.checkpoint_id))
+
+    # ---- argument: claims, evidence, edges, objections ----
+    def _arg(project: str) -> ArgumentService:
+        ps, _ = _project(k, project)
+        return ArgumentService(ps)
+
+    def _arg_call(fn):
+        try:
+            return fn()
+        except KeyError as e:
+            raise ToolError("not_found", f"unknown id {e.args[0]}", status=404) from e
+        except ValueError as e:
+            raise ToolError("invalid", str(e)) from e
+
+    class ClaimAdd(BaseModel):
+        project: str
+        claim: ClaimIn
+
+    @tool("rk_claim_add", "Add an atomic claim (status starts as draft; only V-SUPPORT changes it).", ClaimAdd, True)
+    def _claim_add(ctx: CallContext, a: ClaimAdd) -> Out:
+        svc = _arg(a.project)
+        vendor = svc.generator_vendor(ctx.task_id, ctx.role)
+        cid = svc.add_claim(a.claim, generator_vendor=vendor, actor=ctx.actor, actor_kind=_added_by(ctx))
+        return Out(claim_id=cid, generator_vendor=vendor)
+
+    class EvidenceLink(BaseModel):
+        project: str
+        evidence: EvidenceIn
+
+    @tool("rk_evidence_link", "Link verified notes to a claim as its evidence.", EvidenceLink, True)
+    def _evidence_link(ctx: CallContext, a: EvidenceLink) -> Out:
+        svc = _arg(a.project)
+        return Out(evidence_id=_arg_call(lambda: svc.link_evidence(a.evidence, actor=ctx.actor,
+                                                                   actor_kind=_added_by(ctx))))
+
+    class EdgeAdd(BaseModel):
+        project: str
+        edge: EdgeIn
+
+    @tool("rk_edge_add", "Add an argument edge (reason, evidence, warrant, objection, response).", EdgeAdd, True)
+    def _edge_add(ctx: CallContext, a: EdgeAdd) -> Out:
+        svc = _arg(a.project)
+        return Out(edge_id=_arg_call(lambda: svc.add_edge(a.edge, actor=ctx.actor, actor_kind=_added_by(ctx))))
+
+    class ObjectionAdd(BaseModel):
+        project: str
+        objection: ObjectionIn
+
+    @tool("rk_objection_add", "Record an objection to a claim, edge or piece of evidence.", ObjectionAdd, True)
+    def _objection_add(ctx: CallContext, a: ObjectionAdd) -> Out:
+        svc = _arg(a.project)
+        return Out(objection_id=_arg_call(lambda: svc.add_objection(a.objection, actor=ctx.actor,
+                                                                    actor_kind=_added_by(ctx))))
+
+    class ClaimGet(BaseModel):
+        project: str
+        claim_id: str
+
+    @tool("rk_claim_get", "A claim with its evidence notes and objections.", ClaimGet, False)
+    def _claim_get(ctx: CallContext, a: ClaimGet) -> Out:
+        svc = _arg(a.project)
+        return Out(claim=_arg_call(lambda: svc.get_claim(a.claim_id)))
+
+    class ClaimList(BaseModel):
+        project: str
+        status: Literal["draft", "supported", "uncertain", "unsupported", "contradicted", "withdrawn"] | None = None
+
+    @tool("rk_claim_list", "List claims, optionally by status.", ClaimList, False)
+    def _claim_list(ctx: CallContext, a: ClaimList) -> Out:
+        return Out(claims=_arg(a.project).list_claims(a.status))
 
     # ---- search & resolve ----
     class SearchArgs(BaseModel):
