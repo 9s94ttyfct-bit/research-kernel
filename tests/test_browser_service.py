@@ -221,6 +221,14 @@ def test_status_shows_only_the_callers_tabs(service, kernel, sites):
     assert {t["tab"] for t in service.status(HUMAN)["tabs"]} >= {mine, theirs, human}
 
 
+def test_browser_tools_through_registry(service, kernel, sites):
+    reg = build_registry(kernel, browser=lambda: service)
+    out = reg.call("rk_browser_open", {"project": "demo", "url": sites.url("/blog")}, SCOUT)
+    assert out["title"] == "Lab notebook: humidity tests"
+    status = reg.call("rk_browser_status", {"project": "demo"}, SCOUT)
+    assert status["running"] is True and [t["tab"] for t in status["tabs"]] == [out["tab"]]
+
+
 def test_browser_tools_unavailable_without_browser(kernel):
     reg = build_registry(kernel)
     with pytest.raises(BrowserUnavailable):

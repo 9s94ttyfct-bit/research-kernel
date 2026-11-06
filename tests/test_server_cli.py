@@ -29,6 +29,23 @@ def test_server_auth(tmp_home, replay_http):
     assert c.post("/api/tools/nope", json={"args": {}}, headers={"Authorization": "Bearer secret-token"}).status_code == 404
 
 
+def test_validation_error_with_object_input_is_reported_as_json(tmp_home, replay_http):
+    from pydantic import BaseModel
+
+    from rk.tools.registry import Tool
+
+    class Strict(BaseModel):
+        n: int
+
+    reg = build_registry(Kernel(tmp_home, http=replay_http))
+    reg.register(Tool(name="rk_bad_output", summary="returns an object the output model rejects", input_model=Strict,
+                      output_model=Strict, roles=frozenset({"cli"}), writes=False,
+                      handler=lambda ctx, a: object()))
+    c = TestClient(create_app(reg, "secret-token"))
+    r = c.post("/api/tools/rk_bad_output", json={"args": {"n": 1}}, headers={"Authorization": "Bearer secret-token"})
+    assert r.status_code == 422 and r.json()["error"]["type"] == "validation_error"
+
+
 def test_serve_lock(tmp_home):
     rt = acquire_serve_lock(tmp_home)
     try:
