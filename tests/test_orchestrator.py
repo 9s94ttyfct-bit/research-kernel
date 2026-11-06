@@ -14,6 +14,9 @@ from rk.checkpoints import (
     list_checkpoints,
 )
 from rk.discovery.executor import BudgetExceeded, RateCapped
+from rk.discovery.gaps import GapsWorker, MinerResult
+from rk.discovery.models import Gap, GapEvidence
+from rk.discovery.store import gaps
 from rk.orchestrator.engine import GateResult, IntakeWorker, Orchestrator, StageOutcome
 from rk.orchestrator.graph import DISCOVERY, OPEN_STAGES, stages_for
 from rk.orchestrator.state import (
@@ -323,15 +326,18 @@ def _restart(ps, run_id, clock):
 
 def test_rate_cap_waits_and_reruns_the_attempt(project):
     k, ps = project
-    landscape = FakeWorker(runs=[RateCapped("claude_cli", 120.0)])
+    landscape = FakeWorker(runs=[StageOutcome("rerun", reason="try harder"), RateCapped("claude_cli", 120.0)])
     o = _orch(k, _workers(landscape=landscape))
     run_id = start_run(ps, until="landscape", actor="tester", clock=Clock())
     assert o.step("demo", run_id, actor="tester") == "running"  # intake
+    assert o.step("demo", run_id, actor="tester") == "running"  # rerun: landscape->landscape
     assert o.step("demo", run_id, actor="tester") == "waiting_rate"
     assert run_row(ps, run_id)["status"] == "running"
     assert o.step("demo", run_id, actor="tester") == "done"
-    assert [c[:2] for c in landscape.calls] == [("run", 1), ("run", 2), ("gate", 2)]
-    assert edge_count(ps, "landscape->landscape") == 0
+    # the interrupted attempt 2 reruns as attempt 3 with its guidance, without another use of the edge
+    assert [c[:3] for c in landscape.calls] == [("run", 1, ""), ("run", 2, "try harder"), ("run", 3, "try harder"),
+                                                ("gate", 3)]
+    assert edge_count(ps, "landscape->landscape") == 1
 
 
 def test_on_answer_runs_again_after_a_rate_cap_and_settles_once(project):
@@ -495,6 +501,57 @@ def test_d1_degrade_failure_returns_failed(project):
     out = o.run_stage("demo", "landscape", actor="tester")
     assert (out.status, out.reason) == ("failed", "no cluster with 5 verified sources")
     assert current_stage(ps) == "landscape" and landscape.kinds().count("run") == 3
+
+
+@pytest.mark.parametrize("interruption", [RateCapped("claude_cli", 60.0), RuntimeError("the kernel crashed")])
+def test_d1_interrupted_attempt_reruns_as_a_new_attempt_without_an_edge(project, interruption):
+    k, ps = project
+    landscape = FakeWorker(runs=[interruption])
+    o = _orch(k, _workers(landscape=landscape))
+    o.run_stage("demo", "intake", actor="tester")
+    assert o.advance("demo", actor="tester").ok
+    with pytest.raises(type(interruption)):
+        o.run_stage("demo", "landscape", guidance="exclude animal studies", actor="tester")
+    assert o.run_stage("demo", "landscape", actor="tester").status == "done"
+    assert landscape.calls == [("run", 1, "exclude animal studies"), ("run", 2, "exclude animal studies")]
+    assert edge_count(ps, "landscape->landscape") == 0
+    # an attempt that finished is still rerun as a use of X->X
+    assert o.run_stage("demo", "landscape", actor="tester").status == "done"
+    assert edge_count(ps, "landscape->landscape") == 1 and latest_attempt(ps, "landscape") == 3
+
+
+def _one_gap(ctx, clusters):
+    return MinerResult(gaps=[(Gap(kind="evidence_map_hole", statement=f"hole of attempt {ctx.attempt}",
+                                  evidence=GapEvidence()), True, {"targeted_search": "pass"})])
+
+
+@pytest.mark.parametrize("mode", ["d1", "d2"])
+def test_interrupted_gaps_attempt_keeps_its_gaps_out_of_the_rerun(project, mode):
+    k, ps = project
+    interrupted: list[int] = []
+
+    def flaky(ctx, clusters):
+        if not interrupted:
+            interrupted.append(ctx.attempt)
+            raise RateCapped("claude_cli", 60.0)
+        return MinerResult()
+
+    o = _orch(k, {**_workers(), "gaps": GapsWorker(miners=[_one_gap, flaky])})
+    if mode == "d2":
+        run_id = start_run(ps, until="gaps", actor="tester", clock=Clock())
+        assert "waiting_rate" in _drive(o, run_id) and run_row(ps, run_id)["status"] == "done"
+    else:
+        for stage in ("intake", "landscape"):
+            o.run_stage("demo", stage, actor="tester")
+            assert o.advance("demo", actor="tester").ok
+        with pytest.raises(RateCapped):
+            o.run_stage("demo", "gaps", actor="tester")
+        assert o.run_stage("demo", "gaps", actor="tester").status == "done"
+        assert o.advance("demo", actor="tester").ok
+    assert interrupted == [1] and latest_attempt(ps, "gaps") == 2
+    assert [g["statement"] for g in gaps(ps, 1)] == ["hole of attempt 1"]
+    assert [g["statement"] for g in gaps(ps, 2)] == ["hole of attempt 2"]
+    assert edge_count(ps, "gaps->gaps") == 0
 
 
 def test_intake_worker(project):

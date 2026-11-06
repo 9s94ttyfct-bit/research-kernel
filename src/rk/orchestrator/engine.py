@@ -27,6 +27,7 @@ from rk.discovery.store import intake_of
 from rk.orchestrator.graph import BACK_EDGES, DISCOVERY, EDGE_LIMIT, edge_name
 from rk.orchestrator.state import (
     TERMINAL_RUN_STATES,
+    attempt_ran,
     current_stage,
     edge_row,
     latest_attempt,
@@ -35,6 +36,7 @@ from rk.orchestrator.state import (
     record_edge_taken,
     record_gate,
     record_passed,
+    record_ran,
     record_reopened,
     record_run_status,
     record_waiting,
@@ -156,10 +158,11 @@ class Orchestrator:
         """Run a new attempt of the current stage. ``guidance`` is asked for this attempt; without it the stage
         gets the guidance it was reopened with (or that of the attempt it replaces).
 
-        In D1 (no ``run_id``) running a stage that already has an attempt is a rerun, a use of the edge ``X->X``,
+        In D1 (no ``run_id``) running a stage whose last attempt finished is a rerun, a use of the edge ``X->X``,
         and a ``back_edge`` outcome uses its edge at once; both obey the per-project limit (§7.2): at the limit P2
         returns ``waiting_human`` on a ``stage_blocked`` checkpoint, P1 degrades (``done`` after the gate passes,
-        else ``failed``). With a ``run_id``, ``step`` settles every outcome."""
+        else ``failed``). An attempt that was interrupted (a rate cap or a crash) is not a rerun: it runs again as a
+        new attempt with the same guidance and uses no edge. With a ``run_id``, ``step`` settles every outcome."""
         ps, lib = self.kernel.project(project)
         worker = self._worker(stage)
         current = current_stage(ps)
@@ -178,10 +181,11 @@ class Orchestrator:
 
     def _d1_rerun(self, project: str, ps: ProjectStore, lib, stage: str, worker: Worker, *,
                   actor: str) -> StageOutcome | None:
-        """Count a D1 rerun of ``stage`` as ``X->X`` (a stage reopened by an edge already counted it). Returns
-        ``None`` to go on with the attempt, else the outcome to return instead."""
+        """Count a D1 rerun of ``stage`` as ``X->X`` (a stage reopened by an edge already counted it, and an
+        interrupted attempt is no rerun). Returns ``None`` to go on with the attempt, else the outcome to return
+        instead."""
         row = stage_row(ps, stage)
-        if row is None or row["status"] == "reopened":
+        if row is None or row["status"] == "reopened" or not attempt_ran(ps, stage, row["attempt"]):
             return None
         cid = row["waiting_checkpoint"]
         cp = get_checkpoint(ps, cid) if cid else None
@@ -200,7 +204,8 @@ class Orchestrator:
 
     def _attempt(self, project: str, ps: ProjectStore, lib, stage: str, worker: Worker, *, run_id: str | None,
                  guidance: str | None, actor: str, session: int | None = None) -> tuple[StageContext, StageOutcome]:
-        """Write ``stage.attempt`` (attempt + 1), run the worker and link a checkpoint wait to the attempt."""
+        """Write ``stage.attempt`` (attempt + 1), run the worker, record that the run returned (``stage.ran``; an
+        attempt without it was interrupted and is replaced by a new one) and link a checkpoint wait to the attempt."""
         row = stage_row(ps, stage)
         requested = guidance if guidance is not None else (row["guidance"] if row else None)
         attempt = latest_attempt(ps, stage) + 1
@@ -209,6 +214,7 @@ class Orchestrator:
         ctx = self._ctx(project, ps, lib, stage, attempt, run_id, composed, actor, session=session)
         outcome = worker.run(ctx)
         self._check(stage, outcome)
+        record_ran(ps, stage, attempt, outcome.status, outcome.reason, actor=actor)
         if outcome.status == "waiting_human":
             record_waiting(ps, stage, attempt, outcome.checkpoint_id, actor=actor)
         return ctx, outcome
@@ -249,7 +255,8 @@ class Orchestrator:
     def step(self, project: str, run_id: str, *, actor: str) -> str:
         """One unit of a D2 run: start (or rerun) the current stage's attempt, or apply the answer it waits on, and
         settle the outcome. Returns the run status, or ``waiting_rate`` when a driver is at its hourly cap (the run
-        stays ``running`` and the next step reruns the attempt)."""
+        stays ``running``; the next step runs the interrupted attempt again as a new attempt with the same guidance,
+        or applies the answer again)."""
         ps, lib = self.kernel.project(project)
         run = run_row(ps, run_id)
         if run is None:

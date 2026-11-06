@@ -52,6 +52,18 @@ def record_attempt(ps: ProjectStore, stage: str, attempt: int, *, run_id: str | 
                                        "requested": requested}, actor)
 
 
+def record_ran(ps: ProjectStore, stage: str, attempt: int, status: str, reason: str, *, actor: str) -> None:
+    """The worker's ``run`` of the attempt returned ``status`` (with ``reason``). An attempt without this event was
+    interrupted (a rate cap, a budget or a crash) and is rerun as a new attempt with the same guidance."""
+    _emit(ps, "stage.ran", stage, {"stage": stage, "attempt": attempt, "status": status, "reason": reason}, actor)
+
+
+def attempt_ran(ps: ProjectStore, stage: str, attempt: int) -> bool:
+    """Whether the worker's ``run`` of the attempt returned (see ``record_ran``)."""
+    return ps.db.execute("SELECT 1 FROM events WHERE type='stage.ran' AND json_extract(payload, '$.stage')=? AND "
+                         "json_extract(payload, '$.attempt')=? LIMIT 1", (stage, attempt)).fetchone() is not None
+
+
 def record_gate(ps: ProjectStore, stage: str, attempt: int, ok: bool, failures: list[str], *, actor: str) -> None:
     _emit(ps, "stage.gate", stage, {"stage": stage, "attempt": attempt, "ok": ok, "failures": list(failures)}, actor)
 
