@@ -183,10 +183,14 @@ class Topic(BaseModel):
 
 
 class ThreeStep(BaseModel):
-    """'I am studying X, because I want to find out Y, in order to help my reader understand Z.'"""
+    """'I am studying X because I want to find out Y in order to help my audience understand Z.'"""
     x: str
     y: str
     z: str
+
+    def sentence(self) -> str:
+        return (f"I am studying {self.x.strip()} because I want to find out {self.y.strip()} in order to help my "
+                f"audience understand {self.z.strip().rstrip('.')}.")
 
 
 class Problem(BaseModel):
@@ -220,3 +224,10 @@ class RQBody(BaseModel):
 class HypothesisIn(BaseModel):
     statement: str
     falsification: str
+
+
+class RQOut(BaseModel):
+    """The Ideator's research question for the approved topic and its rival hypotheses (question stage); the kernel
+    checks its structure (``rk.discovery.question.check_rq``) before the already-done check."""
+    body: RQBody
+    hypotheses: list[HypothesisIn]

@@ -64,6 +64,21 @@ def answer_checkpoint(ps: ProjectStore, chk_id: str, answer: dict, *, answered_b
                           payload={"answer": answer, "answered_by": answered_by, "answered_at": _now()}))
 
 
+def answered_by_actor(ps: ProjectStore, chk_id: str) -> str | None:
+    """Who answered the checkpoint (the actor of its latest answer), or ``None`` while it is unanswered."""
+    r = ps.db.execute("SELECT actor FROM events WHERE type='checkpoint.answered' AND entity_id=? ORDER BY seq DESC "
+                      "LIMIT 1", (chk_id,)).fetchone()
+    return r["actor"] if r else None
+
+
+def opened_in_place_of(ps: ProjectStore, kind: str, chk_id: str) -> str | None:
+    """The checkpoint of ``kind`` a worker opened in answer to ``chk_id`` (``options.replaces``), if any; a worker
+    handling the same answer again finds it here instead of opening a second one."""
+    r = ps.db.execute("SELECT id FROM checkpoints WHERE kind=? AND json_extract(options, '$.replaces')=? "
+                      "ORDER BY created, id LIMIT 1", (kind, chk_id)).fetchone()
+    return r["id"] if r else None
+
+
 @projection("checkpoint.created")
 def _created(conn: sqlite3.Connection, ev: Event) -> None:
     p = ev.payload

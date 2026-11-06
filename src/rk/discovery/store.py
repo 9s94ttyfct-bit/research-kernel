@@ -213,6 +213,11 @@ def rqs(ps: ProjectStore, attempt: int) -> list[dict]:
     return _rows(ps, "SELECT * FROM rqs WHERE attempt=? ORDER BY rowid", (attempt,), ("body", "already_done"))
 
 
+def rq_row(ps: ProjectStore, rq_id: str) -> dict | None:
+    rows = _rows(ps, "SELECT * FROM rqs WHERE id=?", (rq_id,), ("body", "already_done"))
+    return rows[0] if rows else None
+
+
 def hypotheses(ps: ProjectStore, rq_id: str) -> list[dict]:
     return _rows(ps, "SELECT * FROM hypotheses WHERE rq_id=? ORDER BY rowid", (rq_id,))
 

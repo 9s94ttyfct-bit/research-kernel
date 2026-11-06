@@ -18,7 +18,12 @@ its 5 closest works (fewer only when its searches found fewer, as recorded with 
 
 from __future__ import annotations
 
-from rk.checkpoints import create_checkpoint, get_checkpoint
+from rk.checkpoints import (
+    answered_by_actor,
+    create_checkpoint,
+    get_checkpoint,
+    opened_in_place_of,
+)
 from rk.discovery.models import Intake, Topic, TopicsOut
 from rk.discovery.store import (
     add_round,
@@ -91,19 +96,6 @@ def _set_status(ctx: StageContext, topic_id: str, status: str, *, actor: str, ac
         set_topic_status(ctx.ps, topic_id, status, actor=actor, actor_kind=actor_kind)
 
 
-def _answered_by(ps: ProjectStore, checkpoint_id: str) -> str | None:
-    r = ps.db.execute("SELECT actor FROM events WHERE type='checkpoint.answered' AND entity_id=? ORDER BY seq DESC "
-                      "LIMIT 1", (checkpoint_id,)).fetchone()
-    return r["actor"] if r else None
-
-
-def _replacement(ps: ProjectStore, checkpoint_id: str) -> str | None:
-    """The ``topic_review`` opened in place of the answered one, if any."""
-    r = ps.db.execute("SELECT id FROM checkpoints WHERE kind='topic_review' AND "
-                      "json_extract(options, '$.replaces')=? ORDER BY created, id LIMIT 1", (checkpoint_id,)).fetchone()
-    return r["id"] if r else None
-
-
 def _last_answered_review(ps: ProjectStore, attempt: int) -> dict | None:
     """The latest answered ``topic_review`` of the attempt (by the order of the answers)."""
     r = ps.db.execute(
@@ -130,7 +122,7 @@ def _review_prompt(ps: ProjectStore, topic_ids: list[str], why: str = "") -> str
 def _open_review(ctx: StageContext, topic_ids: list[str], *, replaces: str | None = None, why: str = "") -> str:
     """A ``topic_review`` of the attempt's ``topic_ids``. Opened in place of the answered ``replaces``, it is opened
     once: handling the same answer again returns the review opened the first time."""
-    if replaces is not None and (existing := _replacement(ctx.ps, replaces)) is not None:
+    if replaces is not None and (existing := opened_in_place_of(ctx.ps, "topic_review", replaces)) is not None:
         return existing
     return create_checkpoint(ctx.ps, "topic_review", _review_prompt(ctx.ps, topic_ids, why),
                              {"topic_ids": topic_ids, "attempt": ctx.attempt, "replaces": replaces},
@@ -215,7 +207,7 @@ class TopicsWorker:
             cid = _open_review(ctx, [t for t in under_review if _status(ctx.ps, t) != "rejected"],
                                replaces=checkpoint["id"], why=f"Your answer could not be applied: {why}.")
             return StageOutcome("waiting_human", checkpoint_id=cid, reason=why)
-        by = _answered_by(ctx.ps, checkpoint["id"]) or ctx.actor
+        by = answered_by_actor(ctx.ps, checkpoint["id"]) or ctx.actor
         decision = answer["decision"]
         if decision == "approve":
             _set_status(ctx, answer["topic_id"], "approved", actor=by, actor_kind="human")
@@ -298,7 +290,7 @@ class TopicsWorker:
         answer = (cp or {}).get("answer") or {}
         if cp is None or answer.get("decision") not in ("revise", "reject"):
             return StageOutcome("failed", reason="; ".join(failures) or "the topics did not pass their gate")
-        if (existing := _replacement(ctx.ps, cp["id"])) is not None:  # degraded already for this answer
+        if (existing := opened_in_place_of(ctx.ps, "topic_review", cp["id"])) is not None:  # degraded already
             return StageOutcome("waiting_human", checkpoint_id=existing, reason="topic review reopened")
         under_review = list(cp["options"].get("topic_ids") or [])
         removed = [t for t in (_ids_of(answer) or under_review) if t in under_review]

@@ -6,3 +6,7 @@ You judge whether a piece of evidence supports a claim, using only the evidence 
 Closest works (V-NOVELTY, `DifferencesOut`): for each given work, one or two sentences on how the given text differs from it (question, population, method, data or scope), keyed by the work's item id exactly as given.
 - Use only the given titles and abstracts.
 - Describe differences only; never say or judge whether the text is novel, new or original. A difference that calls it novel is discarded.
+
+Already done? (`AnsweredOut`): for each given work, whether it already answers the given research question (`answered` true only when it studies the same question and reports an answer to it), keyed by the work's item id exactly as given.
+- Give a quote copied character for character from that work's title or abstract that your judgement rests on; a judgement whose quote is not verbatim there is discarded.
+- Use only the given titles and abstracts; never say or judge whether the question is novel.
