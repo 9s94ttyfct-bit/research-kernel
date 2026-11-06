@@ -165,6 +165,87 @@ CREATE TABLE IF NOT EXISTS objections (
     data      TEXT NOT NULL
 );
 
+-- Discovery (Plan 4): searches, landscape clusters, gaps, topics, research questions, exploration rounds.
+CREATE TABLE IF NOT EXISTS search_log (
+    id       TEXT PRIMARY KEY,
+    stage    TEXT NOT NULL,
+    attempt  INTEGER NOT NULL,
+    purpose  TEXT NOT NULL,
+    source   TEXT NOT NULL,
+    query    TEXT NOT NULL,
+    limit_n  INTEGER NOT NULL,
+    item_ids TEXT NOT NULL,
+    ts       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS search_log_stage ON search_log(stage, attempt);
+
+CREATE TABLE IF NOT EXISTS clusters (
+    id                 TEXT PRIMARY KEY,
+    attempt            INTEGER NOT NULL,
+    label              TEXT NOT NULL,
+    description        TEXT NOT NULL,
+    query              TEXT NOT NULL,
+    item_ids           TEXT NOT NULL,
+    representative_ids TEXT NOT NULL,
+    year_counts        TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS gaps (
+    id         TEXT PRIMARY KEY,
+    attempt    INTEGER NOT NULL,
+    kind       TEXT NOT NULL,
+    statement  TEXT NOT NULL,
+    cluster_id TEXT,
+    evidence   TEXT NOT NULL,
+    details    TEXT NOT NULL,
+    verified   INTEGER NOT NULL,
+    checks     TEXT NOT NULL,
+    created    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS topics (
+    id          TEXT PRIMARY KEY,
+    attempt     INTEGER NOT NULL,
+    title       TEXT NOT NULL,
+    summary     TEXT NOT NULL,
+    gap_ids     TEXT NOT NULL,
+    closest     TEXT NOT NULL,
+    feasibility TEXT NOT NULL,
+    data_needed TEXT NOT NULL,
+    paper_type  TEXT NOT NULL,
+    risks       TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    created     TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS rqs (
+    id           TEXT PRIMARY KEY,
+    attempt      INTEGER NOT NULL,
+    topic_id     TEXT NOT NULL,
+    body         TEXT NOT NULL,
+    already_done TEXT,
+    status       TEXT NOT NULL,
+    text_hash    TEXT,
+    adopted_by   TEXT,
+    created      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS hypotheses (
+    id            TEXT PRIMARY KEY,
+    rq_id         TEXT NOT NULL,
+    statement     TEXT NOT NULL,
+    falsification TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS hypotheses_rq ON hypotheses(rq_id);
+
+CREATE TABLE IF NOT EXISTS exploration_rounds (
+    id       TEXT PRIMARY KEY,
+    n        INTEGER NOT NULL,
+    stage    TEXT NOT NULL,
+    feedback TEXT NOT NULL,
+    created  TEXT NOT NULL
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(
     item_id UNINDEXED, title, abstract, creators, notes, fulltext
 );

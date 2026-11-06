@@ -253,6 +253,29 @@ def project_status(slug: str | None = typer.Argument(None), as_json: bool = JSON
     _out(r, as_json, render)
 
 
+@project_app.command("intake")
+def project_intake(audience: str = typer.Option(..., "--audience", help="Who the paper is for"),
+                   paper_type: str = typer.Option(..., "--paper-type",
+                                                  help="systematic_review, scoping_review, critical_review or "
+                                                       "research_proposal"),
+                   mode: str = typer.Option(..., "--mode", help="d1 (guided) or d2 (autonomous discovery)"),
+                   production: str = typer.Option(..., "--production", help="p1 (auto) or p2 (collab)"),
+                   language: str = typer.Option("en", "--language"), topics_n: int = typer.Option(6, "--topics-n"),
+                   project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
+    """Record the project's intake: audience, paper type, discovery and production modes."""
+    modes = {"p1": "auto", "p2": "collab"}
+    if production not in modes:
+        typer.secho("--production must be p1 or p2", fg="red", err=True)
+        raise typer.Exit(2)
+    r = _call("rk_project_intake", {"project": _project(project), "audience": audience, "paper_type": paper_type,
+                                    "discovery_mode": mode, "production_mode": modes[production],
+                                    "language": language, "topics_n": topics_n}, write=True)
+    _out(r, as_json, lambda d: typer.echo(
+        f"{d['project']}: {d['paper_type']} for {d['audience']}; discovery {d['discovery_mode']}, "
+        f"production {'p1' if d['production_mode'] == 'auto' else 'p2'}, language {d['language']}, "
+        f"{d['topics_n']} topics"))
+
+
 # ---------------- search / add / fetch ----------------
 @app.command()
 def search(query: str, source: str = typer.Option("openalex", "--source"), limit: int = typer.Option(10, "--limit"),

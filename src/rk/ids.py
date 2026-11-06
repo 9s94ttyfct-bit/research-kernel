@@ -9,7 +9,8 @@ from ulid import ULID
 PREFIXES: frozenset[str] = frozenset(
     {
         "prj", "src", "snp", "nte", "clm", "evd", "edg", "obj", "hyp", "rq", "tpc", "gap",
-        "prt", "dsg", "fig", "stt", "chk", "ver", "drf", "tsk", "run", "evt", "att", "col", "brw",
+        "prt", "dsg", "fig", "stt", "chk", "ver", "drf", "tsk", "run", "evt", "att", "col", "brw", "cls", "xpr",
+        "sch",
     }
 )
 

@@ -12,6 +12,8 @@ from rk.argument import ArgumentService, ClaimIn, EdgeIn, EvidenceIn, ObjectionI
 from rk.browser.service import BrowserService
 from rk.browser.tools import register_browser_tools
 from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
+from rk.discovery.models import Intake
+from rk.discovery.store import record_intake
 from rk.flags import flag_injection
 from rk.fulltext import FulltextResult, attach_pdf, fetch_fulltext
 from rk.library.formats import FORMATS
@@ -111,6 +113,17 @@ def build_registry(k: Kernel, browser: Callable[[], BrowserService | None] | Non
                    notes=count("notes"), verifications=count("verifications"), events=count("events"),
                    injection_flags=count("injection_flags"), flagged_items=flagged,
                    chain=ps.log.verify_chain().model_dump())
+
+    class IntakeArgs(Intake):
+        project: str
+
+    @tool("rk_project_intake", "Record the project's intake: audience, paper type, discovery mode (d1 guided, d2 "
+          "autonomous), production mode (auto = P1, collab = P2), language and number of topics.", IntakeArgs, True)
+    def _intake(ctx: CallContext, a: IntakeArgs) -> Out:
+        ps, _ = _project(k, a.project)
+        intake = Intake.model_validate(a.model_dump(exclude={"project"}))
+        record_intake(ps, intake, actor=ctx.actor, actor_kind=_added_by(ctx))
+        return Out(project=a.project, **intake.model_dump(mode="json"))
 
     class FlagArgs(BaseModel):
         project: str

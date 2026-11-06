@@ -36,7 +36,8 @@ TOOL_ROLES: dict[str, frozenset[str]] = {
     "rk_objection_add": _r("lead", "skeptic"),
     # the Lead shows and explains checkpoints, manages the library and projects; it never answers checkpoints
     **{name: _r("lead") for name in ("rk_checkpoint_list", "rk_verify", "rk_project_create", "rk_project_list",
-                                     "rk_library_tag", "rk_library_collect", "rk_library_import", "rk_providers")},
+                                     "rk_project_intake", "rk_library_tag", "rk_library_collect",
+                                     "rk_library_import", "rk_providers")},
     # human only: host file paths, credentials, answering checkpoints, launching tasks
     **{name: _r() for name in ("rk_library_attach", "rk_token_create", "rk_token_list", "rk_token_revoke",
                                "rk_checkpoint_answer", "rk_task_run", "rk_support_check", "rk_browser_save_page")},
