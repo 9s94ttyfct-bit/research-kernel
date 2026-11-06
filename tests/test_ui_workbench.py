@@ -1,5 +1,6 @@
 # ruff: noqa: F811 - pytest fixtures imported from test_ui_api / test_sessions are re-bound as test parameters
 import json
+import threading
 import time
 
 import pytest
@@ -196,6 +197,7 @@ def test_ws_pushes_checkpoint_updates(ui, project):
     assert msg["open_count"] == 1
 
 
+@pytest.mark.filterwarnings("error::pytest.PytestUnhandledThreadExceptionWarning")
 def test_ws_chat_with_fake_driver(ui, project, fake, monkeypatch):
     exe, _records = fake
     monkeypatch.setenv("FAKE_KIND", "claude")
@@ -212,3 +214,7 @@ def test_ws_chat_with_fake_driver(ui, project, fake, monkeypatch):
             if m["type"] == "chat":
                 kinds.append(m["kind"])
         assert kinds == ["tool_call", "tool_result", "text", "done"]
+    # The socket (and its event loop) is gone while the chat thread still finishes the turn; it must end quietly.
+    for t in threading.enumerate():
+        if t.name == "rk-ui-chat":
+            t.join(10)

@@ -456,14 +456,20 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
             loop = asyncio.get_running_loop()
             q: asyncio.Queue = asyncio.Queue()
 
+            def post(m: dict | None) -> None:
+                try:
+                    loop.call_soon_threadsafe(q.put_nowait, m)
+                except RuntimeError:  # the socket's event loop has shut down: nobody is left to receive this
+                    pass
+
             def run() -> None:
                 try:
-                    for ev in chats.send(chat_id, text):
-                        loop.call_soon_threadsafe(q.put_nowait, {"kind": ev.kind, "data": ev.data})
+                    for ev in chats.send(chat_id, text):  # finish the turn even if the socket is gone
+                        post({"kind": ev.kind, "data": ev.data})
                 except (KeyError, RuntimeError) as e:
-                    loop.call_soon_threadsafe(q.put_nowait, {"kind": "error", "data": {"message": str(e)}})
+                    post({"kind": "error", "data": {"message": str(e)}})
                 finally:
-                    loop.call_soon_threadsafe(q.put_nowait, None)
+                    post(None)
 
             threading.Thread(target=run, name="rk-ui-chat", daemon=True).start()
             while (m := await q.get()) is not None:
