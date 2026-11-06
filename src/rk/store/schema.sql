@@ -13,14 +13,6 @@ CREATE TABLE IF NOT EXISTS events (
     hash        TEXT NOT NULL
 );
 
--- Operational table (not a projection): tool-call idempotency results.
-CREATE TABLE IF NOT EXISTS idempotency (
-    tool   TEXT NOT NULL,
-    key    TEXT NOT NULL,
-    result TEXT NOT NULL,
-    PRIMARY KEY (tool, key)
-);
-
 -- ---- Projections (rebuildable from events) ----
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,

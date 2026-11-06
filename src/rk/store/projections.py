@@ -7,7 +7,7 @@ import sqlite3
 from collections import defaultdict
 from collections.abc import Callable
 
-from rk.store.events import Event, EventLog, NewEvent
+from rk.store.events import Event, EventLog, NewEvent, _to_event
 
 Handler = Callable[[sqlite3.Connection, Event], None]
 
@@ -35,11 +35,7 @@ def projection(event_type: str) -> Callable[[Handler], Handler]:
 
 def _load_modules() -> None:
     for m in PROJECTION_MODULES:
-        try:
-            importlib.import_module(m)
-        except ModuleNotFoundError as exc:  # TODO(plan1-final): remove once all modules exist
-            if not (exc.name and (m == exc.name or m.startswith(exc.name + "."))):
-                raise
+        importlib.import_module(m)
 
 
 def _project(conn: sqlite3.Connection, ev: Event) -> None:
@@ -69,8 +65,6 @@ def rebuild(conn: sqlite3.Connection) -> int:
             conn.execute(f"DELETE FROM {t}")
         n = 0
         for r in conn.execute("SELECT * FROM events ORDER BY seq").fetchall():
-            from rk.store.events import _to_event
-
             _project(conn, _to_event(r))
             n += 1
     except BaseException:
