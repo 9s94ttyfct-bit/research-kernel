@@ -26,8 +26,9 @@ PASS, FAIL, SKIPPED = "pass", "fail", "skipped"
 
 @dataclass
 class MinerResult:
-    """A miner's gaps as ``(gap, verified, checks)``, plus ``problems`` that kept it from mining (e.g. a role task
-    that failed); the worker reruns the stage with them when no miner found anything."""
+    """A miner's gaps as ``(gap, verified, checks)``, plus ``problems`` that kept it from mining all it could (e.g. a
+    role task that failed); the worker reruns the stage with them when no verified gap was stored, else returns them
+    as the reason of its ``done``."""
     gaps: list[tuple[Gap, bool, dict]] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
 
@@ -82,10 +83,15 @@ def in_record(lib: Library, item_id: str, quote: str) -> bool:
     return span_in(f"{it.title}\n{it.abstract or ''}", quote)
 
 
+def gap_check_sources(ctx: StageContext) -> list[str]:
+    """The sources a gap-check search runs on: the first ones in preference order."""
+    return ctx.sources.sources()[:GAP_CHECK_SOURCES]
+
+
 def gap_check_search(ctx: StageContext, query: str, *, after_year: int | None = None) -> list[str]:
-    """Run a gap-check search (purpose ``gap_check``, logged) on the first sources; the hit ids, de-duplicated."""
+    """Run a gap-check search (purpose ``gap_check``, logged) on ``gap_check_sources``; the hit ids, de-duplicated."""
     found: list[str] = []
-    for source in ctx.sources.sources()[:GAP_CHECK_SOURCES]:
+    for source in gap_check_sources(ctx):
         ids = log_and_search(ctx.ps, ctx.sources, stage=ctx.stage, attempt=ctx.attempt, purpose="gap_check",
                              query=query, source=source, limit=GAP_CHECK_LIMIT, actor=ctx.actor, after_year=after_year)
         found += [i for i in ids if i not in found]
@@ -115,16 +121,17 @@ class GapsWorker:
         for c in cls:
             for iid in c["representative_ids"][:FULLTEXT_PER_CLUSTER]:
                 ctx.sources.fulltext(iid)
-        stored, problems = 0, []
+        verified, problems = 0, []
         for miner in self.miners:
             result = miner(ctx, cls)
-            for gap, verified, checks in result.gaps:
-                add_gap(ctx.ps, ctx.attempt, gap, verified=verified, checks=checks, actor=ctx.actor)
-                stored += 1
+            for gap, ok, checks in result.gaps:
+                add_gap(ctx.ps, ctx.attempt, gap, verified=ok, checks=checks, actor=ctx.actor)
+                verified += ok
             problems += result.problems
-        if not stored and problems:
-            return StageOutcome("rerun", reason="; ".join(problems))
-        return StageOutcome("done")
+        reason = "; ".join(problems)
+        if not verified and problems:  # a miner that could not mine may still find the verified gap on a rerun
+            return StageOutcome("rerun", reason=reason)
+        return StageOutcome("done", reason=reason)
 
     def on_answer(self, ctx: StageContext, checkpoint: dict) -> StageOutcome:
         return StageOutcome("done")  # gaps opens no checkpoint

@@ -4,7 +4,14 @@ is verified when the search ran and nothing matched."""
 
 from __future__ import annotations
 
-from rk.discovery.gaps import Checks, MinerResult, gap_check_search, task_context, work
+from rk.discovery.gaps import (
+    Checks,
+    MinerResult,
+    gap_check_search,
+    gap_check_sources,
+    task_context,
+    work,
+)
 from rk.discovery.models import CellMatchOut, Dim, Gap, GapEvidence, MapPlan
 from rk.orchestrator.engine import StageContext
 
@@ -56,8 +63,12 @@ def _check_cell(ctx: StageContext, dims: list[Dim], a: str, b: str, query: str, 
                     checks.failed("cell_match", f"{len(matches)} searched work(s) fall into the cell")
                 else:
                     checks.passed("cell_match")
-    statement = (f"Evidence-map hole: no work with {dims[0].name} = {a!r} and {dims[1].name} = {b!r} was found "
-                 "within the searched scope.")
+    cell = f"{dims[0].name} = {a!r} and {dims[1].name} = {b!r}"
+    if checks.ok:
+        statement = (f"Evidence-map hole: no work with {cell} was found within the searched scope (the landscape and "
+                     f'the query "{query}" on {", ".join(gap_check_sources(ctx))}).')
+    else:
+        statement = f"Evidence-map cell with {cell}: empty in the landscape, not confirmed as a hole."
     gap = Gap(kind="evidence_map_hole", statement=statement, evidence=GapEvidence(item_ids=evidence_ids),
               details=details)
     return gap, checks.ok, checks.dump()

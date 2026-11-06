@@ -1,10 +1,12 @@
 """Retracted but still cited (deterministic, no role task): a cluster work retracted or withdrawn on a known date that
-works published after the retraction year still cite. The citing works are added to the library as evidence."""
+works published after the retraction year still cite. The citation lookup is logged like a search and the citing works
+are added to the library as evidence."""
 
 from __future__ import annotations
 
 from rk.discovery.gaps import Checks, MinerResult
 from rk.discovery.models import Gap, GapEvidence
+from rk.discovery.sources import log_and_cited_by
 from rk.orchestrator.engine import StageContext
 
 RETRACTED = frozenset({"retracted", "withdrawn"})
@@ -33,11 +35,8 @@ def _check(ctx: StageContext, cluster_id: str, item_id: str) -> tuple[Gap, bool,
         return gap, False, checks.dump(**data)
 
     checks.passed("retraction_date")
-    citing: list[str] = []
-    for it in ctx.sources.cited_by(item_id, after_year=year):
-        iid = ctx.lib.add_item(it, added_by="agent", actor=ctx.actor, actor_kind="kernel").item_id
-        if iid != item_id and iid not in citing:
-            citing.append(iid)
+    citing = [i for i in log_and_cited_by(ctx.ps, ctx.sources, item_id, stage=ctx.stage, attempt=ctx.attempt,
+                                          purpose="gap_check", actor=ctx.actor, after_year=year) if i != item_id]
     if not citing:
         return None  # retracted and no longer cited: not a gap
     checks.passed("cited_after_retraction")

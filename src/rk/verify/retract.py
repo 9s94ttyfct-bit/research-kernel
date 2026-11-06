@@ -23,6 +23,8 @@ _UPDATE_MAP: dict[str, RetractionStatus] = {
 _PRIORITY: list[RetractionStatus] = ["retracted", "withdrawn", "partial_retraction", "eoc", "corrected"]
 # statuses that put an item into the flag collection and project-status warnings
 FLAGGED: frozenset[str] = frozenset({"retracted", "withdrawn", "partial_retraction", "eoc"})
+# statuses that take the work out of the record; one's notice date stands in for the other's when that has none
+_REMOVED: tuple[RetractionStatus, ...] = ("retracted", "withdrawn")
 
 
 class RetractionInfo(BaseModel):
@@ -50,6 +52,8 @@ def retraction_status(resolved: ResolvedWork | None) -> RetractionInfo:
     for st in _PRIORITY:
         if st in found:
             srcs, doi, dates = found[st]
+            if not dates and st in _REMOVED:  # e.g. OpenAlex is_retracted plus a dated Crossref withdrawal
+                dates = [d for other in _REMOVED for d in found.get(other, ([], None, []))[2]]
             return RetractionInfo(status=st, sources=sorted(set(srcs)), notice_doi=doi,
                                   date=min(dates) if dates else None)
     return RetractionInfo(status="none", sources=[s for s in resolved.sources_used if s in ("crossref", "openalex")])

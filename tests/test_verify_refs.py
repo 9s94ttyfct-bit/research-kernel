@@ -91,3 +91,16 @@ def test_retraction_date_comes_from_the_crossref_notice():
     info = retraction_status(resolved)
     assert (info.status, info.notice_doi, info.date) == ("retracted", "10.1/r", "2016-04-30")
     assert retraction_status(_resolved("retraction")).date is None  # the notice carries no date
+
+
+def test_retraction_date_falls_back_to_a_dated_withdrawal():
+    from rk.sources.openalex import OpenAlexWork
+
+    oa = OpenAlexWork(item=ItemIn(title="t"), is_retracted=True, referenced_works=[], cited_by_count=0,
+                      oa_pdf_urls=[], raw={})
+    resolved = ResolvedWork(item=ItemIn(title="t"), sources_used=["crossref", "openalex"], openalex=oa,
+                            retraction_updates=[
+                                Update(type="expression_of_concern", source="publisher", date="2013-01-01"),
+                                Update(type="withdrawal", source="publisher", doi="10.1/w", date="2015-07-01")])
+    info = retraction_status(resolved)
+    assert (info.status, info.sources, info.date) == ("retracted", ["openalex"], "2015-07-01")

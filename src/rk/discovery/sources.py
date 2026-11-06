@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from rk.browser.service import BrowserService
 
 HITS_COLLECTION = "Search hits"
+CITED_BY_LIMIT = 25  # citing works per cited_by lookup (one OpenAlex page)
 
 
 class DiscoverySources(Protocol):
@@ -85,7 +86,8 @@ class KernelSources:
             oa_id = work.item.ids.openalex if work else None
         if not oa_id:
             return []
-        return openalex.cited_by(ctx.http, oa_id, api_key=ctx.settings.openalex_key, after_year=after_year)
+        return openalex.cited_by(ctx.http, oa_id, api_key=ctx.settings.openalex_key, per_page=CITED_BY_LIMIT,
+                                 after_year=after_year)
 
     def retraction(self, item_id: str) -> RetractionInfo:
         """V-RETRACT (Crossref update notices and OpenAlex ``is_retracted``) without writing anything; ``date`` is the
@@ -110,17 +112,15 @@ class KernelSources:
         return got is not None
 
 
-def log_and_search(ps: ProjectStore, sources: DiscoverySources, *, stage: str, attempt: int, purpose: str,
-                   query: str, source: str, limit: int, actor: str, after_year: int | None = None) -> list[str]:
-    """Search one source (with ``after_year``, only works published in a later year), add the hits to the library
-    (collection "Search hits"), log the search with the hit item ids (event ``search.logged``) and return those ids in
-    rank order."""
+def _add_and_log(ps: ProjectStore, hits: list[ItemIn], *, discovered_via: str, stage: str, attempt: int,
+                  purpose: str, query: str, source: str, limit: int, actor: str, after_year: int | None) -> list[str]:
+    """Add the hits to the library (collection "Search hits"), log the search with their item ids (event
+    ``search.logged``) and return those ids in rank order."""
     lib = Library(ps)
-    hits = sources.search(query, source, limit, after_year=after_year)
     col = lib.ensure_default_collections(actor=actor)[HITS_COLLECTION]
     ids: list[str] = []
     for it in hits:
-        iid = lib.add_item(it.model_copy(update={"discovered_via": "search"}), added_by="agent", actor=actor,
+        iid = lib.add_item(it.model_copy(update={"discovered_via": discovered_via}), added_by="agent", actor=actor,
                            actor_kind="kernel").item_id
         if iid not in ids:
             lib.collect(iid, col, actor=actor, actor_kind="kernel")
@@ -128,3 +128,22 @@ def log_and_search(ps: ProjectStore, sources: DiscoverySources, *, stage: str, a
     log_search(ps, stage=stage, attempt=attempt, purpose=purpose, source=source, query=query, limit=limit,
                item_ids=ids, actor=actor, after_year=after_year)
     return ids
+
+
+def log_and_search(ps: ProjectStore, sources: DiscoverySources, *, stage: str, attempt: int, purpose: str,
+                   query: str, source: str, limit: int, actor: str, after_year: int | None = None) -> list[str]:
+    """Search one source (with ``after_year``, only works published in a later year), add the hits to the library,
+    log the search and return the hit item ids in rank order."""
+    hits = sources.search(query, source, limit, after_year=after_year)
+    return _add_and_log(ps, hits, discovered_via="search", stage=stage, attempt=attempt, purpose=purpose, query=query,
+                        source=source, limit=limit, actor=actor, after_year=after_year)
+
+
+def log_and_cited_by(ps: ProjectStore, sources: DiscoverySources, item_id: str, *, stage: str, attempt: int,
+                     purpose: str, actor: str, after_year: int | None = None) -> list[str]:
+    """The works citing ``item_id`` (with ``after_year``, only those published in a later year), added to the library
+    and logged like a search (source ``openalex``, query ``cites:<item id>``); returns their item ids."""
+    hits = sources.cited_by(item_id, after_year=after_year)
+    return _add_and_log(ps, hits, discovered_via="forward", stage=stage, attempt=attempt, purpose=purpose,
+                        query=f"cites:{item_id}", source="openalex", limit=CITED_BY_LIMIT, actor=actor,
+                        after_year=after_year)

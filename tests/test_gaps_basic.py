@@ -139,6 +139,9 @@ def test_limitation_with_unverbatim_addressed_basis_is_verified(env):
     assert gap["checks"]["later_judgement"] == "pass" and gap["verified"] is True
     assert gap["details"]["addressed"] == [] and gap["details"]["rejected"] == [later, "itm_invented"]
     assert gap["cluster_id"] is not None and LIMITATION in gap["statement"]
+    assert gap["statement"].endswith('; no later work (published after 2015) addressing it was found within the '
+                                     'searched scope (query "aspirin younger adults" on openalex, europepmc)')
+    assert gap["details"]["sources"] == ["openalex", "europepmc"]
 
 
 RETRACTED = ItemIn(title="Retracted trial", year=2010, ids=Ids(doi="10.1000/retracted"))
@@ -189,6 +192,17 @@ def test_retracted_cited_after_retraction_is_a_gap(env):
     assert undated["checks"]["reasons"]["retraction_date"] == "retraction date unknown"
     assert not any(c[0] == "cited_by" and c[1] == ids[1] for c in sources.calls)
 
+    # every citation lookup is logged like a search; the citing works join the search hits
+    logged = {r["query"]: r for r in searches(ps, "gaps", 1)}
+    assert set(logged) == {f"cites:{ids[0]}", f"cites:{ids[2]}"}
+    hit = logged[f"cites:{ids[0]}"]
+    assert (hit["purpose"], hit["source"], hit["item_ids"]) == ("gap_check", "openalex", [after])
+    assert logged[f"cites:{ids[2]}"]["item_ids"] == []
+    events = {e.payload["query"]: e.payload for e in ps.log.iter() if e.type == "search.logged"}
+    assert events[f"cites:{ids[0]}"]["after_year"] == 2016 and events[f"cites:{ids[2]}"]["after_year"] == 2018
+    assert lib.collection_by_name("Search hits") in lib.get(after).collection_ids
+    assert lib.get(after).discovered_via == "forward"
+
 
 CELL_ITEMS = [ItemIn(title=f"Aspirin study {i}", year=2015 + i, abstract=f"Abstract {i}.",
                      ids=Ids(doi=f"10.1000/cell-{i}")) for i in range(4)]
@@ -216,6 +230,10 @@ def test_empty_cell_needs_a_targeted_search_with_no_match(env):
     assert (hole["checks"]["targeted_search"], hole["checks"]["cell_match"]) == ("pass", "pass")
     assert filled["details"]["cell"] == ["children", "mortality"] and filled["verified"] is False
     assert filled["checks"]["cell_match"] == "fail" and filled["details"]["matches"] == [match]
+    assert hole["statement"] == (
+        "Evidence-map hole: no work with population = 'children' and outcome = 'bleeding' was found within the "
+        'searched scope (the landscape and the query "aspirin bleeding children" on openalex, europepmc).')
+    assert "searched scope" not in filled["statement"]
     assert hole["details"]["counts"]["adults|stroke"] == 1 and hole["details"]["counts"]["children|bleeding"] == 0
     assert hole["details"]["ignored_items"] == ["itm_invented"]
 
@@ -237,6 +255,30 @@ def test_map_plan_without_two_dimensions_stores_nothing(env):
     out = GapsWorker(miners=[maphole.mine]).run(_ctx(k, ps, lib, ex, FakeSources({}, lib=lib)))
     assert gaps(ps, 1) == []
     assert out.status == "rerun" and "exactly 2 dimensions (got 1)" in out.reason
+
+
+def _gap_miner(verified: bool):
+    def miner(ctx, clusters):
+        return MinerResult(gaps=[(Gap(kind="evidence_map_hole", statement="s", evidence=GapEvidence()), verified,
+                                  {"targeted_search": "pass" if verified else "fail"})])
+    return miner
+
+
+def _failing_miner(ctx, clusters):
+    return MinerResult(problems=["the gapminer gave no limitations (timeout)"])
+
+
+def test_miner_problem_reruns_when_no_gap_is_verified(env):
+    k, ps, lib = env
+    _landscape(ps, lib, {"Aspirin": CELL_ITEMS})
+    ctx = _ctx(k, ps, lib, ScriptedExecutor({}), FakeSources({}, lib=lib))
+    out = GapsWorker(miners=[_failing_miner, _gap_miner(False)]).run(ctx)
+    assert out.status == "rerun" and out.reason == "the gapminer gave no limitations (timeout)"
+    assert [g["verified"] for g in gaps(ps, 1)] == [False]
+
+    out = GapsWorker(miners=[_failing_miner, _gap_miner(True)]).run(_ctx(k, ps, lib, ScriptedExecutor({}),
+                                                                          FakeSources({}, lib=lib), attempt=2))
+    assert out.status == "done" and out.reason == "the gapminer gave no limitations (timeout)"
 
 
 def test_worker_fetches_full_text_of_three_representatives_per_cluster(env):
