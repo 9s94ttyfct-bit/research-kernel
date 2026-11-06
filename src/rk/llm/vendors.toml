@@ -1,0 +1,18 @@
+# Model developer ("vendor") per driver, spec §8.1. Rules are tried in order; `match` is an fnmatch pattern
+# against "<provider>:<model>" (a driver without a model is matched as "<provider>:").
+# A driver that matches no rule has an unknown vendor and can never act as a reviewer.
+rules = [
+  { match = "claude_cli:*",               vendor = "anthropic" },
+  { match = "anthropic_api:*",            vendor = "anthropic" },
+  { match = "omp_gateway:anthropic/*",    vendor = "anthropic" },
+  { match = "codex_cli:*",                vendor = "openai" },
+  { match = "openai_api:*",               vendor = "openai" },
+  { match = "omp_gateway:openai-codex/*", vendor = "openai" },
+  { match = "omp_gateway:openai/*",       vendor = "openai" },
+  { match = "ollama:gemma*",              vendor = "google" },
+  { match = "ollama:deepseek*",           vendor = "deepseek" },
+  { match = "ollama:qwen*",               vendor = "alibaba" },
+  { match = "ollama:gpt-oss*",            vendor = "openai" },
+  { match = "ollama:llama*",              vendor = "meta" },
+  { match = "human:*",                    vendor = "human" },
+]
