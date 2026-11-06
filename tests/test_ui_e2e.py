@@ -9,7 +9,7 @@ import pytest
 import uvicorn
 
 from rk.checkpoints import create_checkpoint, get_checkpoint
-from rk.config import Settings, load_settings, save_settings
+from rk.config import Settings, save_settings
 from rk.fulltext import attach_pdf_bytes
 from rk.library.models import Creator, Ids, ItemIn
 from rk.server.app import create_app
@@ -28,8 +28,9 @@ PAGES = {"chat": "Chat", "library": "Library", "checkpoints": "Checkpoints", "pr
 
 
 @pytest.fixture
-def workbench(tmp_home, replay_http):
-    save_settings(Settings(email="rk-fixtures@users.noreply.github.com"))
+def workbench(tmp_home, replay_http, fake):
+    exe, _ = fake  # the chat page opens a chat on load, so every CLI driver must already be the fake
+    save_settings(Settings(email="rk-fixtures@users.noreply.github.com", cli_paths={"claude": exe, "codex": exe}))
     rt = acquire_serve_lock(tmp_home)
     kernel = Kernel(tmp_home, http=replay_http)
     kernel.create_project("demo", "Demo project", actor="t")
@@ -102,6 +103,7 @@ def test_slow_page_does_not_render_over_a_newer_one(page, monkeypatch):
     assert page.errors == []
 
 
+
 def test_answer_checkpoint_from_ui(page, workbench):
     kernel, _ = workbench
     ps, _ = kernel.project("demo")
@@ -132,10 +134,8 @@ def test_library_search_and_badges(page, workbench):
     assert page.errors == []
 
 
-def test_chat_roundtrip_fake_driver(page, fake, monkeypatch):
-    exe, _ = fake
+def test_chat_roundtrip_fake_driver(page, monkeypatch):
     monkeypatch.setenv("FAKE_KIND", "claude")
-    save_settings(load_settings().model_copy(update={"cli_paths": {"claude": exe}}))
     page.goto(page.url.split("#")[0] + "#/chat")
     page.get_by_text("Talking to claude_cli.").wait_for()
     page.get_by_label("Message").fill("hello")
@@ -145,12 +145,10 @@ def test_chat_roundtrip_fake_driver(page, fake, monkeypatch):
     assert page.errors == []
 
 
-def test_chat_ignores_a_superseded_open(page, fake, monkeypatch):
+def test_chat_ignores_a_superseded_open(page, monkeypatch):
     """Re-rendering the chat page opens a new chat; the earlier render's ``chat.opened`` arriving late must not bind
     the new page to that chat (whose replies the page would then drop once its own ``chat.opened`` arrives)."""
-    exe, _ = fake
     monkeypatch.setenv("FAKE_KIND", "claude")
-    save_settings(load_settings().model_copy(update={"cli_paths": {"claude": exe}}))
     real_open = ChatManager.open
 
     def open_slowly(self, *a):

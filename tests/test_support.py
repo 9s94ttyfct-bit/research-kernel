@@ -11,6 +11,7 @@ from rk.notes import NoteIn, add_note
 from rk.store.projections import rebuild
 from rk.tools.builtin import build_registry
 from rk.tools.registry import CallContext
+from rk.verify import support
 from rk.verify.judge import JudgeOpinion, JudgeVerdict
 from rk.verify.minicheck import Layer1Score, Layer1Unavailable
 from rk.verify.support import combine, verify_support
@@ -200,6 +201,10 @@ def test_rk_verify_claim_tool_reports_layer1_state(env, monkeypatch):
     _k, reg, _ps, _, claim = env
     cid = claim("Copper catalysts are studied for CO2 reduction.", vendor="google")
     monkeypatch.setattr("rk.verify.support.get_minicheck", lambda *a: FakeLayer1(fail=True))
+    fake = judges()  # the tool takes no judge providers, so the configured (real CLI) judges are replaced here
+    real_run_judges = support.run_judges
+    monkeypatch.setattr(support, "run_judges", lambda *a, **kw: real_run_judges(
+        *a, **{**kw, "drivers": fake["judge_drivers"], "providers": fake["judge_providers"]}))
     out = reg.call("rk_verify", {"project": "sp", "target_type": "claim", "target_id": cid},
                    CallContext(role="cli", actor="u", idempotency_key="v1"))
     assert out["support"]["verdict"] == "uncertain" and "layer1_unavailable" in out["support"]["layer1_reason"]
