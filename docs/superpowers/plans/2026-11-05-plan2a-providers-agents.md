@@ -318,11 +318,13 @@ Tool results are passed to the model as JSON text wrapped in `<tool_result untru
 
   | Tools | Roles besides `cli` |
   |---|---|
-  | `rk_project_list`, `rk_project_status`, `rk_get_work`, `rk_text_read`, `rk_text_find`, `rk_note_list`, `rk_library_list`, `rk_library_search`, `rk_library_export`, `rk_checkpoint_list`, `rk_flag_injection` | every role except `judge`, `judge_2`, `triage` |
+  | `rk_get_work`, `rk_library_list`, `rk_library_search`, `rk_flag_injection` | every role except `judge`, `judge_2`, `triage` |
+  | `rk_text_read`, `rk_text_find`, `rk_note_list` | lead, gapminer, ideator, arguer, skeptic, simreader, writer, reader (not screeners, not scout) |
+  | `rk_project_status`, `rk_library_export`, `rk_claim_get`, `rk_claim_list` | lead, gapminer, ideator, arguer, skeptic, simreader, writer |
   | `rk_search_works`, `rk_expand_citations`, `rk_source_add` | lead, scout, skeptic |
   | `rk_source_fetch_fulltext`, `rk_note_add` | lead, reader |
-  | `rk_verify`, `rk_project_create`, `rk_library_tag`, `rk_library_collect`, `rk_library_import` | lead |
-  | `rk_library_attach`, `rk_task_run`, `rk_checkpoint_answer` (Task 10) | none (cli only) |
+  | `rk_checkpoint_list`, `rk_verify`, `rk_project_create`, `rk_project_list`, `rk_library_tag`, `rk_library_collect`, `rk_library_import` | lead |
+  | `rk_library_attach`, `rk_task_run`, `rk_checkpoint_answer`, `rk_token_*` | none (cli only) |
 - `role_tools(role: str, registry) -> list[str]`: registered tools allowed for the role.
 - `build_system_prompt(role: str, output_schema: type[BaseModel] | None) -> str` = `preamble.md` + `<role>.md` + (if a schema is given) "Reply with only one JSON object matching this JSON Schema:" + schema.
 - `render_inputs(inputs: dict) -> str` wraps each value in `<data name="…" untrusted="true">…</data>`.

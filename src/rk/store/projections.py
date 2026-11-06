@@ -13,12 +13,12 @@ Handler = Callable[[sqlite3.Connection, Event], None]
 
 PROJECTION_TABLES: tuple[str, ...] = (
     "meta", "items", "item_ids", "tags", "collections", "collection_items",
-    "attachments", "snapshots", "notes", "verifications", "items_fts",
+    "attachments", "snapshots", "notes", "verifications", "items_fts", "injection_flags",
 )
 
 # Modules that register projections; imported before replay so rebuild sees every handler.
 PROJECTION_MODULES: tuple[str, ...] = (
-    "rk.store.project", "rk.library.service", "rk.fulltext", "rk.notes", "rk.verify.records",
+    "rk.store.project", "rk.library.service", "rk.fulltext", "rk.notes", "rk.verify.records", "rk.flags",
 )
 
 _HANDLERS: dict[str, list[Handler]] = defaultdict(list)

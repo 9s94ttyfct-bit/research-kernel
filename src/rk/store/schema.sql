@@ -91,6 +91,15 @@ CREATE TABLE IF NOT EXISTS verifications (
     ts          TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS injection_flags (
+    id      TEXT PRIMARY KEY,
+    item_id TEXT NOT NULL,
+    snippet TEXT NOT NULL,
+    reason  TEXT NOT NULL,
+    actor   TEXT NOT NULL,
+    ts      TEXT NOT NULL
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(
     item_id UNINDEXED, title, abstract, creators, notes, fulltext
 );

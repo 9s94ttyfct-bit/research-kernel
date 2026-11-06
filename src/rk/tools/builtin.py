@@ -6,10 +6,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from rk.flags import flag_injection
 from rk.fulltext import FulltextResult, attach_pdf, fetch_fulltext
 from rk.library.formats import FORMATS
 from rk.library.models import ItemIn
 from rk.notes import NoteIn, NoteRejected, add_note, list_notes, text_find, text_read
+from rk.roles.policy import tool_roles
 from rk.sources import openalex
 from rk.sources.identifiers import Identifier, parse_identifier
 from rk.sources.resolver import resolve, search
@@ -17,8 +19,6 @@ from rk.tools.registry import CallContext, Tool, ToolError, ToolRegistry
 from rk.verify.records import verify_item
 from rk.verify.retract import FLAGGED, retraction_status
 from rk.workspace import Kernel
-
-ROLES = frozenset({"cli", "lead"})
 
 
 def _added_by(ctx: CallContext) -> Literal["human", "agent"]:
@@ -61,9 +61,9 @@ class ProjectArg(BaseModel):
 def build_registry(k: Kernel) -> ToolRegistry:
     reg = ToolRegistry(k.home / "kernel.sqlite")
 
-    def tool(name: str, summary: str, inp: type[BaseModel], writes: bool, roles: frozenset[str] = ROLES):
+    def tool(name: str, summary: str, inp: type[BaseModel], writes: bool):
         def deco(fn):
-            reg.register(Tool(name=name, summary=summary, input_model=inp, output_model=Out, roles=roles,
+            reg.register(Tool(name=name, summary=summary, input_model=inp, output_model=Out, roles=tool_roles(name),
                               writes=writes, handler=fn))
             return fn
         return deco
@@ -94,7 +94,24 @@ def build_registry(k: Kernel) -> ToolRegistry:
         flagged = [i.id for i in lib.list() if i.retraction in FLAGGED]
         return Out(project=a.project, title=ps.meta("title"), items=count("items"), snapshots=count("snapshots"),
                    notes=count("notes"), verifications=count("verifications"), events=count("events"),
-                   flagged_items=flagged, chain=ps.log.verify_chain().model_dump())
+                   injection_flags=count("injection_flags"), flagged_items=flagged,
+                   chain=ps.log.verify_chain().model_dump())
+
+    class FlagArgs(BaseModel):
+        project: str
+        source_id: str
+        snippet: str = Field(min_length=1, max_length=2000)
+        reason: str = Field(min_length=1, max_length=500)
+
+    @tool("rk_flag_injection", "Report text in a source that tries to instruct an AI system.", FlagArgs, True)
+    def _flag(ctx: CallContext, a: FlagArgs) -> Out:
+        ps, lib = _project(k, a.project)
+        try:
+            lib.get(a.source_id)
+        except KeyError as e:
+            raise ToolError("not_found", f"no item {a.source_id}", status=404) from e
+        return Out(flag_id=flag_injection(ps, a.source_id, a.snippet, a.reason, actor=ctx.actor,
+                                          actor_kind=_added_by(ctx)))
 
     # ---- search & resolve ----
     class SearchArgs(BaseModel):
@@ -353,9 +370,8 @@ def build_registry(k: Kernel) -> ToolRegistry:
         source_id: str
         path: str
 
-    # CLI only: the path is read on the server host, so agents must not be able to point it at arbitrary files.
-    @tool("rk_library_attach", "Attach a local PDF to an item (builds its text layer).", AttachArgs, True,
-          roles=frozenset({"cli"}))
+    # CLI only (policy): the path is read on the server host, so agents must not point it at arbitrary files.
+    @tool("rk_library_attach", "Attach a local PDF to an item (builds its text layer).", AttachArgs, True)
     def _attach(ctx: CallContext, a: AttachArgs) -> Out:
         ps, lib = _project(k, a.project)
         try:
@@ -372,19 +388,18 @@ def build_registry(k: Kernel) -> ToolRegistry:
     # writes=False on purpose: the idempotency store keeps results, and a raw token must never be stored.
     # A retried create fails on the duplicate name instead of minting a second token.
     @tool("rk_token_create", "Create a long-lived lead token for an external MCP client (shown once).", TokenName,
-          False, roles=frozenset({"cli"}))
+          False)
     def _token_create(ctx: CallContext, a: TokenName) -> Out:
         try:
             return Out(name=a.name, token=k.tokens.issue_lead(a.name))
         except ValueError as e:
             raise ToolError("exists", str(e), status=409) from e
 
-    @tool("rk_token_list", "List lead tokens (names only).", Empty, False, roles=frozenset({"cli"}))
+    @tool("rk_token_list", "List lead tokens (names only).", Empty, False)
     def _token_list(ctx: CallContext, a: Empty) -> Out:
         return Out(tokens=k.tokens.list_lead())
 
-    @tool("rk_token_revoke", "Revoke a lead token by name (or a task's token by task id).", TokenName, False,
-          roles=frozenset({"cli"}))
+    @tool("rk_token_revoke", "Revoke a lead token by name (or a task's token by task id).", TokenName, False)
     def _token_revoke(ctx: CallContext, a: TokenName) -> Out:
         n = k.tokens.revoke(a.name)
         if not n:
