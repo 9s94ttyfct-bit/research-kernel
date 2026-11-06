@@ -12,12 +12,17 @@ from lxml import html as lhtml
 
 from rk.text.markup import sanitize_html
 
+# Challenge widgets and interstitials only. reCAPTCHA v3 / invisible widgets (a script, a size=invisible anchor iframe,
+# a hidden g-recaptcha-response textarea) score traffic silently on normal pages, so they are not blocks.
 _CAPTCHA_MARKUP = re.compile(
-    r"""(?:id|class)\s*=\s*["'][^"']*\b(?:gs_captcha_ccl|captcha-form|g-recaptcha|h-captcha|cf-turnstile|"""
-    r"""cf-challenge[\w-]*|challenge-form)\b|src\s*=\s*["'][^"']*(?:recaptcha|hcaptcha\.com|challenges\.cloudflare)""",
+    r"""(?:id|class)\s*=\s*["'](?:[^"']*\s)?(?:gs_captcha_ccl|captcha-form|challenge-form|challenge-error-text|"""
+    r"""cf-chl-widget[\w-]*|cf-challenge[\w-]*|g-recaptcha|h-captcha|cf-turnstile)["'\s]"""
+    r"""|src\s*=\s*["'][^"']*/cdn-cgi/challenge-platform/[^"']*chl_page"""
+    r"""|src\s*=\s*["'][^"']*recaptcha/(?:api2|enterprise)/anchor[^"']*size=(?:normal|compact)""",
     re.IGNORECASE)
-_CAPTCHA_TEXT = re.compile(r"unusual traffic|not a robot|verify (?:that )?you are (?:a )?human|are you a robot|"
-                           r"sending automated queries", re.IGNORECASE)
+_CAPTCHA_TEXT = re.compile(r"\b(?:unusual traffic|not a (?:ro)?bot|verify (?:that )?you are (?:a )?human|"
+                           r"are you a robot|sending automated queries|performing security verification)\b",
+                           re.IGNORECASE)
 _LOGIN_HOST = re.compile(r"(?:^|\.)(?:login|signin|sso|idp|auth|wayf|shibboleth)\.|openathens", re.IGNORECASE)
 _LOGIN_PATH = re.compile(
     r"(?:^|[/?&=])(?:log-?in|sign-?in|sso|shibboleth(?:\.sso)?|cas/login|adfs|wayf|showlogin|saml2?)(?:$|[/?&.=_-])",
