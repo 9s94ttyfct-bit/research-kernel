@@ -53,9 +53,11 @@ Hidden text is removed before anything enters a text layer:
 
 ## Evaluation
 
-V-SUPPORT layer 1 needs the optional extras (`uv sync --extra support --extra eval`) and, for the default
-Bespoke-MiniCheck-7B, a local Ollama with `ollama pull bespoke-minicheck:7b-q8_0` (8.2 GB). The Flan-T5 alternative
-downloads once to `$RK_HOME/models`.
+V-SUPPORT layer 1 defaults to Bespoke-MiniCheck-7B in a local Ollama: `ollama pull bespoke-minicheck:7b-q8_0`
+(8.2 GB; it needs nltk from the `support` extra for sentence splitting). That tag is Ollama's 8-bit quantized build of
+`bespokelabs/Bespoke-MiniCheck-7B`. It has not been checked against the full-precision model, so its thresholds come
+from its own calibration. The Flan-T5 alternative also needs torch and transformers (`uv sync --extra support`) and
+downloads once to `$RK_HOME/models`. Evaluation needs `--extra eval`.
 
 ```bash
 rk eval support --write-config      # calibrate τ on SciFact train; confusion matrices on held-out SciFact dev

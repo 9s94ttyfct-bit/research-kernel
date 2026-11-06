@@ -158,21 +158,24 @@ class MiniCheck:
         return self.score_batch([(doc, claim)])[0]
 
 
-_instances: dict[tuple[str, str], object] = {}
+_instances: dict[tuple[str, ...], object] = {}
 _instances_lock = threading.Lock()
 
 
 def get_minicheck(cache_dir: Path, model_id: str = MODEL_ID):
     """One layer-1 scorer per process and model. ``ollama:…`` ids (Bespoke-MiniCheck-7B) run in local Ollama; other
     ids are Hugging Face checkpoints of MiniCheck-Flan-T5 run in-process."""
-    key = (str(cache_dir), model_id)
+    if model_id.startswith("ollama:"):
+        from rk.config import load_settings
+        from rk.verify.minicheck_bespoke import BespokeMiniCheck
+
+        url = load_settings().ollama_url
+        key: tuple[str, ...] = (str(cache_dir), model_id, url)
+        make = lambda: BespokeMiniCheck(model_id, url, cache_dir=cache_dir)
+    else:
+        key = (str(cache_dir), model_id)
+        make = lambda: MiniCheck(cache_dir, model_id)
     with _instances_lock:
         if key not in _instances:
-            if model_id.startswith("ollama:"):
-                from rk.config import load_settings
-                from rk.verify.minicheck_bespoke import BespokeMiniCheck
-
-                _instances[key] = BespokeMiniCheck(model_id, load_settings().ollama_url, cache_dir=cache_dir)
-            else:
-                _instances[key] = MiniCheck(cache_dir, model_id)
+            _instances[key] = make()
         return _instances[key]
