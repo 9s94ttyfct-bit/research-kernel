@@ -219,7 +219,7 @@ def render_report(r: dict) -> str:
                 (f"- Pairs where ≥2 judges agree on unsupported/contradicted: {j['n_agree_negative']} "
                 f"(not-gold-supported share {_fmt(j['agree_negative_precision'])})"),
                 (f"- τ_hi_judged = {_fmt(j['tau_hi_judged'], 4)}; τ_lo_judged = {_fmt(j['tau_lo_judged'], 4)} "
-                "(n/a = target not reachable, layer-1-only thresholds stay in force)"), "",
+                "(a value of n/a would mean the target was not reachable; the layer-1-only threshold then applies)"), "",
                 "In-sample (train) result of the amended rule — optimistic by construction:", "",
                 _target(j["train_amended"]), "",
                 f"## Held-out comparison (SciFact dev, seeded sample of {d['sample']}, seed {d['seed']})", "",

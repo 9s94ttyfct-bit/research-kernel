@@ -23,7 +23,7 @@ Judges: `omp_gateway:openai-codex/gpt-6-luna`, `omp_gateway:anthropic/claude-son
 
 - Pairs where ≥2 judges agree on "supported": 27 (gold-supported share 1.000)
 - Pairs where ≥2 judges agree on unsupported/contradicted: 94 (not-gold-supported share 0.968)
-- τ_hi_judged = 0.0742; τ_lo_judged = 0.9713 (n/a = target not reachable, layer-1-only thresholds stay in force)
+- τ_hi_judged = 0.0742; τ_lo_judged = 0.9713 (a value of n/a would mean the target was not reachable; the layer-1-only threshold then applies)
 
 In-sample (train) result of the amended rule — optimistic by construction:
 
