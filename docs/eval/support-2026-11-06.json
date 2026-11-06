@@ -38,36 +38,131 @@
    }
   }
  },
- "two_layer": {
+ "joint_calibration": {
+  "split": "train",
+  "sample": 200,
+  "seed": 13,
+  "tau_hi_judged": 0.074177,
+  "tau_lo_judged": 0.971312,
+  "n": 200,
+  "n_agree_supported": 27,
+  "n_agree_negative": 94,
+  "agree_supported_precision": 1.0,
+  "agree_negative_precision": 0.9680851063829787,
+  "target_precision": 0.95,
+  "train_amended": {
+   "n": 200,
+   "predicted_supported": 26,
+   "precision_supported": 1.0,
+   "coverage": 0.6,
+   "confusion": {
+    "supported": {
+     "supported": 26,
+     "contradicted": 0,
+     "unsupported": 3,
+     "uncertain": 45
+    },
+    "contradicted": {
+     "supported": 0,
+     "contradicted": 26,
+     "unsupported": 2,
+     "uncertain": 14
+    },
+    "unsupported": {
+     "supported": 0,
+     "contradicted": 6,
+     "unsupported": 57,
+     "uncertain": 21
+    }
+   }
+  }
+ },
+ "dev_sample": {
   "split": "dev",
   "sample": 100,
   "seed": 13,
   "judges": [
-   "omp_gateway:openai-codex/gpt-6-luna"
+   "omp_gateway:openai-codex/gpt-6-luna",
+   "omp_gateway:anthropic/claude-sonnet-5"
   ],
-  "min_judges": 1,
-  "n": 100,
-  "predicted_supported": 7,
-  "precision_supported": 1.0,
-  "coverage": 0.07,
-  "confusion": {
-   "supported": {
-    "supported": 7,
-    "contradicted": 0,
-    "unsupported": 0,
-    "uncertain": 38
-   },
-   "contradicted": {
-    "supported": 0,
-    "contradicted": 0,
-    "unsupported": 0,
-    "uncertain": 21
-   },
-   "unsupported": {
-    "supported": 0,
-    "contradicted": 0,
-    "unsupported": 0,
-    "uncertain": 34
+  "min_judges": 2,
+  "failed_judge_calls": 0,
+  "old_rule": {
+   "n": 100,
+   "predicted_supported": 5,
+   "precision_supported": 1.0,
+   "coverage": 0.05,
+   "confusion": {
+    "supported": {
+     "supported": 5,
+     "contradicted": 0,
+     "unsupported": 0,
+     "uncertain": 40
+    },
+    "contradicted": {
+     "supported": 0,
+     "contradicted": 0,
+     "unsupported": 0,
+     "uncertain": 21
+    },
+    "unsupported": {
+     "supported": 0,
+     "contradicted": 0,
+     "unsupported": 0,
+     "uncertain": 34
+    }
+   }
+  },
+  "amended_rule": {
+   "n": 100,
+   "predicted_supported": 11,
+   "precision_supported": 1.0,
+   "coverage": 0.54,
+   "confusion": {
+    "supported": {
+     "supported": 11,
+     "contradicted": 1,
+     "unsupported": 3,
+     "uncertain": 30
+    },
+    "contradicted": {
+     "supported": 0,
+     "contradicted": 16,
+     "unsupported": 0,
+     "uncertain": 5
+    },
+    "unsupported": {
+     "supported": 0,
+     "contradicted": 2,
+     "unsupported": 21,
+     "uncertain": 11
+    }
+   }
+  },
+  "judges_only": {
+   "n": 100,
+   "predicted_supported": 12,
+   "precision_supported": 1.0,
+   "coverage": 0.55,
+   "confusion": {
+    "supported": {
+     "supported": 12,
+     "contradicted": 1,
+     "unsupported": 3,
+     "uncertain": 29
+    },
+    "contradicted": {
+     "supported": 0,
+     "contradicted": 16,
+     "unsupported": 0,
+     "uncertain": 5
+    },
+    "unsupported": {
+     "supported": 0,
+     "contradicted": 2,
+     "unsupported": 21,
+     "uncertain": 11
+    }
    }
   }
  }
