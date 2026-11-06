@@ -1,0 +1,173 @@
+{
+ "date": "2026-11-06",
+ "driver": "omp_gateway:openai-codex/gpt-6-luna",
+ "seed": 13,
+ "n": 20,
+ "answered": 11,
+ "correct": 11,
+ "accuracy": 0.55,
+ "precision": 1.0,
+ "coverage": 0.55,
+ "rows": [
+  {
+   "id": "4d4cb121-9525-499a-9475-9b212465c72d",
+   "ok": true,
+   "answered": true,
+   "correct": true,
+   "tool_calls": 8,
+   "error": null
+  },
+  {
+   "id": "5806ed2a-1005-44f1-8d70-332048fea8f4",
+   "ok": true,
+   "answered": false,
+   "correct": false,
+   "tool_calls": 7,
+   "error": null
+  },
+  {
+   "id": "b2a0249b-2850-4576-8b78-8408c1e47324",
+   "ok": true,
+   "answered": true,
+   "correct": true,
+   "tool_calls": 7,
+   "error": null
+  },
+  {
+   "id": "cbe93a43-09cd-4cb4-9edd-f22fe8c28415",
+   "ok": true,
+   "answered": false,
+   "correct": false,
+   "tool_calls": 4,
+   "error": null
+  },
+  {
+   "id": "49d2630e-9d26-4e12-89a3-3050a609abf5",
+   "ok": true,
+   "answered": false,
+   "correct": false,
+   "tool_calls": 8,
+   "error": null
+  },
+  {
+   "id": "dbb51a1c-f9a2-4960-a93c-118957659790",
+   "ok": true,
+   "answered": false,
+   "correct": false,
+   "tool_calls": 8,
+   "error": null
+  },
+  {
+   "id": "3f5bae15-bd5d-43e3-8e5e-944b1e533529",
+   "ok": true,
+   "answered": true,
+   "correct": true,
+   "tool_calls": 5,
+   "error": null
+  },
+  {
+   "id": "c47dd378-dde3-4a45-9184-6abfa6163717",
+   "ok": true,
+   "answered": true,
+   "correct": true,
+   "tool_calls": 6,
+   "error": null
+  },
+  {
+   "id": "6aa10957-bdd9-4dab-a4e1-234a17cb87dd",
+   "ok": true,
+   "answered": false,
+   "correct": false,
+   "tool_calls": 7,
+   "error": null
+  },
+  {
+   "id": "a8aa19cc-e4d1-4aa1-8c4e-2a518b4c99d6",
+   "ok": true,
+   "answered": false,
+   "correct": false,
+   "tool_calls": 12,
+   "error": null
+  },
+  {
+   "id": "afb36e40-0836-4810-909e-eabfe17dcd8b",
+   "ok": true,
+   "answered": true,
+   "correct": true,
+   "tool_calls": 7,
+   "error": null
+  },
+  {
+   "id": "0eede7a8-fe1f-42d3-a2c6-478083648644",
+   "ok": true,
+   "answered": true,
+   "correct": true,
+   "tool_calls": 5,
+   "error": null
+  },
+  {
+   "id": "5049c648-b1bb-4624-8824-9d93dfb04e51",
+   "ok": true,
+   "answered": true,
+   "correct": true,
+   "tool_calls": 10,
+   "error": null
+  },
+  {
+   "id": "ea4ce240-2864-4ee5-9ffc-2dbda0f8f550",
+   "ok": true,
+   "answered": false,
+   "correct": false,
+   "tool_calls": 4,
+   "error": null
+  },
+  {
+   "id": "12321eab-6ad6-4218-8815-18bc51c14544",
+   "ok": true,
+   "answered": false,
+   "correct": false,
+   "tool_calls": 4,
+   "error": null
+  },
+  {
+   "id": "0d5cf8a7-a240-4a8f-be4e-c16712f90d79",
+   "ok": true,
+   "answered": false,
+   "correct": false,
+   "tool_calls": 9,
+   "error": null
+  },
+  {
+   "id": "6fff0994-6d02-470a-9d61-8e35420412b6",
+   "ok": true,
+   "answered": true,
+   "correct": true,
+   "tool_calls": 5,
+   "error": null
+  },
+  {
+   "id": "5c4c602c-9624-4eae-ac44-efe4c0dd10e6",
+   "ok": true,
+   "answered": true,
+   "correct": true,
+   "tool_calls": 5,
+   "error": null
+  },
+  {
+   "id": "8696273a-7fea-411a-b6c6-0e826e1e02b5",
+   "ok": true,
+   "answered": true,
+   "correct": true,
+   "tool_calls": 9,
+   "error": null
+  },
+  {
+   "id": "eda34fde-798e-43a1-a9d3-a804d3d8ee4e",
+   "ok": true,
+   "answered": true,
+   "correct": true,
+   "tool_calls": 10,
+   "error": null
+  }
+ ]
+}

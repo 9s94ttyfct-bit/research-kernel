@@ -486,6 +486,72 @@ def eval_reportbench(reports: Path = REPORTS_OPT, gt: Path | None = GT_OPT, as_j
         f"R={d['macro']['recall']:.3f}  ({len(d['reports'])} reports, {d['n_match']}/{d['n_gt']} references found)"))
 
 
+EVAL_DRIVER_OPT = typer.Option("omp_gateway:openai-codex/gpt-6-luna", "--driver",
+                               help="Chat-API driver for the agent tasks (evaluations run on a scratch kernel)")
+
+
+@eval_app.command("deepfact")
+def eval_deepfact(limit: int = typer.Option(30, "--limit"), driver: str = EVAL_DRIVER_OPT,
+                  judges: str | None = JUDGES_OPT, min_judges: int | None = typer.Option(None, "--min-judges"),
+                  out: Path = EVAL_OUT_OPT) -> None:
+    """DeepFact-Bench (evaluation only): gather evidence with Scout + Reader tasks, then V-SUPPORT each claim."""
+    from rk.eval.deepfact import run_deepfact
+    from rk.llm.drivers import DriverSpec
+
+    k = min_judges if min_judges is not None else load_settings().support_min_judges
+    r = run_deepfact(driver=DriverSpec.parse(driver), judges=_judges(judges), min_judges=k, limit=limit,
+                     report_dir=out)
+    typer.echo(Path(r["report"]).read_text())
+
+
+@eval_app.command("litqa2")
+def eval_litqa2(limit: int = typer.Option(20, "--limit"), driver: str = EVAL_DRIVER_OPT,
+                out: Path = EVAL_OUT_OPT) -> None:
+    """LitQA2 multiple-choice questions answered with the Kernel's search and full-text tools."""
+    from rk.eval.litqa2 import run_litqa2
+    from rk.llm.drivers import DriverSpec
+
+    r = run_litqa2(driver=DriverSpec.parse(driver), limit=limit, report_dir=out)
+    typer.echo(Path(r["report"]).read_text())
+
+
+# ---------------- support check (runs inside rk serve; agentic CLIs reach their tools via rk mcp) ----------------
+support_app = typer.Typer(help="Claim support checks", no_args_is_help=True)
+app.add_typer(support_app, name="support")
+TEXT_FILE_OPT = typer.Option(..., "--text", help="File with the passage to check")
+GOLD_OPT = typer.Option(None, "--gold", help='JSON file {"<sentence index>": "supported|unsupported|contradicted"}')
+
+
+@support_app.command("check")
+def support_check_cmd(text: Path = TEXT_FILE_OPT, sources: str = typer.Option(..., "--sources",
+                                                                              help="Comma-separated item ids"),
+                      driver: str | None = typer.Option(None, "--driver", help="Default: the arguer's driver"),
+                      judges: str | None = JUDGES_OPT, min_judges: int | None = typer.Option(None, "--min-judges"),
+                      gold: Path | None = GOLD_OPT, project: str | None = typer.Option(None, "--project"),
+                      as_json: bool = JSON_OPT) -> None:
+    """Split a passage into claims, gather verified quotes from the sources, and give each claim a V-SUPPORT verdict."""
+    args = {"project": _project(project), "text": text.read_text(), "source_ids": sources.split(","),
+            "driver": driver, "judges": judges.split(",") if judges else None, "min_judges": min_judges,
+            "gold": json.loads(gold.read_text()) if gold else None}
+    r = _call("rk_support_check", args, write=True, timeout=3 * 3600)
+
+    def render(d):
+        typer.echo(f"driver {d['driver']} (vendor {d['vendor']})")
+        for row in d["rows"]:
+            gold_s = f"  gold={row['gold']}" if row.get("gold") else ""
+            p = "-" if row["p"] is None else f"{row['p']:.3f}"
+            typer.echo(f"[{row['sentence_index']}] {row['verdict'].upper():<12} p={p} nums={'ok' if row['numbers_ok'] else 'UNGROUNDED'}"
+                       f"{gold_s}\n    {row['claim']}\n    judges: {'; '.join(row['judges']) or '-'}")
+            for ev in row["evidence"]:
+                typer.echo(f"    evidence {ev}")
+        if d.get("confusion"):
+            from rk.eval.metrics import md_matrix
+
+            typer.echo(f"\naccuracy {d['accuracy']:.3f}\n{md_matrix(d['confusion'])}")
+
+    _out(r, as_json, render)
+
+
 # ---------------- checkpoints ----------------
 @checkpoint_app.command("list")
 def checkpoint_list(project: str | None = typer.Option(None, "--project"), status: str | None = typer.Option(

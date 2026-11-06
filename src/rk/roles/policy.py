@@ -39,7 +39,7 @@ TOOL_ROLES: dict[str, frozenset[str]] = {
                                      "rk_library_tag", "rk_library_collect", "rk_library_import", "rk_providers")},
     # human only: host file paths, credentials, answering checkpoints, launching tasks
     **{name: _r() for name in ("rk_library_attach", "rk_token_create", "rk_token_list", "rk_token_revoke",
-                               "rk_checkpoint_answer", "rk_task_run")},
+                               "rk_checkpoint_answer", "rk_task_run", "rk_support_check")},
 }
 
 

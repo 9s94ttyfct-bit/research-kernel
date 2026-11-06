@@ -43,11 +43,31 @@ State lives in `$RK_HOME`, which defaults to `~/ResearchKernel`:
 | V-QUOTE | A quote note must occur verbatim in the source's text layer after normalisation: ligatures, quote and dash styles, line-end hyphenation and whitespace. It is stored with a page and character locator. |
 | V-PARA | A paraphrase must not copy its source span. Limits: longest shared run ≤ 8 tokens, 4-gram containment ≤ 0.35, token-set ratio ≤ 85. This is a lexical flag only. |
 | V-HEDGE | A claim may not be worded more strongly than its sources. |
+| V-SUPPORT | Layer 1 is the local MiniCheck-Flan-T5-Large probability p, exactly as in the official package. Layer 2 is a set of LLM judges from vendors other than the claim's author; each must quote the evidence verbatim. **supported** needs p ≥ τ_hi and ≥ `support_min_judges` (default 2) agreeing judges. **unsupported**/**contradicted** need p ≤ τ_lo and agreeing judges. Everything else is **uncertain**, which in collaborative mode opens an `uncertain_support` checkpoint. |
+| V-NUM | Every number in a claim must occur, with the same value and unit, in its evidence. Formats are normalised: thousands separators, Unicode minus, `×10ⁿ`, `%`/percent and ranges. |
 
 Hidden text is removed before anything enters a text layer:
 - PDF: white, invisible-render-mode, sub-1 pt (font size or text-matrix scaling) and off-page glyphs
 - HTML: `display:none`, `visibility:hidden`, `opacity:0`, zero font size (inline or via simple `<style>` rules,
   `!important` included), `hidden`, comments, scripts and zero-width characters
+
+## Evaluation
+
+V-SUPPORT layer 1 needs the optional extras: `uv sync --extra support --extra eval`. These install torch, transformers,
+nltk and pyarrow; the model downloads once to `$RK_HOME/models`.
+
+```bash
+rk eval support --write-config      # calibrate τ on SciFact train; confusion matrices on held-out SciFact dev
+rk eval litqa2 --limit 20           # LitQA2 multiple choice with the Kernel's own search/full-text tools
+rk eval deepfact --limit 10         # DeepFact-Bench claims: gather evidence, then V-SUPPORT (evaluation only)
+rk eval reportbench --reports DIR   # citation precision/recall against ReportBench references
+rk support check --text passage.txt --sources src_… --driver codex_cli --gold gold.json
+```
+
+- Results land in `docs/eval/` as aggregate numbers only. Dataset sources and licences are listed in
+  `src/rk/eval/LICENSES.md`.
+- Evaluations run on a scratch kernel with chat-API drivers. `rk support check` runs inside `rk serve`, so it can
+  use any driver.
 
 ## Drivers and roles
 

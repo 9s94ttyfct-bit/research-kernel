@@ -21,6 +21,7 @@ from rk.roles.policy import ROLES, tool_roles
 from rk.sources import openalex
 from rk.sources.identifiers import Identifier, parse_identifier
 from rk.sources.resolver import resolve, search
+from rk.support_check import support_check
 from rk.tools.registry import CallContext, Tool, ToolError, ToolRegistry
 from rk.verify.records import verify_item
 from rk.verify.retract import FLAGGED, retraction_status
@@ -552,6 +553,30 @@ def build_registry(k: Kernel) -> ToolRegistry:
             rows.append({"role": role, "driver": str(spec), "vendor": vendor_of(spec.provider, spec.model),
                          **avail.model_dump()})
         return Out(providers=rows)
+
+    class SupportCheckArgs(BaseModel):
+        project: str
+        text: str = Field(min_length=1, max_length=20000)
+        source_ids: list[str] = Field(min_length=1)
+        driver: str | None = None
+        judges: list[str] | None = None
+        min_judges: int | None = Field(None, ge=1, le=3)
+        gold: dict[int, Literal["supported", "unsupported", "contradicted"]] | None = None
+
+    @tool("rk_support_check", "Per-claim support verdicts for a passage against its sources (human only).",
+          SupportCheckArgs, True)
+    def _support_check(ctx: CallContext, a: SupportCheckArgs) -> Out:
+        _project(k, a.project)
+        try:
+            driver = DriverSpec.parse(a.driver or k.settings().drivers["arguer"])
+            judges = [DriverSpec.parse(j) for j in a.judges] if a.judges else None
+            report = support_check(k, reg, project=a.project, text=a.text, source_ids=a.source_ids, driver=driver,
+                                   gold=a.gold, judge_drivers=judges, min_judges=a.min_judges, actor=ctx.actor)
+        except KeyError as e:
+            raise ToolError("not_found", f"unknown source {e.args[0]}", status=404) from e
+        except (ValueError, RuntimeError) as e:
+            raise ToolError("failed", str(e)) from e
+        return Out(**report.model_dump(mode="json"))
 
     return reg
 
