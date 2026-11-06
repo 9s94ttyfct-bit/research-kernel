@@ -63,6 +63,17 @@ def judge_drivers(settings, drivers: list[DriverSpec] | None) -> list[DriverSpec
     return [DriverSpec.parse(settings.drivers[r]) for r in ("judge", "judge_2") if r in settings.drivers]
 
 
+def judge_vendor_error(vendor: str | None, generator_vendor: str | None, seen: set[str]) -> str | None:
+    """Why a judge of ``vendor`` cannot judge work of ``generator_vendor`` (``seen``: the vendors of the judges
+    already admitted), else ``None``. A judge must be of a known, non-human vendor that differs from the generator's
+    and from every other judge's."""
+    if vendor is None or vendor == "human" or vendor == generator_vendor:
+        return "same_or_unknown_vendor"
+    if vendor in seen:
+        return "duplicate_vendor"
+    return None
+
+
 def run_judges(kernel, registry, *, project: str, claim_text: str, evidence_text: str,
                generator_vendor: str | None, drivers: list[DriverSpec] | None = None,
                providers: dict[str, object] | None = None, run: JudgeRunner | None = None) -> list[JudgeOpinion]:
@@ -78,11 +89,9 @@ def run_judges(kernel, registry, *, project: str, claim_text: str, evidence_text
     for i, spec in enumerate(judge_drivers(kernel.settings(), drivers)):
         vendor = vendor_of(spec.provider, spec.model)
         base = {"driver": str(spec), "vendor": vendor}
-        if vendor is None or vendor == "human" or vendor == generator_vendor:
-            opinions.append(JudgeOpinion(**base, label="uncertain", error="same_or_unknown_vendor"))
-            continue
-        if vendor in seen_vendors:
-            opinions.append(JudgeOpinion(**base, label="uncertain", error="duplicate_vendor"))
+        error = judge_vendor_error(vendor, generator_vendor, seen_vendors)
+        if error is not None:
+            opinions.append(JudgeOpinion(**base, label="uncertain", error=error))
             continue
         seen_vendors.add(vendor)
         r = run(role="judge" if i == 0 else "judge_2", instructions=INSTRUCTIONS,

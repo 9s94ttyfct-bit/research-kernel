@@ -119,6 +119,22 @@ class DistortionsOut(BaseModel):
     items: list[DistortionOut]
 
 
+class TopicOut(BaseModel):
+    title: str
+    summary: str
+    gap_ids: list[str]  # ids of the given verified gaps the topic rests on
+    feasibility: str
+    data_needed: str
+    paper_type: PaperType
+    risks: str
+
+
+class TopicsOut(BaseModel):
+    """The Ideator's candidate topics (topics stage); the kernel drops gap ids that are not verified gaps of the latest
+    gaps attempt, and topics left without one."""
+    topics: list[TopicOut]
+
+
 class GapEvidence(BaseModel):
     note_ids: list[str] = []
     item_ids: list[str] = []

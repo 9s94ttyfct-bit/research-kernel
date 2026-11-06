@@ -66,8 +66,8 @@ class StageOutcome:
 
 @dataclass(frozen=True)
 class _EdgeResult:
-    """What a use of an edge came to: taken, blocked on a ``stage_blocked`` checkpoint (P2), or degraded and then
-    passed or failed (P1)."""
+    """What a use of an edge came to: taken, blocked on a checkpoint (P2: ``stage_blocked``; P1: one the degrade
+    opened), or degraded and then passed or failed (P1)."""
     kind: Literal["taken", "blocked", "passed", "failed"]
     checkpoint_id: str | None = None
     reason: str = ""
@@ -102,7 +102,8 @@ class Worker(Protocol):
 
     def degrade(self, ctx: StageContext, failures: list[str]) -> StageOutcome:
         """P1 only, at an edge limit: delete or narrow what fails, re-validate and continue (spec §5.3/§7.2). Writes
-        ``stage.degraded`` for the disclosure; ``done`` goes to the gate, ``failed`` fails the run."""
+        ``stage.degraded`` for the disclosure; ``done`` goes to the gate, ``failed`` fails the run, ``waiting_human``
+        waits on the checkpoint it opened (a review that is human in every mode, e.g. ``topic_review``)."""
         ...
 
 
@@ -137,8 +138,9 @@ def default_workers() -> dict[str, Worker]:
     """The worker of every discovery stage that has one."""
     from rk.discovery.gaps import GapsWorker  # the workers import this module
     from rk.discovery.landscape import LandscapeWorker
+    from rk.discovery.topics import TopicsWorker
 
-    return {"intake": IntakeWorker(), "landscape": LandscapeWorker(), "gaps": GapsWorker()}
+    return {"intake": IntakeWorker(), "landscape": LandscapeWorker(), "gaps": GapsWorker(), "topics": TopicsWorker()}
 
 
 class Orchestrator:
@@ -313,8 +315,10 @@ class Orchestrator:
 
     @staticmethod
     def _guidance(ps: ProjectStore, stage: str, requested: str | None) -> str:
-        """What the worker gets: the guidance requested for the attempt, then every exploration round's feedback."""
-        return "\n".join(g for g in (requested, round_guidance(ps, stage)) if g)
+        """What the worker gets: the guidance requested for the attempt, then every exploration round's feedback; a
+        line already given (a review comment that is both the rerun reason and a round) is given once."""
+        lines = [ln for g in (requested, round_guidance(ps, stage)) if g for ln in g.split("\n")]
+        return "\n".join(dict.fromkeys(lines))
 
     @staticmethod
     def _check(stage: str, outcome: StageOutcome) -> None:
@@ -370,7 +374,8 @@ class Orchestrator:
     def _use_edge(self, ps: ProjectStore, worker: Worker, ctx: StageContext, to: str,
                   failures: list[str]) -> _EdgeResult:
         """Take ``stage->to`` unless its uses are spent (§7.2, in D1 and D2 alike). At the limit P2 opens a
-        ``stage_blocked`` checkpoint linked to the attempt; P1 degrades, then gates the attempt."""
+        ``stage_blocked`` checkpoint linked to the attempt; P1 degrades, then gates the attempt, or waits on the
+        checkpoint the degrade opened."""
         stage, actor = ctx.stage, ctx.actor
         edge = edge_name(stage, to)
         uses = edge_row(ps, edge)
@@ -389,6 +394,10 @@ class Orchestrator:
             record_waiting(ps, stage, ctx.attempt, cid, actor=actor)
             return _EdgeResult("blocked", checkpoint_id=cid)
         out = worker.degrade(ctx, list(failures))
+        self._check(stage, out)
+        if out.status == "waiting_human":
+            record_waiting(ps, stage, ctx.attempt, out.checkpoint_id, actor=actor)
+            return _EdgeResult("blocked", checkpoint_id=out.checkpoint_id)
         if out.status == "failed":
             return _EdgeResult("failed", reason=out.reason or f"{stage!r} could not degrade at {edge}")
         if out.status != "done":

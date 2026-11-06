@@ -75,10 +75,15 @@ def add_gap(ps: ProjectStore, attempt: int, gap: Gap, *, verified: bool, checks:
     return gid
 
 
-def add_topic(ps: ProjectStore, attempt: int, topic: Topic, *, actor: str, actor_kind: ActorKind = "agent") -> str:
+def add_topic(ps: ProjectStore, attempt: int, topic: Topic, *, actor: str, actor_kind: ActorKind = "agent",
+              novelty: dict | None = None) -> str:
+    """``novelty`` is the V-NOVELTY reference of the topic (queries, sources, how many works the searches found), kept
+    in the event for the gate and the review (``topic_novelty``)."""
     tid = new_id("tpc")
-    ps.apply(NewEvent(type="topic.added", entity_id=tid, actor_kind=actor_kind, actor=actor,
-                      payload={"attempt": attempt, "topic": topic.model_dump(mode="json")}))
+    payload: dict = {"attempt": attempt, "topic": topic.model_dump(mode="json")}
+    if novelty is not None:
+        payload["novelty"] = novelty
+    ps.apply(NewEvent(type="topic.added", entity_id=tid, actor_kind=actor_kind, actor=actor, payload=payload))
     return tid
 
 
@@ -130,14 +135,26 @@ def freeze_rq(ps: ProjectStore, rq_id: str, *, adopted_by: Literal["human", "age
     return h
 
 
-def add_round(ps: ProjectStore, stage: str, feedback: str, *, actor: str, actor_kind: ActorKind = "human") -> str:
-    """One exploration round: feedback on a stage's output that guides its next run."""
+def add_round(ps: ProjectStore, stage: str, feedback: str, *, actor: str, actor_kind: ActorKind = "human",
+              checkpoint_id: str | None = None) -> str:
+    """One exploration round: feedback on a stage's output that guides its next run. ``checkpoint_id`` names the
+    checkpoint answer the feedback came from (``round_for_checkpoint``)."""
     xid = new_id("xpr")
+    payload: dict = {"stage": stage, "feedback": feedback}
+    if checkpoint_id is not None:
+        payload["checkpoint_id"] = checkpoint_id
     with ps.lock:
         n = ps.db.execute("SELECT COALESCE(MAX(n), 0) FROM exploration_rounds").fetchone()[0] + 1
         ps.apply(NewEvent(type="exploration.round", entity_id=xid, actor_kind=actor_kind, actor=actor,
-                          payload={"n": n, "stage": stage, "feedback": feedback}))
+                          payload={"n": n, **payload}))
     return xid
+
+
+def round_for_checkpoint(ps: ProjectStore, checkpoint_id: str) -> str | None:
+    """The id of the exploration round recorded from the checkpoint's answer, if any."""
+    r = ps.db.execute("SELECT entity_id FROM events WHERE type='exploration.round' AND "
+                      "json_extract(payload, '$.checkpoint_id')=? ORDER BY seq LIMIT 1", (checkpoint_id,)).fetchone()
+    return r["entity_id"] if r else None
 
 
 def _require(ps: ProjectStore, table: str, entity_id: str) -> sqlite3.Row:
@@ -183,6 +200,13 @@ def gaps(ps: ProjectStore, attempt: int, verified: bool | None = None) -> list[d
 
 def topics(ps: ProjectStore, attempt: int) -> list[dict]:
     return _rows(ps, "SELECT * FROM topics WHERE attempt=? ORDER BY rowid", (attempt,), ("gap_ids", "closest"))
+
+
+def topic_novelty(ps: ProjectStore, topic_id: str) -> dict | None:
+    """The V-NOVELTY reference stored with the topic (``add_topic(novelty=...)``), or ``None``."""
+    r = ps.db.execute("SELECT json_extract(payload, '$.novelty') AS n FROM events WHERE type='topic.added' AND "
+                      "entity_id=? ORDER BY seq DESC LIMIT 1", (topic_id,)).fetchone()
+    return json.loads(r["n"]) if r and r["n"] else None
 
 
 def rqs(ps: ProjectStore, attempt: int) -> list[dict]:
