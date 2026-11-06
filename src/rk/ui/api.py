@@ -22,7 +22,7 @@ from fastapi.responses import (
 )
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
-from rk.checkpoints import list_checkpoints
+from rk.checkpoints import get_checkpoint, list_checkpoints
 from rk.config import check_library_proxy, load_settings, save_settings
 from rk.tools.registry import CallContext, PermissionDenied, ToolError
 from rk.ui.auth import COOKIE, UiAuth
@@ -381,6 +381,10 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
                 for ev in await run_in_threadpool(_event_rows, ps, last):
                     last = ev["seq"]
                     await send({"type": "event", "event": ev})
+                    if ev["type"].startswith("checkpoint.") and ev["entity_id"]:
+                        cp, open_cps = await run_in_threadpool(
+                            lambda cid=ev["entity_id"]: (get_checkpoint(ps, cid), list_checkpoints(ps, "open")))
+                        await send({"type": "checkpoint", "checkpoint": cp, "open_count": len(open_cps)})
                 svc = browser()
                 status = (await run_in_threadpool(svc.status, ctx)) if svc is not None and svc.running else \
                     {"running": False}

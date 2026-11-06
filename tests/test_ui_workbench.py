@@ -153,6 +153,20 @@ def test_ws_pushes_new_events(ui, project, kernel):
     assert {"item.added", "attachment.added"} <= seen
 
 
+def test_ws_pushes_checkpoint_updates(ui, project):
+    ps, _ = project
+    with ui.websocket_connect("/ui/ws?project=demo", headers=W) as ws:
+        assert ws.receive_json()["type"] == "hello"
+        chk = create_checkpoint(ps, "login_wait", "Sign in to the library", ["done"], actor="kernel:browser")
+        deadline, msg = time.time() + 10, None
+        while time.time() < deadline:
+            msg = ws.receive_json()
+            if msg["type"] == "checkpoint":
+                break
+    assert msg["type"] == "checkpoint" and msg["checkpoint"]["id"] == chk and msg["checkpoint"]["kind"] == "login_wait"
+    assert msg["open_count"] == 1
+
+
 def test_ws_chat_with_fake_driver(ui, project, fake, monkeypatch):
     exe, _records = fake
     monkeypatch.setenv("FAKE_KIND", "claude")
