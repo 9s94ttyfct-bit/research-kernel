@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
 from rk.flags import flag_injection
 from rk.fulltext import FulltextResult, attach_pdf, fetch_fulltext
 from rk.library.formats import FORMATS
@@ -112,6 +113,33 @@ def build_registry(k: Kernel) -> ToolRegistry:
             raise ToolError("not_found", f"no item {a.source_id}", status=404) from e
         return Out(flag_id=flag_injection(ps, a.source_id, a.snippet, a.reason, actor=ctx.actor,
                                           actor_kind=_added_by(ctx)))
+
+    # ---- checkpoints ----
+    class CheckpointList(BaseModel):
+        project: str
+        status: Literal["open", "answered", "cancelled"] | None = None
+
+    @tool("rk_checkpoint_list", "List checkpoints (questions waiting for the researcher).", CheckpointList, False)
+    def _chk_list(ctx: CallContext, a: CheckpointList) -> Out:
+        ps, _ = _project(k, a.project)
+        return Out(checkpoints=list_checkpoints(ps, a.status))
+
+    class CheckpointAnswer(BaseModel):
+        project: str
+        checkpoint_id: str
+        answer: dict
+
+    # Policy: cli only. No agent role can answer; the CLI asks the human to confirm before calling this.
+    @tool("rk_checkpoint_answer", "Answer a checkpoint (human only).", CheckpointAnswer, True)
+    def _chk_answer(ctx: CallContext, a: CheckpointAnswer) -> Out:
+        ps, _ = _project(k, a.project)
+        try:
+            answer_checkpoint(ps, a.checkpoint_id, a.answer, answered_by="human", actor=ctx.actor)
+        except KeyError as e:
+            raise ToolError("not_found", f"no checkpoint {a.checkpoint_id}", status=404) from e
+        except ValueError as e:
+            raise ToolError("invalid", str(e), status=409) from e
+        return Out(checkpoint=get_checkpoint(ps, a.checkpoint_id))
 
     # ---- search & resolve ----
     class SearchArgs(BaseModel):

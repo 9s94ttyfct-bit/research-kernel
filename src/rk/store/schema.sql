@@ -100,6 +100,20 @@ CREATE TABLE IF NOT EXISTS injection_flags (
     ts      TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS checkpoints (
+    id          TEXT PRIMARY KEY,
+    kind        TEXT NOT NULL,
+    stage       TEXT,
+    prompt      TEXT NOT NULL,
+    options     TEXT,
+    task_id     TEXT,
+    status      TEXT NOT NULL,
+    answer      TEXT,
+    answered_by TEXT,
+    created     TEXT NOT NULL,
+    answered_at TEXT
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(
     item_id UNINDEXED, title, abstract, creators, notes, fulltext
 );

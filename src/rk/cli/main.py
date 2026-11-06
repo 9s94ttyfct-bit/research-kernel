@@ -16,10 +16,12 @@ project_app = typer.Typer(help="Projects", no_args_is_help=True)
 library_app = typer.Typer(help="Project library", no_args_is_help=True)
 note_app = typer.Typer(help="Notes", no_args_is_help=True)
 token_app = typer.Typer(help="Lead tokens for external MCP clients", no_args_is_help=True)
+checkpoint_app = typer.Typer(help="Checkpoints waiting for you", no_args_is_help=True)
 app.add_typer(project_app, name="project")
 app.add_typer(library_app, name="library")
 app.add_typer(note_app, name="note")
 app.add_typer(token_app, name="token")
+app.add_typer(checkpoint_app, name="checkpoint")
 
 JSON_OPT = typer.Option(False, "--json", help="Print raw JSON")
 KEYWORD_OPT = typer.Option(None, "--keyword", help="Repeatable")
@@ -373,6 +375,61 @@ def setup() -> None:
     for k, v in caps.items():
         typer.echo(f"  {k:<17} {v}")
     typer.echo(f"\nSaved to {rk_home() / 'config.toml'} (mode 600).")
+
+
+# ---------------- checkpoints ----------------
+@checkpoint_app.command("list")
+def checkpoint_list(project: str | None = typer.Option(None, "--project"), status: str | None = typer.Option(
+        "open", "--status", help="open | answered | all"), as_json: bool = JSON_OPT) -> None:
+    args = {"project": _project(project)}
+    if status and status != "all":
+        args["status"] = status
+    r = _call("rk_checkpoint_list", args)
+
+    def render(d):
+        if not d["checkpoints"]:
+            typer.echo("(no checkpoints)")
+        for c in d["checkpoints"]:
+            typer.echo(f"{c['id']}  [{c['kind']}] {c['status']}\n  {c['prompt'][:300]}")
+
+    _out(r, as_json, render)
+
+
+@checkpoint_app.command("answer")
+def checkpoint_answer(checkpoint_id: str, answer: str = typer.Option(..., "--json", help="Answer as a JSON object"),
+                      project: str | None = typer.Option(None, "--project"),
+                      yes: bool = typer.Option(False, "--yes", help="Skip the prompt (only with "
+                                                                     "RK_ALLOW_NONINTERACTIVE_ANSWER=1)")) -> None:
+    """Answer a checkpoint. You are asked to confirm: only a human may answer."""
+    import os
+    import sys
+
+    slug = _project(project)
+    try:
+        payload = json.loads(answer)
+    except json.JSONDecodeError as e:
+        typer.secho(f"--json is not valid JSON: {e}", fg="red", err=True)
+        raise typer.Exit(2) from e
+    if not isinstance(payload, dict):
+        typer.secho("--json must be a JSON object", fg="red", err=True)
+        raise typer.Exit(2)
+    cps = {c["id"]: c for c in _call("rk_checkpoint_list", {"project": slug})["checkpoints"]}
+    if checkpoint_id not in cps:
+        typer.secho(f"no checkpoint {checkpoint_id} in {slug}", fg="red", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"[{cps[checkpoint_id]['kind']}] {cps[checkpoint_id]['prompt']}\n\nYour answer: {payload}")
+    if yes:
+        if os.environ.get("RK_ALLOW_NONINTERACTIVE_ANSWER") != "1":
+            typer.secho("--yes needs RK_ALLOW_NONINTERACTIVE_ANSWER=1", fg="red", err=True)
+            raise typer.Exit(2)
+    elif not sys.stdin.isatty() and os.environ.get("RK_ALLOW_NONINTERACTIVE_ANSWER") != "1":
+        typer.secho("answering needs an interactive terminal (a human confirms every answer)", fg="red", err=True)
+        raise typer.Exit(2)
+    elif not typer.confirm("Confirm answer?", default=False):
+        typer.echo("not answered")
+        raise typer.Exit(1)
+    _call("rk_checkpoint_answer", {"project": slug, "checkpoint_id": checkpoint_id, "answer": payload}, write=True)
+    typer.echo(f"answered {checkpoint_id}")
 
 
 # ---------------- tokens ----------------
