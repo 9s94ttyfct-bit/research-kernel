@@ -128,6 +128,7 @@ function listen(fn) {
 
 const pages = {};
 let unlisten = null;
+let chatOpens = 0;  // numbers each chat.open so a re-rendered chat page ignores the replies meant for an earlier render
 
 function needProject() {
   if (state.project) return false;
@@ -183,10 +184,12 @@ pages.chat = async (root) => {
   fill(root, el("h1", {}, "Chat"), el("p", { class: "lead" }, "The Lead agent works on this project with its tools; tool calls appear folded under each answer."), status, transcript, form);
 
   let current = null;
+  const ref = ++chatOpens;
+  state.chat = null;  // until this render's own chat.opened arrives
   const add = (node) => { transcript.append(node); node.scrollIntoView({ block: "end" }); return node; };
   unlisten = listen((msg) => {
-    if (msg.type === "chat.opened") { state.chat = msg.chat_id; status.textContent = `Talking to ${msg.driver}.`; }
-    if (msg.type === "chat.error") { status.textContent = `Chat unavailable: ${msg.message}`; }
+    if (msg.type === "chat.opened" && msg.ref === ref) { state.chat = msg.chat_id; status.textContent = `Talking to ${msg.driver}.`; }
+    if (msg.type === "chat.error" && msg.ref === ref) { status.textContent = `Chat unavailable: ${msg.message}`; }
     if (msg.type !== "chat" || msg.chat_id !== state.chat) return;
     if (msg.kind === "text") {
       current = current || add(el("div", { class: "msg" }));
@@ -202,7 +205,7 @@ pages.chat = async (root) => {
       send.disabled = false;
     }
   });
-  const open = () => state.ws.send(JSON.stringify({ type: "chat.open" }));
+  const open = () => state.ws.send(JSON.stringify({ type: "chat.open", ref }));
   if (state.ws && state.ws.readyState === WebSocket.OPEN) open(); else state.ws?.addEventListener("open", open, { once: true });
   form.addEventListener("submit", (e) => {
     e.preventDefault();

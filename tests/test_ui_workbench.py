@@ -202,9 +202,9 @@ def test_ws_chat_with_fake_driver(ui, project, fake, monkeypatch):
     save_settings(load_settings().model_copy(update={"cli_paths": {"claude": exe}}))
     with ui.websocket_connect("/ui/ws?project=demo", headers=W) as ws:
         assert ws.receive_json()["type"] == "hello"
-        ws.send_json({"type": "chat.open", "driver": "claude_cli"})
+        ws.send_json({"type": "chat.open", "driver": "claude_cli", "ref": 7})
         opened = next(m for m in iter(ws.receive_json, None) if m["type"] in ("chat.opened", "chat.error"))
-        assert opened["type"] == "chat.opened"
+        assert opened["type"] == "chat.opened" and opened["ref"] == 7
         ws.send_json({"type": "chat.send", "chat_id": opened["chat_id"], "text": "hello"})
         kinds = []
         while "done" not in kinds:

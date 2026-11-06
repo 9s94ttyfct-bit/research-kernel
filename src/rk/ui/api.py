@@ -477,11 +477,12 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
                 kind = msg.get("type")
                 if kind == "chat.open":
                     driver = msg.get("driver") or load_settings().drivers.get("lead", "claude_cli")
+                    ref = msg.get("ref")  # echoed so a page binds only to the chat it asked for
                     try:
                         chat_id = await run_in_threadpool(chats.open, driver, "lead", slug)
-                        await send({"type": "chat.opened", "chat_id": chat_id, "driver": driver})
+                        await send({"type": "chat.opened", "ref": ref, "chat_id": chat_id, "driver": driver})
                     except (ValueError, LookupError) as e:
-                        await send({"type": "chat.error", "message": str(e)})
+                        await send({"type": "chat.error", "ref": ref, "message": str(e)})
                 elif kind == "chat.send" and msg.get("chat_id"):
                     t = asyncio.create_task(stream(msg["chat_id"], str(msg.get("text", ""))))
                     streams.add(t)

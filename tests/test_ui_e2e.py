@@ -119,3 +119,26 @@ def test_chat_roundtrip_fake_driver(page, fake, monkeypatch):
     page.locator(".msg:not(.you)").first.wait_for()
     assert page.locator("details.tool").count() >= 1
     assert page.errors == []
+
+
+def test_chat_ignores_a_superseded_open(page, fake, monkeypatch):
+    """Re-rendering the chat page opens a new chat; the earlier render's ``chat.opened`` arriving late must not bind
+    the new page to that chat (whose replies the page would then drop once its own ``chat.opened`` arrives)."""
+    exe, _ = fake
+    monkeypatch.setenv("FAKE_KIND", "claude")
+    save_settings(load_settings().model_copy(update={"cli_paths": {"claude": exe}}))
+    real_open = ChatManager.open
+
+    def open_slowly(self, *a):
+        time.sleep(0.5)
+        return real_open(self, *a)
+
+    monkeypatch.setattr(ChatManager, "open", open_slowly)
+    base = page.url.split("#")[0]
+    page.goto(base + "#/chat")
+    page.goto(base + "#/chat?again")  # a second render while the first one's chat is still opening
+    page.get_by_text("Talking to claude_cli.").wait_for()
+    page.get_by_label("Message").fill("hello")
+    page.get_by_role("button", name="Send").click()
+    page.locator(".msg:not(.you)").first.wait_for(timeout=10_000)
+    assert page.errors == []
