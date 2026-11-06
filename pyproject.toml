@@ -39,5 +39,8 @@ packages = ["src/rk"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["live: hits the real network"]
-addopts = "-m 'not live' -q"
+markers = [
+    "live: hits the real network",
+    "llm: calls a language model (default test model: omp_gateway openai-codex/gpt-6-luna)",
+]
+addopts = "-m 'not live and not llm' -q"
