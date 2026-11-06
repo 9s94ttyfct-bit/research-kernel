@@ -43,11 +43,14 @@ def _ngrams(t: list[str], n: int = 4) -> set[tuple[str, ...]]:
     return {tuple(t[i : i + n]) for i in range(len(t) - n + 1)}
 
 
-def check_paraphrase(paraphrase: str, source_span: str) -> ParaResult:
-    p, s = _tokens(paraphrase), _tokens(source_span)
-    run = _longest_common_run(p, s)
+def check_paraphrase(paraphrase: str, source_span: str, context: str | None = None) -> ParaResult:
+    """``context`` (e.g. the passage around the located span) also counts for copied runs and 4-grams, so a
+    paraphrase cannot pass by copying a neighbouring sentence while citing an unrelated span."""
+    p = _tokens(paraphrase)
+    sources = [_tokens(source_span)] + ([_tokens(context)] if context else [])
+    run = max(_longest_common_run(p, s) for s in sources)
     pg = _ngrams(p)
-    containment = len(pg & _ngrams(s)) / len(pg) if pg else 0.0
-    tsr = float(fuzz.token_set_ratio(" ".join(p), " ".join(s)))
+    containment = max((len(pg & _ngrams(s)) / len(pg) if pg else 0.0) for s in sources)
+    tsr = float(fuzz.token_set_ratio(" ".join(p), " ".join(sources[0])))
     ok = run <= MAX_COMMON_RUN and containment <= MAX_NGRAM4_CONTAINMENT and tsr <= MAX_TOKEN_SET_RATIO
     return ParaResult(ok=ok, longest_common_run=run, ngram4_containment=round(containment, 3), token_set_ratio=tsr)

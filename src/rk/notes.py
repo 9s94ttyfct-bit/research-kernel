@@ -21,6 +21,7 @@ from rk.verify.quote import verify_quote
 
 NoteKind = Literal["quote", "paraphrase", "summary", "own"]
 RoleInSource = Literal["main", "sub", "concession", "qualification", "summary_of_other"]
+PARA_CONTEXT = 300  # characters on each side of the located span checked for copying
 
 
 class Locator(BaseModel):
@@ -77,7 +78,11 @@ def add_note(ps: ProjectStore, lib: Library, note: NoteIn, *, actor: str,
         locator = Locator(page=q.page, start=q.start, end=q.end)
         verified["quote"] = {"ok": True, "page": q.page}
         if note.kind == "paraphrase":
-            p = check_paraphrase(note.text, note.source_span)
+            if verify_quote(note.text, layer).ok:
+                raise NoteRejected("too_close", reason_detail="paraphrase text occurs verbatim in the source")
+            page_text = next(p.text for p in layer.pages if p.n == q.page)
+            context = page_text[max(0, q.start - PARA_CONTEXT) : q.end + PARA_CONTEXT]
+            p = check_paraphrase(note.text, note.source_span, context=context)
             if not p.ok:
                 raise NoteRejected("too_close", **p.model_dump())
             verified["paraphrase"] = p.model_dump()
@@ -136,6 +141,17 @@ def text_read(ps: ProjectStore, source_id: str, page: int | None = None, start: 
     return TextSlice(page=pg.n, start=s, end=e, text=pg.text[s:e], snapshot_sha=sha)
 
 
+def _folded(key) -> tuple[str, list[int]]:
+    """Lower-case a norm key character by character, keeping the offset map aligned."""
+    chars: list[str] = []
+    mp: list[int] = []
+    for c, m in zip(key.key, key.map, strict=True):
+        for lc in c.lower():
+            chars.append(lc)
+            mp.append(m)
+    return "".join(chars), mp
+
+
 def text_find(ps: ProjectStore, source_id: str, query: str, limit: int = 10) -> list[TextMatch]:
     _, layer = _layer(ps, source_id)
     q = normalize_query(query).lower()
@@ -143,13 +159,16 @@ def text_find(ps: ProjectStore, source_id: str, query: str, limit: int = 10) -> 
         return []
     out: list[TextMatch] = []
     for pg in layer.pages:
-        key = build_norm_keys(pg.text)[0]
-        hay = key.key.lower()
-        i = hay.find(q)
-        while i >= 0 and len(out) < limit:
-            s, e = key.map[i], key.map[i + len(q) - 1] + 1
-            out.append(TextMatch(page=pg.n, start=s, end=e, snippet=pg.text[max(0, s - 80) : e + 80]))
-            i = hay.find(q, i + 1)
+        seen: set[tuple[int, int]] = set()
+        for key in build_norm_keys(pg.text):  # dehyphenated and hyphen-joined
+            hay, mp = _folded(key)
+            i = hay.find(q)
+            while i >= 0 and len(out) < limit:
+                s, e = mp[i], mp[i + len(q) - 1] + 1
+                if (s, e) not in seen:
+                    seen.add((s, e))
+                    out.append(TextMatch(page=pg.n, start=s, end=e, snippet=pg.text[max(0, s - 80) : e + 80]))
+                i = hay.find(q, i + 1)
         if len(out) >= limit:
             break
     return out

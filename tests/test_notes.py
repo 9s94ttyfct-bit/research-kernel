@@ -59,6 +59,43 @@ def test_paraphrase_rules(env):
     assert ok.locator.page == 1 and ok.verified["paraphrase"]["ok"]
 
 
+def test_paraphrase_cannot_copy_text_verbatim_or_from_neighbouring_sentence(env):
+    ps, lib, iid = env
+    span = "Moisture ingress is a known failure mode."
+    # the whole "paraphrase" is a verbatim sentence from the source (different from the cited span)
+    with pytest.raises(NoteRejected) as ei:
+        add_note(ps, lib, NoteIn(source_id=iid, kind="paraphrase", text="Page one discusses perovskite stability.",
+                                 source_span=span, role_in_source="sub"), actor="a")
+    assert ei.value.reason == "too_close"
+    # mostly copied from the sentence right before the cited span
+    with pytest.raises(NoteRejected) as ei:
+        add_note(ps, lib, NoteIn(source_id=iid, kind="paraphrase", text="Indeed, page one discusses perovskite "
+                                 "stability.", source_span=span, role_in_source="sub"), actor="a")
+    assert ei.value.reason == "too_close" and ei.value.details["ngram4_containment"] > 0.35
+    assert list_notes(ps) == []
+
+
+def test_quote_must_match_whole_words(env):
+    ps, lib, iid = env
+    with pytest.raises(NoteRejected):
+        add_note(ps, lib, NoteIn(source_id=iid, kind="quote", text="opper catalysts for CO2 reductio",
+                                 role_in_source="main"), actor="a")
+    r = add_note(ps, lib, NoteIn(source_id=iid, kind="quote", text="copper catalysts for CO2 reduction.",
+                                 role_in_source="main"), actor="a")
+    assert r.locator.page == 2
+
+
+def test_text_find_case_insensitive_and_hyphen_joined(tmp_path):
+    ps = ProjectStore(tmp_path / "p", "prj_T")
+    lib = Library(ps)
+    iid = lib.add_item(ItemIn(title="Fact checking", year=2022), added_by="human", actor="u").item_id
+    attach_pdf(ps, lib, iid, DOCS / "hyphen.pdf", origin="user_upload", actor="u")
+    assert text_find(ps, iid, "FACT-CHECKING")  # only in the hyphen-joined key
+    assert text_find(ps, iid, "factchecking")  # only in the dehyphenated key
+    hit = text_find(ps, iid, "EVIDENCE BASE")[0]
+    assert "evi" in text_read(ps, iid, page=hit.page, start=hit.start, end=hit.end).text
+
+
 def test_role_required_and_own_notes(env):
     ps, lib, iid = env
     with pytest.raises(ValueError):

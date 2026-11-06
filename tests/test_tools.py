@@ -49,7 +49,7 @@ def test_end_to_end_tools_offline(reg):
                    cli())["matches"][0]
     sl = reg.call("rk_text_read", {"project": "smoke", "source_id": peer["item_id"], "page": hit["page"],
                                    "start": hit["start"] - 20, "end": hit["end"] + 60}, cli())
-    quote = sl["text"].strip()
+    quote = " ".join(sl["text"].split()[1:-1])  # drop possibly cut-off edge words: quotes must be whole words
     n = reg.call("rk_note_add", {"project": "smoke", "note": {"source_id": peer["item_id"], "kind": "quote",
                                                               "text": quote, "role_in_source": "main"}}, cli("n1"))
     assert n["locator"]["page"] == 1
