@@ -40,7 +40,13 @@ P2 asks you at the weak spots; P1 votes and records "not reviewed by a human".
 4. **Meta-analysis is gated by a recorded validation.** `rk eval stats --write-config` stores `stats_validated = {version, report}` only when every reference dataset reproduces within tolerance.
    - When it is absent or stale, a protocol that pre-specified meta-analysis gets a narrative synthesis instead.
    - The fallback is recorded as a deviation from the protocol (G-PREREG keeps passing) and listed in the limitations.
-5. **The default τ² estimator is REML, with Hartung–Knapp–Sidik–Jonkman intervals and no truncation.** This follows the Cochrane Handbook v6.5 recommendation (verify the citation in Task 2 and record it in the eval report). The protocol's `synthesis_plan.model` and `heterogeneity` override it with `DL`, `REML` or `FE`, plus `hksj: true|false`.
+5. **Defaults follow the Cochrane Handbook v6.5.1, chapter 10** (checked in Task 2; controller ruling 2026-11-07):
+   - the τ² estimator is REML;
+   - Hartung–Knapp–Sidik–Jonkman intervals apply only when τ² > 0 and k > 2 (§10.10.4.4); otherwise the interval is Wald-normal;
+   - the prediction interval uses the CI's standard error and multiplier family, as in RevMan: with HKSJ, μ̂ ± t(k−1)·√(τ̂² + q·var(μ̂)); with the Wald interval, μ̂ ± z·√(τ̂² + var(μ̂)) (§10.10.4.3). Higgins 2009's t(k−2) with the Wald SE is a protocol option;
+   - REML is solved by Fisher scoring with step-halving, finished by a safeguarded one-dimensional solve of the REML score.
+
+   The protocol's `synthesis_plan.model` and `heterogeneity` override these with `DL`, `REML` or `FE`, plus `hksj: auto|true|false` and `pi_df: "k-2"` (Higgins 2009).
 
 ## Global Constraints
 
