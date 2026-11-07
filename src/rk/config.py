@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 import tomli_w
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 DEFAULT_DRIVERS: dict[str, str] = {
     **{r: "claude_cli" for r in ("lead", "scout", "screener_a", "reader", "gapminer", "ideator", "arguer", "writer")},
@@ -63,6 +63,12 @@ class Settings(BaseModel):
     summon_base: str | None = None
     translation_server_url: str | None = None  # optional Zotero translation-server, e.g. http://127.0.0.1:1969
     fulltext_browser_fallback: bool = True
+
+    @field_validator("drivers")
+    @classmethod
+    def _fill_driver_roles(cls, v: dict[str, str]) -> dict[str, str]:
+        """A stored ``[drivers]`` table keeps its roles; roles it lacks (e.g. one added later) get the default."""
+        return {**DEFAULT_DRIVERS, **v}
 
     def headless(self) -> bool:
         return self.browser_headless or os.environ.get("RK_BROWSER_HEADLESS") == "1"

@@ -96,7 +96,7 @@ def test_settings_never_returns_secrets(ui, project):
     assert s["openalex_key_set"] is True and s["s2_key_set"] is False and s["email"]
     assert post(ui, "/ui/api/settings", {"library_name": "Fixture Library", "s2_key": "new-s2"}).json()["ok"]
     assert (load_settings().library_name, load_settings().s2_key) == ("Fixture Library", "new-s2")
-    assert post(ui, "/ui/api/settings", {"support_tau_hi": 0.1}).status_code == 422  # not editable here
+    assert post(ui, "/ui/api/settings", {"support_min_judges": 1}).status_code == 422  # not editable here
     assert post(ui, "/ui/api/settings", {"library_proxy": "http://proxy.example/login"}).status_code == 422
 
 

@@ -8,8 +8,8 @@ from rk.ids import new_id
 from rk.llm.types import TaskResult
 from rk.production import store
 from rk.production.vote import vote
+from rk.roles.policy import JUDGE_ROLES
 from rk.store.projections import rebuild
-from rk.verify.judge import JUDGE_ROLES
 from tests.discovery_fakes import ScriptedExecutor
 from tests.production_fakes import a_protocol, make_frozen_project, production_ctx
 

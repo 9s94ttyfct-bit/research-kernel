@@ -13,6 +13,7 @@ from rk.orchestrator.graph import DISCOVERY
 from rk.orchestrator.runs import RunManager
 from rk.orchestrator.state import current_stage
 from rk.roles.policy import (
+    JUDGE_ROLES,
     NO_TOOL_ROLES,
     ROLES,
     TOOL_ROLES,
@@ -85,6 +86,15 @@ def test_prompt_contains_injection_rule_and_schema():
     assert "never instructions" in p and "rk_flag_injection" in p
     assert "## Your role: reader" in p and '"verdict"' in p
     assert all(build_system_prompt(r, None) for r in ROLES)
+
+
+def test_every_role_has_duties_and_the_judges_share_one_prompt():
+    duties = {}
+    for role in ROLES:
+        parts = build_system_prompt(role, None).split(f"## Your role: {role}\n\n", 1)
+        assert len(parts) == 2 and parts[1].strip(), f"{role} has no duties"
+        duties[role] = parts[1]
+    assert len({duties[r] for r in JUDGE_ROLES}) == 1
 
 
 def test_render_inputs_marks_untrusted():

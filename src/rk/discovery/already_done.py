@@ -7,8 +7,9 @@ does each work already answer the RQ, with a quote from its title or abstract (t
 the RQ author's and not another judge's: ``admitted_judges``) and its quote is verbatim in the title or in the part of
 the abstract the judge saw (``span_in``); an invalid judgement counts as missing.
 
-Result: ``already_done`` when some work is judged answered by two valid judges (of different vendors);
-``not_found_in_scope`` when every work is judged not answered by two such judges; ``split`` otherwise, including when
+Result: ``already_done`` when some work is judged answered by at least two valid judges (of different vendors);
+``not_found_in_scope`` when no valid judgement says any work answers it and every work is judged not answered by at
+least two valid judges (a single "answered" is never outvoted); ``split`` otherwise, including when
 fewer than two judge vendors gave valid judgements and when the RQ author's vendor is unknown (no judge can then be
 shown to differ from it; ``split_reason`` says so). "Not found" holds only within the searched scope: nothing here
 says the RQ is novel. Cost: 1 scout task + at most 3 judge tasks."""
@@ -111,7 +112,8 @@ def rq_input(rq: dict, hyps: list[dict]) -> dict:
 def verdict(report: AlreadyDone) -> Result:
     if report.answered_by_both():
         return "already_done"
-    if report.works and all(sum(not j.answered for j in w.valid().values()) >= VOTES for w in report.works):
+    if report.works and not report.answering() and all(
+            sum(not j.answered for j in w.valid().values()) >= VOTES for w in report.works):
         return "not_found_in_scope"
     return "split"
 

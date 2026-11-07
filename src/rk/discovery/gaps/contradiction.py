@@ -1,7 +1,7 @@
 """Contradictions: the GapMiner pairs works of one cluster whose findings disagree, each with a verbatim quote. The
 kernel keeps both quotes as quote notes (V-QUOTE), stores quote A as a gap-mining claim with note B as its evidence
-and runs V-SUPPORT (two agreeing cross-vendor judges, no checkpoint). The pair is verified only when the verdict is
-"contradicted"."""
+and runs V-SUPPORT (the admitted cross-vendor judges, all agreeing; no checkpoint). The pair is verified only when the
+verdict is "contradicted"."""
 
 from __future__ import annotations
 
@@ -78,8 +78,8 @@ def _check(ctx: StageContext, miner: SupportMiner, p: ContradictionOut, members:
         return result(possible, p.cluster_id)
     checks.passed("support")
     return result(f'{a_label} and {b_label} report contradicting findings: the first states "{p.a.quote}", the '
-                  f'second "{p.b.quote}"; V-SUPPORT (two cross-vendor judges agreeing) found the second contradicts '
-                  "the first.", p.cluster_id)
+                  f'second "{p.b.quote}"; V-SUPPORT (the admitted cross-vendor judges, all agreeing) found the second '
+                  "contradicts the first.", p.cluster_id)
 
 
 class ContradictionMiner(SupportMiner):

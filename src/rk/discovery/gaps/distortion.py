@@ -1,8 +1,9 @@
 """Citation distortion: the GapMiner quotes what a cluster work says a cited work found and names the cited work (item
 id or DOI). The kernel keeps the citing quote as a quote note (V-QUOTE), adds the cited work if needed and requires it
 to pass V-REF, fetches its full text and picks its passages itself (``top_passages``, Plan 4 deviation 4: the miner
-cannot cherry-pick), keeps every one as a quote note at its position and runs V-SUPPORT of the quote against them (two
-agreeing cross-vendor judges, no checkpoint). Verified when the verdict is "unsupported" or "contradicted"."""
+cannot cherry-pick), keeps every one as a quote note at its position and runs V-SUPPORT of the quote against them (the
+admitted cross-vendor judges, all agreeing; no checkpoint). Verified when the verdict is "unsupported" or
+"contradicted"."""
 
 from __future__ import annotations
 
@@ -150,8 +151,9 @@ def _check(ctx: StageContext, miner: SupportMiner, it: DistortionOut, of: dict[s
         return result(possible, cluster_id)
     checks.passed("support")
     return result(f'{citing} cites {cited_label} for "{it.quote}", but the cited work does not support it (V-SUPPORT: '
-                  f"{res.verdict}, two cross-vendor judges agreeing); no supporting passage was found within the "
-                  f"searched scope (the {len(notes)} passages of its full text most similar to the statement).",
+                  f"{res.verdict}, the admitted cross-vendor judges all agreeing); no supporting passage was found "
+                  f"within the searched scope (the {len(notes)} passages of its full text most similar to the "
+                  "statement).",
                   cluster_id)
 
 

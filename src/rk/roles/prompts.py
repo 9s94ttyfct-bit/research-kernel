@@ -7,6 +7,8 @@ from importlib.resources import files
 
 from pydantic import BaseModel
 
+from rk.roles.policy import JUDGE_ROLES
+
 
 def _text(name: str) -> str:
     p = files("rk.roles").joinpath(name)
@@ -15,7 +17,7 @@ def _text(name: str) -> str:
 
 def build_system_prompt(role: str, output_schema: type[BaseModel] | None) -> str:
     parts = [_text("preamble.md")]
-    duties = _text(f"{role}.md")
+    duties = _text("judge.md" if role in JUDGE_ROLES else f"{role}.md")  # the judges share one prompt
     if duties:
         parts.append(f"## Your role: {role}\n\n{duties}")
     if output_schema is not None:

@@ -53,9 +53,10 @@ from rk.orchestrator.state import (
     start_run,
 )
 from rk.production.screening import screeners_problem
+from rk.roles.policy import JUDGE_ROLES
 from rk.store.project import ProjectStore
 from rk.tools.registry import ToolError
-from rk.verify.judge import JUDGE_ROLES, judge_vendor_error
+from rk.verify.judge import judge_vendor_error
 
 log = logging.getLogger(__name__)
 

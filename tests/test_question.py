@@ -7,7 +7,13 @@ import json
 import pytest
 
 from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
-from rk.discovery.already_done import AlreadyDone, already_done
+from rk.discovery.already_done import (
+    AlreadyDone,
+    JudgedWork,
+    Judgement,
+    already_done,
+    verdict,
+)
 from rk.discovery.models import HypothesisIn, RQBody, Topic
 from rk.discovery.question import QuestionWorker, check_rq
 from rk.discovery.store import (
@@ -395,6 +401,20 @@ def test_judge_quote_counts_only_from_what_the_judge_saw(env):
     assert w.judgements["openai"].ok_quote is True  # from the abstract, within what the judge saw
     assert w.judgements["deepseek"].ok_quote is False  # in the abstract, but past the slice the judge saw
     assert report.result == "split"
+
+
+@pytest.mark.parametrize(("answered", "expected"), [
+    ((True, False, False), "split"),               # one valid "answered" is never outvoted
+    ((False, False, False), "not_found_in_scope"),
+    ((True, True, False), "already_done"),
+    ((False, False), "not_found_in_scope"),
+    ((False,), "split"),                            # one valid "not answered" is not enough
+])
+def test_three_judge_verdicts(answered, expected):
+    vendors = ("openai", "deepseek", "anthropic")
+    work = JudgedWork(item_id="src_a", title="A", judgements={
+        v: Judgement(answered=a, quote="A", ok_quote=True) for v, a in zip(vendors, answered, strict=False)})
+    assert verdict(AlreadyDone(works=[work], judged=list(vendors[:len(answered)]))) == expected
 
 
 def test_unknown_author_vendor_is_split(env):

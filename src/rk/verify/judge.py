@@ -1,5 +1,5 @@
 """V-SUPPORT judges: LLMs from vendors other than the claim's author (spec §8.1, §9.1), configured as the roles
-``JUDGE_ROLES``.
+``rk.roles.policy.JUDGE_ROLES``.
 
 A judge's ``supported``/``partial``/``contradicted`` label counts only if it quotes the evidence verbatim; otherwise
 that judge's opinion becomes ``uncertain``."""
@@ -15,6 +15,7 @@ from rk.llm.drivers import DriverSpec
 from rk.llm.runner import run_task
 from rk.llm.types import TaskResult
 from rk.llm.vendors import vendor_of
+from rk.roles.policy import JUDGE_ROLES
 from rk.text.layer import build_norm_keys, normalize_query
 from rk.verify.quote import find_verbatim
 
@@ -24,7 +25,6 @@ if TYPE_CHECKING:
 JudgeLabel = Literal["supported", "partial", "unsupported", "contradicted"]
 NEEDS_SPANS = frozenset({"supported", "partial", "contradicted"})
 JudgeRunner = Callable[..., TaskResult]  # run_task's keyword interface without kernel, registry and project
-JUDGE_ROLES: tuple[str, ...] = ("judge", "judge_2", "judge_3")
 
 INSTRUCTIONS = (
     "Decide whether the evidence supports the claim, using only the evidence text. Labels: supported (the evidence "
@@ -62,18 +62,19 @@ def check_opinion(v: JudgeVerdict, evidence: str) -> tuple[str, bool]:
     return v.label, spans_ok
 
 
+def _judges(settings, drivers: list[DriverSpec] | None) -> list[tuple[str, DriverSpec]]:
+    """The judges with their roles: the configured ``JUDGE_ROLES``, each as its own role, or, for an explicit
+    ``drivers`` list, the i-th driver as ``JUDGE_ROLES[i]``."""
+    if drivers is None:
+        return [(r, DriverSpec.parse(settings.drivers[r])) for r in JUDGE_ROLES if r in settings.drivers]
+    if len(drivers) > len(JUDGE_ROLES):
+        raise ValueError(f"at most {len(JUDGE_ROLES)} judges ({', '.join(JUDGE_ROLES)}), got {len(drivers)}")
+    return list(zip(JUDGE_ROLES, drivers, strict=False))
+
+
 def judge_drivers(settings, drivers: list[DriverSpec] | None) -> list[DriverSpec]:
     """``drivers``, else the configured ``JUDGE_ROLES`` in role order."""
-    if drivers is not None:
-        return drivers
-    return [DriverSpec.parse(settings.drivers[r]) for r in JUDGE_ROLES if r in settings.drivers]
-
-
-def _roles(specs: list[DriverSpec]) -> list[tuple[str, DriverSpec]]:
-    """Each judge with its role: the i-th judge acts as ``JUDGE_ROLES[i]``."""
-    if len(specs) > len(JUDGE_ROLES):
-        raise ValueError(f"at most {len(JUDGE_ROLES)} judges ({', '.join(JUDGE_ROLES)}), got {len(specs)}")
-    return list(zip(JUDGE_ROLES, specs, strict=False))
+    return [spec for _, spec in _judges(settings, drivers)]
 
 
 def judge_vendor_error(vendor: str | None, generator_vendor: str | None, seen: set[str]) -> str | None:
@@ -95,7 +96,7 @@ def admitted_judges(ctx: StageContext, generator_vendor: str | None,
     admitted: list[tuple[str, DriverSpec, str]] = []
     skipped: dict[str, str] = {}
     seen: set[str] = set()
-    for role, spec in _roles(judge_drivers(ctx.kernel.settings(), judges)):
+    for role, spec in _judges(ctx.kernel.settings(), judges):
         vendor = vendor_of(spec.provider, spec.model)
         error = judge_vendor_error(vendor, generator_vendor, seen)
         if error is not None:
@@ -118,7 +119,7 @@ def run_judges(kernel, registry, *, project: str, claim_text: str, evidence_text
             return run_task(kernel, registry, project=project, **task)
     opinions: list[JudgeOpinion] = []
     seen_vendors: set[str] = set()
-    for role, spec in _roles(judge_drivers(kernel.settings(), drivers)):
+    for role, spec in _judges(kernel.settings(), drivers):
         vendor = vendor_of(spec.provider, spec.model)
         base = {"driver": str(spec), "vendor": vendor}
         error = judge_vendor_error(vendor, generator_vendor, seen_vendors)

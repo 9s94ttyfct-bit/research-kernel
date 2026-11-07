@@ -17,11 +17,12 @@ from rk.llm.drivers import DriverSpec
 from rk.llm.types import TaskResult
 from rk.llm.vendors import vendor_of
 from rk.notes import NoteIn, add_note
+from rk.roles.policy import JUDGE_ROLES
 from rk.store.projections import rebuild
 from rk.tools.builtin import build_registry
 from rk.tools.registry import CallContext
 from rk.verify import support
-from rk.verify.judge import JUDGE_ROLES, JudgeOpinion
+from rk.verify.judge import JudgeOpinion
 from rk.verify.records import record_verification
 from rk.verify.support import SupportResult, combine, verify_support
 from rk.workspace import Kernel
@@ -218,13 +219,17 @@ def test_old_config_keys_are_ignored(tmp_home):
         'support_model = "ollama:bespoke-minicheck:7b-q8_0"\n'
         'support_tau_hi = 0.9\nsupport_tau_lo = 0.1\nsupport_tau_hi_judged = 0.5\nsupport_tau_lo_judged = 0.6\n'
         'support_min_judges = 2\n'
-        'support_calibration = { model = "ollama:bespoke-minicheck:7b-q8_0", tau_hi = 0.9 }\n')
+        'support_calibration = { model = "ollama:bespoke-minicheck:7b-q8_0", tau_hi = 0.9 }\n'
+        '[drivers]\njudge = "codex_cli"\njudge_2 = "ollama:deepseek-v4.1-flash:cloud"\nreader = "codex_cli"\n')
     s = load_settings()
     assert s.email == "rk-fixtures@users.noreply.github.com" and s.support_min_judges == 2
+    # a stored [drivers] table keeps its roles; roles it lacks (judge_3, the other roles) come from the defaults
+    assert s.drivers == {**DEFAULT_DRIVERS, "judge": "codex_cli", "reader": "codex_cli"}
     save_settings(s)
     stored = tomllib.loads(config_path().read_text())
     assert not {k for k in stored if k.startswith("support_")} - {"support_min_judges"}
-    assert stored["drivers"]["judge_3"] == DEFAULT_DRIVERS["judge_3"]
+    assert stored["drivers"]["judge_3"] == DEFAULT_DRIVERS["judge_3"] and stored["drivers"]["judge"] == "codex_cli"
+    assert Settings(drivers={"judge": "codex_cli"}).drivers == {**DEFAULT_DRIVERS, "judge": "codex_cli"}
 
 
 def test_old_support_records_still_render(env):

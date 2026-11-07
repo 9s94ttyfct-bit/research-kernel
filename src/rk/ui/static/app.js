@@ -439,7 +439,7 @@ function alreadyDone(ad) {
   if (!ad) return el("p", { class: "empty" }, "The already-done check has not run.");
   const head = {
     not_found_in_scope: "Prior work answering this question was not found within the searched scope.",
-    already_done: "Two judges of different vendors say published work already answers this question.",
+    already_done: "At least two judges of different vendors say published work already answers this question.",
     split: ad.split_reason || "The judges did not agree, or fewer than two judge vendors gave valid judgements.",
   }[ad.result] || words(ad.result);
   const skipped = Object.entries(ad.skipped || {});
