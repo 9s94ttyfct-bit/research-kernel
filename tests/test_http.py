@@ -60,6 +60,23 @@ def test_get_json_non_404_errors_raise(client):
 
 
 @respx.mock
+def test_get_json_non_json_200_is_a_source_error_and_not_cached(client):
+    """A 200 with an error page instead of JSON (seen from OpenAlex) is a transient source error, not a JSONDecodeError
+    that fails the run, and the bad body is not served from the cache next time."""
+    from rk.discovery.boundary import transient_source_error
+    from rk.net.http import BadBody
+
+    route = respx.get("https://api.openalex.org/works").mock(side_effect=[
+        httpx.Response(200, text="<html>Service busy</html>"), httpx.Response(200, json={"results": []})])
+    with pytest.raises(HttpError) as ei:
+        client.get_json("https://api.openalex.org/works", {"search": "x"})
+    assert isinstance(ei.value, BadBody) and ei.value.status == 200 and "not JSON" in str(ei.value)
+    assert transient_source_error(ei.value)
+    data, _ = client.get_json("https://api.openalex.org/works", {"search": "x"})
+    assert data == {"results": []} and route.call_count == 2
+
+
+@respx.mock
 def test_api_key_not_in_cache_key_or_url(client):
     respx.get("https://api.openalex.org/works/W1").mock(return_value=httpx.Response(200, json={}))
     res = client.get("https://api.openalex.org/works/W1", params={"api_key": "SECRET", "select": "id"})

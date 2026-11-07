@@ -134,3 +134,30 @@ def test_rebuild_fails_loudly_when_text_layer_missing(ps, lib):
     with pytest.raises(FileNotFoundError):
         rebuild(ps.db)
     assert lib.search("catalysts")[0].item_id == iid  # failed rebuild rolled back; old projections intact
+
+
+def test_bioc_lone_surrogates_become_replacement(tmp_path):
+    """A BioC JSON escape like \\ud800 decodes to a lone surrogate, which UTF-8 cannot encode (it broke saving the
+    layer in the live demo); it becomes U+FFFD, a pair stays one character."""
+    import json
+
+    from rk.text.layer import TextLayer
+    from rk.text.markup import bioc_to_layer
+
+    doc = json.loads('{"documents": [{"passages": [{"text": "a \\ud800 b"}, {"text": "x \\ud835\\udc65 y"}]}]}')
+    layer = bioc_to_layer(doc, "x")
+    assert layer.pages[0].text == "a \ufffd b\n\nx \U0001d465 y"
+    layer.save(tmp_path / "l.json")
+    assert TextLayer.load(tmp_path / "l.json") == layer
+
+
+def test_jats_lone_surrogates_become_replacement(tmp_path):
+    from rk.text.layer import TextLayer
+    from rk.text.markup import jats_to_layer
+
+    xml = (b'<?xml version="1.0" encoding="UTF-8"?><article><body><p>char ref &#55296; and &#xDC00; here</p>'
+           b"<p>raw \xed\xa0\x80 bytes</p><p>pair &#x1D465;</p></body></article>")
+    layer = jats_to_layer(xml, "x")
+    assert layer.pages[0].text == "char ref \ufffd and \ufffd here\n\nraw \ufffd\ufffd\ufffd bytes\n\npair \U0001d465"
+    layer.save(tmp_path / "l.json")
+    assert TextLayer.load(tmp_path / "l.json") == layer

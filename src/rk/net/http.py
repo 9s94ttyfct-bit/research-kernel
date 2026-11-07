@@ -39,6 +39,16 @@ class HttpError(Exception):
         self.url = url
 
 
+class BadBody(HttpError):
+    """A 200 whose body is not what the endpoint returns (e.g. an HTML error page instead of JSON): a source error
+    like a 5xx, not a parse error."""
+
+    def __init__(self, url: str, why: str):
+        Exception.__init__(self, f"HTTP 200 for {url}: {why}")
+        self.status = 200
+        self.url = url
+
+
 class BudgetExhausted(Exception):
     def __init__(self, budget_key: str, reset_at: float):
         super().__init__(f"API budget exhausted for {budget_key}; resets at {reset_at:.0f}")
@@ -206,13 +216,19 @@ class HttpClient:
             return res
 
     def get_json(self, url: str, params: dict | None = None, **kw) -> tuple[Any, HttpResult]:
-        """200 -> parsed JSON; 404 -> (None, res); any other status raises HttpError (never 'not found')."""
+        """200 -> parsed JSON; 404 -> (None, res); any other status raises HttpError (never 'not found'), and so does a
+        200 whose body is not JSON (``BadBody``; the body is dropped from the cache)."""
         res = self.get(url, params, **kw)
         if res.status == 404:
             return None, res
         if res.status != 200:
             raise HttpError(res.status, res.url)
-        return res.json(), res
+        try:
+            return res.json(), res
+        except ValueError as e:  # JSONDecodeError, or bytes that are no UTF-8
+            with self._lock:
+                self._db.execute("DELETE FROM http_cache WHERE key=?", (self._key(url, params),))
+            raise BadBody(res.url, f"the body is not JSON ({type(e).__name__})") from e
 
     def close(self) -> None:
         self._client.close()

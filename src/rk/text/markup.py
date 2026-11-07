@@ -29,6 +29,31 @@ def _norm_ws(s: str) -> str:
     return re.sub(r"[ \t\r\f\v]+", " ", s).strip()
 
 
+def utf8_safe(s: str) -> str:
+    """Join surrogate pairs and replace lone surrogates (which UTF-8 cannot encode, so saving the layer fails) with
+    U+FFFD, as for PDF text."""
+    return s.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+
+
+# a character reference to a surrogate code point (U+D800-U+DFFF), which XML forbids and lxml rejects
+_SURROGATE_REF = re.compile(rb"&#(?:[xX]0*[dD][89a-fA-F][0-9a-fA-F]{2}|0*(?:5529[6-9]|55[3-9]\d\d|56\d\d\d|57[0-2]\d\d"
+                            rb"|573[0-3]\d|5734[0-3]));")
+_XML_ENCODING = re.compile(rb"""^\s*<\?xml[^>]*encoding\s*=\s*["']([^"']+)["']""")
+
+
+def _xml_safe(xml: bytes) -> bytes:
+    """JATS bytes lxml can parse: surrogate character references become U+FFFD, and so do byte sequences that are no
+    UTF-8 (e.g. CESU-8 surrogates) in a document declared UTF-8 (or not declared)."""
+    xml = _SURROGATE_REF.sub(b"&#xFFFD;", xml)
+    declared = _XML_ENCODING.match(xml)
+    if declared is None or declared.group(1).lower().replace(b"-", b"") == b"utf8":
+        try:
+            xml.decode("utf-8")
+        except UnicodeDecodeError:
+            xml = xml.decode("utf-8", "replace").encode("utf-8")
+    return xml
+
+
 def _hidden_selectors(doc) -> list[tuple[str | None, set[str], str | None]]:
     """Simple selectors (tag, .class, #id and combinations) whose <style> rules hide content.
 
@@ -91,7 +116,7 @@ def _itertext(el) -> str:
 
 
 def jats_to_layer(xml: bytes, sha: str) -> TextLayer:
-    root = etree.fromstring(xml)
+    root = etree.fromstring(_xml_safe(xml))
     lines: list[str] = []
     title = root.find(".//article-meta//article-title")
     if title is not None:
@@ -108,11 +133,11 @@ def jats_to_layer(xml: bytes, sha: str) -> TextLayer:
             t = _itertext(el)
             if t:
                 lines.append(t)
-    return TextLayer(source_kind="jats", pages=[Page(n=1, text="\n\n".join(lines))], sha256=sha)
+    return TextLayer(source_kind="jats", pages=[Page(n=1, text=utf8_safe("\n\n".join(lines)))], sha256=sha)
 
 
 def bioc_to_layer(doc: dict, sha: str) -> TextLayer:
     docs = doc.get("documents") or []
     passages = docs[0].get("passages", []) if docs else []
     texts = [_norm_ws(p.get("text", "")) for p in passages if p.get("text")]
-    return TextLayer(source_kind="bioc", pages=[Page(n=1, text="\n\n".join(texts))], sha256=sha)
+    return TextLayer(source_kind="bioc", pages=[Page(n=1, text=utf8_safe("\n\n".join(texts)))], sha256=sha)
