@@ -90,6 +90,7 @@ from rk.discovery.boundary import per_item
 from rk.discovery.models import Intake
 from rk.discovery.store import intake_of
 from rk.fulltext import latest_snapshot
+from rk.library.service import Library
 from rk.llm.drivers import DriverSpec
 from rk.llm.vendors import vendor_of
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
@@ -240,7 +241,7 @@ def _note(ctx: StageContext, phase: str | None, kind: str, **fields) -> None:
 
 
 # ---- screening ----
-def record_input(lib, rec: dict) -> dict:
+def record_input(lib: Library, rec: dict) -> dict:
     """What a screener (and a judge) sees of a record at title/abstract screening."""
     item = lib.get(rec["item_id"])
     out = {"record_id": rec["id"], "title": item.title, "abstract": item.abstract or "", "year": item.year,
@@ -302,7 +303,7 @@ def fulltext_excerpt(text: str, limit: int = FULLTEXT_CHARS) -> tuple[str, list[
     return "\n\n".join(f"{s.capitalize()}\n{cut[s]}" for s in names), names
 
 
-def full_text_input(ps: ProjectStore, lib, rec: dict) -> dict:
+def full_text_input(ps: ProjectStore, lib: Library, rec: dict) -> dict:
     """What a screener (and a judge) sees of a record at full-text screening: its metadata and ``text``, the
     excerpt of its full text (``text_kind`` ``sections``, with the ``sections`` found, or ``whole_text``) or, for an
     abstract-only record, its abstract (``abstract_only``)."""
@@ -320,7 +321,7 @@ def full_text_input(ps: ProjectStore, lib, rec: dict) -> dict:
     return out
 
 
-def phase_input(ps: ProjectStore, lib, phase: str, rec: dict) -> dict:
+def phase_input(ps: ProjectStore, lib: Library, phase: str, rec: dict) -> dict:
     return full_text_input(ps, lib, rec) if phase == FULL_TEXT else record_input(lib, rec)
 
 
@@ -487,7 +488,7 @@ TEXT_LABELS = {"sections": "Full text (abstract, methods, results)", "whole_text
                "abstract_only": "Abstract only (no full text)"}
 
 
-def disagreement_view(ps: ProjectStore, lib, attempt: int, phase: str, record_ids: list[str]) -> list[dict]:
+def disagreement_view(ps: ProjectStore, lib: Library, attempt: int, phase: str, record_ids: list[str]) -> list[dict]:
     """What a ``screening_disagreements`` checkpoint shows of each of its records (its prompt, and the Workbench's
     card): ``record_id``, ``title``, ``year``, ``venue``, ``language``, the ``text`` the screeners read as far as it is
     shown (an abstract cut to ``ABSTRACT_SHOWN``; at full text the excerpt cut to ``EXCERPT_SHOWN``, every section

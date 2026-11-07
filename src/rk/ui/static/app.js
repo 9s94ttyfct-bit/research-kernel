@@ -295,14 +295,20 @@ function focusNote(box, noteId) {
 const noteLabel = (against) => `Quote note${against === "abstract" ? " (abstract)" : ""}`;
 
 // The extraction of a study (read_extract): the values that are usable evidence, each linked to its quote note, and
-// apart from them the rows that are no evidence, with their problem.
-function extractionSection(s, itemId, box) {
+// apart from them the rows that are no evidence, with their problem. `ex` is the whole extraction: its attempt and
+// whether that attempt passed read_extract's gate.
+function extractionSection(ex, s, itemId, box) {
   const value = (v) => (v === "not_reported" ? "not reported" : v === null || v === undefined ? "—" : typeof v === "object" ? JSON.stringify(v) : String(v));
   const state = s.in_evidence
     ? s.read_on === "abstract" ? "Read on the abstract only: every value from it has sufficiency low." : "Read on the full text."
     : `Not in the evidence: ${s.out_reason}.`;
+  const gate = ex.gate && !ex.gate.passed
+    ? el("p", { class: "notice gate-hint" }, `From read_extract attempt ${ex.attempt}, which has not passed its gate`,
+        ex.gate.failures.length ? `: ${ex.gate.failures.join("; ")}` : " yet", ". Later stages read only a passed attempt.")
+    : null;
   return [
     el("h2", {}, "Extraction"),
+    gate,
     el("p", { class: s.in_evidence ? "hint" : "hint bad" }, state),
     s.values.length
       ? el("table", { class: "extraction" }, el("thead", {}, el("tr", {}, ["Field", "Value", "Sufficiency", "Evidence"].map((h) => el("th", {}, h)))),
@@ -329,7 +335,7 @@ async function showItem(id, box, noteId = null) {
   el("p", { class: "meta" }, [it.creators.map((c) => [c.given, c.family].filter(Boolean).join(" ")).join(", "), it.year, it.venue].filter(Boolean).join(" — ")),
   badgeList(d.badges),
   ids.length ? el("p", { class: "hint" }, ids.map(([k, v]) => `${k}: ${v}`).join("   ")) : null,
-  study ? extractionSection(study, id, box) : ex.error ? el("p", { class: "error" }, `Could not load the extraction: ${ex.error}`) : null,
+  study ? extractionSection(ex, study, id, box) : ex.error ? el("p", { class: "error" }, `Could not load the extraction: ${ex.error}`) : null,
   el("h2", {}, "Files"),
   d.attachments.length
     ? el("ul", {}, d.attachments.map((a) => el("li", {},
@@ -601,6 +607,7 @@ const PHASE_NAMES = { title_abstract: "Title and abstract", full_text: "Full tex
 // The PRISMA flow (systematic and scoping reviews): each box with its count and what it holds, the full-text
 // exclusions by reason, V-PRISMA and the notes. The other paper types: the selection reasons of every decision.
 function prismaPanel(d) {
+  if (d.error) return el("p", { class: "error" }, `Could not load the PRISMA flow: ${d.error}`);
   if (d.attempt === null || (!d.prisma && !d.selection.length))
     return el("p", { class: "empty" }, "Search and screening have not run yet.");
   const notes = d.notes.length ? [el("h3", {}, "Notes"), el("ul", { class: "prisma-notes" }, d.notes.map((n) => el("li", {}, n)))] : null;
@@ -614,7 +621,10 @@ function prismaPanel(d) {
         el("table", {}, el("thead", {}, el("tr", {}, ["Record", "Decision", "Decided by", "Selection reason"].map((h) => el("th", {}, h)))),
           el("tbody", {}, rows.map((s) => el("tr", {}, el("td", {}, s.title), el("td", {}, SAID[s.include] || s.include),
             el("td", {}, DECIDED_BY[s.decided_by] || s.decided_by),
-            el("td", {}, s.screeners.length ? s.screeners.map((x) => el("div", {}, `${screener(x.screener)}: `, x.reason || "(no reason)")) : s.reason))))));
+            el("td", {},
+              // a decision of the screeners rests on their reasons; one of you, the vote or a rule has its own
+              ["single", "agreement"].includes(s.decided_by) ? null : el("div", { class: "final-reason" }, s.reason || "(no reason)"),
+              s.screeners.map((x) => el("div", { class: "hint" }, `${screener(x.screener)}: `, x.reason || "(no reason)"))))))));
     };
     return [
       el("p", { class: "hint" }, `A ${words(d.paper_type)} reports the selection reasons, not PRISMA counts (search_screen attempt ${d.attempt}).`),
@@ -645,6 +655,12 @@ function prismaPanel(d) {
   ];
 }
 
+// The PRISMA flow, or the error that kept it from loading (the panel shows it; the rest of Progress still draws).
+const prismaOrError = () => api("/ui/api/prisma", { query: { project: state.project } }).catch((err) => {
+  if (err.message === "signed out") throw err;
+  return { error: err.message };
+});
+
 pages.checkpoints = async (root) => {
   if (needProject()) return;
   const [open, answered] = await Promise.all([
@@ -654,7 +670,7 @@ pages.checkpoints = async (root) => {
   const card = async (c) => {
     const special = CARDS[c.kind];
     const long = special && c.kind !== "stage_blocked";  // its card shows everything the prompt says, laid out
-    const li = el("li", { "data-kind": c.kind, class: c.status === "answered" ? "answered" : "" },
+    const li = el("li", { "data-kind": c.kind, "data-checkpoint": c.id, class: c.status === "answered" ? "answered" : "" },
       el("div", { class: "kind" }, KINDS[c.kind] || words(c.kind)),
       long ? el("details", { class: "prompt" }, el("summary", {}, "The checkpoint's full text"), el("p", {}, c.prompt)) : el("p", { class: "prompt" }, c.prompt));
     if (c.kind === "captcha_wait" || c.kind === "login_wait")
@@ -668,7 +684,12 @@ pages.checkpoints = async (root) => {
       try {
         await api(`/ui/api/checkpoints/${c.id}/answer`, { method: "POST", body: { project: state.project, answer: body } });
         toast("Answer recorded");
-        route();
+        if (!unfinished(li)) return route();
+        // you are still answering another card: keep the page (and what you chose there), mark this one answered
+        li.classList.add("answered");
+        li.querySelectorAll("input, textarea, select, button").forEach((x) => { x.disabled = true; });
+        li.append(el("p", { class: "hint" }, "Answer recorded."));
+        notice.hidden = false;
       } catch (err) {
         li.querySelectorAll("button").forEach((b) => { b.disabled = false; });
         toast(err.message, "error");
@@ -690,8 +711,11 @@ pages.checkpoints = async (root) => {
   };
   const [openCards, answeredCards] = await Promise.all([Promise.all(open.checkpoints.map(card)),
     Promise.all(answered.checkpoints.slice(-20).reverse().map(card))]);
-  // A checkpoint that opened, or one shown open that was answered, redraws the page, unless you are writing an
-  // answer: then a notice offers it.
+  // A checkpoint that opened, or one shown open that was answered, redraws the page, unless you are answering one
+  // (text written, a choice made, a record cap typed): then a notice offers it.
+  const unfinished = (skip = null) => [...document.querySelectorAll("#page .checkpoints > li:not(.answered)")].some((x) => x !== skip && (
+    [...x.querySelectorAll("textarea, input[type='number']")].some((t) => t.value.trim())
+    || x.querySelector(".card-body input[type='radio']:checked") !== null));
   const shown = new Set(open.checkpoints.map((c) => c.id));
   const notice = el("p", { class: "notice", role: "status", hidden: true }, "Checkpoints changed. ",
     el("button", { type: "button", class: "secondary", onclick: () => route() }, "Show the latest"));
@@ -702,7 +726,7 @@ pages.checkpoints = async (root) => {
     clearTimeout(timer);
     timer = setTimeout(() => {
       if (left) return;
-      if ([...document.querySelectorAll("#page textarea")].some((t) => t.value.trim())) notice.hidden = false;
+      if (unfinished()) notice.hidden = false;
       else route();
     }, 300);
   });
@@ -788,7 +812,7 @@ function redrawKeeping(box, redraw) {
 pages.progress = async (root) => {
   if (needProject()) return;
   const [p, first, firstPrisma] = await Promise.all([api("/ui/api/progress", { query: { project: state.project } }),
-    api("/ui/api/stages", { query: { project: state.project } }), api("/ui/api/prisma", { query: { project: state.project } })]);
+    api("/ui/api/stages", { query: { project: state.project } }), prismaOrError()]);
   const graphBox = el("div", {});
   const runStatus = el("div", { "aria-live": "polite" });  // only the status line is announced
   const runButtons = el("div", {});
@@ -804,7 +828,7 @@ pages.progress = async (root) => {
     const n = ++asked;
     try {
       const [g, d] = await Promise.all([api("/ui/api/stages", { query: { project: state.project } }),
-        api("/ui/api/prisma", { query: { project: state.project } })]);
+        prismaOrError()]);
       if (n === asked) { draw(g); showPrisma(d); }  // a slower, older answer does not draw over a newer one
     } catch (err) { toast(err.message, "error"); }
   };

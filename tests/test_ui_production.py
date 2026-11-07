@@ -22,6 +22,7 @@ from rk.orchestrator.runs import RunManager
 from rk.orchestrator.state import (
     edge_rows,
     record_attempt,
+    record_gate,
     record_passed,
     record_ran,
     run_row,
@@ -264,6 +265,13 @@ def test_extraction_tool_shows_usable_evidence_apart(api):
     only = api.reg.call("rk_extraction_get", {"project": "demo", "item_id": b_id}, _cli())
     assert [s["item_id"] for s in only["studies"]] == [b_id]
     assert got["limitations"]["low_sufficiency"] == [b_id]
+    # the attempt ran but was never gated: its values are shown with that said; once it passes, so is that
+    assert got["gate"] == {"passed": False, "failures": []}
+    record_gate(api.ps, "read_extract", 1, False, ["study x: field n: no value"], actor="tester")
+    assert api.reg.call("rk_extraction_get", {"project": "demo"}, _cli())["gate"] == {
+        "passed": False, "failures": ["study x: field n: no value"]}
+    record_passed(api.ps, "read_extract", 1, actor="tester")
+    assert api.reg.call("rk_extraction_get", {"project": "demo"}, _cli())["gate"]["passed"] is True
     # the library item route of the Workbench shows the same through the tool
     assert _get(api, "/ui/api/extraction", item_id=b_id)["studies"] == only["studies"]
 
@@ -356,7 +364,7 @@ def served(tmp_home, replay_http, request):
     t = threading.Thread(target=server.run, kwargs={"sockets": [rt.sock]}, daemon=True)
     t.start()
     time.sleep(0.5)
-    yield SimpleNamespace(kernel=k, ps=ps, lib=lib, ui=ui, runs=runs, ex=ex)
+    yield SimpleNamespace(kernel=k, ps=ps, lib=lib, ui=ui, runs=runs, ex=ex, src=src)
     server.should_exit = True
     t.join(5)
     runs.close()
@@ -518,7 +526,8 @@ def test_progress_shows_selection_reasons_for_a_critical_review(page, served):
     panel = page.locator(".prisma")
     panel.get_by_text("selection reasons").first.wait_for()
     assert panel.get_by_text("Identified").count() == 0  # no PRISMA arithmetic for this paper type
-    assert panel.get_by_text("screener_a read it").count() >= 1 and panel.get_by_text("language").count() >= 1
+    assert panel.get_by_text("screener_a read it").count() >= 1
+    assert "language" in panel.locator(".final-reason").all_text_contents()  # the rule's own reason
     assert page.errors == []
 
 
@@ -543,4 +552,53 @@ def test_library_item_shows_extraction_values_with_note_links(page, served):
     link.click()
     page.wait_for_function("id => document.activeElement?.dataset.noteId === id", arg=note_id)
     assert "abstract" in box.locator(f'blockquote[data-note-id="{note_id}"]').text_content()
+    assert "has not passed its gate yet" in box.locator(".gate-hint").text_content()
     assert page.errors == []
+
+
+@pytest.mark.browser
+def test_disagreement_choices_survive_answering_another_batch(page, served):
+    """Two disagreement checkpoints are open; answering the first keeps the page, so a choice already made in the
+    second (not yet submitted) is not lost to a redraw."""
+    ps = served.ps
+    served.src.items = {"aspirin": [ItemIn(title=f"Aspirin {i} [yes/no]", year=2001 + i % 20, abstract=f"Abstract {i}.",
+                                           ids=Ids(doi=f"10.1000/b{i}")) for i in range(26)]}
+    served.runs.start("demo", "search_screen", actor="tester")
+    _cp, card = _show(page, ps, "protocol_approval")
+    card.get_by_role("button", name="Approve this protocol").click()
+    until(lambda: len(_open(ps, "screening_disagreements")) == 2)
+    first, second = _open(ps, "screening_disagreements")
+    assert (len(first["options"]["record_ids"]), len(second["options"]["record_ids"])) == (25, 1)
+    page.goto_route("checkpoints?two")
+    one = page.locator(f'li[data-checkpoint="{first["id"]}"]')
+    two = page.locator(f'li[data-checkpoint="{second["id"]}"]')
+    two.locator("tbody tr").first.wait_for()
+    one.locator("tbody tr").nth(24).wait_for()
+    two.locator("input[type=radio][value=exclude]").check()  # decided in batch 2, not submitted
+    for radio in one.locator("input[type=radio][value=include]").all():
+        radio.check()
+    one.get_by_role("button", name="Submit decisions").click()
+    assert set(_answer_of(ps, first["id"])["decisions"].values()) == {"include"}
+    page.get_by_text("Checkpoints changed.").wait_for()
+    page.wait_for_timeout(600)  # the checkpoint events of the answer arrive; the page must not redraw
+    assert two.locator("input[type=radio][value=exclude]").is_checked()
+    assert "answered" in one.get_attribute("class") and one.get_by_text("Answer recorded.").count() == 1
+    two.get_by_role("button", name="Submit decisions").click()
+    (rid,) = second["options"]["record_ids"]
+    assert _answer_of(ps, second["id"]) == {"decisions": {rid: "exclude"}}
+    assert page.errors == []
+
+
+@pytest.mark.browser
+def test_progress_renders_when_the_prisma_flow_fails(page, served, monkeypatch):
+    from rk.production import tools
+    from rk.tools.registry import ToolError
+
+    def broken(*a, **kw):
+        raise ToolError("broken", "the PRISMA flow broke", status=409)
+
+    monkeypatch.setattr(tools, "prisma_view", broken)
+    page.goto_route("progress")
+    page.locator(".prisma").get_by_text("Could not load the PRISMA flow: the PRISMA flow broke").wait_for()
+    assert page.locator("ol.stages > li").count() > 0 and page.get_by_role("heading", name="Activity").count() == 1
+    assert all("409" in e for e in page.errors)  # only the failed request itself is logged

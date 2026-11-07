@@ -12,7 +12,7 @@ from dataclasses import asdict
 from pydantic import BaseModel
 
 from rk.discovery.store import intake_of
-from rk.orchestrator.state import attempt_ran, shown_attempt
+from rk.orchestrator.state import attempt_ran, shown_attempt, stage_row
 from rk.production.extraction import (
     extraction_limitations,
     included_studies,
@@ -189,12 +189,18 @@ def extraction_view(ps: ProjectStore, item_id: str | None = None) -> dict:
     ``out_reason``: flagged as retracted or withdrawn, taken out by the P1 degrade, not read), its ``values`` (only
     usable evidence: ``rk.production.extraction.usable_evidence``'s rows without a problem, with their verified quote
     note) and the rows that are no evidence (``set_aside``, each with its problem: a quote not verbatim, degraded,
-    marked missing, or its study out of the evidence); and the attempt's limitations input."""
+    marked missing, or its study out of the evidence); the attempt's limitations input; and its ``gate``:
+    ``passed`` (whether this attempt passed read_extract's gate) and the ``failures`` of its gate when it failed (``[]``
+    while it was not gated)."""
     row = frozen_protocol(ps)
     fields = row["body"]["extraction_schema"] if row else []
     attempt = shown_attempt(ps, READ_EXTRACT)
     if attempt is None:
-        return {"attempt": None, "fields": fields, "studies": [], "limitations": None}
+        return {"attempt": None, "fields": fields, "studies": [], "limitations": None, "gate": None}
+    stage = stage_row(ps, READ_EXTRACT)
+    last = stage["last_gate"] if stage and stage["last_gate"] and stage["last_gate"]["attempt"] == attempt else None
+    gate = {"passed": bool(stage and stage["status"] == "passed" and stage["passed_attempt"] == attempt),
+            "failures": list(last["failures"]) if last and not last["ok"] else []}
     titles = _titles(ps)
     noted = {n["item_id"]: n for n in extraction_notes(ps, attempt, kind="study")}
     usable = {e["item_id"]: e for e in usable_evidence(ps, attempt)}
@@ -231,7 +237,7 @@ def extraction_view(ps: ProjectStore, item_id: str | None = None) -> dict:
                         "in_evidence": ev is not None, "out_reason": out_reason,
                         "notes": ev["notes"] if ev else [], "values": values, "set_aside": aside,
                         "carried_from": s["carried_from"] if s else None})
-    return {"attempt": attempt, "fields": fields, "studies": studies, "limitations": limitations}
+    return {"attempt": attempt, "fields": fields, "studies": studies, "limitations": limitations, "gate": gate}
 
 
 def register_production_tools(tool: Callable, kernel) -> None:
