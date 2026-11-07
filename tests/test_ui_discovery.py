@@ -307,6 +307,40 @@ def test_run_routes_start_pause_resume_cancel(wb):
     assert [e["actor"] for e in events] == ["ui:user"]
 
 
+def _run_events(ps) -> list[tuple]:
+    return [tuple(r) for r in ps.db.execute("SELECT seq, type FROM events WHERE type LIKE 'run.%' ORDER BY seq")]
+
+
+@pytest.mark.parametrize("path, body", [("/ui/api/run", {"project": "demo", "until": "topics"}),
+                                        ("/ui/api/run/pause", {"project": "demo"}),
+                                        ("/ui/api/run/resume", {"project": "demo"}),
+                                        ("/ui/api/run/cancel", {"project": "demo"})])
+def test_run_routes_refuse_foreign_or_missing_origin_and_no_cookie(wb, path, body):
+    """Each request would be applied if it got through: start meets no run, pause and cancel a waiting run, resume a
+    paused one."""
+    run_id, status = None, None
+    if path != "/ui/api/run":
+        wb.orch.workers["topics"] = FakeWorker(runs=[lambda ctx: StageOutcome(
+            "waiting_human", checkpoint_id=open_topic_review(ctx.ps, ctx.attempt, []))])
+        run_id = start(wb, "topics")
+        waiting(wb, run_id, "topic_review")
+        status = "paused_waiting_human"
+        if path.endswith("/resume"):
+            assert post(wb.client, "/ui/api/run/pause", {"project": "demo"}).status_code == 200
+            status = until(lambda: run_row(wb.ps, run_id)["status"] == "paused" and "paused")
+    before = _run_events(wb.ps)
+    assert wb.client.post(path, json=body, headers={"Origin": "https://evil.example"}).status_code == 403
+    assert wb.client.post(path, json=body).status_code == 403  # no Origin header
+    wb.client.cookies.clear()
+    assert wb.client.post(path, json=body, headers=W).status_code == 401
+    time.sleep(0.2)  # a request that got through would be applied by the run's thread within a poll
+    assert _run_events(wb.ps) == before
+    if run_id is None:
+        assert latest_run(wb.ps) is None
+    else:
+        assert run_row(wb.ps, run_id)["status"] == status
+
+
 def test_run_start_refused_in_d1(wb):
     from rk.discovery.models import Intake
     from rk.discovery.store import record_intake

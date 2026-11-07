@@ -53,7 +53,7 @@ def create_app(registry: ToolRegistry, token: str, *, actor: str = "cli:user",
     """The serve token acts as the human CLI (role ``cli``). Any other bearer must be a live task or lead token;
     its calls run with that grant's role, project binding and tool list. With ``ui`` the Workbench is served under
     ``/ui`` with its own session cookie (``rk.ui.auth``). ``orchestrator`` and ``runs`` (the RunManager) are the ones
-    ``rk serve`` built for the run and stage tools; the Workbench gets them too."""
+    ``rk serve`` built for the run and stage tools; the Workbench gets ``runs``."""
     app = FastAPI(title="rk serve", version=__version__)
     browser = browser or (lambda: None)
 
@@ -162,7 +162,6 @@ def create_app(registry: ToolRegistry, token: str, *, actor: str = "cli:user",
     if ui is not None:
         from rk.ui.api import ui_router
 
-        app.include_router(ui_router(ui, kernel=kernel, registry=registry, chats=chats, browser=browser,
-                                     orchestrator=orchestrator, runs=runs))
+        app.include_router(ui_router(ui, kernel=kernel, registry=registry, chats=chats, browser=browser, runs=runs))
         app.mount("/ui", StaticFiles(directory=STATIC, html=True), name="ui")
     return app

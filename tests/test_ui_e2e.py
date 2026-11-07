@@ -18,7 +18,7 @@ from rk.library.models import Creator, Ids, ItemIn
 from rk.orchestrator.engine import Orchestrator, StageOutcome
 from rk.orchestrator.graph import DISCOVERY, stages_for
 from rk.orchestrator.runs import RunManager
-from rk.orchestrator.state import latest_run
+from rk.orchestrator.state import latest_run, record_run_status
 from rk.server.app import create_app
 from rk.server.chat import ChatManager
 from rk.server.runtime import acquire_serve_lock, release
@@ -349,6 +349,30 @@ def test_run_controls_follow_state(page, workbench_env):
     page.get_by_role("button", name="Cancel run").click()
     page.get_by_role("button", name="Start D2 run until question").wait_for()
     assert latest_run(ps)["status"] == "cancelled"
+    assert page.errors == []
+
+
+def test_run_controls_keep_keyboard_focus(page, workbench_env):
+    """A refresh with nothing changed leaves the run controls alone; a change redraws them and focus returns to the
+    button of the same name."""
+    ps, _ = workbench_env.kernel.project("demo")
+    _intake(ps)
+    workbench_env.orch.workers["topics"] = FakeWorker(runs=[lambda ctx: StageOutcome(
+        "waiting_human", checkpoint_id=open_topic_review(ctx.ps, ctx.attempt, []))])
+    _goto(page, "progress")
+    page.get_by_role("button", name="Start D2 run until topics").click()
+    page.get_by_text("Waiting for your answer").wait_for()
+    run_id = latest_run(ps)["id"]
+    focused = "document.activeElement && document.activeElement.textContent"
+    page.get_by_role("button", name="Pause run").focus()
+    with page.expect_response("**/ui/api/stages*"):  # the same status again: a run.status event, nothing changed
+        record_run_status(ps, run_id, "paused_waiting_human", actor="t", clock=time.time)
+    page.wait_for_timeout(200)
+    assert page.evaluate(focused) == "Pause run"
+    page.get_by_role("button", name="Cancel run").focus()
+    workbench_env.runs.pause("demo", actor="t")  # a change: Pause gives way to Resume, Cancel stays
+    page.get_by_role("button", name="Resume run").wait_for()
+    assert page.evaluate(focused) == "Cancel run"
     assert page.errors == []
 
 

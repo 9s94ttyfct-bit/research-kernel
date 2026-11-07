@@ -197,10 +197,9 @@ def _topic_views(ps, lib, rows: list[dict]) -> list[dict]:
 
 
 def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
-              browser: Callable[[], Any] | None = None, orchestrator=None, runs=None) -> APIRouter:
+              browser: Callable[[], Any] | None = None, runs=None) -> APIRouter:
     """``runs`` is ``rk serve``'s RunManager: the run controls and the run state of the stage graph use it (without it
-    the run routes answer 503). ``orchestrator`` is ``rk serve``'s too; the run and stage tools reach it through
-    ``runs``."""
+    the run routes answer 503)."""
     r = APIRouter()
     ctx_dep = ui_context(auth)
     browser = browser or (lambda: None)

@@ -412,7 +412,7 @@ async function rqCard(c, answer) {
     el("h4", {}, "Problem"), el("p", {}, b.problem.condition),
     b.problem.consequences.length ? el("ul", {}, b.problem.consequences.map((x) => el("li", {}, x))) : null,
     el("h4", {}, "FINER (as the Ideator wrote it)"),
-    facts([["Feasible", b.finer.feasible], ["Interesting", b.finer.interesting], ["Novel", b.finer.novel], ["Ethical", b.finer.ethical], ["Relevant", b.finer.relevant]]),
+    facts([["Feasible", b.finer.feasible], ["Interesting", b.finer.interesting], ["Novelty (as the Ideator claimed it)", b.finer.novel], ["Ethical", b.finer.ethical], ["Relevant", b.finer.relevant]]),
     b.clinical && b.pico ? [el("h4", {}, "PICO"), facts([["Population", b.pico.population], ["Intervention", b.pico.intervention], ["Comparison", b.pico.comparison], ["Outcome", b.pico.outcome]])] : null,
     el("h4", {}, "Hypotheses"),
     el("ol", { class: "hypotheses" }, d.hypotheses.map((h) => el("li", {}, el("p", {}, h.statement), el("p", { class: "hint" }, "Falsified if: ", h.falsification)))),
@@ -434,7 +434,7 @@ async function rqCard(c, answer) {
 function blockedCard(c, answer) {
   const o = c.options || {};
   return [
-    facts([["Back-edge", (o.edge || "").replace("->", " → ")], ["Allow one more", `${words(o.to)} runs again`], ["Stop", "the stage ends here (a run fails)"]]),
+    facts([["Back-edge", (o.edge || "").replace("->", " → ")], ["Allow one more", `${words(o.to)} runs again`], ["Stop", "the stage ends here (an active run fails)"]]),
     (o.failures || []).length ? [el("h4", {}, "Why"), el("ul", {}, o.failures.map((f) => el("li", {}, f)))] : null,
     el("div", { class: "toolbar" },
       el("button", { type: "button", onclick: () => answer({ decision: "allow_one_more" }) }, "Allow one more use"),
@@ -533,15 +533,16 @@ function stageChip(s) {
       el("ul", {}, gate.failures.map((f) => el("li", {}, f)))) : null);
 }
 
+// The run's status line, and the controls that fit its state.
 function runControls(g, act) {
-  if (!g.intake) return el("p", { class: "hint" }, "Record the intake first (rk project intake): it sets the paper type and how discovery runs.");
+  if (!g.intake) return { status: el("p", { class: "hint" }, "Record the intake first (rk project intake): it sets the paper type and how discovery runs."), controls: null };
   if (g.discovery_mode !== "d2")
-    return el("p", { class: "hint" }, "This project uses guided discovery (D1): the Lead drives the stages in ", el("a", { href: "#/chat" }, "Chat"), ". Ask it to run the next stage.");
+    return { status: el("p", { class: "hint" }, "This project uses guided discovery (D1): the Lead drives the stages in ", el("a", { href: "#/chat" }, "Chat"), ". Ask it to run the next stage."), controls: null };
   const run = g.run;
   const status = run
     ? el("p", { class: "run-status" }, `Run ${run.id} (until ${run.until}): `, el("strong", {}, RUN_STATUS[run.status] || words(run.status)), run.reason ? ` — ${run.reason}` : "")
     : el("p", { class: "run-status" }, "No run yet.");
-  if (!g.runs_available) return [status, el("p", { class: "hint" }, "Runs are driven by rk serve's orchestrator, which this server does not have.")];
+  if (!g.runs_available) return { status, controls: el("p", { class: "hint" }, "Runs are driven by rk serve's orchestrator, which this server does not have.") };
   const btn = (text, onclick, cls) => el("button", { type: "button", class: cls, onclick }, text);
   const buttons = [];
   if (!g.run_active) {
@@ -553,7 +554,27 @@ function runControls(g, act) {
     if (g.requested === "paused") status.append(" Pausing after the current step…");
     buttons.push(paused ? btn("Resume run", () => act("resume")) : btn("Pause run", () => act("pause")), btn("Cancel run", () => act("cancel"), "secondary"));
   }
-  return [status, buttons.length ? el("div", { class: "toolbar" }, buttons) : null];
+  return { status, controls: buttons.length ? el("div", { class: "toolbar" }, buttons) : null };
+}
+
+// What identifies a control across redraws: the stage chip it sits in and its accessible name.
+const focusKey = (node) => `${node.closest("[data-stage]")?.dataset.stage || ""}|${node.getAttribute("aria-label") || node.textContent}`;
+
+// Focus the control in `box` that has the key `key`, else the box's first button.
+function restoreFocus(box, key) {
+  if (key === null || box.contains(document.activeElement)) return;
+  const same = [...box.querySelectorAll("button, a, summary")].find((n) => focusKey(n) === key);
+  (same || box.querySelector("button"))?.focus();
+}
+
+// Redraw `box` keeping what a keyboard user had: the focused control and the open disclosures.
+function redrawKeeping(box, redraw) {
+  const had = box.contains(document.activeElement) ? focusKey(document.activeElement) : null;
+  const stageOf = (d) => d.closest("[data-stage]")?.dataset.stage;
+  const open = new Set([...box.querySelectorAll("details[open]")].map(stageOf));
+  redraw();
+  box.querySelectorAll("details").forEach((d) => { if (open.has(stageOf(d))) d.open = true; });
+  restoreFocus(box, had);
 }
 
 pages.progress = async (root) => {
@@ -561,8 +582,9 @@ pages.progress = async (root) => {
   const [p, first] = await Promise.all([api("/ui/api/progress", { query: { project: state.project } }),
     api("/ui/api/stages", { query: { project: state.project } })]);
   const graphBox = el("div", {});
-  const runBox = el("div", { class: "run-controls", "aria-live": "polite" });
-  let asked = 0, timer = null;
+  const runStatus = el("div", { "aria-live": "polite" });  // only the status line is announced
+  const runButtons = el("div", {});
+  let asked = 0, timer = null, graphShown = null, runShown = null;
   const refresh = async () => {
     const n = ++asked;
     try {
@@ -571,21 +593,35 @@ pages.progress = async (root) => {
     } catch (err) { toast(err.message, "error"); }
   };
   const act = async (action, until) => {
-    runBox.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+    const had = runButtons.contains(document.activeElement) ? focusKey(document.activeElement) : null;
+    runButtons.querySelectorAll("button").forEach((b) => { b.disabled = true; });
     try {
       if (action === "start") await api("/ui/api/run", { method: "POST", body: { project: state.project, until } });
       else await api(`/ui/api/run/${action}`, { method: "POST", body: { project: state.project } });
     } catch (err) { toast(err.message, "error"); }
     await refresh();
+    runButtons.querySelectorAll("button").forEach((b) => { b.disabled = false; });  // also when nothing changed
+    restoreFocus(runButtons, had);
   };
+  // Each part is redrawn only when what it shows changed, so live updates leave focus and open details alone.
   const draw = (g) => {
-    const used = g.back_edges.filter((e) => e.count || e.allowed);
-    fill(graphBox,
-      el("p", { class: "hint" }, g.paper_type ? `Paper type: ${words(g.paper_type)}. ` : "No paper type yet. ", "The stages after the research question are not available yet."),
-      el("ol", { class: "stages", "aria-label": "Stages" }, g.graph.map(stageChip)),
-      el("p", { class: "hint" }, `Back-edges and reruns used (each up to ${g.edge_limit} times, plus any you allow): `,
-        used.length ? used.map((e) => `${words(e.from)} ${e.from === e.to ? "reruns" : `→ ${words(e.to)}`} ${e.count} of ${e.limit + e.allowed}`).join(" · ") : "none"));
-    fill(runBox, runControls(g, act));
+    const graphNow = JSON.stringify([g.paper_type, g.graph, g.back_edges, g.edge_limit]);
+    if (graphNow !== graphShown) {
+      graphShown = graphNow;
+      const used = g.back_edges.filter((e) => e.count || e.allowed);
+      redrawKeeping(graphBox, () => fill(graphBox,
+        el("p", { class: "hint" }, g.paper_type ? `Paper type: ${words(g.paper_type)}. ` : "No paper type yet. ", "The stages after the research question are not available yet."),
+        el("ol", { class: "stages", "aria-label": "Stages" }, g.graph.map(stageChip)),
+        el("p", { class: "hint" }, `Back-edges and reruns used (each up to ${g.edge_limit} times, plus any you allow): `,
+          used.length ? used.map((e) => `${words(e.from)} ${e.from === e.to ? "reruns" : `→ ${words(e.to)}`} ${e.count} of ${e.limit + e.allowed}`).join(" · ") : "none")));
+    }
+    const runNow = JSON.stringify([g.intake, g.discovery_mode, g.runs_available, g.run, g.run_active, g.requested]);
+    if (runNow !== runShown) {
+      runShown = runNow;
+      const { status, controls } = runControls(g, act);
+      fill(runStatus, status);
+      redrawKeeping(runButtons, () => fill(runButtons, controls));
+    }
   };
   draw(first);
   const feed = el("ul", { class: "feed", "aria-live": "polite" });
@@ -602,7 +638,7 @@ pages.progress = async (root) => {
   fill(root, el("h1", {}, "Progress"),
     el("p", { class: "lead" }, "Where discovery stands, and what the agents and you did in this project, newest first."),
     el("h2", {}, "Stages"), graphBox,
-    el("h2", {}, "Run"), runBox,
+    el("h2", {}, "Run"), el("div", { class: "run-controls" }, runStatus, runButtons),
     el("h2", {}, "Tasks"),
     p.tasks.length ? el("table", {}, el("thead", {}, el("tr", {}, ["Task", "Role", "Driver", "Status", "Tries", "Error"].map((h) => el("th", {}, h)))),
       el("tbody", {}, p.tasks.map((t) => el("tr", {}, el("td", {}, t.id), el("td", {}, t.role), el("td", {}, t.driver), el("td", {}, t.status), el("td", {}, t.attempts), el("td", {}, t.error || "")))))
