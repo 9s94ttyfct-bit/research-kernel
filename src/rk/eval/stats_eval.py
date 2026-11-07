@@ -184,7 +184,13 @@ def _markdown(result: dict, refs: list[dict]) -> str:
 
 def run_stats_eval(report_dir: Path = Path("docs/eval"), *, refs_dir: Path = REFS_DIR,
                    write_config: bool = False) -> dict:
-    paths = sorted(refs_dir.glob("*.json"))
+    """Run every reference dataset in ``refs_dir`` and write the report. ``write_config`` is allowed only with the
+    packaged references (``REFERENCE_DIR``, covered by ``STATS_VERSION``): other references give a report, never a
+    validation."""
+    if write_config and Path(refs_dir).resolve() != REFERENCE_DIR.resolve():
+        raise ValueError(f"write_config validates only against the packaged references in {REFERENCE_DIR}, "
+                         f"not {refs_dir}")
+    paths = sorted(Path(refs_dir).glob("*.json"))
     if not paths:
         raise FileNotFoundError(f"no reference datasets in {refs_dir}")
     refs = [json.loads(p.read_text()) for p in paths]

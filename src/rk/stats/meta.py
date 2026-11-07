@@ -11,11 +11,15 @@ With ``w_i = 1/(v_i + τ²)`` (τ² = 0 for FE) the summary is ``μ = Σw_i·y_i
 * REML: Fisher scoring from the DL value (Viechtbauer 2005, Stat Med 24:3681),
   ``τ² ← τ² + (yᵀPPy - tr P) / tr(PP)`` with ``P = W - W11ᵀW/Σw``. A step that would leave τ² < 0 ends at the boundary
   τ² = 0 when the score there is not positive (the boundary maximum); otherwise it is halved until τ² stays ≥ 0. It
-  stops when a step changes τ² by less than ``REML_TOL`` (1e-10). If ``REML_MAX_ITER`` (100) steps do not converge,
-  the REML score is solved directly by Brent's method on [0, U]: the score is positive at 0 (else τ² = 0) and negative at
-  ``U = 2·max(max v_i, 4·S/(k-1))`` with ``S = Σ(y_i - ȳ)²``. Proof of the bound: ``yᵀPPy = Σw_i²(y_i-μ)² ≤
-  w_max·Σw_i(y_i-ȳ)² ≤ S/τ⁴`` and ``tr P = Σ_{i≠j} w_i w_j / Σw ≥ (k-1)·τ²/(τ² + v_max)²``; for τ² ≥ v_max the latter
-  is ≥ (k-1)/(4τ²), which exceeds S/τ⁴ once τ² > 4S/(k-1). A failed solve raises ``ConvergenceError``.
+  stops when a step changes τ² by less than ``REML_TOL`` (1e-10) or gives up after ``REML_MAX_ITER`` (100) steps.
+  The REML likelihood can be bimodal, so the result is the candidate with the highest restricted log-likelihood
+  (``reml_loglik``; ties go to the smaller τ²) among the Fisher result, τ² = 0 when the score there is ≤ 0, and —
+  when Fisher scoring failed or τ² = 0 is a candidate — every interior local maximum: the score is scanned at
+  ``REML_SCAN_POINTS`` log-spaced points over [U·1e-12, U] and each + → − sign change is solved by Brent's method to
+  ``REML_TOL``. ``U = 2·max(max v_i, 4·S/(k-1))`` with ``S = Σ(y_i - ȳ)²`` bounds every maximum (the score is negative
+  beyond it). Proof: ``yᵀPPy = Σw_i²(y_i-μ)² ≤ w_max·Σw_i(y_i-ȳ)² ≤ S/τ⁴`` and
+  ``tr P = Σ_{i≠j} w_i w_j / Σw ≥ (k-1)·τ²/(τ² + v_max)²``; for τ² ≥ v_max the latter is ≥ (k-1)/(4τ²), which exceeds
+  S/τ⁴ once τ² > 4S/(k-1). A failed solve, or no candidate at all, raises ``ConvergenceError``.
 * CI: with HKSJ (Hartung & Knapp 2001; Sidik & Jonkman 2002) ``SE² = q·Var(μ)``, ``q = Σw_i(y_i - μ)²/(k-1)`` (not
   truncated at 1), and a t(k-1) quantile; otherwise the Wald ``SE² = Var(μ)`` with a normal quantile. ``hksj="auto"``
   (default) uses HKSJ only for a random-effects model with τ² > 0 and k > 2 (Handbook §10.10.4.4); ``True``/``False``
@@ -28,7 +32,8 @@ With ``w_i = 1/(v_i + τ²)`` (τ² = 0 for FE) the summary is ``μ = Σw_i·y_i
   equals the CI when τ² = 0. ``pi_df="k-2"``: ``μ ± t_{k-2}·√(τ² + Var(μ))`` with the Wald variance whatever the CI
   (Higgins, Thompson & Spiegelhalter 2009, J R Stat Soc A 172:137, eq. 12; Riley et al. 2011).
 
-Non-finite inputs, weights or sums raise ``ValueError``."""
+Non-finite inputs, weights or sums, and random-effects denominators that underflow to 0 (variances out of
+floating-point range), raise ``ValueError``; ``hksj`` must be a ``bool`` or ``"auto"``."""
 
 from __future__ import annotations
 
@@ -45,6 +50,7 @@ Model = Literal["FE", "DL", "REML"]
 REML_TOL = 1e-10
 REML_MAX_ITER = 100
 REML_BRENT_MAXITER = 200
+REML_SCAN_POINTS = 240  # 20 per decade over 12 decades
 
 
 class ConvergenceError(RuntimeError):
@@ -73,9 +79,18 @@ class Pooled:
         return asdict(self)
 
 
+_RANGE = "the sampling variances are out of floating-point range (rescale the effects)"
+
+
 def _finite(*xs: float) -> None:
     if not all(math.isfinite(x) for x in xs):
-        raise ValueError("non-finite weight or sum: the effects' estimates or variances are out of range")
+        raise ValueError(f"a weight or sum is not finite: {_RANGE}")
+
+
+def _positive(*xs: float) -> None:
+    """Denominators that must be > 0 in exact arithmetic; 0 here means the weights underflowed."""
+    if not all(math.isfinite(x) and x > 0 for x in xs):
+        raise ValueError(f"a random-effects denominator underflowed to 0: {_RANGE}")
 
 
 def pool(effects: list[Effect], *, model: Model = "REML", hksj: bool | Literal["auto"] = "auto",
@@ -83,7 +98,7 @@ def pool(effects: list[Effect], *, model: Model = "REML", hksj: bool | Literal["
     """Pool ``effects`` (at least two). See the module docstring for every formula and default."""
     if model not in ("FE", "DL", "REML"):
         raise ValueError(f"unknown model {model!r}; expected FE, DL or REML")
-    if hksj not in (True, False, "auto") or isinstance(hksj, int) and not isinstance(hksj, bool):
+    if not (isinstance(hksj, bool) or (isinstance(hksj, str) and hksj == "auto")):
         raise ValueError(f"hksj must be True, False or 'auto', not {hksj!r}")
     if pi_df not in ("ci", "k-2"):
         raise ValueError(f"pi_df must be 'ci' or 'k-2', not {pi_df!r}")
@@ -110,10 +125,12 @@ def pool(effects: list[Effect], *, model: Model = "REML", hksj: bool | Literal["
         tau2 = 0.0
         i2 = max(0.0, (q - df) / q) if q > 0 else 0.0
     else:
-        tau2 = max(0.0, (q - df) / (sw - sw2 / sw))
+        den_dl, den_typical = sw - sw2 / sw, sw * sw - sw2
+        _positive(den_dl, den_typical)
+        tau2 = max(0.0, (q - df) / den_dl)
         if model == "REML":
             tau2 = _reml(y, v, tau2)
-        typical = df * sw / (sw * sw - sw2)
+        typical = df * sw / den_typical
         i2 = tau2 / (tau2 + typical)
         _finite(tau2, typical)
 
@@ -154,7 +171,10 @@ def _score_parts(y: list[float], v: list[float], tau2: float) -> tuple[float, fl
     sw, sw2, sw3 = math.fsum(w), math.fsum(a * a for a in w), math.fsum(a * a * a for a in w)
     mu = _mean(y, w)
     ypy = math.fsum((wi * (yi - mu)) * (wi * (yi - mu)) for wi, yi in zip(w, y, strict=True))
-    return ypy, sw - sw2 / sw, sw2 - 2 * sw3 / sw + (sw2 / sw) ** 2
+    tr_p, tr_pp = sw - sw2 / sw, sw2 - 2 * sw3 / sw + (sw2 / sw) ** 2
+    _finite(ypy, tr_p, tr_pp)
+    _positive(tr_p, tr_pp)
+    return ypy, tr_p, tr_pp
 
 
 def reml_score(y: list[float], v: list[float], tau2: float) -> float:
@@ -163,36 +183,67 @@ def reml_score(y: list[float], v: list[float], tau2: float) -> float:
     return (ypy - tr_p) / 2
 
 
-def _reml(y: list[float], v: list[float], tau2: float) -> float:
+def reml_loglik(y: list[float], v: list[float], tau2: float) -> float:
+    """The restricted log-likelihood up to a constant: ``-(Σlog(v_i+τ²) + log Σw + Σw_i(y_i-μ)²)/2``."""
+    w = [1 / (a + tau2) for a in v]
+    mu = _mean(y, w)
+    return -0.5 * (math.fsum(math.log(a + tau2) for a in v) + math.log(math.fsum(w))
+                   + math.fsum(wi * (yi - mu) * (yi - mu) for wi, yi in zip(w, y, strict=True)))
+
+
+def _reml(y: list[float], v: list[float], start: float) -> float:
+    """The REML τ²: the candidate with the highest restricted likelihood among the Fisher-scoring result, the boundary
+    τ² = 0 when the score there is not positive, and — when Fisher scoring did not converge or the boundary is a
+    candidate — every interior local maximum found by scanning the score on [0, U]."""
+    fisher = _fisher(y, v, start)
+    at_zero = reml_score(y, v, 0.0) <= 0
+    candidates = ([0.0] if at_zero else []) + ([fisher] if fisher is not None else [])
+    if fisher is None or at_zero:
+        candidates += _score_maxima(y, v)
+    if not candidates:
+        raise ConvergenceError("REML: no maximum of the restricted likelihood was found")
+    return max(candidates, key=lambda t: (reml_loglik(y, v, t), -t))
+
+
+def _fisher(y: list[float], v: list[float], tau2: float) -> float | None:
     for _ in range(REML_MAX_ITER):
         ypy, tr_p, tr_pp = _score_parts(y, v, tau2)
-        _finite(ypy, tr_p, tr_pp)
         step = (ypy - tr_p) / tr_pp
         new = tau2 + step
         if new < 0:
             if tau2 == 0 or reml_score(y, v, 0.0) <= 0:
-                return 0.0  # the step points below 0 and the score is not positive there: the maximum is τ² = 0
+                return 0.0  # the step points below 0 and the score is not positive there: the boundary
             while new < 0:  # step-halving keeps τ² inside the parameter space
                 step /= 2
                 new = tau2 + step
         if abs(new - tau2) < REML_TOL:
             return new
         tau2 = new
-    return _reml_brent(y, v)
+    return None
 
 
-def _reml_brent(y: list[float], v: list[float]) -> float:
-    if reml_score(y, v, 0.0) <= 0:
-        return 0.0
+def _score_maxima(y: list[float], v: list[float]) -> list[float]:
+    """Every interior local maximum of the restricted likelihood on (0, U]: the score is evaluated at 0 and at
+    ``REML_SCAN_POINTS`` log-spaced points from U·1e-12 to U, and each + → − sign change is solved by Brent's method
+    to ``REML_TOL``."""
     k = len(y)
     ybar = math.fsum(y) / k
     s = math.fsum((a - ybar) * (a - ybar) for a in y)
     upper = 2 * max(max(v), 4 * s / (k - 1))
-    if not reml_score(y, v, upper) < 0:
-        raise ConvergenceError("REML: the score does not change sign on [0, U]")
-    root, r = optimize.brentq(lambda t: reml_score(y, v, t), 0.0, upper, xtol=REML_TOL,
-                              maxiter=REML_BRENT_MAXITER, full_output=True, disp=False)
-    if not r.converged:
-        raise ConvergenceError(f"REML did not converge: Fisher scoring ({REML_MAX_ITER} steps) and Brent's method "
-                               f"({REML_BRENT_MAXITER} iterations) both failed")
-    return root
+    points = [0.0] + [upper * 10.0 ** (12 * (i / (REML_SCAN_POINTS - 1) - 1)) for i in range(REML_SCAN_POINTS)]
+    scores = [reml_score(y, v, t) for t in points]
+    if not scores[-1] < 0:
+        raise ConvergenceError("REML: the score is not negative at the upper bound U")
+    maxima = []
+    for a, b, sa, sb in zip(points, points[1:], scores, scores[1:], strict=False):
+        if sa > 0 >= sb:
+            if sb == 0:
+                maxima.append(b)
+                continue
+            root, r = optimize.brentq(lambda t: reml_score(y, v, t), a, b, xtol=REML_TOL,
+                                      maxiter=REML_BRENT_MAXITER, full_output=True, disp=False)
+            if not r.converged:
+                raise ConvergenceError(f"REML did not converge: Fisher scoring ({REML_MAX_ITER} steps) and Brent's "
+                                       f"method ({REML_BRENT_MAXITER} iterations) both failed")
+            maxima.append(root)
+    return maxima

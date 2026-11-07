@@ -9,6 +9,7 @@ import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import numpy as np
 import pytest
 from scipy import stats as sps
 
@@ -192,8 +193,9 @@ def test_hksj_auto_follows_the_handbook():
         p = meta.pool(homogeneous, model=model)  # tau2 floored at 0: Wald under auto
         assert p.tau2 == 0.0 and p.i2 == 0.0 and not p.hksj
         assert math.isclose(p.se, math.sqrt(0.04 / 4), rel_tol=1e-12)
-    with pytest.raises(ValueError):
-        meta.pool(es, hksj="yes")
+    for bad in ("yes", 1, 0, 1.0, np.True_, np.False_, None):  # only bool instances or "auto"
+        with pytest.raises(ValueError):
+            meta.pool(es, hksj=bad)
 
 
 def test_identical_studies_and_too_few_studies():
@@ -214,6 +216,21 @@ def test_non_finite_inputs_and_sums_raise():
         meta.pool([Effect(1e200, 0.1), Effect(-1e200, 0.1)])  # Q overflows
     with pytest.raises(ValueError):
         meta.pool([Effect(float("nan"), 0.1), Effect(0.2, 0.1)])
+
+
+@pytest.mark.parametrize("model", ["FE", "DL", "REML"])
+@pytest.mark.parametrize("variances", [[1e-200, 1e-200, 1e-200], [1e-200, 0.1, 0.2],  # weights overflow
+                                       [1e200, 1e200, 1e200], [1e200, 0.1]])  # weights or denominators underflow
+def test_out_of_range_variances_raise_value_error(model, variances):
+    """Weights that overflow (tiny variances) or random-effects denominators that underflow to 0 (huge variances)
+    give a ValueError naming the variances, never a ZeroDivisionError."""
+    es = [Effect(y, v) for y, v in zip((0.1, 0.5, -0.3), variances, strict=False)]
+    if model == "FE" and variances[0] == 1e200:
+        p = meta.pool(es, model="FE")  # no random-effects denominator: plain inverse-variance arithmetic
+        assert math.isfinite(p.estimate) and math.isfinite(p.se)
+        return
+    with pytest.raises(ValueError, match="variances"):
+        meta.pool(es, model=model)
 
 
 def test_fe_model_has_zero_tau2():
@@ -273,6 +290,31 @@ def test_reml_seeded_stress_has_no_failures():
         if not _is_reml_root(y, v, p.tau2):
             failures.append((n, p.tau2))
     assert failures == []
+
+
+# Two bimodal REML likelihoods, found by a seeded search: both have a local maximum at τ² = 0 (score(0) < 0) and
+# one in the interior. In BOUNDARY_GLOBAL the boundary is higher, in INTERIOR_GLOBAL the interior maximum is.
+BOUNDARY_GLOBAL = ([-1.123, 0.016, -0.871, -0.002, -0.006, -0.016], [0.3219, 0.003, 0.0744, 0.0217, 0.0298, 0.0038])
+INTERIOR_GLOBAL = ([2.126, 6.149, -0.005, 1.838, -1.426, -0.014, 0.665],
+                   [1.5448, 2.7721, 0.0038, 7.4657, 1.9275, 0.0056, 3.8707])
+
+
+@pytest.mark.parametrize(("data", "boundary_wins"), [(BOUNDARY_GLOBAL, True), (INTERIOR_GLOBAL, False)])
+def test_reml_returns_the_global_maximum(data, boundary_wins):
+    y, v = data
+    grid = [0.0] + [10 ** (e / 400) for e in range(-2400, 1201)]  # 0 and 1e-6 .. 1e3, log-spaced
+    lls = [_reml_loglik(y, v, t) for t in grid]
+    peaks = [i for i in range(len(grid)) if (i == 0 or lls[i] > lls[i - 1]) and (i == len(grid) - 1 or
+                                                                                   lls[i] > lls[i + 1])]
+    assert len(peaks) == 2 and peaks[0] == 0 and meta.reml_score(y, v, 0.0) < 0  # really bimodal
+    best = max(peaks, key=lambda i: lls[i])
+    assert (best == 0) == boundary_wins
+    p = meta.pool([Effect(a, b) for a, b in zip(y, v, strict=True)], model="REML")
+    if boundary_wins:
+        assert p.tau2 == 0.0
+    else:
+        assert _is_reml_root(y, v, p.tau2) and abs(p.tau2 - grid[best]) <= 0.03 * grid[best]
+    assert _reml_loglik(y, v, p.tau2) >= lls[best] - 1e-12
 
 
 def test_reml_nonconvergence_is_an_error(monkeypatch):
@@ -373,16 +415,25 @@ def test_eval_write_config_only_when_all_pass(tmp_home, tmp_path, monkeypatch):
     assert "10.10.4.4" in text and "10.10.4.3" in text
     assert load_settings().stats_validated == {"version": STATS_VERSION, "report": str(md)}
 
+    home2 = tmp_path / "home2"
+    home2.mkdir()
+    monkeypatch.setenv("RK_HOME", str(home2))
     bad = tmp_path / "bad-refs"
     shutil.copytree(REFS, bad)
+    with pytest.raises(ValueError):  # only the packaged references can validate, even an identical copy cannot
+        run_stats_eval(tmp_path / "out2", refs_dir=bad, write_config=True)
     ref = json.loads((bad / "bcg.json").read_text())
     exp = ref["analyses"][0]["expected"][0]
     exp["value"] = f"{float(exp['value']) + 0.01:.4f}"  # a published estimate no longer reproduced
     (bad / "bcg.json").write_text(json.dumps(ref))
-    home2 = tmp_path / "home2"
-    home2.mkdir()
-    monkeypatch.setenv("RK_HOME", str(home2))
-    r2 = run_stats_eval(tmp_path / "out2", refs_dir=bad, write_config=True)
+    r2 = run_stats_eval(tmp_path / "out2", refs_dir=bad)  # other references: a report, never a validation
     assert not r2["all_pass"] and not r2["config_written"]
-    assert load_settings().stats_validated is None
     assert "FAIL" in Path(r2["report"]).read_text()
+    assert load_settings().stats_validated is None
+
+    import rk.eval.stats_eval as se
+
+    monkeypatch.setattr(se, "check_tolerance", lambda exp: 0.0)  # the packaged references, now failing
+    r3 = run_stats_eval(tmp_path / "out3", write_config=True)
+    assert not r3["all_pass"] and not r3["config_written"]
+    assert load_settings().stats_validated is None
