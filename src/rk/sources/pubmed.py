@@ -11,8 +11,17 @@ EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 BIOC = "https://www.ncbi.nlm.nih.gov/research/bionlp/RESTful/pmcoa.cgi/BioC_json"
 
 
-def esearch(http: HttpClient, term: str, retmax: int = 50) -> list[str]:
-    data, _ = http.get_json(f"{EUTILS}/esearch.fcgi", {"db": "pubmed", "term": term, "retmode": "json", "retmax": retmax})
+def esearch(http: HttpClient, term: str, retmax: int = 50, *, retstart: int = 0, date_from: int | None = None,
+            date_to: int | None = None) -> list[str]:
+    """PMIDs matching ``term``: ``retmax`` from ``retstart``, published (``pdat``) in the years ``date_from``..
+    ``date_to`` (inclusive) when given."""
+    params: dict = {"db": "pubmed", "term": term, "retmode": "json", "retmax": retmax}
+    if retstart:
+        params["retstart"] = retstart
+    if date_from is not None or date_to is not None:  # E-utilities takes mindate and maxdate only together
+        params.update(datetype="pdat", mindate=date_from if date_from is not None else 1000,
+                      maxdate=date_to if date_to is not None else 9999)
+    data, _ = http.get_json(f"{EUTILS}/esearch.fcgi", params)
     return ((data or {}).get("esearchresult") or {}).get("idlist", [])
 
 
@@ -32,7 +41,14 @@ def summary_to_item(uid: str, s: dict) -> ItemIn:
         venue=s.get("fulljournalname") or s.get("source"),
         ids=Ids(doi=ids.get("doi"), pmid=uid, pmcid=ids.get("pmc") or ids.get("pmcid")).normalized(),
         discovered_via="search",
+        language=_language(s.get("lang")),
     )
+
+
+def _language(langs) -> str | None:
+    """The record's language: English when it is among them, else the first."""
+    langs = [x for x in (langs if isinstance(langs, list) else [langs]) if isinstance(x, str) and x]
+    return "eng" if "eng" in langs else (langs[0] if langs else None)
 
 
 def esummary(http: HttpClient, pmids: list[str]) -> list[ItemIn]:

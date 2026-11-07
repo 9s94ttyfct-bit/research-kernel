@@ -30,13 +30,44 @@ def result_to_item(r: dict) -> ItemIn:
         ids=Ids(doi=r.get("doi"), pmid=r.get("pmid"), pmcid=r.get("pmcid")).normalized(),
         oa_urls=pdfs,
         discovered_via="search",
+        language=r.get("language"),
     )
 
 
-def search(http: HttpClient, query: str, *, open_access_only: bool = False, page_size: int = 25) -> list[ItemIn]:
-    q = f"({query}) AND OPEN_ACCESS:y" if open_access_only else query
-    data, _ = http.get_json(f"{BASE}/search", {"query": q, "format": "json", "resultType": "core", "pageSize": page_size})
-    return [result_to_item(r) for r in ((data or {}).get("resultList") or {}).get("result", [])]
+def _query(query: str, open_access_only: bool, date_from: int | None, date_to: int | None) -> str:
+    if not open_access_only and date_from is None and date_to is None:
+        return query
+    parts = [f"({query})"] + (["OPEN_ACCESS:y"] if open_access_only else [])
+    if date_from is not None or date_to is not None:
+        parts.append(f"(PUB_YEAR:[{date_from if date_from is not None else 1000} TO "
+                     f"{date_to if date_to is not None else 9999}])")
+    return " AND ".join(parts)
+
+
+def _page(http: HttpClient, q: str, page_size: int, cursor: str | None) -> tuple[list[dict], str | None]:
+    params = {"query": q, "format": "json", "resultType": "core", "pageSize": page_size}
+    if cursor is not None:
+        params["cursorMark"] = cursor
+    data, _ = http.get_json(f"{BASE}/search", params)
+    return ((data or {}).get("resultList") or {}).get("result", []), (data or {}).get("nextCursorMark")
+
+
+def search(http: HttpClient, query: str, *, open_access_only: bool = False, page_size: int = 25, offset: int = 0,
+           date_from: int | None = None, date_to: int | None = None) -> list[ItemIn]:
+    """One page of records matching ``query`` (publication years ``date_from``..``date_to``, inclusive, when given):
+    ``page_size`` from ``offset``, a multiple of ``page_size``. Europe PMC pages by cursor, so a later page walks the
+    pages before it, which the HTTP cache keeps from when they were fetched."""
+    if offset % page_size:
+        raise ValueError(f"Europe PMC pages by cursor: offset {offset} is not a multiple of {page_size}")
+    q = _query(query, open_access_only, date_from, date_to)
+    cursor: str | None = None
+    for _ in range(offset // page_size):
+        rows, nxt = _page(http, q, page_size, cursor)
+        if not rows or not nxt or nxt == cursor:  # the results end before the offset
+            return []
+        cursor = nxt
+    rows, _ = _page(http, q, page_size, cursor)
+    return [result_to_item(r) for r in rows]
 
 
 def count(http: HttpClient, query: str) -> int | None:

@@ -138,8 +138,10 @@ class Library:
                 cur = self.get(existing)
                 new_ids = {k: v for k, v in item.ids.model_dump().items() if v and not getattr(cur.ids, k)}
                 new_urls = [u for u in item.oa_urls if u not in cur.oa_urls]
-                if new_ids or new_urls:
-                    self._ev("item.merged", existing, {"ids": new_ids, "oa_urls": new_urls}, actor, kind)
+                new_lang = item.language if item.language and not cur.language else None
+                if new_ids or new_urls or new_lang:
+                    payload = {"ids": new_ids, "oa_urls": new_urls, **({"language": new_lang} if new_lang else {})}
+                    self._ev("item.merged", existing, payload, actor, kind)
                 return AddResult(item_id=existing, created=False)
             full = Item(**item.model_dump(), id=new_id("src"), added_by=added_by)
             self._ev("item.added", full.id, {"item": full.model_dump(mode="json"), **(provenance or {})}, actor, kind)
@@ -224,6 +226,8 @@ def _item_merged(conn: sqlite3.Connection, ev: Event) -> None:
     d = _load(conn, ev.entity_id)
     d["ids"].update(ev.payload["ids"])
     d["oa_urls"] = d.get("oa_urls", []) + ev.payload["oa_urls"]
+    if ev.payload.get("language"):  # a source's language for an item that had none
+        d["language"] = ev.payload["language"]
     notes = conn.execute("SELECT notes, fulltext FROM items_fts WHERE item_id=?", (ev.entity_id,)).fetchone()
     _write_item(conn, d)
     if notes:

@@ -35,11 +35,18 @@ def _name(n: str) -> Creator:
     return Creator(family=parts[-1], given=" ".join(parts[:-1]) or None) if parts else Creator(family=n)
 
 
-def search(http: HttpClient, query: str, *, api_key: str | None, limit: int = 20) -> list[ItemIn]:
+def search(http: HttpClient, query: str, *, api_key: str | None, limit: int = 20, offset: int = 0,
+           date_from: int | None = None, date_to: int | None = None) -> list[ItemIn]:
+    """Papers matching ``query``: ``limit`` from ``offset``, published in the years ``date_from``..``date_to``
+    (inclusive; either end open) when given."""
     if not api_key:
         raise NotConfigured("s2_key")
-    data, _ = http.get_json(f"{BASE}/paper/search", {"query": query, "limit": limit, "fields": FIELDS},
-                            headers={"x-api-key": api_key})
+    params: dict = {"query": query, "limit": limit, "fields": FIELDS}
+    if offset:
+        params["offset"] = offset
+    if date_from is not None or date_to is not None:
+        params["year"] = f"{date_from if date_from is not None else ''}-{date_to if date_to is not None else ''}"
+    data, _ = http.get_json(f"{BASE}/paper/search", params, headers={"x-api-key": api_key})
     return [
         ItemIn(title=p.get("title") or "(untitled)", creators=[_name(a["name"]) for a in p.get("authors", []) if a.get("name")],
                year=p.get("year"), venue=p.get("venue") or None, abstract=p.get("abstract"),

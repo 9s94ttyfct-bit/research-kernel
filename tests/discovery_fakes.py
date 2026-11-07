@@ -176,7 +176,8 @@ class FakeJudge:
 class FakeSources:
     """A deterministic ``DiscoverySources``. ``search`` returns, for every key of ``items`` that occurs in the query
     (case-insensitive), its items, in key order, de-duplicated by title, with ``after_year`` only those with
-    ``year > after_year``, cut to ``limit``. Per-item presets are keyed
+    ``year > after_year``, with ``date_from``/``date_to`` only those dated in that year range, cut to ``limit`` from
+    ``offset``; its arguments are also in ``search_args``. Per-item presets are keyed
     by item title and need ``lib`` (the project library): ``statuses`` (``verify`` result, also written to the item's
     ``ref_status``; default ``default_status``), ``retractions``, ``citing`` (``cited_by``, filtered to
     ``year > after_year``) and ``fulltexts`` (pages recorded as the text layer by ``fulltext``). ``year_counts`` is keyed
@@ -196,6 +197,7 @@ class FakeSources:
         self.citing, self.fulltexts, self.resolvable = citing or {}, fulltexts or {}, resolvable or {}
         self.record_counts = record_counts or {}
         self.calls: list[tuple] = []
+        self.search_args: list[dict] = []
 
     def _title(self, item_id: str) -> str:
         if self.lib is None:
@@ -205,15 +207,21 @@ class FakeSources:
     def sources(self) -> list[str]:
         return ["openalex"] + (["s2"] if self.s2 else []) + ["europepmc", "pubmed", "arxiv"]
 
-    def search(self, query: str, source: str, limit: int = 25, after_year: int | None = None) -> list[ItemIn]:
+    def search(self, query: str, source: str, limit: int = 25, after_year: int | None = None, *, offset: int = 0,
+               date_from: int | None = None, date_to: int | None = None) -> list[ItemIn]:
         self.calls.append(("search", query, source, limit, after_year))
+        self.search_args.append({"query": query, "source": source, "limit": limit, "after_year": after_year,
+                                 "offset": offset, "date_from": date_from, "date_to": date_to})
         out: list[ItemIn] = []
         for key, hits in self.items.items():
             if key.lower() in query.lower():
                 out += [h for h in hits if h.title not in {o.title for o in out}]
         if after_year is not None:
             out = [h for h in out if h.year is not None and h.year > after_year]
-        return out[:limit]
+        if date_from is not None or date_to is not None:
+            out = [h for h in out if h.year is not None and (date_from is None or h.year >= date_from)
+                   and (date_to is None or h.year <= date_to)]
+        return out[offset:offset + limit]
 
     def year_counts(self, query: str) -> dict[int, int]:
         self.calls.append(("year_counts", query))

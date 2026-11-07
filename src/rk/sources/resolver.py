@@ -84,26 +84,47 @@ def resolve(ctx: SourceContext, ident: Identifier) -> ResolvedWork | None:
 
 
 def search(ctx: SourceContext, query: str, source: SearchSource, limit: int = 25, *,
-           after_year: int | None = None) -> list[ItemIn]:
-    """Search one source. With ``after_year`` only works published in a later year are returned: OpenAlex filters on
+           after_year: int | None = None, offset: int = 0, date_from: int | None = None,
+           date_to: int | None = None) -> list[ItemIn]:
+    """Search one source: ``limit`` hits from ``offset`` (OpenAlex and Europe PMC page, so there ``offset`` must be a
+    multiple of ``limit``). ``date_from``..``date_to`` (publication years, inclusive, either end open) is filtered on
+    every source's server. With ``after_year`` only works published in a later year are returned: OpenAlex filters on
     the server; the other sources' hits are filtered here, so fewer than ``limit`` may be left (undated hits drop)."""
-    hits = _search(ctx, query, source, limit, after_year)
+    hits = _search(ctx, query, source, limit, after_year, offset, date_from, date_to)
     if after_year is None:
         return hits
     return [h for h in hits if h.year is not None and h.year > after_year]
 
 
-def _search(ctx: SourceContext, query: str, source: SearchSource, limit: int, after_year: int | None) -> list[ItemIn]:
+def _openalex_years(after_year: int | None, date_from: int | None, date_to: int | None) -> str | None:
+    """The OpenAlex ``publication_year`` filter of a year range and ``after_year``."""
+    if date_from is None and date_to is None:
+        return f">{after_year}" if after_year is not None else None
+    lows = [y for y in (date_from, after_year + 1 if after_year is not None else None) if y is not None]
+    if not lows:
+        return f"<{date_to + 1}"
+    return f"{max(lows)}-{date_to}" if date_to is not None else f">{max(lows) - 1}"
+
+
+def _search(ctx: SourceContext, query: str, source: SearchSource, limit: int, after_year: int | None, offset: int,
+            date_from: int | None, date_to: int | None) -> list[ItemIn]:
     http, st = ctx.http, ctx.settings
     if source == "openalex":
-        filters = {"publication_year": f">{after_year}"} if after_year is not None else None
-        return openalex.search(http, query, api_key=st.openalex_key, per_page=limit, filters=filters)
+        years = _openalex_years(after_year, date_from, date_to)
+        return openalex.search(http, query, api_key=st.openalex_key, per_page=limit, offset=offset,
+                               filters={"publication_year": years} if years else None)
     if source == "europepmc":
-        return europepmc.search(http, query, page_size=limit)
+        return europepmc.search(http, query, page_size=limit, offset=offset, date_from=date_from, date_to=date_to)
     if source == "pubmed":
-        return pubmed.esummary(http, pubmed.esearch(http, query, retmax=limit))
+        return pubmed.esummary(http, pubmed.esearch(http, query, retmax=limit, retstart=offset, date_from=date_from,
+                                                    date_to=date_to))
     if source == "arxiv":
-        return arxiv.query(http, search_query=f"all:{query}", max_results=limit)
+        q = f"all:{query}"
+        if date_from is not None or date_to is not None:
+            q += (f" AND submittedDate:[{date_from if date_from is not None else 1000}01010000 TO "
+                  f"{date_to if date_to is not None else 9999}12312359]")
+        return arxiv.query(http, search_query=q, max_results=limit, start=offset)
     if source == "s2":
-        return s2.search(http, query, api_key=st.s2_key, limit=limit)
+        return s2.search(http, query, api_key=st.s2_key, limit=limit, offset=offset, date_from=date_from,
+                         date_to=date_to)
     raise ValueError(f"unknown source {source}")

@@ -54,8 +54,10 @@ def parse_feed(xml: bytes) -> list[ItemIn]:
 
 
 def query(http: HttpClient, *, search_query: str | None = None, id_list: list[str] | None = None,
-          max_results: int = 25) -> list[ItemIn]:
+          max_results: int = 25, start: int = 0) -> list[ItemIn]:
     params: dict = {"max_results": max_results}
+    if start:
+        params["start"] = start
     if search_query:
         params["search_query"] = search_query
     if id_list:

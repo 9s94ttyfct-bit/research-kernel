@@ -286,7 +286,7 @@ def test_one_full_text_error_does_not_fail_the_gaps_attempt(env):
 def _failing_search(sources):
     from rk.net.http import HttpError
 
-    def search(query, source, limit=25, after_year=None):
+    def search(query, source, limit=25, after_year=None, *, offset=0, date_from=None, date_to=None):
         raise HttpError(503, "https://api.openalex.org/works")
 
     sources.search = search

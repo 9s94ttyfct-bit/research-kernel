@@ -27,7 +27,11 @@ COUNTED_SOURCES = ("openalex", "europepmc")  # the sources ``count`` can size a 
 
 
 class DiscoverySources(Protocol):
-    def search(self, query: str, source: str, limit: int = 25, after_year: int | None = None) -> list[ItemIn]: ...
+    def search(self, query: str, source: str, limit: int = 25, after_year: int | None = None, *, offset: int = 0,
+               date_from: int | None = None, date_to: int | None = None) -> list[ItemIn]:
+        """``limit`` hits of one source from rank ``offset`` (a multiple of ``limit``), published after
+        ``after_year`` and in the years ``date_from``..``date_to`` (inclusive; None: open) when given."""
+        ...
 
     def sources(self) -> list[str]: ...
 
@@ -67,9 +71,12 @@ class KernelSources:
         s2 = ["s2"] if self.kernel.settings().s2_key else []
         return ["openalex", *s2, "europepmc", "pubmed", "arxiv"]
 
-    def search(self, query: str, source: str, limit: int = 25, after_year: int | None = None) -> list[ItemIn]:
-        """Hits of one source; with ``after_year`` only works published in a later year."""
-        return resolver.search(self.kernel.ctx(), query, source, limit, after_year=after_year)
+    def search(self, query: str, source: str, limit: int = 25, after_year: int | None = None, *, offset: int = 0,
+               date_from: int | None = None, date_to: int | None = None) -> list[ItemIn]:
+        """Hits of one source from rank ``offset``; with ``after_year`` only works published in a later year, with
+        ``date_from``/``date_to`` only those published in that year range (inclusive)."""
+        return resolver.search(self.kernel.ctx(), query, source, limit, after_year=after_year, offset=offset,
+                               date_from=date_from, date_to=date_to)
 
     def year_counts(self, query: str) -> dict[int, int]:
         ctx = self.kernel.ctx()
@@ -142,30 +149,47 @@ class KernelSources:
 
 
 def _add_and_log(ps: ProjectStore, hits: list[ItemIn], *, discovered_via: str, stage: str, attempt: int,
-                  purpose: str, query: str, source: str, limit: int, actor: str, after_year: int | None) -> list[str]:
-    """Add the hits to the library (collection "Search hits"), log the search with their item ids (event
-    ``search.logged``) and return those ids in rank order."""
+                 purpose: str, query: str, source: str, limit: int, actor: str, after_year: int | None,
+                 offset: int = 0, date_from: int | None = None, date_to: int | None = None) -> list[str]:
+    """Add the hits to the library (collection "Search hits"), log the search with their distinct item ids (event
+    ``search.logged``) and return one item id per hit in rank order: a hit the library merged into an earlier hit's
+    item repeats that item's id."""
     lib = Library(ps)
     col = lib.ensure_default_collections(actor=actor)[HITS_COLLECTION]
-    ids: list[str] = []
+    hit_ids: list[str] = []
     for it in hits:
         iid = lib.add_item(it.model_copy(update={"discovered_via": discovered_via}), added_by="agent", actor=actor,
                            actor_kind="kernel").item_id
-        if iid not in ids:
+        if iid not in hit_ids:
             lib.collect(iid, col, actor=actor, actor_kind="kernel")
-            ids.append(iid)
+        hit_ids.append(iid)
     log_search(ps, stage=stage, attempt=attempt, purpose=purpose, source=source, query=query, limit=limit,
-               item_ids=ids, actor=actor, after_year=after_year)
-    return ids
+               item_ids=list(dict.fromkeys(hit_ids)), actor=actor, after_year=after_year, offset=offset,
+               date_from=date_from, date_to=date_to)
+    return hit_ids
+
+
+def log_and_search_hits(ps: ProjectStore, sources: DiscoverySources, *, stage: str, attempt: int, purpose: str,
+                        query: str, source: str, limit: int, actor: str, after_year: int | None = None,
+                        offset: int = 0, date_from: int | None = None, date_to: int | None = None) -> list[str]:
+    """``log_and_search`` keeping every hit: one item id per hit in rank order, a hit the library merged into an
+    earlier hit's item repeating that id (so a full page has ``limit`` ids)."""
+    hits = sources.search(query, source, limit, after_year=after_year, offset=offset, date_from=date_from,
+                          date_to=date_to)
+    return _add_and_log(ps, hits, discovered_via="search", stage=stage, attempt=attempt, purpose=purpose, query=query,
+                        source=source, limit=limit, actor=actor, after_year=after_year, offset=offset,
+                        date_from=date_from, date_to=date_to)
 
 
 def log_and_search(ps: ProjectStore, sources: DiscoverySources, *, stage: str, attempt: int, purpose: str,
-                   query: str, source: str, limit: int, actor: str, after_year: int | None = None) -> list[str]:
-    """Search one source (with ``after_year``, only works published in a later year), add the hits to the library,
-    log the search and return the hit item ids in rank order."""
-    hits = sources.search(query, source, limit, after_year=after_year)
-    return _add_and_log(ps, hits, discovered_via="search", stage=stage, attempt=attempt, purpose=purpose, query=query,
-                        source=source, limit=limit, actor=actor, after_year=after_year)
+                   query: str, source: str, limit: int, actor: str, after_year: int | None = None, offset: int = 0,
+                   date_from: int | None = None, date_to: int | None = None) -> list[str]:
+    """Search one source (from rank ``offset``; with ``after_year``, only works published in a later year; with
+    ``date_from``/``date_to``, only those published in that year range), add the hits to the library, log the search
+    and return the distinct hit item ids in rank order."""
+    return list(dict.fromkeys(log_and_search_hits(
+        ps, sources, stage=stage, attempt=attempt, purpose=purpose, query=query, source=source, limit=limit,
+        actor=actor, after_year=after_year, offset=offset, date_from=date_from, date_to=date_to)))
 
 
 def log_and_cited_by(ps: ProjectStore, sources: DiscoverySources, item_id: str, *, stage: str, attempt: int,
@@ -173,6 +197,6 @@ def log_and_cited_by(ps: ProjectStore, sources: DiscoverySources, item_id: str, 
     """The works citing ``item_id`` (with ``after_year``, only those published in a later year), added to the library
     and logged like a search (source ``openalex``, query ``cites:<item id>``); returns their item ids."""
     hits = sources.cited_by(item_id, after_year=after_year)
-    return _add_and_log(ps, hits, discovered_via="forward", stage=stage, attempt=attempt, purpose=purpose,
-                        query=f"cites:{item_id}", source="openalex", limit=CITED_BY_LIMIT, actor=actor,
-                        after_year=after_year)
+    return list(dict.fromkeys(_add_and_log(ps, hits, discovered_via="forward", stage=stage, attempt=attempt,
+                                           purpose=purpose, query=f"cites:{item_id}", source="openalex",
+                                           limit=CITED_BY_LIMIT, actor=actor, after_year=after_year)))

@@ -6,7 +6,7 @@ import re
 import unicodedata
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from rk.sources.identifiers import (
     normalize_arxiv,
@@ -56,6 +56,26 @@ class Ids(BaseModel):
         return [(k, v) for k, v in self.model_dump().items() if v and k != "url"]
 
 
+# ISO 639-2 (bibliographic and terminology) codes and names the sources give, as ISO 639-1
+_LANGUAGES = {
+    "eng": "en", "english": "en", "fre": "fr", "fra": "fr", "french": "fr", "ger": "de", "deu": "de", "german": "de",
+    "spa": "es", "spanish": "es", "ita": "it", "italian": "it", "por": "pt", "portuguese": "pt", "dut": "nl",
+    "nld": "nl", "dutch": "nl", "chi": "zh", "zho": "zh", "chinese": "zh", "jpn": "ja", "japanese": "ja", "rus": "ru",
+    "russian": "ru", "pol": "pl", "polish": "pl", "kor": "ko", "korean": "ko", "swe": "sv", "dan": "da", "nor": "no",
+    "fin": "fi", "tur": "tr", "turkish": "tr", "ara": "ar", "heb": "he", "gre": "el", "ell": "el", "cze": "cs",
+    "ces": "cs", "hun": "hu", "per": "fa", "fas": "fa",
+}
+
+
+def normalize_language(code: str | None) -> str | None:
+    """A source's language code as ISO 639-1 where known (``"eng"`` -> ``"en"``), else lower-cased; ``None`` for no
+    language or an undetermined one (``"und"``)."""
+    c = (code or "").strip().lower()
+    if not c or c == "und":
+        return None
+    return _LANGUAGES.get(c, c)
+
+
 class ItemIn(BaseModel):
     item_type: ItemType = "journalArticle"
     title: str
@@ -67,6 +87,12 @@ class ItemIn(BaseModel):
     oa_urls: list[str] = Field(default_factory=list)
     discovered_via: DiscoveredVia = "search"
     csl: dict | None = None
+    language: str | None = None  # the source's language field (ISO 639-1 where known); None when it gave none
+
+    @field_validator("language")
+    @classmethod
+    def _language(cls, v: str | None) -> str | None:
+        return normalize_language(v)
 
 
 class Item(ItemIn):

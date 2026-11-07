@@ -74,6 +74,7 @@ def work_to_item(w: dict) -> ItemIn:
         ids=Ids(doi=w.get("doi"), pmid=pmid, pmcid=pmcid, openalex=_short(w.get("id"))).normalized(),
         oa_urls=_pdf_urls(w),
         discovered_via="search",
+        language=w.get("language"),
     )
 
 
@@ -120,9 +121,15 @@ def _list(http: HttpClient, params: dict) -> list[dict]:
 
 
 def search(http: HttpClient, query: str, *, api_key: str | None, per_page: int = 25,
-           filters: dict | None = None) -> list[ItemIn]:
+           filters: dict | None = None, offset: int = 0) -> list[ItemIn]:
+    """One page of works matching ``query``: ``per_page`` from ``offset``, which must be a multiple of ``per_page``
+    (OpenAlex pages by page number)."""
+    if offset % per_page:
+        raise ValueError(f"OpenAlex pages by page number: offset {offset} is not a multiple of {per_page}")
     flt = ",".join(f"{k}:{v}" for k, v in (filters or {}).items()) or None
-    return [work_to_item(w) for w in _list(http, _params(api_key, search=query, per_page=per_page, filter=flt))]
+    page = offset // per_page + 1 if offset else None
+    return [work_to_item(w) for w in _list(http, _params(api_key, search=query, per_page=per_page, filter=flt,
+                                                         page=page))]
 
 
 def cited_by(http: HttpClient, openalex_id: str, *, api_key: str | None, per_page: int = 25,
