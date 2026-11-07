@@ -11,8 +11,10 @@ thread they are written at once. A step that raises fails the run with the error
 restarts the threads after ``rk serve`` restarts; the event-sourced stage state makes every step start from what
 already passed.
 
-One writer of a project's stages at a time: a guided (D1) stage call goes through ``d1``, refused while a run of the
-project is active, and while it runs ``start`` and ``resume`` of the project are refused."""
+One writer of a project's stages at a time: a guided (D1) stage call (``rk_stage_run``, ``rk_stage_advance``) runs in
+the background through ``d1_start`` (stages take minutes, longer than a chat turn or a tool call may wait): refused
+while a run of the project is active or another D1 call of it runs, and while it runs ``start`` and ``resume`` of the
+project are refused. ``d1_status`` shows the call in flight and the outcome of the last one."""
 
 from __future__ import annotations
 
@@ -29,8 +31,10 @@ from rk.orchestrator.state import (
     TERMINAL_RUN_STATES,
     active_run,
     current_stage,
+    last_d1,
     latest_run,
     rate_capped_driver,
+    record_d1_finished,
     record_run_session,
     record_run_status,
     run_row,
@@ -64,6 +68,14 @@ class _Runner:
     source_errors: int = 0  # transient source errors in a row (``waiting_source``)
 
 
+@dataclass
+class _D1Job:
+    action: str  # "run" or "advance"
+    stage: str | None
+    started: float
+    thread: threading.Thread | None = None
+
+
 class RunManager:
     def __init__(self, kernel, registry, orchestrator, *, poll_s: float = 2.0,
                  max_rate_wait_s: float = MAX_RATE_WAIT_S, unknown_rate_wait_s: float = UNKNOWN_RATE_WAIT_S,
@@ -75,7 +87,7 @@ class RunManager:
         self.join_timeout_s = join_timeout_s
         self._lock = threading.Lock()  # guards _runners, _d1, _closed and every status write outside a step
         self._runners: dict[str, _Runner] = {}
-        self._d1: set[str] = set()  # projects with a guided (D1) stage call in flight
+        self._d1: dict[str, _D1Job] = {}  # the guided (D1) stage call in flight, per project
         self._closed = False
 
     # ---- controls ----
@@ -149,16 +161,19 @@ class RunManager:
         return {"project": project, "run": latest_run(ps), "current": current_stage(ps), "stages": stage_rows(ps),
                 "stepping": stepping, "requested": requested}
 
-    def d1(self, project: str, call: Callable[[], T]) -> T:
-        """Run a guided (D1) stage call (``rk_stage_run``, ``rk_stage_advance``) of ``project``: refused while a run
-        of the project is active (or its thread is still stopping) or another D1 call of it runs; until ``call``
-        returns, ``start`` and ``resume`` of the project are refused, so the stages have one writer at a time."""
+    def d1_start(self, project: str, action: str, stage: str | None, call: Callable[[], dict]) -> dict:
+        """Start a guided (D1) stage call of ``project`` in the background and return at once (``status:
+        running``); ``call`` returns the outcome shown by ``d1_status`` once it finished. Refused while a run of the
+        project is active (or its thread is still stopping) or another D1 call of it runs (``stage_busy``)."""
         ps = self._ps(project)
         with self._lock:
             self._check_open()
-            if project in self._d1:
-                raise ToolError("stage_busy", f"another guided stage call of {project} is in progress; try again "
-                                              "when it returns")
+            busy = self._d1.get(project)
+            if busy is not None:
+                raise ToolError("stage_busy", f"a guided stage call of {project} ({busy.action} "
+                                              f"{busy.stage or ''}) is still running; follow it with rk_stage_status "
+                                              "and do not start another until it finished",
+                                {"action": busy.action, "stage": busy.stage})
             run = active_run(ps)
             r = self._runners.get(project)
             if run is not None or r is not None:
@@ -166,12 +181,22 @@ class RunManager:
                 state = run["status"] if run is not None else "still stopping"
                 raise ToolError("run_active", f"run {run_id} is {state}; a D2 run drives the stages until it is "
                                               "done, failed or cancelled (rk run cancel)", {"run_id": run_id})
-            self._d1.add(project)
-        try:
-            return call()
-        finally:
-            with self._lock:
-                self._d1.discard(project)
+            job = _D1Job(action, stage, time.time())
+            job.thread = threading.Thread(target=self._d1_run, args=(project, job, call), name=f"rk-d1-{project}",
+                                          daemon=True)
+            self._d1[project] = job
+            job.thread.start()
+        return {"status": "running", "action": action, "stage": stage}
+
+    def d1_status(self, project: str) -> dict:
+        """The guided stage call of ``project`` in flight (``running``: its action, stage and start time, else
+        ``None``) and the last one that finished (``last``, kept in the event log so it outlives a restart: its
+        ``outcome``, or its ``error``; ``None`` before any)."""
+        ps = self._ps(project)
+        with self._lock:
+            job = self._d1.get(project)
+            running = {"action": job.action, "stage": job.stage, "started": job.started} if job else None
+            return {"running": running, "last": last_d1(ps)}
 
     def d1_active(self, project: str) -> bool:
         """Whether a guided (D1) stage call of ``project`` is in flight."""
@@ -196,12 +221,13 @@ class RunManager:
         return resumed
 
     def close(self, timeout: float | None = None) -> None:
-        """Stop every thread between steps and join them all within one deadline (``timeout``, default
-        ``join_timeout_s``). A thread still in a step after that is left to the process exit: it still applies a
-        pending pause or cancel, and its attempt reruns after the restart."""
+        """Stop every thread between steps and join them all, the guided stage calls in flight included, within one
+        deadline (``timeout``, default ``join_timeout_s``). A thread still in a step after that is left to the
+        process exit: it still applies a pending pause or cancel, and its attempt reruns after the restart."""
         with self._lock:
             self._closed = True
             runners = list(self._runners.items())
+            d1_jobs = list(self._d1.items())
         for _, r in runners:
             r.wake.set()
         deadline = time.monotonic() + (self.join_timeout_s if timeout is None else timeout)
@@ -210,6 +236,11 @@ class RunManager:
             if r.thread.is_alive():
                 log.warning("run %s of %s is still in a step at shutdown; it resumes after the restart", r.run_id,
                             project)
+        for project, job in d1_jobs:
+            job.thread.join(max(0.0, deadline - time.monotonic()))
+            if job.thread.is_alive():
+                log.warning("the guided %s of %s is still running at shutdown; an interrupted attempt reruns",
+                            job.action, project)
 
     def rate_wait_s(self, project: str, run_id: str) -> float:
         """Seconds until the driver of the run's latest rate-capped task may be called again (``CallCaps``), at
@@ -357,3 +388,21 @@ class RunManager:
                                       clock=self.orchestrator.clock)
             except Exception:  # logged; the run stays as it was
                 log.exception("could not record the failure of run %s of %s", r.run_id, project)
+
+    def _d1_run(self, project: str, job: _D1Job, call: Callable[[], dict]) -> None:
+        """The thread of a guided stage call: run it and record its outcome (or its error) as the project's last."""
+        outcome, error = None, None
+        try:
+            outcome = call()
+        except Exception as e:  # kept as the call's error for rk_stage_status, not lost with the thread
+            error = f"{e.type}: {e.message}" if isinstance(e, ToolError) else f"{type(e).__name__}: {e}"
+            log.warning("the guided %s of %s failed: %s", job.action, project, error, exc_info=e)
+        with self._lock:
+            try:
+                record_d1_finished(self._ps(project), {"action": job.action, "stage": job.stage,
+                                                       "started": job.started, "finished": time.time(),
+                                                       "outcome": outcome, "error": error}, actor=ACTOR)
+            except Exception:  # logged; the stage state itself is event-sourced and stays consistent
+                log.exception("could not record the guided %s of %s", job.action, project)
+            if self._d1.get(project) is job:
+                del self._d1[project]

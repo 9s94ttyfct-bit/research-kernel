@@ -98,6 +98,20 @@ def record_edge_allowed(ps: ProjectStore, edge: str, *, actor: str) -> None:
     _emit(ps, "edge.allowed", edge, {"edge": edge}, actor)
 
 
+# ---- guided (D1) stage calls ----
+def record_d1_finished(ps: ProjectStore, outcome: dict, *, actor: str) -> None:
+    """A guided stage call that ran in the background finished: ``outcome`` holds its action, stage, start and end
+    times, the call's result (``outcome``) or its ``error``. Kept as an event so ``rk_stage_status`` shows it after a
+    restart too."""
+    _emit(ps, "d1.finished", ps.project_id, outcome, actor)
+
+
+def last_d1(ps: ProjectStore) -> dict[str, Any] | None:
+    """The last guided stage call that finished (``record_d1_finished``), or ``None``."""
+    r = ps.db.execute("SELECT payload FROM events WHERE type='d1.finished' ORDER BY seq DESC LIMIT 1").fetchone()
+    return json.loads(r["payload"]) if r else None
+
+
 # ---- runs ----
 def start_run(ps: ProjectStore, *, until: str, actor: str, clock: Callable[[], float]) -> str:
     """Start a D2 run of the discovery stages up to ``until``. One run per project at a time."""

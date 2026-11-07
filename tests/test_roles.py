@@ -1,3 +1,4 @@
+import time
 import uuid
 
 import pytest
@@ -149,9 +150,19 @@ def test_lead_stage_tools_close_after_question(tmp_home, replay_http):
         with pytest.raises(ToolError) as e:
             _call(reg, "rk_browser_open", {"url": "https://example.org/"}, "lead")
         assert e.value.type != "stage_closed" and e.value.type == "browser_unavailable"
+
+        def finished() -> dict:  # a stage call runs in the background: wait for it, then read its outcome
+            end = time.monotonic() + 10
+            while m.d1_status("demo")["running"] is not None:
+                assert time.monotonic() < end
+                time.sleep(0.01)
+            return _call(reg, "rk_stage_status", {}, "lead")["d1"]["last"]["outcome"]
+
         for stage in DISCOVERY:
-            assert _call(reg, "rk_stage_run", {"stage": stage}, "lead")["status"] == "done"
-            assert _call(reg, "rk_stage_advance", {}, "lead")["ok"]
+            assert _call(reg, "rk_stage_run", {"stage": stage}, "lead")["status"] == "running"
+            assert finished()["status"] == "done"
+            assert _call(reg, "rk_stage_advance", {}, "lead")["status"] == "running"
+            assert finished()["ok"]
         assert current_stage(ps) is None
 
         # every project-scoped Lead tool that writes (and the browser) is refused, before its arguments are read

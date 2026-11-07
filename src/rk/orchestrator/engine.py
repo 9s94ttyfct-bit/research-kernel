@@ -170,12 +170,7 @@ class Orchestrator:
         else ``failed``). An attempt that was interrupted (a rate cap or a crash) is not a rerun: it runs again as a
         new attempt with the same guidance and uses no edge. With a ``run_id``, ``step`` settles every outcome."""
         ps, lib = self.kernel.project(project)
-        worker = self._worker(stage)
-        current = current_stage(ps)
-        if stage != current:
-            why = "it already passed" if current is None or DISCOVERY.index(stage) < DISCOVERY.index(current) \
-                else f"{current!r} has not passed"
-            raise ToolError("stage_unavailable", f"cannot run {stage!r}: {why}", {"current": current})
+        worker = self.check_stage(project, stage)
         if run_id is None:
             early = self._d1_rerun(project, ps, lib, stage, worker, actor=actor)
             if early is not None:
@@ -184,6 +179,18 @@ class Orchestrator:
         if outcome.status == "back_edge" and run_id is None:
             return self._d1_edge(ps, worker, ctx, outcome.to, [outcome.reason] if outcome.reason else []) or outcome
         return outcome
+
+    def check_stage(self, project: str, stage: str) -> Worker:
+        """The worker of ``stage`` when it is the current stage (what ``run_stage`` runs), else ``stage_unavailable``;
+        a quick check before a guided stage call goes to the background."""
+        ps, _ = self.kernel.project(project)
+        worker = self._worker(stage)
+        current = current_stage(ps)
+        if stage != current:
+            why = "it already passed" if current is None or DISCOVERY.index(stage) < DISCOVERY.index(current) \
+                else f"{current!r} has not passed"
+            raise ToolError("stage_unavailable", f"cannot run {stage!r}: {why}", {"current": current})
+        return worker
 
     def _d1_rerun(self, project: str, ps: ProjectStore, lib, stage: str, worker: Worker, *,
                   actor: str) -> StageOutcome | None:

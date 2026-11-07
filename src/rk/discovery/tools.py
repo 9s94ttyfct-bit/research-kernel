@@ -11,7 +11,13 @@ from pydantic import BaseModel
 
 from rk.discovery.store import add_round, gaps, hypotheses, rqs, topics
 from rk.orchestrator.graph import EDGE_LIMIT
-from rk.orchestrator.state import current_stage, edge_rows, stage_row, stage_rows
+from rk.orchestrator.state import (
+    current_stage,
+    edge_rows,
+    latest_attempt,
+    stage_row,
+    stage_rows,
+)
 from rk.store.project import ProjectStore
 from rk.tools.registry import CallContext, ToolError
 
@@ -85,7 +91,8 @@ def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManag
     def _run_pause(ctx: CallContext, a: ProjectArg) -> dict:
         return manager().pause(a.project, actor=ctx.actor)
 
-    @tool("rk_run_resume", "Resume the project's paused run in a new session (its budgets and wall clock restart).",
+    @tool("rk_run_resume", "Resume the project's paused run in a new session (its budgets and wall clock restart); "
+          "on a failed or cancelled run, start a new run with the same end stage.",
           ProjectArg, True)
     def _run_resume(ctx: CallContext, a: ProjectArg) -> dict:
         return manager().resume(a.project, actor=ctx.actor)
@@ -99,34 +106,52 @@ def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManag
         return manager().status(a.project)
 
     # ---- stages ----
-    @tool("rk_stage_status", "The discovery stages: status, attempts, last gate, waits; the current stage and the "
-          "back-edges used.", ProjectArg, False)
+    @tool("rk_stage_status", "The discovery stages: status, attempts, last gate, waits; the current stage, the "
+          "back-edges used, and the guided (D1) stage call: d1.running while one runs in the background, d1.last "
+          "with the outcome and reason (or error) of the last one.", ProjectArg, False)
     def _stage_status(ctx: CallContext, a: ProjectArg) -> dict:
         ps = project(a.project)
+        m = runs()
         return {"project": a.project, "current": current_stage(ps), "stages": stage_rows(ps), "edges": edge_rows(ps),
-                "edge_limit": EDGE_LIMIT}
+                "edge_limit": EDGE_LIMIT, "d1": m.d1_status(a.project) if m is not None else None}
 
-    @tool("rk_stage_run", "Guided discovery (D1): run a new attempt of the current stage, with optional guidance. "
-          "Refused while a D2 run is active.", StageRun, True)
+    def started(a: ProjectArg, action: str, stage: str, attempt: int, out: dict) -> dict:
+        return {"project": a.project, **out, "attempt": attempt,
+                "message": f"{action} of {stage!r} (attempt {attempt}) started in the background; poll "
+                           "rk_stage_status until d1.running is null, then read d1.last. Do not start it again while "
+                           "it runs."}
+
+    @tool("rk_stage_run", "Guided discovery (D1): start a new attempt of the current stage, with optional guidance. "
+          "Returns at once (status running); the stage runs in the background (minutes): poll rk_stage_status for "
+          "its outcome. Refused while a D2 run is active or another stage call runs (stage_busy).", StageRun, True)
     def _stage_run(ctx: CallContext, a: StageRun) -> dict:
         ps = project(a.project)
         m = manager()
-        outcome = m.d1(a.project, lambda: m.orchestrator.run_stage(a.project, a.stage, guidance=a.guidance,
-                                                                   actor=ctx.actor))
-        return {"project": a.project, "stage": a.stage, **asdict(outcome), "current": current_stage(ps)}
+        m.orchestrator.check_stage(a.project, a.stage)
+        attempt = latest_attempt(ps, a.stage) + 1
+
+        def run() -> dict:
+            outcome = m.orchestrator.run_stage(a.project, a.stage, guidance=a.guidance, actor=ctx.actor)
+            return {"stage": a.stage, **asdict(outcome), "current": current_stage(ps)}
+
+        return started(a, "run", a.stage, attempt, m.d1_start(a.project, "run", a.stage, run))
 
     @tool("rk_stage_advance", "Guided discovery (D1): apply the answer the current stage waits on, then gate it; a "
-          "pass moves on to the next stage. Refused while a D2 run is active.", ProjectArg, True)
+          "pass moves on to the next stage. Returns at once (status running); poll rk_stage_status for the gate "
+          "result. Refused while a D2 run is active or another stage call runs (stage_busy).", ProjectArg, True)
     def _stage_advance(ctx: CallContext, a: ProjectArg) -> dict:
         ps = project(a.project)
         m = manager()
+        stage = current_stage(ps)
+        if stage is None:
+            raise ToolError("stage_unavailable", "every discovery stage passed")
 
-        def advance():
-            stage = current_stage(ps)
-            return stage, m.orchestrator.advance(a.project, actor=ctx.actor)
+        def advance() -> dict:
+            res = m.orchestrator.advance(a.project, actor=ctx.actor)
+            return {"stage": stage, **asdict(res), "current": current_stage(ps)}
 
-        stage, res = m.d1(a.project, advance)
-        return {"project": a.project, "stage": stage, **asdict(res), "current": current_stage(ps)}
+        return started(a, "advance", stage, latest_attempt(ps, stage), m.d1_start(a.project, "advance", stage,
+                                                                                   advance))
 
     @tool("rk_exploration_round", "Record feedback on a stage's output; it guides the next runs of the stages.",
           RoundArgs, True)

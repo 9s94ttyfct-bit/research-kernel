@@ -187,37 +187,90 @@ def test_start_runs_until_topics_or_question(env):
     assert latest_run(ps) is None and not _run_threads()
 
 
-def test_d1_stage_call_holds_off_a_run(env):
+def _d1(ps) -> None:
+    """Switch the test project to guided discovery (as the researcher would, with no run active)."""
+    record_intake(ps, Intake(**{**DEFAULT_INTAKE, "discovery_mode": "d1"}), actor="tester", actor_kind="human")
+
+
+def _d1_idle(m, project: str = "demo") -> dict:
+    """Wait until no guided stage call of the project runs; returns its ``d1_status``."""
+    return _wait(lambda: (s := m.d1_status(project))["running"] is None and s)
+
+
+def test_d1_stage_call_runs_in_the_background_and_holds_off_a_run(env):
     _, ps, _, make = env
+    _d1(ps)
     entered, release = threading.Event(), threading.Event()
 
     def slow(ctx):
         entered.set()
         assert release.wait(TIMEOUT)
-        return StageOutcome("done")
+        return StageOutcome("done", reason="intake complete")
 
     m, reg = make({**_workers(), "intake": FakeWorker(runs=[slow])})
-    outs: list = []
-    d1 = threading.Thread(target=lambda: outs.append(
-        reg.call("rk_stage_run", {"project": "demo", "stage": "intake"}, _ctx())), name="d1-call")
-    d1.start()
     try:
+        t0 = time.monotonic()
+        out = reg.call("rk_stage_run", {"project": "demo", "stage": "intake"}, _ctx("lead"))
+        assert time.monotonic() - t0 < 2.0  # returned at once while the stage still runs
+        assert (out["status"], out["stage"], out["attempt"], out["action"]) == ("running", "intake", 1, "run")
+        assert "poll rk_stage_status" in out["message"]
         assert entered.wait(TIMEOUT)
-        for call in (lambda: m.start("demo", "question", actor="tester"), lambda: m.resume("demo")):
+        status = reg.call("rk_stage_status", {"project": "demo"}, _ctx("lead"))
+        assert status["d1"]["running"]["stage"] == "intake" and status["d1"]["last"] is None
+        for name, args in (("rk_stage_run", {"project": "demo", "stage": "intake"}),
+                           ("rk_stage_advance", {"project": "demo"})):
             with pytest.raises(ToolError) as e:
-                call()
-            assert e.value.type == "run_active" and "guided" in e.value.message
-        with pytest.raises(ToolError) as e:
-            reg.call("rk_stage_advance", {"project": "demo"}, _ctx())
-        assert e.value.type == "stage_busy"
+                reg.call(name, args, _ctx("lead"))
+            assert e.value.type == "stage_busy" and "rk_stage_status" in e.value.message
+        with pytest.raises(ToolError) as e:  # resume checks the guided call first
+            m.resume("demo")
+        assert e.value.type == "run_active" and "guided" in e.value.message
+        with pytest.raises(ToolError) as e:  # a D1 project never starts a run (and the marker would refuse it too)
+            m.start("demo", "question", actor="tester")
+        assert e.value.type in ("not_d2", "run_active")
         assert latest_run(ps) is None and not _run_threads()
     finally:
         release.set()
-        d1.join(TIMEOUT)
-    assert not d1.is_alive() and outs[0]["status"] == "done"
-    run_id = m.start("demo", "question", actor="tester")
-    _wait(lambda: run_row(ps, run_id)["status"] == "done")
-    assert reg.call("rk_stage_status", {"project": "demo"}, _ctx())["current"] is None
+    last = _d1_idle(m)["last"]
+    assert last["action"] == "run" and last["error"] is None
+    assert (last["outcome"]["status"], last["outcome"]["reason"]) == ("done", "intake complete")
+    out = reg.call("rk_stage_advance", {"project": "demo"}, _ctx("lead"))
+    assert (out["status"], out["stage"]) == ("running", "intake")
+    last = _d1_idle(m)["last"]
+    assert last["outcome"]["ok"] is True and last["outcome"]["current"] == "landscape"
+
+
+def test_d1_outcome_and_errors_survive_a_restart(env):
+    _, ps, _, make = env
+    _d1(ps)
+    m, reg = make({**_workers(), "intake": FakeWorker(runs=[RuntimeError("disk full")])})
+    reg.call("rk_stage_run", {"project": "demo", "stage": "intake"}, _ctx("lead"))
+    assert _d1_idle(m)["last"]["error"] == "RuntimeError: disk full"
+    m.close()
+    m2, reg2 = make({**_workers(), "intake": FakeWorker()})  # rk serve restarted
+    status = reg2.call("rk_stage_status", {"project": "demo"}, _ctx("lead"))
+    assert status["d1"]["running"] is None and status["d1"]["last"]["error"] == "RuntimeError: disk full"
+    # the interrupted attempt 1 has no stage.ran: it reruns cleanly as attempt 2, no edge counted
+    assert reg2.call("rk_stage_run", {"project": "demo", "stage": "intake"}, _ctx("lead"))["attempt"] == 2
+    assert _d1_idle(m2)["last"]["outcome"]["status"] == "done"
+    assert reg2.call("rk_stage_status", {"project": "demo"}, _ctx("lead"))["edges"] == {}
+
+
+def test_close_joins_a_guided_stage_call_in_flight(env):
+    _, ps, _, make = env
+    _d1(ps)
+    release = threading.Event()
+
+    def slow(ctx):
+        assert release.wait(TIMEOUT)
+        return StageOutcome("done")
+
+    m, reg = make({**_workers(), "intake": FakeWorker(runs=[slow])})
+    reg.call("rk_stage_run", {"project": "demo", "stage": "intake"}, _ctx("lead"))
+    threading.Timer(0.1, release.set).start()
+    m.close(timeout=TIMEOUT)
+    assert not [t for t in threading.enumerate() if t.name == "rk-d1-demo"]
+    assert m.d1_status("demo")["last"]["outcome"]["status"] == "done"
 
 
 def test_stage_run_refused_while_run_active(env):
@@ -225,6 +278,7 @@ def test_stage_run_refused_while_run_active(env):
     m, reg = make(_workers(topics=FakeWorker(runs=[_review, _review])))
     run_id = m.start("demo", "question", actor="tester")
     _wait(lambda: run_row(ps, run_id)["status"] == "paused_waiting_human")
+    _d1(ps)  # (the intake tool refuses this during a run; written directly to reach the D1 check)
     for name, args in (("rk_stage_run", {"project": "demo", "stage": "topics"}),
                        ("rk_stage_advance", {"project": "demo"})):
         with pytest.raises(ToolError) as e:
@@ -232,9 +286,11 @@ def test_stage_run_refused_while_run_active(env):
         assert e.value.type == "run_active" and e.value.details["run_id"] == run_id
     m.cancel("demo")
     _wait(lambda: run_row(ps, run_id)["status"] == "cancelled")
-    out = reg.call("rk_stage_run", {"project": "demo", "stage": "topics", "guidance": "Fewer topics."}, _ctx())
+    reg.call("rk_stage_run", {"project": "demo", "stage": "topics", "guidance": "Fewer topics."}, _ctx())
+    out = _d1_idle(m)["last"]["outcome"]
     assert out["status"] == "waiting_human" and out["checkpoint_id"]
-    assert reg.call("rk_stage_advance", {"project": "demo"}, _ctx())["ok"] is False
+    reg.call("rk_stage_advance", {"project": "demo"}, _ctx())
+    assert _d1_idle(m)["last"]["outcome"]["ok"] is False
 
 
 def test_resume_starts_a_new_session_budget(env):

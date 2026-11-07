@@ -4,6 +4,7 @@ answers the checkpoints (Plan 4 Task 10)."""
 from __future__ import annotations
 
 import json
+import time
 import uuid
 
 import pytest
@@ -62,6 +63,20 @@ class Lead:
         assert events[-1].kind == "done", events[-1]
         return [e.data["content"] for e in events if e.kind == "tool_result"]
 
+    def stage(self, text: str, name: str, args: dict) -> dict:
+        """One guided stage call the way the Lead makes it: start it (it returns at once, ``running``), then, once
+        it finished, read its outcome with ``rk_stage_status`` (``d1.last``)."""
+        (out,) = self.say(text, (name, args))
+        assert _ok(out)["status"] == "running", out
+        end = time.monotonic() + 10
+        while self.runs.d1_status("demo")["running"] is not None:
+            assert time.monotonic() < end, "the stage call did not finish"
+            time.sleep(0.01)
+        (status,) = self.say("Is it done?", ("rk_stage_status", {}))
+        d1 = _ok(status)["d1"]
+        assert d1["running"] is None and d1["last"]["error"] is None, d1
+        return d1["last"]["outcome"]
+
     def close(self) -> None:
         self.chats.close_all()
         self.runs.close()
@@ -112,58 +127,57 @@ def test_d1_scripted_chat_reaches_topic_review(lead):
     ld = lead(orchestrator)
     ps, _ = ld.k.project("demo")
     intake = {**DEFAULT_INTAKE, "discovery_mode": "d1", "topics_n": 1}
-    out = ld.say("I want to look at aspirin in older people.",
-                 ("rk_project_intake", intake), ("rk_stage_run", {"stage": "intake"}), ("rk_stage_advance", {}))
-    assert _ok(out[0])["discovery_mode"] == "d1"
-    assert _ok(out[1])["status"] == "done"
-    assert (_ok(out[2])["ok"], _ok(out[2])["current"]) == (True, "landscape")
+    (out,) = ld.say("I want to look at aspirin in older people.", ("rk_project_intake", intake))
+    assert _ok(out)["discovery_mode"] == "d1"
+    assert ld.stage("Run the intake.", "rk_stage_run", {"stage": "intake"})["status"] == "done"
+    res = ld.stage("Pass it.", "rk_stage_advance", {})
+    assert (res["ok"], res["current"]) == (True, "landscape")
 
     # a round: run the stage, show it, record the researcher's feedback; the rerun gets it as guidance
-    out = ld.say("Map the field.", ("rk_stage_run", {"stage": "landscape"}))
-    assert _ok(out[0])["status"] == "done"
+    assert ld.stage("Map the field.", "rk_stage_run", {"stage": "landscape"})["status"] == "done"
     out = ld.say(f"Please {FEEDBACK}.", ("rk_exploration_round", {"stage": "landscape", "feedback": FEEDBACK}))
     assert _ok(out[0])["round_id"]
-    out = ld.say("Run it again with that.", ("rk_stage_run", {"stage": "landscape"}), ("rk_stage_advance", {}))
-    assert _ok(out[0])["status"] == "done" and _ok(out[1])["current"] == "gaps"
+    assert ld.stage("Run it again with that.", "rk_stage_run", {"stage": "landscape"})["status"] == "done"
+    assert ld.stage("Move on.", "rk_stage_advance", {})["current"] == "gaps"
     assert landscape.calls[0] == ("run", 1, "") and landscape.calls[-2] == ("run", 2, FEEDBACK)
     assert edge_count(ps, "landscape->landscape") == 1
 
-    out = ld.say("Now the gaps.", ("rk_stage_run", {"stage": "gaps"}), ("rk_stage_advance", {}),
-                 ("rk_gap_list", {"verified": True}))
-    assert _ok(out[1])["current"] == "topics"
-    assert [x["id"] for x in _ok(out[2])["gaps"]] == [g["verified"]]
+    ld.stage("Now the gaps.", "rk_stage_run", {"stage": "gaps"})
+    assert ld.stage("Pass them.", "rk_stage_advance", {})["current"] == "topics"
+    (out,) = ld.say("Show the gaps.", ("rk_gap_list", {"verified": True}))
+    assert [x["id"] for x in _ok(out)["gaps"]] == [g["verified"]]
     ex.script[("ideator", "TopicsOut")] = [{"topics": [_topic("Aspirin over 80", [g["verified"]])]}]
 
     more = "Focus on patients over 80."
-    out = ld.say("Suggest topics.", ("rk_exploration_round", {"stage": "gaps", "feedback": more}),
-                 ("rk_stage_run", {"stage": "topics"}), ("rk_checkpoint_list", {"status": "open"}))
-    run = _ok(out[1])
+    ld.say("Note this.", ("rk_exploration_round", {"stage": "gaps", "feedback": more}))
+    run = ld.stage("Suggest topics.", "rk_stage_run", {"stage": "topics"})
     assert run["status"] == "waiting_human" and run["current"] == "topics"
     review = get_checkpoint(ps, run["checkpoint_id"])
     assert (review["kind"], review["status"]) == ("topic_review", "open")
-    assert [c["id"] for c in _ok(out[2])["checkpoints"]] == [review["id"]]
+    (out,) = ld.say("What is open?", ("rk_checkpoint_list", {"status": "open"}))
+    assert [c["id"] for c in _ok(out)["checkpoints"]] == [review["id"]]
     assert [(r["stage"], r["feedback"]) for r in rounds(ps)] == [("landscape", FEEDBACK), ("gaps", more)]
     (ideator,) = [c for c in ex.calls if c["role"] == "ideator"]
     assert FEEDBACK in ideator["inputs"]["guidance"] and more in ideator["inputs"]["guidance"]
 
     # the Lead cannot answer the review; advancing tells it the review is open
     (topic_id,) = review["options"]["topic_ids"]
-    out = ld.say("Just approve it for me.",
-                 ("rk_checkpoint_answer", {"checkpoint_id": review["id"],
-                                           "answer": {"decision": "approve", "topic_id": topic_id}}),
-                 ("rk_stage_advance", {}))
-    assert out[0]["error"] == "permission_denied"
-    assert _ok(out[1])["ok"] is False
-    assert _ok(out[1])["failures"] == [f"checkpoint {review['id']} (topic_review) is open"]
+    (out,) = ld.say("Just approve it for me.",
+                    ("rk_checkpoint_answer", {"checkpoint_id": review["id"],
+                                              "answer": {"decision": "approve", "topic_id": topic_id}}))
+    assert out["error"] == "permission_denied"
+    res = ld.stage("Advance.", "rk_stage_advance", {})
+    assert res["ok"] is False and res["failures"] == [f"checkpoint {review['id']} (topic_review) is open"]
     assert get_checkpoint(ps, review["id"])["status"] == "open"
 
     # the researcher answers in the Checkpoints panel / CLI (the cli-only tool), then the Lead advances
     ld.reg.call("rk_checkpoint_answer", {"project": "demo", "checkpoint_id": review["id"],
                                          "answer": {"decision": "approve", "topic_id": topic_id}},
                 CallContext(role="cli", actor="researcher", idempotency_key=uuid.uuid4().hex))
-    out = ld.say("I approved it.", ("rk_stage_advance", {}), ("rk_topic_list", {}))
-    assert (_ok(out[0])["ok"], _ok(out[0])["stage"], _ok(out[0])["current"]) == (True, "topics", "question")
-    assert [(t["id"], t["status"]) for t in _ok(out[1])["topics"]] == [(topic_id, "approved")]
+    res = ld.stage("I approved it.", "rk_stage_advance", {})
+    assert (res["ok"], res["stage"], res["current"]) == (True, "topics", "question")
+    (out,) = ld.say("Show the topics.", ("rk_topic_list", {}))
+    assert [(t["id"], t["status"]) for t in _ok(out)["topics"]] == [(topic_id, "approved")]
     assert current_stage(ps) == "question"
 
 
@@ -180,12 +194,11 @@ def test_guidance_reaches_the_next_stage_run(lead):
         return Orchestrator(k, reg, executor_factory=lambda p, r, s: state["ex"], sources_factory=lambda p: sources)
 
     ld = lead(orchestrator, intake={"discovery_mode": "d1"})
-    out = ld.say("Start.", ("rk_stage_run", {"stage": "intake"}), ("rk_stage_advance", {}),
-                 ("rk_stage_run", {"stage": "landscape"}))
-    assert _ok(out[2])["status"] == "done"
+    ld.stage("Start.", "rk_stage_run", {"stage": "intake"})
+    ld.stage("Pass it.", "rk_stage_advance", {})
+    assert ld.stage("Landscape.", "rk_stage_run", {"stage": "landscape"})["status"] == "done"
     ld.say(f"Please {FEEDBACK}.", ("rk_exploration_round", {"stage": "landscape", "feedback": FEEDBACK}))
-    out = ld.say("Again, please.", ("rk_stage_run", {"stage": "landscape"}))
-    assert _ok(out[0])["status"] == "done"
+    assert ld.stage("Again, please.", "rk_stage_run", {"stage": "landscape"})["status"] == "done"
 
     calls = state["ex"].calls
     assert [c["attempt"] for c in calls] == [1, 1, 2, 2]
@@ -200,25 +213,45 @@ def _fake_stages(k, reg, landscape: FakeWorker | None = None):
                         sources_factory=lambda p: FakeSources({}))
 
 
-def test_one_reply_runs_and_advances_two_stages(lead):
-    landscape = FakeWorker()
+def test_a_second_stage_call_in_one_reply_is_refused_while_the_first_runs(lead):
+    """The Lead may not chain run and advance in one reply any more: the stage runs in the background, so the
+    second call gets stage_busy (and says to poll rk_stage_status) unless the first already finished."""
+    import threading
+
+    release = threading.Event()
+
+    def slow(ctx):
+        assert release.wait(10)
+        return StageOutcome("done")
+
+    landscape = FakeWorker(runs=[slow])
     ld = lead(lambda k, reg: _fake_stages(k, reg, landscape), intake={"discovery_mode": "d1"})
-    out = ld.say("Go through intake and landscape.", ("rk_stage_run", {"stage": "intake"}), ("rk_stage_advance", {}),
-                 ("rk_stage_run", {"stage": "landscape"}), ("rk_stage_advance", {}))
-    assert [(_ok(r)["stage"], _ok(r)["current"]) for r in out] == [
-        ("intake", "intake"), ("intake", "landscape"), ("landscape", "landscape"), ("landscape", "gaps")]
-    assert _ok(out[1])["ok"] and _ok(out[3])["ok"]
-    assert landscape.kinds() == ["run", "gate"]  # the second advance gated landscape: it was not the first replayed
+    ld.stage("Start.", "rk_stage_run", {"stage": "intake"})
+    ld.stage("Pass it.", "rk_stage_advance", {})
+    try:
+        out = ld.say("Landscape, then advance.", ("rk_stage_run", {"stage": "landscape"}), ("rk_stage_advance", {}))
+        assert _ok(out[0])["status"] == "running"
+        assert out[1]["error"] == "stage_busy" and "rk_stage_status" in json.dumps(out[1])
+    finally:
+        release.set()
+    end = time.monotonic() + 10
+    while ld.runs.d1_status("demo")["running"] is not None:  # the Lead polls rk_stage_status until it finished
+        assert time.monotonic() < end
+        time.sleep(0.01)
+    assert ld.stage("Advance now.", "rk_stage_advance", {})["ok"] is True
+    assert landscape.kinds() == ["run", "gate"]
     assert current_stage(ld.k.project("demo")[0]) == "gaps"
 
 
-def test_one_reply_reruns_the_same_stage(lead):
+def test_one_session_reruns_the_same_stage(lead):
     landscape = FakeWorker(gates=[GateResult(False, ["thin"])])
     ld = lead(lambda k, reg: _fake_stages(k, reg, landscape), intake={"discovery_mode": "d1"})
-    ld.say("Start.", ("rk_stage_run", {"stage": "intake"}), ("rk_stage_advance", {}))
-    out = ld.say("Landscape, and again if its gate fails.", ("rk_stage_run", {"stage": "landscape"}),
-                 ("rk_stage_advance", {}), ("rk_stage_run", {"stage": "landscape"}), ("rk_stage_advance", {}))
-    assert _ok(out[1])["failures"] == ["thin"] and _ok(out[3])["ok"]
+    ld.stage("Start.", "rk_stage_run", {"stage": "intake"})
+    ld.stage("Pass it.", "rk_stage_advance", {})
+    ld.stage("Landscape.", "rk_stage_run", {"stage": "landscape"})
+    assert ld.stage("Advance.", "rk_stage_advance", {})["failures"] == ["thin"]
+    ld.stage("Again.", "rk_stage_run", {"stage": "landscape"})
+    assert ld.stage("Advance.", "rk_stage_advance", {})["ok"]
     assert landscape.calls == [("run", 1, ""), ("gate", 1), ("run", 2, "thin"), ("gate", 2)]
     ps = ld.k.project("demo")[0]
     assert edge_count(ps, "landscape->landscape") == 1 and current_stage(ps) == "gaps"
@@ -234,15 +267,15 @@ def test_p1_dead_end_is_said_plainly(lead):
                             sources_factory=lambda p: FakeSources({}))
 
     ld = lead(orchestrator, intake={"discovery_mode": "d1", "production_mode": "auto"})
-    ld.say("Start.", ("rk_stage_run", {"stage": "intake"}), ("rk_stage_advance", {}))
+    ld.stage("Start.", "rk_stage_run", {"stage": "intake"})
+    ld.stage("Pass it.", "rk_stage_advance", {})
     for i in range(3):
-        out = ld.say(f"Landscape, try {i + 1}.", ("rk_stage_run", {"stage": "landscape"}), ("rk_stage_advance", {}))
-        assert _ok(out[0])["status"] == "done" and _ok(out[1])["failures"] == ["thin"]
+        assert ld.stage(f"Landscape, try {i + 1}.", "rk_stage_run", {"stage": "landscape"})["status"] == "done"
+        assert ld.stage("Advance.", "rk_stage_advance", {})["failures"] == ["thin"]
     assert edge_count(ld.k.project("demo")[0], "landscape->landscape") == 2
 
     for _ in range(2):  # running it again says the same thing: no new attempt, no silent loop
-        (out,) = ld.say("Run the landscape again.", ("rk_stage_run", {"stage": "landscape"}))
-        res = _ok(out)
+        res = ld.stage("Run the landscape again.", "rk_stage_run", {"stage": "landscape"})
         assert res["status"] == "failed" and res["current"] == "landscape"
         assert res["reason"].startswith("dead end: landscape->landscape reached its limit of 2 uses")
         assert "no cluster with 5 verified sources" in res["reason"]
