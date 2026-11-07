@@ -286,6 +286,85 @@ CREATE TABLE IF NOT EXISTS runs (
     reason          TEXT
 );
 
+-- Production (Plan 5a): the review protocol and its deviations, screened records, screening decisions, extractions
+-- and the P1 two-vendor votes.
+CREATE TABLE IF NOT EXISTS protocols (
+    id          TEXT PRIMARY KEY,
+    version     INTEGER NOT NULL,
+    attempt     INTEGER NOT NULL,
+    body        TEXT NOT NULL,                 -- JSON Protocol
+    frozen_hash TEXT,
+    frozen_at   TEXT,
+    status      TEXT NOT NULL                  -- draft | frozen
+);
+
+CREATE TABLE IF NOT EXISTS protocol_deviations (
+    id           TEXT PRIMARY KEY,             -- the evt_id of the deviation's event
+    from_version INTEGER NOT NULL,
+    to_version   INTEGER NOT NULL,
+    reason       TEXT NOT NULL,
+    stage        TEXT NOT NULL,
+    ts           TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS records (
+    id            TEXT PRIMARY KEY,
+    attempt       INTEGER NOT NULL,
+    item_id       TEXT NOT NULL,
+    dedup_of      TEXT,
+    language      TEXT NOT NULL,
+    retrieved     INTEGER NOT NULL DEFAULT 0,
+    abstract_only INTEGER NOT NULL DEFAULT 0,
+    problem       TEXT
+);
+CREATE INDEX IF NOT EXISTS records_attempt ON records(attempt);
+
+CREATE TABLE IF NOT EXISTS screening (
+    id        TEXT PRIMARY KEY,
+    attempt   INTEGER NOT NULL,
+    record_id TEXT NOT NULL,
+    phase     TEXT NOT NULL,                   -- title_abstract | full_text
+    screener  TEXT NOT NULL,
+    include   TEXT NOT NULL,                   -- yes | no | unclear
+    reason    TEXT NOT NULL,
+    criterion TEXT
+);
+CREATE INDEX IF NOT EXISTS screening_attempt ON screening(attempt, phase);
+
+CREATE TABLE IF NOT EXISTS screening_final (
+    record_id  TEXT NOT NULL,
+    attempt    INTEGER NOT NULL,
+    phase      TEXT NOT NULL,
+    include    TEXT NOT NULL,
+    decided_by TEXT NOT NULL,                  -- agreement | single | human | vote
+    reason     TEXT NOT NULL,
+    PRIMARY KEY (record_id, attempt, phase)
+);
+
+CREATE TABLE IF NOT EXISTS extractions (
+    id         TEXT PRIMARY KEY,
+    attempt    INTEGER NOT NULL,
+    item_id    TEXT NOT NULL,
+    field      TEXT NOT NULL,
+    value      TEXT NOT NULL,                  -- JSON
+    note_id    TEXT,
+    sufficient INTEGER NOT NULL,
+    problem    TEXT
+);
+CREATE INDEX IF NOT EXISTS extractions_attempt ON extractions(attempt, item_id);
+
+CREATE TABLE IF NOT EXISTS votes (
+    id           TEXT PRIMARY KEY,
+    subject_type TEXT NOT NULL,
+    subject_id   TEXT NOT NULL,
+    question     TEXT NOT NULL,
+    decision     TEXT NOT NULL,
+    conservative INTEGER NOT NULL,             -- 1 when the decision is the conservative fallback
+    opinions     TEXT NOT NULL,                -- JSON [{role, vendor, choice, reason}]
+    ts           TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS votes_subject ON votes(subject_type, subject_id);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(
     item_id UNINDEXED, title, abstract, creators, notes, fulltext
 );

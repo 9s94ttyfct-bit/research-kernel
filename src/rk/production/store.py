@@ -1,0 +1,257 @@
+"""Event-sourced production artifacts: protocols and their deviations, records, screening decisions and final
+decisions, extractions and votes. Every write is one event; the tables below are projections of them. The queries
+read one attempt, as the discovery store does."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from typing import Any, get_args
+
+from rk.canon import canonical_json, sha256_hex
+from rk.discovery.store import ActorKind, _require, _rows
+from rk.ids import new_id
+from rk.production.models import DecidedBy, Include, Protocol, ScreeningPhase
+from rk.store.events import Event, NewEvent
+from rk.store.project import ProjectStore
+from rk.store.projections import projection
+
+RECORD_FIELDS = frozenset({"retrieved", "abstract_only", "problem"})
+
+
+def _check(name: str, value: str, allowed: Any) -> None:
+    if value not in get_args(allowed):
+        raise ValueError(f"unknown {name} {value!r}; expected one of {get_args(allowed)}")
+
+
+# ---- protocols ----
+def add_protocol(ps: ProjectStore, attempt: int, body: Protocol, *, version: int, actor: str,
+                 actor_kind: ActorKind = "agent") -> str:
+    pid = new_id("prt")
+    ps.apply(NewEvent(type="protocol.added", entity_id=pid, actor_kind=actor_kind, actor=actor,
+                      payload={"attempt": attempt, "version": version, "body": body.model_dump(mode="json")}))
+    return pid
+
+
+def protocol_hash(body: dict) -> str:
+    """The frozen protocol's identity: sha256 of the canonical JSON of its body."""
+    return sha256_hex(canonical_json(body))
+
+
+def freeze_protocol(ps: ProjectStore, protocol_id: str, *, actor: str, actor_kind: ActorKind = "agent") -> str:
+    """Freeze the protocol; returns the hash of its body. A protocol freezes once."""
+    with ps.lock:
+        r = _require(ps, "protocols", protocol_id)
+        if r["status"] == "frozen":
+            raise ValueError("protocol already frozen")
+        h = protocol_hash(json.loads(r["body"]))
+        ps.apply(NewEvent(type="protocol.frozen", entity_id=protocol_id, actor_kind=actor_kind, actor=actor,
+                          payload={"frozen_hash": h}))
+    return h
+
+
+def add_deviation(ps: ProjectStore, from_v: int, to_v: int, reason: str, stage: str, *, actor: str,
+                  actor_kind: ActorKind = "agent") -> str:
+    """A deviation from protocol version ``from_v`` to ``to_v``; returns its id (the event's ``evt_id``)."""
+    ev = ps.apply(NewEvent(type="protocol.deviation", entity_id=None, actor_kind=actor_kind, actor=actor,
+                           payload={"from_version": from_v, "to_version": to_v, "reason": reason, "stage": stage}))
+    return ev.evt_id
+
+
+# ---- records ----
+def add_record(ps: ProjectStore, attempt: int, item_id: str, *, dedup_of: str | None = None, language: str,
+               actor: str, actor_kind: ActorKind = "kernel") -> str:
+    rid = new_id("rec")
+    ps.apply(NewEvent(type="record.added", entity_id=rid, actor_kind=actor_kind, actor=actor,
+                      payload={"attempt": attempt, "item_id": item_id, "dedup_of": dedup_of, "language": language}))
+    return rid
+
+
+def set_record(ps: ProjectStore, record_id: str, *, actor: str, actor_kind: ActorKind = "kernel", **fields) -> None:
+    """Set ``retrieved``, ``abstract_only`` (bools) and/or ``problem`` (text or None) of a record."""
+    unknown = set(fields) - RECORD_FIELDS
+    if unknown or not fields:
+        raise ValueError(f"unknown record field(s) {sorted(unknown)}; expected some of {sorted(RECORD_FIELDS)}")
+    _require(ps, "records", record_id)
+    payload = {k: bool(v) if k != "problem" else v for k, v in fields.items()}
+    ps.apply(NewEvent(type="record.set", entity_id=record_id, actor_kind=actor_kind, actor=actor, payload=payload))
+
+
+# ---- screening ----
+def add_decision(ps: ProjectStore, attempt: int, record_id: str, phase: ScreeningPhase, screener: str,
+                 include: Include, reason: str, criterion: str | None, *, actor: str,
+                 actor_kind: ActorKind = "agent") -> str:
+    """One screener's decision on a record in a phase; ``criterion`` is the eligibility criterion id it rests on."""
+    _check("phase", phase, ScreeningPhase)
+    _check("include", include, Include)
+    _require(ps, "records", record_id)
+    sid = new_id("scr")
+    ps.apply(NewEvent(type="screening.decided", entity_id=sid, actor_kind=actor_kind, actor=actor,
+                      payload={"attempt": attempt, "record_id": record_id, "phase": phase, "screener": screener,
+                               "include": include, "reason": reason, "criterion": criterion}))
+    return sid
+
+
+def set_final(ps: ProjectStore, record_id: str, attempt: int, phase: ScreeningPhase, include: Include,
+              decided_by: DecidedBy, reason: str, *, actor: str, actor_kind: ActorKind = "kernel") -> None:
+    """The final decision on a record in a phase of an attempt; a later one replaces it."""
+    _check("phase", phase, ScreeningPhase)
+    _check("include", include, Include)
+    _check("decided_by", decided_by, DecidedBy)
+    _require(ps, "records", record_id)
+    ps.apply(NewEvent(type="screening.final", entity_id=record_id, actor_kind=actor_kind, actor=actor,
+                      payload={"attempt": attempt, "phase": phase, "include": include, "decided_by": decided_by,
+                               "reason": reason}))
+
+
+# ---- extractions ----
+def add_extraction(ps: ProjectStore, attempt: int, item_id: str, field: str, value: Any, note_id: str | None,
+                   sufficient: bool, *, actor: str, actor_kind: ActorKind = "agent", problem: str | None = None) -> str:
+    """One extracted value (any JSON) of a protocol extraction field, with the note that supports it."""
+    eid = new_id("ext")
+    ps.apply(NewEvent(type="extraction.added", entity_id=eid, actor_kind=actor_kind, actor=actor,
+                      payload={"attempt": attempt, "item_id": item_id, "field": field, "value": value,
+                               "note_id": note_id, "sufficient": bool(sufficient), "problem": problem}))
+    return eid
+
+
+# ---- votes ----
+def add_vote(ps: ProjectStore, *, subject_type: str, subject_id: str, question: str, options: list[str],
+             conservative: str, decision: str, conservative_used: bool, reason: str, opinions: list[dict],
+             skipped: dict[str, str], stage: str, attempt: int, actor: str) -> str:
+    """The P1 two-vendor vote's decision (``rk.production.vote``). ``opinions``: each judge that ran, as ``{role,
+    vendor, choice, reason}``; ``skipped``: the judges not admitted, role -> why. Never human-reviewed."""
+    vid = new_id("vot")
+    ps.apply(NewEvent(type="vote.decided", entity_id=vid, actor_kind="kernel", actor=actor,
+                      payload={"subject_type": subject_type, "subject_id": subject_id, "question": question,
+                               "options": list(options), "conservative": conservative, "decision": decision,
+                               "conservative_used": bool(conservative_used), "reason": reason,
+                               "opinions": opinions, "skipped": skipped, "human_reviewed": False,
+                               "stage": stage, "attempt": attempt}))
+    return vid
+
+
+# ---- queries ----
+def protocols(ps: ProjectStore, attempt: int) -> list[dict]:
+    return _rows(ps, "SELECT * FROM protocols WHERE attempt=? ORDER BY rowid", (attempt,), ("body",))
+
+
+def protocol_row(ps: ProjectStore, protocol_id: str) -> dict | None:
+    rows = _rows(ps, "SELECT * FROM protocols WHERE id=?", (protocol_id,), ("body",))
+    return rows[0] if rows else None
+
+
+def frozen_protocol(ps: ProjectStore) -> dict | None:
+    """The frozen protocol (the latest frozen, should there be several), else ``None``."""
+    rows = _rows(ps, "SELECT * FROM protocols WHERE status='frozen' ORDER BY rowid DESC LIMIT 1", (), ("body",))
+    return rows[0] if rows else None
+
+
+def deviations(ps: ProjectStore) -> list[dict]:
+    return _rows(ps, "SELECT * FROM protocol_deviations ORDER BY rowid", ())
+
+
+def records(ps: ProjectStore, attempt: int) -> list[dict]:
+    return _rows(ps, "SELECT * FROM records WHERE attempt=? ORDER BY rowid", (attempt,))
+
+
+def record_row(ps: ProjectStore, record_id: str) -> dict | None:
+    rows = _rows(ps, "SELECT * FROM records WHERE id=?", (record_id,))
+    return rows[0] if rows else None
+
+
+def decisions(ps: ProjectStore, attempt: int, *, phase: ScreeningPhase | None = None) -> list[dict]:
+    sql, params = "SELECT * FROM screening WHERE attempt=?", (attempt,)
+    if phase is not None:
+        sql, params = sql + " AND phase=?", (attempt, phase)
+    return _rows(ps, sql + " ORDER BY rowid", params)
+
+
+def finals(ps: ProjectStore, attempt: int, *, phase: ScreeningPhase | None = None) -> list[dict]:
+    sql, params = "SELECT * FROM screening_final WHERE attempt=?", (attempt,)
+    if phase is not None:
+        sql, params = sql + " AND phase=?", (attempt, phase)
+    return _rows(ps, sql + " ORDER BY rowid", params)
+
+
+def extractions(ps: ProjectStore, attempt: int, *, item_id: str | None = None) -> list[dict]:
+    sql, params = "SELECT * FROM extractions WHERE attempt=?", (attempt,)
+    if item_id is not None:
+        sql, params = sql + " AND item_id=?", (attempt, item_id)
+    return _rows(ps, sql + " ORDER BY rowid", params, ("value",))
+
+
+def votes(ps: ProjectStore, subject_type: str, subject_id: str) -> list[dict]:
+    return _rows(ps, "SELECT * FROM votes WHERE subject_type=? AND subject_id=? ORDER BY rowid",
+                 (subject_type, subject_id), ("opinions",))
+
+
+# ---- projections ----
+@projection("protocol.added")
+def _protocol(conn: sqlite3.Connection, ev: Event) -> None:
+    p = ev.payload
+    conn.execute("INSERT OR REPLACE INTO protocols(id, version, attempt, body, frozen_hash, frozen_at, status) "
+                 "VALUES (?,?,?,?,NULL,NULL,'draft')", (ev.entity_id, p["version"], p["attempt"], json.dumps(p["body"])))
+
+
+@projection("protocol.frozen")
+def _protocol_frozen(conn: sqlite3.Connection, ev: Event) -> None:
+    conn.execute("UPDATE protocols SET status='frozen', frozen_hash=?, frozen_at=? WHERE id=?",
+                 (ev.payload["frozen_hash"], ev.ts, ev.entity_id))
+
+
+@projection("protocol.deviation")
+def _deviation(conn: sqlite3.Connection, ev: Event) -> None:
+    p = ev.payload
+    conn.execute("INSERT OR REPLACE INTO protocol_deviations(id, from_version, to_version, reason, stage, ts) "
+                 "VALUES (?,?,?,?,?,?)", (ev.evt_id, p["from_version"], p["to_version"], p["reason"], p["stage"], ev.ts))
+
+
+@projection("record.added")
+def _record(conn: sqlite3.Connection, ev: Event) -> None:
+    p = ev.payload
+    conn.execute("INSERT OR REPLACE INTO records(id, attempt, item_id, dedup_of, language) VALUES (?,?,?,?,?)",
+                 (ev.entity_id, p["attempt"], p["item_id"], p["dedup_of"], p["language"]))
+
+
+@projection("record.set")
+def _record_set(conn: sqlite3.Connection, ev: Event) -> None:
+    for k, v in ev.payload.items():
+        if k in RECORD_FIELDS:  # column names come from this fixed set only
+            conn.execute(f"UPDATE records SET {k}=? WHERE id=?", (int(v) if k != "problem" else v, ev.entity_id))
+
+
+@projection("screening.decided")
+def _decision(conn: sqlite3.Connection, ev: Event) -> None:
+    p = ev.payload
+    conn.execute("INSERT OR REPLACE INTO screening(id, attempt, record_id, phase, screener, include, reason, criterion) "
+                 "VALUES (?,?,?,?,?,?,?,?)", (ev.entity_id, p["attempt"], p["record_id"], p["phase"], p["screener"],
+                                              p["include"], p["reason"], p["criterion"]))
+
+
+@projection("screening.final")
+def _final(conn: sqlite3.Connection, ev: Event) -> None:
+    p = ev.payload
+    conn.execute("DELETE FROM screening_final WHERE record_id=? AND attempt=? AND phase=?",
+                 (ev.entity_id, p["attempt"], p["phase"]))
+    conn.execute("INSERT INTO screening_final(record_id, attempt, phase, include, decided_by, reason) "
+                 "VALUES (?,?,?,?,?,?)", (ev.entity_id, p["attempt"], p["phase"], p["include"], p["decided_by"],
+                                          p["reason"]))
+
+
+@projection("extraction.added")
+def _extraction(conn: sqlite3.Connection, ev: Event) -> None:
+    p = ev.payload
+    conn.execute("INSERT OR REPLACE INTO extractions(id, attempt, item_id, field, value, note_id, sufficient, problem) "
+                 "VALUES (?,?,?,?,?,?,?,?)", (ev.entity_id, p["attempt"], p["item_id"], p["field"],
+                                              json.dumps(p["value"]), p["note_id"], int(p["sufficient"]),
+                                              p["problem"]))
+
+
+@projection("vote.decided")
+def _vote(conn: sqlite3.Connection, ev: Event) -> None:
+    p = ev.payload
+    conn.execute("INSERT OR REPLACE INTO votes(id, subject_type, subject_id, question, decision, conservative, "
+                 "opinions, ts) VALUES (?,?,?,?,?,?,?,?)",
+                 (ev.entity_id, p["subject_type"], p["subject_id"], p["question"], p["decision"],
+                  int(p["conservative_used"]), json.dumps(p["opinions"]), ev.ts))
