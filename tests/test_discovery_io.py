@@ -314,3 +314,63 @@ def test_fake_sources_presets_by_title(env):
     assert [i.title for i in fake.cited_by(a, after_year=2018)] == ["New"] and fake.cited_by(b, None) == []
     assert fake.fulltext(a) is True and fake.fulltext(b) is False
     assert top_passages(ps, a, "page two")[0].page == 2
+
+
+def _source_errors() -> list[BaseException]:
+    """One of each error a source, its IO or a parser raises for one item."""
+    import pypdfium2
+    from lxml import etree
+
+    from rk.net.http import BadBody, BudgetExhausted, HttpError
+    from rk.sources.s2 import NotConfigured
+
+    try:
+        etree.fromstring(b"<a><b></a>")
+    except etree.XMLSyntaxError as e:
+        xml_error = e
+    try:
+        Ids.model_validate({"doi": 3})
+    except ValueError as e:  # pydantic's ValidationError
+        invalid = e
+    try:
+        json.loads("<html>")
+    except ValueError as e:
+        not_json = e
+    return [HttpError(503, "https://api.openalex.org/works"), BadBody("https://api.openalex.org/works", "not JSON"),
+            httpx.ConnectError("refused"), httpx.ReadTimeout("slow"), OSError("disk"), ValueError("bad year"),
+            UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"), not_json, invalid, xml_error,
+            pypdfium2.PdfiumError("broken PDF"), NotConfigured("s2_key"), BudgetExhausted("openalex", 0.0)]
+
+
+@pytest.mark.parametrize("error", _source_errors(), ids=lambda e: type(e).__name__)
+def test_per_item_records_a_source_error_and_the_loop_goes_on(error):
+    from rk.discovery.boundary import per_item
+
+    done: list[str] = []
+
+    def lookup(iid: str) -> str:
+        if iid == "itm_2":
+            raise error
+        done.append(iid)
+        return iid.upper()
+
+    results = [per_item(f"lookup of {iid}", lambda iid=iid: lookup(iid)) for iid in ("itm_1", "itm_2", "itm_3")]
+    assert done == ["itm_1", "itm_3"]
+    assert results[0] == ("ITM_1", None) and results[2] == ("ITM_3", None)
+    value, reason = results[1]
+    assert value is None and reason.startswith(f"lookup of itm_2 failed ({type(error).__name__}: ")
+
+
+@pytest.mark.parametrize("error", [TypeError("unsupported operand"), AttributeError("no attribute 'ids'"),
+                                   KeyError("itm_9"), RuntimeError("bug"), AssertionError("invariant")],
+                         ids=lambda e: type(e).__name__)
+def test_per_item_lets_a_programming_error_crash(error):
+    """A bug in kernel code is no item's failure: it propagates instead of turning every item into a failed check
+    (a gate failure and reruns)."""
+    from rk.discovery.boundary import per_item
+
+    def broken():
+        raise error
+
+    with pytest.raises(type(error)):
+        per_item("lookup of itm_1", broken)
