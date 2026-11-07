@@ -15,6 +15,7 @@ The design lives in `docs/superpowers/specs/2026-11-05-research-kernel-design.md
 uv sync
 uv run rk setup                      # email + free OpenAlex / Semantic Scholar keys (all optional)
 uv run rk project create perovskite --title "Perovskite stability"
+uv run rk project intake --audience "researchers in photovoltaics" --paper-type critical_review --mode d2 --production p2
 uv run rk search "perovskite moisture stability" --source europepmc --limit 5 --add
 uv run rk add 10.7717/peerj.1364     # resolve + reference check + retraction check
 uv run rk library list               # !RETRACTED / ref=… flags per item
@@ -95,6 +96,49 @@ uv run rk browser status                   # paused sites, today's quotas, open 
 - **Metadata.** Pages are read through Highwire `citation_*`, JSON-LD, Dublin Core and COinS. If a DOI, PMID or arXiv id resolves through Crossref, OpenAlex or PubMed, the API record wins and the differences are logged. Otherwise the item is marked `page_metadata_only`.
 - **Full-text order.** Open-access channels come first; the browser comes last (`fulltext_browser_fallback`). A PDF fetched this way is labelled `library_browser` or `publisher_browser` with an access note, and stays in the project.
 - **Optional.** A Zotero translation-server (`translation_server_url`) improves metadata for pages without good tags.
+
+## Discovery (D1/D2)
+
+Discovery goes from a field to one frozen research question in five stages: intake, landscape (clusters of verified
+works), gaps, topics and question. Each stage has a gate. A rerun of a stage and the back-edges gaps→landscape,
+topics→gaps and question→topics may each be used twice per project; after that P2 asks you (`stage_blocked`) and P1
+degrades.
+
+- **D1 (guided).** The Lead drives the stages with you in the Workbench Chat: it runs a stage, shows what it found with
+  its evidence, records your feedback as an exploration round and moves on when you are satisfied.
+- **D2 (autonomous).** `rk run` runs the stages in `rk serve` without the Lead and stops only at checkpoints. A run
+  session has a 12 h wall clock and 40 role tasks per open stage (landscape, gaps, topics); hourly CLI caps pause it
+  until the next slot.
+
+```bash
+rk project intake --audience "…" --paper-type critical_review --mode d2 --production p2 --topics-n 6
+rk run perovskite --until question     # or --until topics; the query comes from the project's title and field
+rk run status                          # the run and its stages; also pause, resume, cancel
+rk stage status                        # status, attempts, waits and back-edges used per stage
+rk topic list                          # candidate topics with their gaps and closest works
+rk checkpoint list / rk checkpoint answer <id> --json '{…}'
+```
+
+The checkpoints you answer (only a human can, in the Workbench Checkpoints page or with `rk checkpoint answer`):
+
+| Checkpoint | When | Answers |
+|---|---|---|
+| `topic_review` | after the topics stage, in every mode | `approve` one topic, `revise` (topics or gaps, with a comment) or `reject` |
+| `rq_approval` | the RQ was not found answered within the searched scope (D1; D2 with P2) | `approve` freezes the RQ; `revise` with a comment reruns the stage |
+| `significance_novelty` | the two already-done judges split (P2) | `proceed` to `rq_approval`, or go `back` to topics |
+| `stage_blocked` | a back-edge is at its limit (P2) | allow one more use, or stop the run |
+
+- **A verified gap means its evidence chain was checked, not that it is new.** The kinds are contradictions (two
+  verbatim quotes judged "contradicted" by V-SUPPORT), citation distortions (a citing quote judged unsupported by
+  passages the Kernel picks from the cited work), stated limitations (a verbatim quote in the last 40 % of the text
+  that Triage finds no later work addressing), evidence-map holes (an empty cell whose targeted search found nothing)
+  and retracted works still cited. Absence is always worded "not found within the searched scope".
+- **V-NOVELTY is a reference only.** Each topic shows its closest works so you can judge overlap yourself; nothing calls
+  a topic, gap or question novel. The already-done check of the RQ works the same way: two judges of other vendors
+  than the RQ's author must each quote the title or abstract.
+- **Models are configurable per role** (`drivers` in `config.toml`): the Scout, GapMiner and Ideator generate;
+  `judge` and `judge_2` (V-SUPPORT, V-NOVELTY, the already-done check) and `triage` check, from other vendors.
+- A recorded run: `docs/demo/plan4-discovery.md`.
 
 ## Drivers and roles
 
