@@ -39,6 +39,7 @@ from rk.orchestrator.state import (
     record_passed,
     record_ran,
     record_reopened,
+    record_run_session,
     record_run_status,
     record_waiting,
     run_row,
@@ -289,8 +290,13 @@ class Orchestrator:
         if cp is not None and cp["status"] == "open":
             return self._set_run(ps, run, "paused_waiting_human", actor=actor)
         if self.clock() - run["session_started"] > SESSION_WALL_S:
-            return self._set_run(ps, run, "paused_budget", f"run session {run['session']} reached its 12 h wall "
-                                                           f"clock", actor=actor)
+            if cp is None:
+                return self._set_run(ps, run, "paused_budget", f"run session {run['session']} reached its 12 h wall "
+                                                               f"clock", actor=actor)
+            # the run waited for the researcher, who answered after the session's 12 h: waiting is no work, so the
+            # answer starts a new session (wall clock and stage budgets restart) instead of pausing the run (§5.3)
+            record_run_session(ps, run_id, run["session"] + 1, actor=actor, clock=self.clock)
+            run = run_row(ps, run_id)
         self._set_run(ps, run, "running", actor=actor)
         try:
             if cp is not None and cp["kind"] == "stage_blocked":

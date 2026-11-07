@@ -106,9 +106,12 @@ degrades.
 
 - **D1 (guided).** The Lead drives the stages with you in the Workbench Chat: it runs a stage, shows what it found with
   its evidence, records your feedback as an exploration round and moves on when you are satisfied.
-- **D2 (autonomous).** `rk run` runs the stages in `rk serve` without the Lead and stops only at checkpoints. A run
-  session has a 12 h wall clock and 40 role tasks per open stage (landscape, gaps, topics); hourly CLI caps pause it
-  until the next slot.
+- **D2 (autonomous).** `uv run rk run` runs the stages in `rk serve` without the Lead and stops only at checkpoints. A
+  run session has a 12 h wall clock and 40 role tasks per open stage (landscape, gaps, topics); hourly CLI caps pause it
+  until the next slot. Time spent waiting for your answer does not count: an answer that comes after the session's
+  12 h starts a new session. A source that fails for a while (HTTP 429/5xx) makes the run back off and try again;
+  one work whose lookup fails is reported and skipped. `uv run rk run resume` on a failed or cancelled run starts a
+  new run (and says so), which goes on from the stages that already passed.
 
 ```bash
 rk project intake --audience "…" --paper-type critical_review --mode d2 --production p2 --topics-n 6

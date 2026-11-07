@@ -4,6 +4,7 @@ Task 3)."""
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
@@ -287,6 +288,67 @@ def _restart(ps, run_id, clock):
     record_run_status(ps, run_id, "running", actor="tester", clock=clock)
     assert run_row(ps, run_id)["session"] == 2
     return run_id
+
+
+def test_answer_after_the_session_clock_starts_a_new_session(project):
+    """Waiting for the researcher does not use up the run: answering topic_review 13 h after the session started
+    continues the run in a new session instead of pausing it on the 12 h wall clock."""
+    k, ps = project
+    clock = Clock()
+
+    def review(ctx):
+        cid = create_checkpoint(ctx.ps, "topic_review", "Pick", {"topic_ids": ["tpc_a"]}, stage="topics",
+                                actor=ctx.actor)
+        return StageOutcome("waiting_human", checkpoint_id=cid)
+
+    topics = FakeWorker(runs=[review])
+    o = _orch(k, _workers(topics=topics), clock=clock)
+    run_id = start_run(ps, until="topics", actor="tester", clock=clock)
+    assert _drive(o, run_id)[-1] == "paused_waiting_human"
+    clock.t = T0 + 13 * 3600
+    assert o.step("demo", run_id, actor="tester") == "paused_waiting_human"  # still open: no new session
+    assert run_row(ps, run_id)["session"] == 1
+    [cp] = list_checkpoints(ps, "open")
+    answer_checkpoint(ps, cp["id"], {"decision": "approve", "topic_id": "tpc_a"}, answered_by="human", actor="tester")
+    assert o.step("demo", run_id, actor="tester") == "done"
+    row = run_row(ps, run_id)
+    assert (row["session"], row["session_started"]) == (2, T0 + 13 * 3600)
+    assert topics.kinds() == ["run", "on_answer", "gate"]
+
+
+def test_wall_clock_restarts_with_each_session(project):
+    """The 12 h wall clock counts from the start of the current session: a run paused on it resumes in a new session
+    with a fresh 12 h, and pauses again only 12 h after that."""
+    from rk.orchestrator.runs import RunManager
+
+    k, ps = project
+    clock = Clock()
+
+    def long(ctx):
+        clock.t += 12 * 3600 + 1
+        return StageOutcome("done")
+
+    landscape, gaps_w, topics = FakeWorker(runs=[long]), FakeWorker(runs=[long]), FakeWorker()
+    o = _orch(k, _workers(landscape=landscape, gaps=gaps_w, topics=topics), clock=clock)
+    m = RunManager(k, None, o, poll_s=0.01)
+    try:
+        run_id = m.start("demo", "topics", actor="tester")
+        until = time.monotonic() + 10
+        for session, stage in ((1, "gaps"), (2, "topics")):
+            while run_row(ps, run_id)["status"] != "paused_budget" or m.status("demo")["stepping"]:
+                assert time.monotonic() < until
+                time.sleep(0.01)
+            row = run_row(ps, run_id)
+            assert row["session"] == session and f"run session {session} reached its 12 h" in row["reason"]
+            assert current_stage(ps) == stage
+            m.resume("demo")
+            assert run_row(ps, run_id)["session_started"] == clock.t
+        while run_row(ps, run_id)["status"] != "done":
+            assert time.monotonic() < until
+            time.sleep(0.01)
+        assert run_row(ps, run_id)["session"] == 3 and topics.kinds() == ["run", "gate"]
+    finally:
+        m.close()
 
 
 def test_rate_cap_waits_and_reruns_the_attempt(project):
