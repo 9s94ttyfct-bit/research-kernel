@@ -35,7 +35,7 @@ from rk.cli.setup import (
 from rk.config import check_library_proxy, load_settings, save_settings
 from rk.discovery.models import ThreeStep
 from rk.discovery.store import hypotheses, intake_of, rq_row, topic_novelty, topics
-from rk.llm.catalog import driver_warnings, list_models, validate_drivers
+from rk.llm.catalog import driver_warnings, model_catalog, validate_drivers
 from rk.orchestrator.engine import default_worker_stages
 from rk.orchestrator.graph import (
     BACK_EDGES,
@@ -568,9 +568,11 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
 
     @r.get("/ui/api/models")
     def models(request: Request) -> JSONResponse:
-        """The model each role may run on (``list_models``; ``omp models --json`` is cut off after 10 s and cached)."""
+        """The model each role may run on and the omp status (``model_catalog``; ``omp models --json`` is cut off
+        after 10 s and cached)."""
         ctx_dep(request)
-        return ok({"roles": list(ROLES), "models": [m.as_dict() for m in list_models(load_settings())]})
+        cat = model_catalog(load_settings())
+        return ok({"roles": list(ROLES), "models": [m.as_dict() for m in cat.models], "omp_status": cat.omp_status})
 
     @r.post("/ui/api/settings")
     async def settings_post(request: Request) -> JSONResponse:

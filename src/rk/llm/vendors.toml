@@ -9,22 +9,24 @@ rules = [
   { match = "openai_api:*",               vendor = "openai" },
   { match = "omp_gateway:openai-codex/*", vendor = "openai" },
   { match = "omp_gateway:openai/*",       vendor = "openai" },
-  { match = "ollama:gemma*",              vendor = "google" },
-  { match = "ollama:deepseek*",           vendor = "deepseek" },
-  { match = "ollama:qwen*",               vendor = "alibaba" },
-  { match = "ollama:gpt-oss*",            vendor = "openai" },
-  { match = "ollama:llama*",              vendor = "meta" },
   { match = "human:*",                    vendor = "human" },
 ]
 
-# Model families, tried after `rules` for the drivers that host many developers' models: `match` is an fnmatch
-# pattern against the model id after its last "/" (omp_gateway:ollama-cloud/kimi-k3 -> "kimi-k3";
-# ollama:glm-5:cloud -> "glm-5:cloud").
-family_providers = ["omp_gateway", "ollama"]
+# Model families, tried after `rules` and failing closed (an unknown vendor can never review; a wrong one could):
+# `match` is an fnmatch pattern against the model id, the part after the last "/".
+# - ollama:<id>: only library ids, without "/" (ollama:glm-5:cloud -> "glm-5:cloud"); a namespaced upload
+#   (ollama:someuser/claude-3-distill) is unknown.
+# - omp_gateway:<host>/<id>: only on the `family_hosts`, which serve first-party or library models
+#   (omp_gateway:ollama-cloud/kimi-k3 -> "kimi-k3"); any other host is unknown.
+# - omp_gateway:<host>/<org>/<id>: the org must be one of the family vendor's `vendor_orgs`
+#   (omp_gateway:openrouter/deepseek-ai/deepseek-v3.2 -> deepseek; …/someuser/deepseek-merge -> unknown).
+# - omp_gateway:<id> without a host is unknown. The o-series (o1, o4-mini) is known only through the openai hosts'
+#   explicit rules above.
 families = [
   { match = "claude*",   vendor = "anthropic" },
-  { match = "gpt*",      vendor = "openai" },
-  { match = "o[0-9]*",   vendor = "openai" },
+  { match = "gpt-[0-9]*", vendor = "openai" },
+  { match = "gpt[0-9]*", vendor = "openai" },
+  { match = "gpt-oss*",  vendor = "openai" },
   { match = "codex*",    vendor = "openai" },
   { match = "deepseek*", vendor = "deepseek" },
   { match = "gemini*",   vendor = "google" },
@@ -36,3 +38,16 @@ families = [
   { match = "glm*",      vendor = "zhipu" },
   { match = "minimax*",  vendor = "minimax" },
 ]
+family_hosts = ["anthropic", "openai", "openai-codex", "ollama-cloud", "ollama"]
+
+[vendor_orgs]
+anthropic = ["anthropic"]
+openai = ["openai"]
+deepseek = ["deepseek", "deepseek-ai"]
+google = ["google"]
+alibaba = ["qwen", "alibaba"]
+meta = ["meta", "meta-llama"]
+mistral = ["mistralai"]
+moonshot = ["moonshotai"]
+zhipu = ["zhipuai", "thudm"]
+minimax = ["minimax"]

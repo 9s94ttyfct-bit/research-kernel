@@ -3,8 +3,9 @@
 
 The catalog lists the configured and default drivers, the subscription CLIs, ``ollama list``, and every chat model of
 ``omp models --json`` as an ``omp_gateway:`` driver; the same omp listing names the Claude Code, Codex CLI and Ollama
-Cloud models. ``omp`` is optional: when it is missing, fails or is slow (``OMP_TIMEOUT_S``), one unavailable
-``omp_gateway`` entry says why and the other drivers are still listed."""
+Cloud models. ``omp`` is optional: when it is missing, fails, is slow (``OMP_TIMEOUT_S``) or prints no usable listing,
+one unavailable ``omp_gateway`` entry and the catalog's ``omp_status`` say why, and the other drivers are still listed;
+malformed entries of a listing are left out and counted."""
 
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
+from typing import NamedTuple
 
 import httpx
 
@@ -76,14 +78,23 @@ def ollama_tags(settings: Settings) -> list[str]:
     r = httpx.get(f"{settings.ollama_url.rstrip('/')}/api/tags", timeout=OLLAMA_TIMEOUT_S,
                   headers={"Authorization": f"Bearer {key}"} if key else {})
     r.raise_for_status()
-    return [m["name"] for m in r.json().get("models", []) if m.get("name")]
+    return [m["name"] for m in r.json().get("models", []) if isinstance(m, dict) and isinstance(m.get("name"), str)]
 
 
 # The runners ``list_models`` uses unless it is given others (tests replace them: no model CLI or server runs there).
 default_omp_runner: OmpRunner = run_omp
 default_ollama_runner: OllamaRunner = ollama_tags
-_omp_cache: dict[str, tuple[float, tuple[list[dict], str | None]]] = {}
-_omp_lock = threading.Lock()
+
+
+class OmpListing(NamedTuple):
+    models: list[dict]  # normalised chat entries: {"selector", "id", "provider" (str | None), "name"}
+    error: str | None  # why `omp models --json` gave no listing
+    skipped: int  # malformed chat entries left out
+
+
+_omp_cache: dict[str, tuple[float, OmpListing]] = {}
+_omp_lock = threading.Lock()  # guards the two dicts
+_omp_loading: dict[str, threading.Lock] = {}  # one lock per omp binary: a cold catalog runs omp once (single flight)
 
 
 def clear_cache() -> None:
@@ -91,34 +102,67 @@ def clear_cache() -> None:
         _omp_cache.clear()
 
 
-def _omp_models(settings: Settings, runner: OmpRunner | None) -> tuple[list[dict], str | None]:
-    """The chat models of ``omp models --json``, or ``[]`` and why not. Only the default runner's result is cached."""
+def _normalise(raw: object) -> tuple[list[dict], int]:
+    """The chat entries of an ``omp models --json`` document that make a valid ``omp_gateway:`` driver, normalised,
+    and how many chat-looking entries were left out. Raises ``TypeError`` when there is no ``models`` list."""
+    entries = raw.get("models") if isinstance(raw, dict) else None
+    if not isinstance(entries, list):
+        raise TypeError("the output has no `models` list")
+    models, skipped = [], 0
+    for e in entries:
+        if isinstance(e, dict) and e.get("kind") != "chat":
+            continue  # another kind of model (embedding, …), not a chat model
+        selector = e.get("selector") if isinstance(e, dict) else None
+        if not isinstance(selector, str) or not selector.strip():
+            skipped += 1
+            continue
+        try:
+            DriverSpec.parse(f"omp_gateway:{selector}")
+        except ValueError:
+            skipped += 1
+            continue
+        model_id = e["id"] if isinstance(e.get("id"), str) and e["id"] else selector.rsplit("/", 1)[-1]
+        name = e["name"] if isinstance(e.get("name"), str) and e["name"].strip() else model_id
+        provider = e["provider"] if isinstance(e.get("provider"), str) else None
+        models.append({"selector": selector, "id": model_id, "provider": provider, "name": name})
+    return models, skipped
+
+
+def _run_omp_listing(omp_bin: str, runner: OmpRunner) -> OmpListing:
+    command = "`omp models --json`"
+    try:
+        models, skipped = _normalise(json.loads(runner([omp_bin, "models", "--json"], OMP_TIMEOUT_S)))
+        return OmpListing(models, None, skipped)
+    except FileNotFoundError:
+        error = f"omp is not installed ({omp_bin} not found on PATH)"
+    except subprocess.TimeoutExpired:
+        error = f"{command} timed out after {OMP_TIMEOUT_S:g} s"
+    except subprocess.CalledProcessError as e:
+        tail = (e.stderr or e.output or "").strip()[-300:]
+        error = f"{command} failed (exit {e.returncode})" + (f": {tail}" if tail else "")
+    except (OSError, ValueError, TypeError) as e:  # ValueError: invalid JSON or no `models` list
+        error = f"{command} failed: {type(e).__name__}: {e}"
+    return OmpListing([], error, 0)
+
+
+def _omp_models(settings: Settings, runner: OmpRunner | None) -> OmpListing:
+    """The chat models of ``omp models --json``. Only the default runner's listing is cached: a good one for
+    ``OMP_CACHE_S``, a failed one for ``OMP_FAILURE_CACHE_S``; concurrent cold loads wait for one omp run."""
     omp_bin = settings.cli_paths.get("omp", "omp")
-    cached = runner is None
-    if cached:
+    if runner is not None:
+        return _run_omp_listing(omp_bin, runner)
+    with _omp_lock:
+        loading = _omp_loading.setdefault(omp_bin, threading.Lock())
+    with loading:
         with _omp_lock:
             hit = _omp_cache.get(omp_bin)
         if hit is not None and hit[0] > time.monotonic():
             return hit[1]
-    command = "`omp models --json`"
-    try:
-        out = (runner or default_omp_runner)([omp_bin, "models", "--json"], OMP_TIMEOUT_S)
-        models = [m for m in json.loads(out)["models"] if m.get("kind") == "chat" and m.get("selector")]
-        result: tuple[list[dict], str | None] = (models, None)
-    except FileNotFoundError:
-        result = ([], f"omp is not installed ({omp_bin} not found on PATH)")
-    except subprocess.TimeoutExpired:
-        result = ([], f"{command} timed out after {OMP_TIMEOUT_S:g} s")
-    except subprocess.CalledProcessError as e:
-        tail = (e.stderr or e.output or "").strip()[-300:]
-        result = ([], f"{command} failed (exit {e.returncode})" + (f": {tail}" if tail else ""))
-    except (OSError, ValueError, KeyError, TypeError) as e:
-        result = ([], f"{command} failed: {type(e).__name__}: {e}")
-    if cached:
-        ttl = OMP_CACHE_S if result[1] is None else OMP_FAILURE_CACHE_S
+        listing = _run_omp_listing(omp_bin, default_omp_runner)
+        ttl = OMP_CACHE_S if listing.error is None else OMP_FAILURE_CACHE_S
         with _omp_lock:
-            _omp_cache[omp_bin] = (time.monotonic() + ttl, result)
-    return result
+            _omp_cache[omp_bin] = (time.monotonic() + ttl, listing)
+    return listing
 
 
 def ollama_cloud_name(model_id: str) -> str:
@@ -126,11 +170,23 @@ def ollama_cloud_name(model_id: str) -> str:
     return f"{model_id}-cloud" if ":" in model_id else f"{model_id}:cloud"
 
 
+@dataclass(frozen=True)
+class Catalog:
+    models: list[ModelChoice]
+    omp_status: str | None  # why omp_gateway models are missing (or some were left out), else None
+
+
 def list_models(settings: Settings, *, omp_runner: OmpRunner | None = None,
                 ollama_runner: OllamaRunner | None = None) -> list[ModelChoice]:
-    """One ``ModelChoice`` per driver, grouped by provider (``PROVIDERS`` order). Never raises for a missing or failing
-    ``omp`` or Ollama: their entries carry the reason."""
-    omp_models, omp_error = _omp_models(settings, omp_runner)
+    """``model_catalog(...).models``."""
+    return model_catalog(settings, omp_runner=omp_runner, ollama_runner=ollama_runner).models
+
+
+def model_catalog(settings: Settings, *, omp_runner: OmpRunner | None = None,
+                  ollama_runner: OllamaRunner | None = None) -> Catalog:
+    """One ``ModelChoice`` per driver, grouped by provider (``PROVIDERS`` order), and the omp status. Never raises for
+    a missing, failing, slow or malformed ``omp`` listing or Ollama: their entries carry the reason."""
+    omp = _omp_models(settings, omp_runner)
     try:
         tags, ollama_error = set((ollama_runner or default_ollama_runner)(settings)), None
     except Exception as e:  # noqa: BLE001 - reported on the ollama entries, never raised
@@ -146,31 +202,37 @@ def list_models(settings: Settings, *, omp_runner: OmpRunner | None = None,
         add(driver)
     add("claude_cli", "Claude Code (its default model)")
     add("codex_cli", "Codex CLI (its default model)")
-    for m in omp_models:
-        name = m.get("name") or m["id"]
-        if m.get("provider") == "anthropic":
-            add(f"claude_cli:{m['id']}", f"{name} (Claude Code)")
-        elif m.get("provider") == "openai-codex":
-            add(f"codex_cli:{m['id']}", f"{name} (Codex CLI)")
-        elif m.get("provider") == "ollama-cloud":
-            add(f"ollama:{ollama_cloud_name(m['id'])}", f"{name} (Ollama Cloud)")
-        add(f"omp_gateway:{m['selector']}", name)
+    for m in omp.models:
+        if m["provider"] == "anthropic":
+            add(f"claude_cli:{m['id']}", f"{m['name']} (Claude Code)")
+        elif m["provider"] == "openai-codex":
+            add(f"codex_cli:{m['id']}", f"{m['name']} (Codex CLI)")
+        elif m["provider"] == "ollama-cloud":
+            add(f"ollama:{ollama_cloud_name(m['id'])}", f"{m['name']} (Ollama Cloud)")
+        add(f"omp_gateway:{m['selector']}", m["name"])
     for tag in sorted(tags):
         add(f"ollama:{tag}", f"{tag} (Ollama)")
-    if omp_error and not any(d.startswith("omp_gateway") for d in labels):
+    if omp.error and not any(d.startswith("omp_gateway") for d in labels):
         add("omp_gateway", "omp gateway")
 
-    selectors = {m["selector"] for m in omp_models}
+    selectors = {m["selector"] for m in omp.models}
     out: list[tuple[int, int, ModelChoice]] = []
     for i, (driver, label) in enumerate(labels.items()):
         try:
             spec = DriverSpec.parse(driver)
         except ValueError:
-            continue  # an unparsable configured driver: the Settings page shows it as "Other…"
-        reason = _unavailable(spec, settings, selectors, omp_error, tags, ollama_error)
+            continue  # an unparsable driver (configured, or derived from a bad id): the Settings page shows "Other…"
+        reason = _unavailable(spec, settings, selectors, omp.error, tags, ollama_error)
         choice = ModelChoice(driver, label, vendor_of(spec.provider, spec.model), reason is None, reason)
         out.append((PROVIDERS.index(spec.provider), i, choice))
-    return [c for *_, c in sorted(out, key=lambda t: t[:2])]
+    if omp.error:
+        status = f"omp gateway models are not listed: {omp.error}"
+    elif omp.skipped:
+        status = (f"{omp.skipped} malformed `omp models --json` entr{'y was' if omp.skipped == 1 else 'ies were'} "
+                  "left out")
+    else:
+        status = None
+    return Catalog([c for *_, c in sorted(out, key=lambda t: t[:2])], status)
 
 
 def _unavailable(spec: DriverSpec, settings: Settings, selectors: set[str], omp_error: str | None, tags: set[str],
@@ -226,30 +288,37 @@ def validate_drivers(drivers: dict[str, str]) -> list[str]:
         if vendor_of(spec.provider, spec.model) is None:
             problems.append(f"{role} ({spec}) has an unknown vendor, so it can never judge; choose a model whose "
                             "developer is known (rk models shows the vendor)")
-    for problem in (judges_problem(full), screener_pair_problem(full)):
-        if problem:
-            problems.append(f"the judges need {problem}" if problem.startswith("two judges") else problem)
+    problem = judges_problem(full)
+    if problem:
+        problems.append(f"the judges need {problem}")
+    problem = screener_pair_problem(full)
+    if problem:
+        problems.append(problem)
     return problems
 
 
 def driver_warnings(drivers: dict[str, str], min_judges: int = 2) -> list[str]:
-    """What still works badly with valid ``drivers``: a writing role (``WRITING_ROLES``) whose vendor leaves fewer than
-    ``min_judges`` judges of other vendors to check its claims (V-SUPPORT then never passes them), and judges a run
-    cannot use (``judges_problem`` against the ``GENERATOR_ROLES``)."""
+    """What still works badly with valid ``drivers``: writing roles (``WRITING_ROLES``, one line per shared driver)
+    whose vendor leaves fewer than ``min_judges`` judges of other vendors to check their claims (V-SUPPORT then never
+    passes them), and judges a run cannot use (``judges_problem`` against the ``GENERATOR_ROLES``)."""
     from rk.verify.judge import admit, judges_problem
 
     full = _full(drivers)
     judges = [(r, DriverSpec.parse(full[r])) for r in JUDGE_ROLES]
-    warnings = []
+    short: dict[tuple[DriverSpec, str | None, int], list[str]] = {}  # (driver, vendor, judges left) -> roles
     for role in WRITING_ROLES:
         spec = DriverSpec.parse(full[role])
         vendor = vendor_of(spec.provider, spec.model)
         admitted, _ = admit(judges, vendor)
         if len(admitted) < min_judges:
-            n = len(admitted)
-            warnings.append(f"{role} ({spec}) is {vendor or 'of an unknown vendor'}: only {n} judge"
-                            f"{'' if n == 1 else 's'} of another vendor can check its claims, and V-SUPPORT needs "
-                            f"{min_judges}, so none of them can pass")
+            short.setdefault((spec, vendor, len(admitted)), []).append(role)
+    warnings = []
+    for (spec, vendor, n), roles in short.items():
+        who = roles[0] if len(roles) == 1 else f"{', '.join(roles[:-1])} and {roles[-1]}"
+        warnings.append(f"{who} ({spec}) {'is' if len(roles) == 1 else 'are'} {vendor or 'of an unknown vendor'}: "
+                        f"only {n} judge{'' if n == 1 else 's'} of another vendor can check "
+                        f"{'its' if len(roles) == 1 else 'their'} claims, and V-SUPPORT needs {min_judges}, so none "
+                        "of them can pass")
     problem = judges_problem(full, GENERATOR_ROLES)
     if problem:
         warnings.append(f"a run cannot pass topics or question: it needs {problem}")

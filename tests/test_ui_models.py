@@ -31,6 +31,21 @@ def test_models_route_lists_choices_and_roles(ui, omp_catalog):
     assert r["roles"] == list(ROLES)
     assert {m["driver"]: m["vendor"] for m in r["models"] if m["provider"] == "omp_gateway"} == GATEWAY
     assert {"driver", "label", "vendor", "available", "reason", "provider"} == set(r["models"][0])
+    assert r["omp_status"] is None
+
+
+def test_models_route_survives_a_malformed_omp_listing(ui, monkeypatch):
+    from .test_catalog import MALFORMED
+
+    monkeypatch.setattr(catalog, "default_omp_runner", lambda argv, t: MALFORMED)
+    monkeypatch.setattr(catalog, "default_ollama_runner", no_ollama)
+    login(ui)
+    r = ui.get("/ui/api/models").json()["result"]
+    assert set(GATEWAY) <= {m["driver"] for m in r["models"]} and "4 malformed" in r["omp_status"]
+    monkeypatch.setattr(catalog, "default_omp_runner", lambda argv, t: "not json")
+    catalog.clear_cache()
+    r = ui.get("/ui/api/models").json()["result"]
+    assert r["omp_status"].startswith("omp gateway models are not listed")
 
 
 def test_settings_drivers_are_validated(ui, omp_catalog):
@@ -49,7 +64,7 @@ def test_settings_drivers_are_validated(ui, omp_catalog):
 
     two_openai = {"judge_2": "codex_cli:gpt-6-sol"}
     r = ui.post("/ui/api/settings", json={"drivers": two_openai}, headers=W).json()["result"]
-    assert any(w.startswith("writer (claude_cli)") for w in r["warnings"])
+    assert any("writer (claude_cli) are anthropic" in w for w in r["warnings"])
     got = ui.get("/ui/api/settings").json()["result"]
     assert got["driver_warnings"] == r["warnings"] and got["driver_problems"] == []
 

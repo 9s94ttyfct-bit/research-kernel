@@ -585,16 +585,18 @@ def _driver_notes(problems: list[str], warnings: list[str]) -> None:
 def models(as_json: bool = JSON_OPT) -> None:
     """List the models each driver can run (the subscription CLIs, Ollama, and every chat model `omp models` lists as
     omp_gateway:<provider>/<model>), with the vendor and whether each is usable now. Set one with `rk driver set`."""
-    from rk.llm.catalog import list_models
+    from rk.llm.catalog import model_catalog
 
-    choices = list_models(load_settings())
+    cat = model_catalog(load_settings())
 
     def render(rows):
         for m in rows:
             state = "ok" if m["available"] else f"UNAVAILABLE ({m['reason']})"
             typer.echo(f"{m['driver']:<52} vendor={m['vendor'] or '?':<9} {state}")
+        if cat.omp_status:
+            typer.secho(f"omp: {cat.omp_status}", fg="yellow")
 
-    _out([m.as_dict() for m in choices], as_json, render)
+    _out([m.as_dict() for m in cat.models], as_json, render)
 
 
 driver_app = typer.Typer(help="Per-role drivers (the model each role runs on)", no_args_is_help=True)

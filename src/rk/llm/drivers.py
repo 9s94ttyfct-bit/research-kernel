@@ -22,6 +22,10 @@ class DriverSpec:
         provider, _, model = text.strip().partition(":")  # first ':' only: ollama models contain ':'
         if provider not in PROVIDERS:
             raise ValueError(f"unknown provider {provider!r}; expected one of {', '.join(PROVIDERS)}")
+        # the model goes into CLI argv (`-m <model>`): never an option, never whitespace or control characters
+        if model.startswith("-") or any(c.isspace() or not c.isprintable() for c in model):
+            raise ValueError(f"invalid model id {model!r}: it may not start with '-' or contain whitespace or "
+                             "control characters")
         return cls(provider, model or None)
 
     def __str__(self) -> str:

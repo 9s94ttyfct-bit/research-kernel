@@ -947,16 +947,15 @@ function modelsSection(s) {
     el("h2", { id: "models-heading" }, "Models"),
     el("p", { class: "hint" }, "The model each role runs on. A judge must be of a known vendor, two judges must be of different vendors, and a writer's claims are checked only by judges of other vendors. omp gateway models are available when omp is installed."),
     status, form, problems, warnings);
-  api("/ui/api/models").then(({ roles, models }) => {
+  api("/ui/api/models").then(({ roles, models, omp_status: ompStatus }) => {
     const byProvider = new Map();
     for (const m of models) {
       if (!byProvider.has(m.provider)) byProvider.set(m.provider, []);
       byProvider.get(m.provider).push(m);
     }
     const known = new Set(models.map((m) => m.driver));
-    const omp = models.find((m) => m.driver === "omp_gateway" && !m.available);
-    fill(status, omp ? `omp gateway models are not listed: ${omp.reason}` : "");
-    status.hidden = !omp;
+    fill(status, ompStatus || "");  // whenever omp failed or some of its entries were left out
+    status.hidden = !ompStatus;
     const rows = roles.map((role) => {
       const current = s.drivers[role] || "";
       const judge = JUDGES.includes(role);
