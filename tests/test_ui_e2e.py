@@ -1,17 +1,24 @@
 """The Workbench in a real (headless) Chromium against a real ``rk serve`` app: navigation, checkpoint answering,
-library search and chat."""
+library search, chat, and the discovery pages (stage graph, run controls, topic, RQ and blocked-stage cards)."""
 
 # ruff: noqa: F811 - fixtures imported from other test modules are re-bound as test parameters
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 import uvicorn
 
-from rk.checkpoints import create_checkpoint, get_checkpoint
+from rk.checkpoints import create_checkpoint, get_checkpoint, list_checkpoints
 from rk.config import Settings, save_settings
+from rk.discovery.models import Intake
+from rk.discovery.store import record_intake, rq_row, topics
 from rk.fulltext import attach_pdf_bytes
 from rk.library.models import Creator, Ids, ItemIn
+from rk.orchestrator.engine import Orchestrator, StageOutcome
+from rk.orchestrator.graph import DISCOVERY, stages_for
+from rk.orchestrator.runs import RunManager
+from rk.orchestrator.state import latest_run
 from rk.server.app import create_app
 from rk.server.chat import ChatManager
 from rk.server.runtime import acquire_serve_lock, release
@@ -20,7 +27,19 @@ from rk.ui.auth import UiAuth
 from rk.workspace import Kernel
 
 from .browser_sites import tiny_pdf
+from .discovery_fakes import DEFAULT_INTAKE, FakeSources, FakeWorker, ScriptedExecutor
 from .test_sessions import fake  # noqa: F401 - fixture
+from .test_ui_discovery import (
+    HYPOTHESES,
+    QUOTE,
+    TITLES,
+    discovery_workers,
+    open_rq_checkpoint,
+    open_topic_review,
+    seed_gap,
+    seed_rq,
+    seed_topics,
+)
 
 pytestmark = pytest.mark.browser
 PAGES = {"chat": "Chat", "library": "Library", "checkpoints": "Checkpoints", "progress": "Progress",
@@ -28,26 +47,40 @@ PAGES = {"chat": "Chat", "library": "Library", "checkpoints": "Checkpoints", "pr
 
 
 @pytest.fixture
-def workbench(tmp_home, replay_http, fake):
+def workbench_env(tmp_home, replay_http, fake):
+    """The served Workbench with ``rk serve``'s Orchestrator and RunManager (every stage after intake a FakeWorker;
+    tests replace ``orch.workers[...]`` before they start a run)."""
     exe, _ = fake  # the chat page opens a chat on load, so every CLI driver must already be the fake
     save_settings(Settings(email="rk-fixtures@users.noreply.github.com", cli_paths={"claude": exe, "codex": exe}))
     rt = acquire_serve_lock(tmp_home)
     kernel = Kernel(tmp_home, http=replay_http)
     kernel.create_project("demo", "Demo project", actor="t")
-    registry = build_registry(kernel)
+    holder: dict = {}
+    registry = build_registry(kernel, runs=lambda: holder.get("m"))
+    orch = Orchestrator(kernel, registry, workers={s: FakeWorker() for s in DISCOVERY if s != "intake"},
+                        executor_factory=lambda p, r, s: ScriptedExecutor({}),
+                        sources_factory=lambda p: FakeSources({}))
+    runs = holder["m"] = RunManager(kernel, registry, orch, poll_s=0.05)
     origin = f"http://127.0.0.1:{rt.port}"
     ui = UiAuth(origin)
     chats = ChatManager(kernel, registry)
-    app = create_app(registry, rt.token, tokens=kernel.tokens, chats=chats, ui=ui, kernel=kernel)
+    app = create_app(registry, rt.token, tokens=kernel.tokens, chats=chats, ui=ui, kernel=kernel, orchestrator=orch,
+                     runs=runs)
     server = uvicorn.Server(uvicorn.Config(app, log_level="warning"))
     t = threading.Thread(target=server.run, kwargs={"sockets": [rt.sock]}, daemon=True)
     t.start()
     time.sleep(0.5)
-    yield kernel, ui, chats
+    yield SimpleNamespace(kernel=kernel, ui=ui, chats=chats, orch=orch, runs=runs)
     server.should_exit = True
     t.join(5)
+    runs.close()
     kernel.close()
     release(rt)
+
+
+@pytest.fixture
+def workbench(workbench_env):
+    return workbench_env.kernel, workbench_env.ui, workbench_env.chats
 
 
 @pytest.fixture
@@ -192,3 +225,161 @@ def until(pred, timeout=5.0):
             return v
         time.sleep(0.05)
     raise AssertionError("condition not reached")
+
+
+# ---- discovery: the stage graph, run controls and the review cards ------------------------------------------------
+def _intake(ps, **overrides) -> None:
+    record_intake(ps, Intake(**{**DEFAULT_INTAKE, "production_mode": "collab", "topics_n": 2, **overrides}),
+                  actor="t", actor_kind="human")
+
+
+def _goto(page, route: str) -> None:
+    page.goto(page.url.split("#")[0] + f"#/{route}")
+
+
+def _answer_of(page, ps, cid: str) -> dict:
+    """The answer the page posted, once the page has redrawn after it (so the next checkpoint meets a settled page)."""
+    answer = until(lambda: get_checkpoint(ps, cid)["answer"])
+    page.get_by_text("Nothing is waiting for you.").wait_for()
+    return answer
+
+
+def test_topic_review_card_approve(page, workbench):
+    kernel, _, _ = workbench
+    ps, lib = kernel.project("demo")
+    ids = seed_topics(ps, lib, 1, [seed_gap(ps, lib, 1)])
+    cid = open_topic_review(ps, 1, ids)
+    _goto(page, "checkpoints")
+    card = page.locator('.checkpoints li[data-kind="topic_review"]')
+    card.locator("blockquote", has_text=QUOTE).first.wait_for()
+    assert card.locator(".topic h3").all_text_contents() == list(TITLES)  # model text is shown as text, not markup
+    assert card.locator("b").count() == 0
+    assert card.get_by_text("Closest prior work (reference only)").count() == 2
+    assert card.get_by_text("The cohort stops at 79; the topic starts at 80.").count() == 2
+    page.get_by_role("button", name=f"Approve this topic: {TITLES[1]}", exact=True).click()
+    assert _answer_of(page, ps, cid) == {"decision": "approve", "topic_id": ids[1]}
+    assert page.errors == []
+
+
+def test_topic_review_card_revise_and_reject(page, workbench):
+    kernel, _, _ = workbench
+    ps, lib = kernel.project("demo")
+    ids = seed_topics(ps, lib, 1, [seed_gap(ps, lib, 1)])
+    cid = open_topic_review(ps, 1, ids)
+    _goto(page, "checkpoints")
+    page.get_by_label("What should change").fill("Look at trials in care homes.")
+    page.get_by_label("What to redo").select_option("gaps")
+    page.get_by_role("button", name="Ask for a revision").click()
+    assert _answer_of(page, ps, cid) == {"decision": "revise", "target": "gaps",
+                                         "comment": "Look at trials in care homes."}
+    cid2 = open_topic_review(ps, 1, ids)
+    _goto(page, "checkpoints?again")
+    page.get_by_role("button", name="Reject all topics").click()
+    assert _answer_of(page, ps, cid2) == {"decision": "reject"}
+    assert page.errors == []
+
+
+def test_rq_cards_answer(page, workbench):
+    kernel, _, _ = workbench
+    ps, lib = kernel.project("demo")
+    (tid, _) = seed_topics(ps, lib, 1, [seed_gap(ps, lib, 1)])
+    rq_id = seed_rq(ps, lib, 1, tid)
+    cid = open_rq_checkpoint(ps, "rq_approval", rq_id, 1)
+    _goto(page, "checkpoints")
+    card = page.locator('.checkpoints li[data-kind="rq_approval"]')
+    card.get_by_text("I am studying aspirin use in people over 80").wait_for()
+    for h in HYPOTHESES:
+        assert card.get_by_text(h["falsification"]).count() == 1
+    assert card.locator("blockquote", has_text="stroke in the very old").count() == 1
+    assert card.get_by_text("not found within the searched scope").count() >= 1
+    page.get_by_role("button", name="Approve this research question").click()
+    assert _answer_of(page, ps, cid) == {"decision": "approve"}
+
+    cid = open_rq_checkpoint(ps, "rq_approval", rq_id, 1)
+    _goto(page, "checkpoints?revise")
+    page.get_by_label("What should change in the question").fill("Narrow it to secondary prevention.")
+    page.get_by_role("button", name="Ask for a revision").click()
+    assert _answer_of(page, ps, cid) == {"decision": "revise", "comment": "Narrow it to secondary prevention."}
+
+    for button, decision in (("Proceed with this question", "proceed"), ("Go back to topics", "back")):
+        cid = open_rq_checkpoint(ps, "significance_novelty", rq_id, 1)
+        _goto(page, f"checkpoints?{decision}")
+        page.get_by_role("button", name=button).click()
+        assert _answer_of(page, ps, cid) == {"decision": decision}
+    assert page.errors == []
+
+
+def test_stage_blocked_card(page, workbench):
+    kernel, _, _ = workbench
+    ps, _ = kernel.project("demo")
+    for button, decision in (("Allow one more use", "allow_one_more"), ("Stop", "stop")):
+        cid = create_checkpoint(ps, "stage_blocked", "'gaps' wants gaps->landscape again, but it was used 2 times.",
+                                {"choices": ["allow_one_more", "stop"], "edge": "gaps->landscape", "to": "landscape",
+                                 "failures": ["no verified gap to build topics on"]}, stage="gaps",
+                                actor="orchestrator")
+        _goto(page, f"checkpoints?{decision}")
+        page.locator('.checkpoints li[data-kind="stage_blocked"]').get_by_text(
+            "no verified gap to build topics on").wait_for()
+        page.get_by_role("button", name=button, exact=True).click()
+        assert _answer_of(page, ps, cid) == {"decision": decision}
+    assert page.errors == []
+
+
+def test_run_controls_follow_state(page, workbench_env):
+    ps, _ = workbench_env.kernel.project("demo")
+    _intake(ps)
+    workbench_env.orch.workers["topics"] = FakeWorker(runs=[lambda ctx: StageOutcome(
+        "waiting_human", checkpoint_id=open_topic_review(ctx.ps, ctx.attempt, []))])
+    _goto(page, "progress")
+    chips = page.locator("ol.stages > li")
+    chips.first.wait_for()
+    assert chips.count() == len(stages_for("critical_review"))
+    assert page.locator('ol.stages > li[data-status="plan5"]').count() == 9
+    assert page.get_by_role("button", name="Pause run").count() == 0
+    page.get_by_role("button", name="Start D2 run until topics").click()
+    page.get_by_role("button", name="Pause run").wait_for()
+    page.locator('ol.stages > li[data-stage="topics"]', has_text="waiting for you").wait_for()
+    assert page.get_by_role("button", name="Start D2 run until topics").count() == 0
+    page.get_by_role("button", name="Pause run").click()
+    until(lambda: latest_run(ps)["status"] == "paused")
+    page.get_by_text("paused by you").wait_for()
+    assert page.get_by_role("button", name="Pause run").count() == 0
+    page.get_by_role("button", name="Resume run").click()
+    page.get_by_role("button", name="Pause run").wait_for()
+    page.get_by_role("button", name="Cancel run").click()
+    page.get_by_role("button", name="Start D2 run until question").wait_for()
+    assert latest_run(ps)["status"] == "cancelled"
+    assert page.errors == []
+
+
+def test_d1_project_shows_the_graph_and_the_lead_hint(page, workbench):
+    kernel, _, _ = workbench
+    ps, _ = kernel.project("demo")
+    _intake(ps, discovery_mode="d1")
+    _goto(page, "progress")
+    page.get_by_text("the Lead drives the stages").wait_for()
+    assert page.locator("ol.stages > li").count() == len(stages_for("critical_review"))
+    assert page.get_by_role("button", name="Start D2 run until topics").count() == 0
+    assert page.errors == []
+
+
+def test_discovery_cards_through_a_run_reach_the_workers(page, workbench_env):
+    ps, lib = workbench_env.kernel.project("demo")
+    _intake(ps)
+    workbench_env.orch.workers.update(discovery_workers(lib))
+    _goto(page, "progress")
+    page.get_by_role("button", name="Start D2 run until question").click()
+    until(lambda: get_open(ps, "topic_review"))
+    _goto(page, "checkpoints")
+    page.get_by_role("button", name=f"Approve this topic: {TITLES[0]}", exact=True).click()
+    page.get_by_role("button", name="Approve this research question").click(timeout=10_000)  # the page follows
+    until(lambda: latest_run(ps)["status"] == "done")
+    assert [t["status"] for t in topics(ps, 1)] == ["approved", "candidate"]
+    (rq_cp,) = [c for c in list_checkpoints(ps, "answered") if c["kind"] == "rq_approval"]
+    rq = rq_row(ps, rq_cp["options"]["rq_id"])
+    assert (rq["status"], rq["adopted_by"]) == ("frozen", "human")
+    assert page.errors == []
+
+
+def get_open(ps, kind: str) -> list[dict]:
+    return [c for c in list_checkpoints(ps, "open") if c["kind"] == kind]

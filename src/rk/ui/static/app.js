@@ -319,15 +319,145 @@ async function importFile(e) {
   } catch (err) { toast(err.message, "error"); }
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// discovery: the review cards (topics, research question, a blocked stage) and the stage graph
+
+const GAP_KINDS = { contradiction: "Contradiction", stated_limitation: "Stated limitation", citation_distortion: "Citation distortion",
+  retracted_still_cited: "Retracted, still cited", evidence_map_hole: "Evidence-map hole" };
+const words = (s) => String(s ?? "").replaceAll("_", " ");
+const yearOf = (w) => (w.year ? ` (${w.year})` : "");
+const count = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+// A definition list of [term, value] pairs; empty values are left out.
+function facts(pairs) {
+  return el("dl", { class: "facts" }, pairs.filter(([, v]) => v !== undefined && v !== null && v !== "").map(([k, v]) => [el("dt", {}, k), el("dd", {}, v)]));
+}
+
+function reviseForm(label, onSend, extra = null) {
+  const comment = el("textarea", { name: "comment", required: true });
+  const form = el("form", { class: "revise" }, el("label", { class: "field" }, label, comment), extra,
+    el("button", { type: "submit", class: "secondary" }, "Ask for a revision"));
+  form.addEventListener("submit", (e) => { e.preventDefault(); if (comment.value.trim()) onSend(comment.value.trim(), form); });
+  return form;
+}
+
+function topicBlock(t, answer) {
+  const ref = t.reference || {};
+  return el("li", { class: "topic" },
+    el("h3", {}, t.title),
+    el("p", {}, t.summary),
+    facts([["Feasibility", t.feasibility], ["Data needed", t.data_needed], ["Paper type", words(t.paper_type)], ["Risks", t.risks]]),
+    el("h4", {}, "Gaps it rests on"),
+    t.gaps.length
+      ? el("ul", { class: "gaps" }, t.gaps.map((g) => el("li", {},
+          el("div", { class: "badges" }, el("span", { class: "badge neutral" }, GAP_KINDS[g.kind] || words(g.kind)),
+            el("span", { class: `badge ${g.verified ? "ok" : "warn"}` }, g.verified ? "Evidence chain checked" : "Evidence chain not checked")),
+          el("p", { class: "statement" }, g.statement),
+          g.quotes.map((q) => el("blockquote", { class: "note" }, q.quote, el("div", { class: "hint" }, q.item_title || q.item_id))))))
+      : el("p", { class: "empty" }, "The gaps of this topic were not found."),
+    el("h4", {}, "Closest prior work (reference only)"),
+    el("p", { class: "hint" }, "How the judges say the topic differs from each work. A reference for your decision, not a verdict on it.",
+      ref.queries ? ` ${count(ref.queries.length, "search", "searches")} on ${(ref.sources_used || []).join(", ") || "no source"} found ${count(ref.found ?? 0, "work")}.` : ""),
+    t.closest.length
+      ? el("ul", { class: "closest" }, t.closest.map((w) => el("li", {},
+          el("div", { class: "work-title" }, w.title, yearOf(w)),
+          Object.keys(w.differences || {}).length
+            ? el("dl", { class: "facts diffs" }, Object.entries(w.differences).map(([vendor, d]) => [el("dt", {}, `Judge (${vendor})`), el("dd", {}, d)]))
+            : el("p", { class: "empty" }, "No difference recorded."))))
+      : el("p", { class: "empty" }, "No closest work listed."),
+    el("div", { class: "toolbar" }, el("button", { type: "button", "aria-label": `Approve this topic: ${t.title}`, onclick: () => answer({ decision: "approve", topic_id: t.id }) }, "Approve this topic")));
+}
+
+async function topicReviewCard(c, answer) {
+  const o = c.options || {};
+  const data = await api("/ui/api/topics", { query: { project: state.project, attempt: o.attempt } });
+  const byId = new Map(data.topics.map((t) => [t.id, t]));
+  const under = (o.topic_ids || []).map((id) => byId.get(id)).filter((t) => t && t.status !== "rejected");
+  const target = el("select", { name: "target" }, el("option", { value: "topics" }, "New topics from the same gaps"), el("option", { value: "gaps" }, "Go back to the gaps"));
+  return [
+    under.length ? el("ol", { class: "topics" }, under.map((t) => topicBlock(t, answer))) : el("p", { class: "empty" }, "The topics under review were not found."),
+    el("div", { class: "other-answers" },
+      el("h4", {}, "Or revise or reject them"),
+      reviseForm("What should change", (comment) => answer({ decision: "revise", target: target.value, comment }), el("label", { class: "field" }, "What to redo", target)),
+      el("div", { class: "toolbar" }, el("button", { type: "button", class: "secondary", onclick: () => answer({ decision: "reject" }) }, "Reject all topics"))),
+  ];
+}
+
+function alreadyDone(ad) {
+  if (!ad) return el("p", { class: "empty" }, "The already-done check has not run.");
+  const head = {
+    not_found_in_scope: "Prior work answering this question was not found within the searched scope.",
+    already_done: "Two judges of different vendors say published work already answers this question.",
+    split: ad.split_reason || "The judges did not agree, or fewer than two judge vendors gave valid judgements.",
+  }[ad.result] || words(ad.result);
+  const skipped = Object.entries(ad.skipped || {});
+  return [
+    el("p", {}, el("strong", {}, head)),
+    el("p", { class: "hint" }, `${count(ad.queries.length, "search", "searches")} on ${ad.sources_used.join(", ") || "no source"}; the top ${ad.works.length} of ${count(ad.found, "work")} judged by ${ad.judged.join(", ") || "no judge"}.`),
+    skipped.length ? el("p", { class: "hint" }, "Judges skipped: ", skipped.map(([role, why]) => `${role}: ${why}`).join("; ")) : null,
+    ad.works.length ? el("ul", { class: "works" }, ad.works.map((w) => el("li", {},
+      el("div", { class: "work-title" }, w.title, yearOf(w)),
+      Object.entries(w.judgements || {}).map(([vendor, j]) => el("div", { class: "judgement" },
+        el("div", { class: "hint" }, `${vendor}: ${j.answered ? "already answers it" : "does not answer it"}${j.ok_quote ? "" : " (quote not verbatim in what the judge saw: discarded)"}`),
+        el("blockquote", { class: `note${j.ok_quote ? "" : " unverified"}` }, j.quote)))))) : null,
+  ];
+}
+
+async function rqCard(c, answer) {
+  const d = await api("/ui/api/rq", { query: { project: state.project, rq_id: c.options?.rq_id } });
+  const b = d.rq.body;
+  const view = [
+    el("p", { class: "rq-sentence" }, d.sentence),
+    d.topic ? el("p", { class: "hint" }, "Topic: ", d.topic.title) : null,
+    el("h4", {}, "Problem"), el("p", {}, b.problem.condition),
+    b.problem.consequences.length ? el("ul", {}, b.problem.consequences.map((x) => el("li", {}, x))) : null,
+    el("h4", {}, "FINER (as the Ideator wrote it)"),
+    facts([["Feasible", b.finer.feasible], ["Interesting", b.finer.interesting], ["Novel", b.finer.novel], ["Ethical", b.finer.ethical], ["Relevant", b.finer.relevant]]),
+    b.clinical && b.pico ? [el("h4", {}, "PICO"), facts([["Population", b.pico.population], ["Intervention", b.pico.intervention], ["Comparison", b.pico.comparison], ["Outcome", b.pico.outcome]])] : null,
+    el("h4", {}, "Hypotheses"),
+    el("ol", { class: "hypotheses" }, d.hypotheses.map((h) => el("li", {}, el("p", {}, h.statement), el("p", { class: "hint" }, "Falsified if: ", h.falsification)))),
+    el("h4", {}, "Already-done check"),
+    alreadyDone(d.rq.already_done),
+  ];
+  if (c.kind === "significance_novelty") {
+    return [...view,
+      el("p", { class: "hint" }, "The judges did not settle whether published work already answers this question. Proceed treats it as not found within the searched scope, and you then approve it; or go back to the topics."),
+      el("div", { class: "toolbar" },
+        el("button", { type: "button", onclick: () => answer({ decision: "proceed" }) }, "Proceed with this question"),
+        el("button", { type: "button", class: "secondary", onclick: () => answer({ decision: "back" }) }, "Go back to topics"))];
+  }
+  return [...view,
+    el("div", { class: "toolbar" }, el("button", { type: "button", onclick: () => answer({ decision: "approve" }) }, "Approve this research question")),
+    reviseForm("What should change in the question", (comment) => answer({ decision: "revise", comment }))];
+}
+
+function blockedCard(c, answer) {
+  const o = c.options || {};
+  return [
+    facts([["Back-edge", (o.edge || "").replace("->", " → ")], ["Allow one more", `${words(o.to)} runs again`], ["Stop", "the stage ends here (a run fails)"]]),
+    (o.failures || []).length ? [el("h4", {}, "Why"), el("ul", {}, o.failures.map((f) => el("li", {}, f)))] : null,
+    el("div", { class: "toolbar" },
+      el("button", { type: "button", onclick: () => answer({ decision: "allow_one_more" }) }, "Allow one more use"),
+      el("button", { type: "button", class: "secondary", onclick: () => answer({ decision: "stop" }) }, "Stop")),
+  ];
+}
+
+const CARDS = { topic_review: topicReviewCard, rq_approval: rqCard, significance_novelty: rqCard, stage_blocked: blockedCard };
+const KINDS = { topic_review: "Topic review", rq_approval: "Research question approval",
+  significance_novelty: "Already answered? The judges split", stage_blocked: "Stage blocked at its back-edge limit" };
+
 pages.checkpoints = async (root) => {
   if (needProject()) return;
   const [open, answered] = await Promise.all([
     api("/ui/api/checkpoints", { query: { project: state.project, status: "open" } }),
     api("/ui/api/checkpoints", { query: { project: state.project, status: "answered" } })]);
   setOpenCount(open.checkpoints.length);
-  const card = (c) => {
+  const card = async (c) => {
+    const special = CARDS[c.kind];
+    const long = special && c.kind !== "stage_blocked";  // its card shows everything the prompt says, laid out
     const li = el("li", { "data-kind": c.kind, class: c.status === "answered" ? "answered" : "" },
-      el("div", { class: "kind" }, c.kind.replaceAll("_", " ")), el("p", { class: "prompt" }, c.prompt));
+      el("div", { class: "kind" }, KINDS[c.kind] || words(c.kind)),
+      long ? el("details", { class: "prompt" }, el("summary", {}, "The checkpoint's full text"), el("p", {}, c.prompt)) : el("p", { class: "prompt" }, c.prompt));
     if (c.kind === "captcha_wait" || c.kind === "login_wait")
       li.append(el("p", { class: "hint" }, "Handle it in the built-in browser window, then press Done. The Kernel never solves CAPTCHAs or sees your password."));
     if (c.status === "answered") {
@@ -335,12 +465,21 @@ pages.checkpoints = async (root) => {
       return li;
     }
     const answer = async (body) => {
+      li.querySelectorAll("button").forEach((b) => { b.disabled = true; });
       try {
         await api(`/ui/api/checkpoints/${c.id}/answer`, { method: "POST", body: { project: state.project, answer: body } });
         toast("Answer recorded");
         route();
-      } catch (err) { toast(err.message, "error"); }
+      } catch (err) {
+        li.querySelectorAll("button").forEach((b) => { b.disabled = false; });
+        toast(err.message, "error");
+      }
     };
+    if (special) {
+      try { li.append(el("div", { class: "card-body" }, await special(c, answer))); }
+      catch (err) { li.append(el("p", { class: "error" }, `Could not load what this checkpoint is about: ${err.message}`)); }
+      return li;
+    }
     const opts = Array.isArray(c.options) ? c.options : [];
     const buttons = el("div", { class: "toolbar" }, opts.map((o) => el("button", { type: "button", onclick: () => answer({ choice: o }) }, o === "done" ? "Done" : String(o))));
     const text = el("textarea", { "aria-label": "Your answer" });
@@ -350,20 +489,120 @@ pages.checkpoints = async (root) => {
     if (c.kind !== "captcha_wait" && c.kind !== "login_wait") li.append(form);
     return li;
   };
-  fill(root, el("h1", {}, "Checkpoints"), el("p", { class: "lead" }, "Questions only you can answer. Agents wait here; nothing is decided for you."),
-    open.checkpoints.length ? el("ul", { class: "checkpoints" }, open.checkpoints.map(card)) : el("p", { class: "empty" }, "Nothing is waiting for you."),
-    answered.checkpoints.length ? [el("h2", {}, "Answered"), el("ul", { class: "checkpoints" }, answered.checkpoints.slice(-20).reverse().map(card))] : null);
+  const [openCards, answeredCards] = await Promise.all([Promise.all(open.checkpoints.map(card)),
+    Promise.all(answered.checkpoints.slice(-20).reverse().map(card))]);
+  // A checkpoint that opened, or one shown open that was answered, redraws the page, unless you are writing an
+  // answer: then a notice offers it.
+  const shown = new Set(open.checkpoints.map((c) => c.id));
+  const notice = el("p", { class: "notice", role: "status", hidden: true }, "Checkpoints changed. ",
+    el("button", { type: "button", class: "secondary", onclick: () => route() }, "Show the latest"));
+  let left = false, timer = null;
+  root.onLeave(() => { left = true; clearTimeout(timer); });
+  root.listen((msg) => {
+    if (msg.type !== "checkpoint" || shown.has(msg.checkpoint.id) === (msg.checkpoint.status === "open")) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      if (left) return;
+      if ([...document.querySelectorAll("#page textarea")].some((t) => t.value.trim())) notice.hidden = false;
+      else route();
+    }, 300);
+  });
+  fill(root, el("h1", {}, "Checkpoints"), el("p", { class: "lead" }, "Questions only you can answer. Agents wait here; nothing is decided for you."), notice,
+    openCards.length ? el("ul", { class: "checkpoints" }, openCards) : el("p", { class: "empty" }, "Nothing is waiting for you."),
+    answeredCards.length ? [el("h2", {}, "Answered"), el("ul", { class: "checkpoints" }, answeredCards)] : null);
 };
+
+const STAGE_STATUS = { passed: "Passed", active: "Active", pending: "Pending", plan5: "Not yet available" };
+const STAGE_STATE = { waiting: "waiting for you", running: "running", reopened: "to run again" };
+const RUN_STATUS = { running: "Running", waiting_human: "Waiting for you", paused_waiting_human: "Waiting for your answer",
+  paused: "Paused", paused_budget: "Paused (budget reached)", done: "Done", failed: "Failed", cancelled: "Cancelled" };
+
+function stageChip(s) {
+  let note = "";
+  if (s.status === "active") note = STAGE_STATE[s.state] || "next";
+  else if (s.status === "pending" && s.state === "reopened") note = "to run again";
+  const gate = s.last_gate && !s.last_gate.ok ? s.last_gate : null;
+  return el("li", { class: `stage-chip ${s.status}`, "data-status": s.status, "data-stage": s.stage },
+    el("span", { class: "stage-name" }, words(s.stage)),
+    el("span", { class: "stage-status" }, note ? `${STAGE_STATUS[s.status]}: ${note}` : STAGE_STATUS[s.status]),
+    s.attempt ? el("span", { class: "hint" }, `attempt ${s.attempt}`) : null,
+    (s.back_edges || []).map((e) => el("span", { class: "hint" },
+      `${e.to === s.stage ? "reruns" : `back to ${words(e.to)}`}: ${e.count} of ${e.limit + e.allowed}`)),
+    s.state === "waiting" ? el("a", { href: "#/checkpoints" }, "Answer it") : null,
+    gate ? el("details", { class: "gate" }, el("summary", {}, `Gate failed (attempt ${gate.attempt})`),
+      el("ul", {}, gate.failures.map((f) => el("li", {}, f)))) : null);
+}
+
+function runControls(g, act) {
+  if (!g.intake) return el("p", { class: "hint" }, "Record the intake first (rk project intake): it sets the paper type and how discovery runs.");
+  if (g.discovery_mode !== "d2")
+    return el("p", { class: "hint" }, "This project uses guided discovery (D1): the Lead drives the stages in ", el("a", { href: "#/chat" }, "Chat"), ". Ask it to run the next stage.");
+  const run = g.run;
+  const status = run
+    ? el("p", { class: "run-status" }, `Run ${run.id} (until ${run.until}): `, el("strong", {}, RUN_STATUS[run.status] || words(run.status)), run.reason ? ` — ${run.reason}` : "")
+    : el("p", { class: "run-status" }, "No run yet.");
+  if (!g.runs_available) return [status, el("p", { class: "hint" }, "Runs are driven by rk serve's orchestrator, which this server does not have.")];
+  const btn = (text, onclick, cls) => el("button", { type: "button", class: cls, onclick }, text);
+  const buttons = [];
+  if (!g.run_active) {
+    buttons.push(btn("Start D2 run until topics", () => act("start", "topics")), btn("Start D2 run until question", () => act("start", "question"), "secondary"));
+  } else if (g.requested === "cancelled") {
+    status.append(" Cancelling after the current step…");
+  } else {
+    const paused = g.requested === "paused" || ["paused", "paused_budget"].includes(run.status);
+    if (g.requested === "paused") status.append(" Pausing after the current step…");
+    buttons.push(paused ? btn("Resume run", () => act("resume")) : btn("Pause run", () => act("pause")), btn("Cancel run", () => act("cancel"), "secondary"));
+  }
+  return [status, buttons.length ? el("div", { class: "toolbar" }, buttons) : null];
+}
 
 pages.progress = async (root) => {
   if (needProject()) return;
-  const p = await api("/ui/api/progress", { query: { project: state.project } });
+  const [p, first] = await Promise.all([api("/ui/api/progress", { query: { project: state.project } }),
+    api("/ui/api/stages", { query: { project: state.project } })]);
+  const graphBox = el("div", {});
+  const runBox = el("div", { class: "run-controls", "aria-live": "polite" });
+  let asked = 0, timer = null;
+  const refresh = async () => {
+    const n = ++asked;
+    try {
+      const g = await api("/ui/api/stages", { query: { project: state.project } });
+      if (n === asked) draw(g);  // a slower, older answer does not draw over a newer one
+    } catch (err) { toast(err.message, "error"); }
+  };
+  const act = async (action, until) => {
+    runBox.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+    try {
+      if (action === "start") await api("/ui/api/run", { method: "POST", body: { project: state.project, until } });
+      else await api(`/ui/api/run/${action}`, { method: "POST", body: { project: state.project } });
+    } catch (err) { toast(err.message, "error"); }
+    await refresh();
+  };
+  const draw = (g) => {
+    const used = g.back_edges.filter((e) => e.count || e.allowed);
+    fill(graphBox,
+      el("p", { class: "hint" }, g.paper_type ? `Paper type: ${words(g.paper_type)}. ` : "No paper type yet. ", "The stages after the research question are not available yet."),
+      el("ol", { class: "stages", "aria-label": "Stages" }, g.graph.map(stageChip)),
+      el("p", { class: "hint" }, `Back-edges and reruns used (each up to ${g.edge_limit} times, plus any you allow): `,
+        used.length ? used.map((e) => `${words(e.from)} ${e.from === e.to ? "reruns" : `→ ${words(e.to)}`} ${e.count} of ${e.limit + e.allowed}`).join(" · ") : "none"));
+    fill(runBox, runControls(g, act));
+  };
+  draw(first);
   const feed = el("ul", { class: "feed", "aria-live": "polite" });
   const row = (e) => el("li", {}, el("time", { datetime: e.ts }, e.ts.replace("T", " ").slice(0, 19)), `${e.type} `, el("span", { class: "hint" }, `${e.actor}${e.entity_id ? ` · ${e.entity_id}` : ""}`));
   feed.append(...p.events.map(row));
-  root.listen((msg) => { if (msg.type === "event") feed.prepend(row(msg.event)); });
+  const later = () => { clearTimeout(timer); timer = setTimeout(refresh, 200); };
+  root.onLeave(() => clearTimeout(timer));
+  root.listen((msg) => {
+    if (msg.type === "event") {
+      feed.prepend(row(msg.event));
+      if (/^(stage|run|edge)\./.test(msg.event.type)) later();
+    } else if (msg.type === "run") later();
+  });
   fill(root, el("h1", {}, "Progress"),
-    el("p", { class: "lead" }, "What the agents and you did in this project, newest first. The stage graph and run controls come with the orchestrator."),
+    el("p", { class: "lead" }, "Where discovery stands, and what the agents and you did in this project, newest first."),
+    el("h2", {}, "Stages"), graphBox,
+    el("h2", {}, "Run"), runBox,
     el("h2", {}, "Tasks"),
     p.tasks.length ? el("table", {}, el("thead", {}, el("tr", {}, ["Task", "Role", "Driver", "Status", "Tries", "Error"].map((h) => el("th", {}, h)))),
       el("tbody", {}, p.tasks.map((t) => el("tr", {}, el("td", {}, t.id), el("td", {}, t.role), el("td", {}, t.driver), el("td", {}, t.status), el("td", {}, t.attempts), el("td", {}, t.error || "")))))

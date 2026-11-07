@@ -33,6 +33,16 @@ from rk.cli.setup import (
     library_fetch_test,
 )
 from rk.config import check_library_proxy, load_settings, save_settings
+from rk.discovery.models import ThreeStep
+from rk.discovery.store import hypotheses, intake_of, rq_row, topic_novelty, topics
+from rk.orchestrator.graph import (
+    BACK_EDGES,
+    DISCOVERY,
+    EDGE_LIMIT,
+    edge_name,
+    stages_for,
+)
+from rk.orchestrator.state import TERMINAL_RUN_STATES, latest_run
 from rk.tools.registry import CallContext, PermissionDenied, ToolError
 from rk.ui.auth import COOKIE, UiAuth
 from rk.ui.drafts import list_drafts, read_draft, render_draft
@@ -115,6 +125,15 @@ class SavePage(BaseModel):
     collection: str | None = None
 
 
+class RunStartBody(BaseModel):
+    project: str
+    until: Literal["topics", "question"]
+
+
+class ProjectBody(BaseModel):
+    project: str
+
+
 def ui_context(auth: UiAuth):
     def dep(request: Request) -> CallContext:
         if not auth.check_cookie(request.cookies.get(COOKIE)):
@@ -140,10 +159,48 @@ def _event_rows(ps, after: int, limit: int = 500) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def _item_title(lib, item_id: str) -> str | None:
+    try:
+        return lib.get(item_id).title
+    except KeyError:
+        return None
+
+
+def _gap_views(ps, lib, gap_ids: list[str]) -> dict[str, dict]:
+    """The gaps ``gap_ids`` (whatever their attempt) with the quotes of their evidence notes, by id."""
+    if not gap_ids:
+        return {}
+    marks = ",".join("?" * len(gap_ids))
+    out = {}
+    for g in ps.db.execute(f"SELECT id, kind, statement, evidence, verified FROM gaps WHERE id IN ({marks})",
+                           tuple(gap_ids)):
+        quotes = []
+        for nid in json.loads(g["evidence"]).get("note_ids", []):
+            n = ps.db.execute("SELECT item_id, data FROM notes WHERE id=?", (nid,)).fetchone()
+            if n is not None:
+                quotes.append({"note_id": nid, "item_id": n["item_id"], "item_title": _item_title(lib, n["item_id"]),
+                               "quote": json.loads(n["data"]).get("text", "")})
+        out[g["id"]] = {"id": g["id"], "kind": g["kind"], "statement": g["statement"],
+                        "verified": bool(g["verified"]), "quotes": quotes}
+    return out
+
+
+def _topic_views(ps, lib, rows: list[dict]) -> list[dict]:
+    """Topics with their gaps (evidence quotes included) and the V-NOVELTY search behind their closest works."""
+    gap_views = _gap_views(ps, lib, sorted({g for t in rows for g in t["gap_ids"]}))
+    out = []
+    for t in rows:
+        ref = topic_novelty(ps, t["id"]) or {}
+        out.append({**t, "gaps": [gap_views[g] for g in t["gap_ids"] if g in gap_views],
+                    "reference": {k: ref[k] for k in ("queries", "sources_used", "found") if k in ref}})
+    return out
+
+
 def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
               browser: Callable[[], Any] | None = None, orchestrator=None, runs=None) -> APIRouter:
-    """``orchestrator`` and ``runs`` are ``rk serve``'s (the run and stage tools use them; the stage graph and run
-    controls arrive with the Workbench discovery pages)."""
+    """``runs`` is ``rk serve``'s RunManager: the run controls and the run state of the stage graph use it (without it
+    the run routes answer 503). ``orchestrator`` is ``rk serve``'s too; the run and stage tools reach it through
+    ``runs``."""
     r = APIRouter()
     ctx_dep = ui_context(auth)
     browser = browser or (lambda: None)
@@ -320,6 +377,103 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
         return ok({"tasks": tasks, "open_checkpoints": list_checkpoints(ps, "open"),
                    "events": list(reversed(_event_rows(ps, max(0, last - 200), 200)))})
 
+    # ---- discovery: the stage graph, runs, topics and the research question ---------------------------------
+    def stage_graph(slug: str, ctx: CallContext) -> dict:
+        ps, _ = project(slug)
+        st = call("rk_stage_status", {"project": slug}, ctx)
+        if runs is not None:
+            rs = call("rk_run_status", {"project": slug}, ctx)
+            run, stepping, requested = rs["run"], rs["stepping"], rs["requested"]
+        else:
+            run, stepping, requested = latest_run(ps), False, None
+        run_active = run is not None and run["status"] not in TERMINAL_RUN_STATES
+        intake = intake_of(ps)
+        paper_type = intake.paper_type if intake else ps.meta("paper_type")
+        try:
+            names = stages_for(paper_type)
+        except ValueError:  # no paper type yet: the discovery stages every type starts with
+            names = list(DISCOVERY)
+        rows, edges, current = {s["stage"]: s for s in st["stages"]}, st["edges"], st["current"]
+        graph = []
+        for name in names:
+            row = rows.get(name)
+            if row is None:  # a later stage: Plan 5 runs it
+                graph.append({"stage": name, "status": "plan5"})
+                continue
+            if row["status"] == "passed":
+                status = "passed"
+            elif name == current and (row["attempt"] > 0 or run_active):
+                status = "active"
+            else:
+                status = "pending"
+            used = [{"edge": e, "to": e.split("->", 1)[1], **v, "limit": EDGE_LIMIT} for e, v in edges.items()
+                    if e.split("->", 1)[0] == name and (v["count"] or v["allowed"])]
+            graph.append({"stage": name, "status": status, "state": row["status"], "attempt": row["attempt"],
+                          "waiting_checkpoint": row["waiting_checkpoint"], "last_gate": row["last_gate"],
+                          "back_edges": used})
+        allowed = [edge_name(*e) for e in sorted(BACK_EDGES, key=lambda e: DISCOVERY.index(e[0]))]
+        back_edges = [{"edge": e, "from": e.split("->", 1)[0], "to": e.split("->", 1)[1],
+                       "count": edges.get(e, {}).get("count", 0), "allowed": edges.get(e, {}).get("allowed", 0),
+                       "limit": EDGE_LIMIT} for e in [*allowed, *(e for e in edges if e not in allowed)]]
+        gate = rows[current]["last_gate"] if current else None
+        return {"project": slug, "paper_type": paper_type, "intake": intake is not None,
+                "discovery_mode": intake.discovery_mode if intake else None,
+                "production_mode": intake.production_mode if intake else None, "current": current,
+                "graph": graph, "back_edges": back_edges, "edge_limit": EDGE_LIMIT,
+                "last_gate": {"stage": current, **gate} if gate else None, "run": run, "run_active": run_active,
+                "stepping": stepping, "requested": requested, "runs_available": runs is not None}
+
+    @r.get("/ui/api/stages")
+    def stages(request: Request) -> JSONResponse:
+        """The project's stage sequence: each discovery stage passed, active or pending, the later ones ``plan5``;
+        the back-edges, the current stage's last gate and the run."""
+        return ok(stage_graph(request.query_params.get("project", ""), ctx_dep(request)))
+
+    @r.post("/ui/api/run")
+    def run_start(body: RunStartBody, request: Request) -> JSONResponse:
+        return ok(call("rk_run_start", body.model_dump(), ctx_dep(request)))
+
+    @r.post("/ui/api/run/{action}")
+    def run_control(action: Literal["pause", "resume", "cancel"], body: ProjectBody,
+                    request: Request) -> JSONResponse:
+        return ok(call(f"rk_run_{action}", {"project": body.project}, ctx_dep(request)))
+
+    @r.get("/ui/api/topics")
+    def topic_list(request: Request, attempt: int | None = None) -> JSONResponse:
+        """The topics of ``attempt`` (default: the attempt the topics stage shows) with their gaps' evidence quotes
+        and closest works."""
+        ctx = ctx_dep(request)
+        slug = request.query_params.get("project", "")
+        ps, lib = project(slug)
+        if attempt is None:
+            listed = call("rk_topic_list", {"project": slug}, ctx)
+            attempt, rows = listed["attempt"], listed["topics"]
+        else:
+            rows = topics(ps, attempt)
+        return ok({"project": slug, "attempt": attempt, "topics": _topic_views(ps, lib, rows)})
+
+    @r.get("/ui/api/rq")
+    def rq_get(request: Request, rq_id: str | None = None) -> JSONResponse:
+        """The research question ``rq_id`` (default: the one the question stage shows) with its three-step sentence,
+        hypotheses, topic and already-done result."""
+        ctx = ctx_dep(request)
+        slug = request.query_params.get("project", "")
+        ps, _ = project(slug)
+        if rq_id is None:
+            got = call("rk_rq_get", {"project": slug}, ctx)
+            rq, hyps = got["rq"], got["hypotheses"]
+        else:
+            rq = rq_row(ps, rq_id)
+            if rq is None:
+                raise HTTPException(status_code=404, detail=f"no research question {rq_id}")
+            hyps = hypotheses(ps, rq_id)
+        sentence = topic = None
+        if rq is not None:
+            sentence = ThreeStep.model_validate(rq["body"]["three_step"]).sentence()
+            t = ps.db.execute("SELECT id, title FROM topics WHERE id=?", (rq["topic_id"],)).fetchone()
+            topic = dict(t) if t else None
+        return ok({"project": slug, "rq": rq, "hypotheses": hyps, "sentence": sentence, "topic": topic})
+
     # ---- drafts -----------------------------------------------------------------------------------------------
     @r.get("/ui/api/drafts")
     def drafts(request: Request) -> JSONResponse:
@@ -432,7 +586,7 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
 
         async def pump() -> None:
             nonlocal last
-            shown = None
+            shown = run_shown = None
             while True:
                 try:
                     for ev in await run_in_threadpool(_event_rows, ps, last):
@@ -442,6 +596,11 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
                             cp, open_cps = await run_in_threadpool(
                                 lambda cid=ev["entity_id"]: (get_checkpoint(ps, cid), list_checkpoints(ps, "open")))
                             await send({"type": "checkpoint", "checkpoint": cp, "open_count": len(open_cps)})
+                    if runs is not None:
+                        run_status = _jsonable(await run_in_threadpool(call, "rk_run_status", {"project": slug}, ctx))
+                        if run_status != run_shown:
+                            run_shown = run_status
+                            await send({"type": "run", "status": run_status})
                     svc = browser()
                     status = (await run_in_threadpool(svc.status, ctx)) if svc is not None and svc.running else \
                         {"running": False}
