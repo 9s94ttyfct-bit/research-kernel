@@ -105,7 +105,10 @@ topics→gaps and question→topics may each be used twice per project; after th
 degrades.
 
 - **D1 (guided).** The Lead drives the stages with you in the Workbench Chat: it runs a stage, shows what it found with
-  its evidence, records your feedback as an exploration round and moves on when you are satisfied.
+  its evidence, records your feedback as an exploration round and moves on when you are satisfied. A stage call
+  (`rk_stage_run`, `rk_stage_advance`) runs in the background and returns at once: a stage takes minutes. The Lead
+  follows it with `rk_stage_status` (`d1.running`, then `d1.last` with the outcome and its reason) and never starts
+  another while one runs. Stage calls are for D1 projects only, and no D2 run can start while one runs.
 - **D2 (autonomous).** `uv run rk run` runs the stages in `rk serve` without the Lead and stops only at checkpoints. A
   run session has a 12 h wall clock and 40 role tasks per open stage (landscape, gaps, topics); hourly CLI caps pause it
   until the next slot. Time spent waiting for your answer does not count: an answer that comes after the session's
@@ -114,15 +117,18 @@ degrades.
   new run (and says so), which goes on from the stages that already passed.
 
 ```bash
-rk project intake --audience "…" --paper-type critical_review --mode d2 --production p2 --topics-n 6
-rk run perovskite --until question     # or --until topics; the query comes from the project's title and field
-rk run status                          # the run and its stages; also pause, resume, cancel
-rk stage status                        # status, attempts, waits and back-edges used per stage
-rk topic list                          # candidate topics with their gaps and closest works
-rk checkpoint list / rk checkpoint answer <id> --json '{…}'
+uv run rk project intake --audience "…" --paper-type critical_review --mode d2 --production p2 --topics-n 6
+uv run rk run perovskite --until question     # or --until topics; the query comes from the title and field
+uv run rk run status                          # the run and its stages; also pause, resume, cancel
+uv run rk stage status                        # status, attempts, waits and back-edges used per stage
+uv run rk topic list                          # candidate topics with their gaps and closest works
+uv run rk checkpoint list / uv run rk checkpoint answer <id> --json '{…}'
 ```
 
-The checkpoints you answer (only a human can, in the Workbench Checkpoints page or with `rk checkpoint answer`):
+A run needs two judges of different known vendors, neither the vendor of the Scout, GapMiner or Ideator;
+`uv run rk run` refuses to start without them (`judges_missing`).
+
+The checkpoints you answer (only a human can, in the Workbench Checkpoints page or with `uv run rk checkpoint answer`):
 
 | Checkpoint | When | Answers |
 |---|---|---|
@@ -134,12 +140,16 @@ The checkpoints you answer (only a human can, in the Workbench Checkpoints page 
 - **A verified gap means its evidence chain was checked, not that it is new.** The kinds are contradictions (two
   verbatim quotes judged "contradicted" by V-SUPPORT), citation distortions (a citing quote judged unsupported by
   passages the Kernel picks from the cited work), stated limitations (a verbatim quote in the last 40 % of the text
-  that Triage finds no later work addressing), evidence-map holes (an empty cell whose targeted search found nothing)
-  and retracted works still cited. Absence is always worded "not found within the searched scope".
-- **V-NOVELTY is a reference only.** Each topic shows its closest works so you can judge overlap yourself. The kernel
-  refuses a novelty claim ("novel", "first study to", "never been studied", …) in every text the Ideator writes for a
-  topic or an RQ, and in the judges' differences: such an output is rerun. The already-done check of the RQ works the
-  same way: two judges of other vendors than the RQ's author must each quote the title or abstract.
+  that Triage finds no later work addressing), evidence-map holes (a cell of a map that placed at least half of the
+  works, next to placed works, with no work in it; Triage placed none of the targeted search's works) and retracted
+  works still cited. Absence is always worded "not found within the searched scope".
+- **V-NOVELTY is a reference only.** Each topic shows its closest works so you can judge overlap yourself; it never
+  stops a topic. The kernel refuses a novelty claim ("novel", "first study to", "never been studied", …) in every text
+  the Ideator writes for a topic or an RQ, and in the judges' differences: such an output is rerun.
+- **The already-done check gates the RQ** (unlike V-NOVELTY): two judges of other vendors than the RQ's author each
+  judge the closest works, quoting their title or abstract. A work both judge as answering the RQ sends the project back
+  to topics; a split asks you (P2) or counts as answered (P1). Only an RQ not found answered within the searched scope
+  can be approved.
 - **Models are configurable per role** (`drivers` in `config.toml`): the Scout, GapMiner and Ideator generate;
   `judge` and `judge_2` (V-SUPPORT, V-NOVELTY, the already-done check) and `triage` check, from other vendors.
 - A recorded run: `docs/demo/plan4-discovery.md`.

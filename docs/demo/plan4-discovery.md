@@ -142,8 +142,13 @@ a verdict on it"). The screenshot was taken with headless Chromium against the r
 
 **Answer (stand-in researcher):** approve topic 1.
 
+The CLI asks the person answering to confirm, and refuses without an interactive terminal. The stand-in ran it from a
+non-interactive shell, so it passed the gate the documented way for scripted answers, `--yes` with
+`RK_ALLOW_NONINTERACTIVE_ANSWER=1`; it is the same command a human would confirm by typing `y`:
+
 ```
-$ rk checkpoint answer chk_01M6TB5S49NWFDFD9R4W6JD540 --json '{"decision": "approve", "topic_id": "tpc_01M6TAHQ89M1EDV7N27QW0N7A5"}'
+$ RK_ALLOW_NONINTERACTIVE_ANSWER=1 uv run rk checkpoint answer chk_01M6TB5S49NWFDFD9R4W6JD540 --yes \
+    --json '{"decision": "approve", "topic_id": "tpc_01M6TAHQ89M1EDV7N27QW0N7A5"}'
 ```
 
 Why topic 1: it is the only critical review besides topic 6, which matches the intake. Topic 6's checklist aim overlaps
@@ -175,7 +180,8 @@ exists …". Three rival hypotheses, each with a falsification condition:
 **Answer (stand-in researcher):** approve.
 
 ```
-$ rk checkpoint answer chk_01M6TBD6SDGPH78BHJV54D3PRY --json '{"decision": "approve"}'
+$ RK_ALLOW_NONINTERACTIVE_ANSWER=1 uv run rk checkpoint answer chk_01M6TBD6SDGPH78BHJV54D3PRY --yes \
+    --json '{"decision": "approve"}'
 ```
 
 The question is scoped, honest about its search and falsifiable. The weakness: the 10 judged works do not include the
@@ -200,7 +206,8 @@ Wall time:
 - **Whole demo:** 64 min (05:30–06:34 UTC). This includes three crashed runs, two code fixes and a model download.
 - **The run that finished** (`run_01M6T8P2JDHVC32GPJ1YC70TE2`): 48 min. This includes a 2 min pause for the model
   switch and 76 s of human waits.
-- **Per stage:** landscape 6.5 min; gaps attempt 5 18.7 min; topics 12.6 min; question 3.3 min.
+- **Per stage:** landscape 6.5 min (run 1; landscape passed there, and the later runs started from gaps); gaps
+  attempt 5 18.7 min, topics 12.6 min and question 3.3 min (the run that finished).
 
 ## What failed or was weak (calibration input)
 
@@ -209,8 +216,9 @@ Wall time:
 1. **Run 1 crashed in gaps:** `PydanticSerializationError: … surrogates not allowed`. pdfium returns UTF-16 code units,
    so a PDF with characters outside the BMP (e.g. math italic letters) produced lone surrogates, and saving its text
    layer failed. Fix `fix(text): lone surrogates in extracted PDF text no longer break the text layer`: surrogate pairs
-   are joined and lone ones become U+FFFD. A failed run cannot be resumed (`rk run resume` → `no_run`), so a new run
-   was started. It continued from gaps.
+   are joined and lone ones become U+FFFD. A failed run could not be resumed then (`rk run resume` → `no_run`), so a
+   new run was started. It continued from gaps. (Since the Plan 4 fix wave, `rk run resume` on a failed run starts the
+   new run itself and says so.)
 2. **Run 2 crashed in gaps:** `HttpError: HTTP 500` from Europe PMC full text. Only the arXiv and OA-URL channels caught
    HTTP errors. Fix `fix(fulltext): an HTTP error on one channel falls through to the next`.
 3. **Run 3 crashed in gaps:** `JSONDecodeError`. For the same item, BioC answered 200 with a body that starts like JSON
