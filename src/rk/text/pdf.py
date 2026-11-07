@@ -40,6 +40,12 @@ def _visible(tp_raw, i: int, crop: tuple[float, float, float, float]) -> bool:
     return not (fill and (min(r.value, g.value, b.value) >= WHITE_MIN or a.value == 0))
 
 
+def _from_utf16_units(s: str) -> str:
+    """pdfium returns one UTF-16 code unit per character: join surrogate pairs (characters outside the BMP, e.g.
+    math italic letters) and replace lone surrogates, which UTF-8 cannot encode, with U+FFFD."""
+    return s.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+
+
 def _page_text(page) -> str:
     tp = page.get_textpage()
     crop = tuple(page.get_cropbox())
@@ -56,7 +62,7 @@ def _page_text(page) -> str:
                 continue
             if ch.isspace() or _visible(tp.raw, i, crop):
                 out.append(ch)
-        return "".join(out).replace("\r\n", "\n")
+        return _from_utf16_units("".join(out)).replace("\r\n", "\n")
     finally:
         tp.close()
 

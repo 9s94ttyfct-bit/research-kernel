@@ -60,3 +60,17 @@ def test_layer_roundtrip(tmp_path):
     layer = extract_pdf(DOCS / "two_pages.pdf")
     layer.save(tmp_path / "l.json")
     assert TextLayer.load(tmp_path / "l.json") == layer
+
+
+def test_pdf_utf16_surrogates_pair_up_or_become_replacement(tmp_path, monkeypatch):
+    """pdfium hands out UTF-16 code units: a pair is one character outside the BMP; a lone surrogate (which UTF-8
+    cannot encode and once broke saving the layer) becomes U+FFFD."""
+    from rk.text import pdf
+
+    units = {0: 0xD835, 1: 0xDC65, 2: 0xD800}  # U+1D465 MATHEMATICAL ITALIC SMALL X as a pair, then a lone surrogate
+    real = pdf.raw.FPDFText_GetUnicode
+    monkeypatch.setattr(pdf.raw, "FPDFText_GetUnicode", lambda tp, i: units.get(i) or real(tp, i))
+    layer = extract_pdf(DOCS / "two_pages.pdf")
+    assert layer.pages[0].text.startswith("\U0001d465\ufffd")
+    layer.save(tmp_path / "l.json")
+    assert TextLayer.load(tmp_path / "l.json") == layer
