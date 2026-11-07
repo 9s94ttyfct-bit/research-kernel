@@ -26,8 +26,14 @@ from rk.production.screening import (
 from rk.production.search import SearchResult, deduplicated
 from rk.tools.builtin import build_registry
 from rk.tools.registry import ToolError
-from tests.discovery_fakes import FakeSources, ScriptedExecutor
-from tests.production_fakes import a_protocol, make_frozen_project, production_ctx
+from tests.discovery_fakes import FakeSources
+from tests.production_fakes import (
+    CappedAt,
+    Screeners,
+    a_protocol,
+    make_frozen_project,
+    production_ctx,
+)
 
 TA = "title_abstract"
 SR_P1 = {"paper_type": "systematic_review", "production_mode": "auto"}
@@ -40,40 +46,6 @@ def env(tmp_home, replay_http, request):
     k, ps, lib, _ = make_frozen_project(tmp_home, replay_http, **getattr(request, "param", {}))
     yield k, ps, lib
     k.close()
-
-
-class Screeners(ScriptedExecutor):
-    """Screeners decide by the record's title, which ends ``[a/b]``: screener_a's and screener_b's decision (yes, no,
-    unclear; ``-`` leaves the record out of the output), unless ``overrides[title]`` gives another ``"a/b"``.
-    ``extra[role]`` is added to that role's first output (e.g. a decision on a record not in the batch). Judges vote by
-    title: ``votes[title] = (judge, judge_2)``."""
-
-    def __init__(self, *, votes: dict[str, tuple[str, str]] | None = None, extra: dict[str, list[dict]] | None = None,
-                 overrides: dict[str, str] | None = None, **kw):
-        super().__init__({}, **kw)
-        self.votes, self.extra, self.overrides = votes or {}, extra or {}, overrides or {}
-
-    def says(self, title: str, role: str) -> str:
-        pair = self.overrides.get(title) or title[title.rindex("[") + 1:-1]
-        a, b = pair.split("/")
-        return a if role == "screener_a" else b
-
-    def run(self, role, instructions, inputs, output_schema, **kw):
-        if output_schema.__name__ == "ScreenOut":
-            out = []
-            for r in inputs["records"]:
-                inc = self.says(r["title"], role)
-                if inc != "-":
-                    out.append({"record_id": r["record_id"], "include": inc,
-                                "criterion_id": "I1" if inc == "yes" else "E1", "reason": f"{role} read it"})
-            self.script[(role, "ScreenOut")] = [{"decisions": out + self.extra.pop(role, [])}]
-        elif output_schema.__name__ == "VoteOut":
-            choice = self.votes[inputs["subject"]["record"]["title"]][0 if role == "judge" else 1]
-            self.script[(role, "VoteOut")] = [{"choice": choice, "reason": f"{role} says {choice}"}]
-        return super().run(role, instructions, inputs, output_schema, **kw)
-
-    def of(self, role: str) -> list[dict]:
-        return [c for c in self.calls if c["role"] == role]
 
 
 def _work(title: str, i: int, *, language: str | None = None) -> ItemIn:
@@ -95,6 +67,7 @@ def _freeze(ps, **overrides) -> Protocol:
 
 def _ctx(env, ex, src, *, attempt: int = 1):
     k, ps, lib = env
+    src.lib = src.lib or lib  # the full-text phase asks the sources per item
     return production_ctx(k, ps, lib, ex, attempt=attempt, sources=src)
 
 
@@ -245,7 +218,7 @@ def test_scoping_sample_switches_to_dual_above_10_percent(env, b):
     ex = Screeners()
     out = SearchScreenWorker().run(_ctx(env, ex, src))
 
-    (note,) = screening_notes(ps, 1, kind="scoping_sample")
+    (note,) = screening_notes(ps, 1, kind="scoping_sample", phase=TA)
     assert (len(note["sample"]), note["disagreements"]) == (2, 0 if b == "yes" else 2)
     assert note["switched"] is (b == "no")
     b_records = [r["record_id"] for c in ex.of("screener_b") for r in c["inputs"]["records"]]
@@ -268,7 +241,7 @@ def test_scoping_sample_switches_to_dual_above_10_percent(env, b):
     fresh = Screeners()
     SearchScreenWorker().run(_ctx(env, fresh, src, attempt=2))
     assert _sizes(fresh, "screener_b")[0] == 2  # screened again, not carried
-    (note2,) = screening_notes(ps, 2, kind="scoping_sample")
+    (note2,) = screening_notes(ps, 2, kind="scoping_sample", phase=TA)
     item |= {r["id"]: r["item_id"] for r in store.records(ps, 2)}
     assert [item[r] for r in note2["sample"]] == [item[r] for r in note["sample"]]
     assert note["protocol_hash"] == store.protocol_hash(body.model_dump(mode="json"))
@@ -411,18 +384,6 @@ def test_incomplete_search_blocks_systematic_screening(env, monkeypatch):
 
 
 # ---- resuming an interrupted attempt ----
-class CappedAt(Screeners):
-    """``Screeners`` whose ``role`` hits its hourly call cap (``RateCapped``) at its ``n``-th call."""
-
-    def __init__(self, role: str, n: int, **kw):
-        super().__init__(**kw)
-        self.cap_role, self.cap_n = role, n
-
-    def run(self, role, instructions, inputs, output_schema, **kw):
-        if role == self.cap_role and len(self.of(role)) + 1 == self.cap_n:
-            raise RateCapped(role, 60.0)
-        return super().run(role, instructions, inputs, output_schema, **kw)
-
 
 def _sizes(ex: Screeners, role: str) -> list[int]:
     return [len(c["inputs"]["records"]) for c in ex.of(role)]
