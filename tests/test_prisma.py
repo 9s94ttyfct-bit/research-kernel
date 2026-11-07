@@ -14,13 +14,9 @@ from rk.library.models import Ids, ItemIn
 from rk.net.http import HttpError
 from rk.orchestrator.state import record_ran
 from rk.production import screening, store
-from rk.production.screening import (
-    FULLTEXT_CHARS,
-    SearchScreenWorker,
-    fulltext_excerpt,
-    screening_notes,
-)
+from rk.production.screening import FULLTEXT_CHARS, SearchScreenWorker, fulltext_excerpt
 from rk.production.search import deduplicated
+from rk.production.store import screening_notes
 from rk.verify.prisma import check_prisma, check_selection_reasons, flow, prisma_counts
 from tests.discovery_fakes import FakeSources
 from tests.production_fakes import (
@@ -220,11 +216,14 @@ def test_full_text_screening_rules_match_title_abstract(env):
     works = [_work(f"Aspirin {p} [yes/yes]", i) for i, p in enumerate(pairs)] + [_work("Aspirin split [yes/no]", 20)]
     full_text = {f"Aspirin {p} [yes/yes]": p for p in pairs}
     ex = Screeners(full_text=full_text)
-    src = _sources(env, works, fulltexts={t: [PAPER] for t in full_text} | {"Aspirin split [yes/no]": [PAPER]})
+    long = PAPER.replace("A cohort of 100 people over 80.", "A cohort. " * 300)  # a long methods section
+    src = _sources(env, works, fulltexts={t: [long] for t in full_text} | {"Aspirin split [yes/no]": [long]})
     w = SearchScreenWorker()
     out = w.run(_ctx(env, ex, src))
     (ta_cp,) = list_checkpoints(ps, "open")  # the title/abstract disagreement comes first
     assert out.status == "waiting_human" and ta_cp["options"]["phase"] == TA and ex.of("screener_a", FT) == []
+    p = prisma_counts(ps, 1)  # nothing was sought for its full text yet: nothing counts as not retrieved
+    assert (p.sought, p.not_retrieved, p.abstract_only) == (8, 0, 0) and check_prisma(p)
 
     ta_cp = _answer(ps, ta_cp["id"], {"decisions": {r: "include" for r in ta_cp["options"]["record_ids"]}})
     out = w.on_answer(_ctx(env, ex, src), ta_cp)
@@ -382,3 +381,87 @@ def test_scoping_full_text_keeps_the_switch(env, b):
         assert len(ft_b) == 2 and [r["record_id"] for r in ft_b] == ft["sample"] and not ft["switched"]
         assert ft["seed"].endswith(":full_text")
     assert prisma_counts(ps, 1).included == 20 and SearchScreenWorker().gate(ps, 1).ok
+
+
+def _p2_after_ta(env, works, ex, src):
+    """Run an SR P2 attempt whose one title/abstract disagreement waits on you, and answer it: include."""
+    _, ps, _ = env
+    assert SearchScreenWorker().run(_ctx(env, ex, src)).status == "waiting_human"
+    (cp,) = list_checkpoints(ps, "open")
+    return _answer(ps, cp["id"], {"decisions": {r: "include" for r in cp["options"]["record_ids"]}})
+
+
+@pytest.mark.parametrize("env", [SR_P2], indirect=True)
+def test_rate_capped_full_text_screening_resumes_in_the_same_attempt(env):
+    _, ps, _ = env
+    _freeze(ps)
+    works = [_work("Aspirin split [yes/no]", 1)] + [_work(f"Aspirin {i} [yes/yes]", 10 + i) for i in range(3)]
+    src = _sources(env, works)
+    ta_cp = _p2_after_ta(env, works, Screeners(), src)
+    w = SearchScreenWorker()
+    capped = CappedAt("screener_b", 1)  # the full-text phase runs while your answer is applied: capped there
+    with pytest.raises(RateCapped):
+        w.on_answer(_ctx(env, capped, src), ta_cp)
+    assert [len(c["inputs"]["records"]) for c in capped.of("screener_a", FT)] == [4]
+
+    resumed = Screeners()  # the engine applies the answer again, in the same attempt
+    out = w.on_answer(_ctx(env, resumed, src), ta_cp)
+    assert out.status == "done", out.reason
+    assert resumed.of("screener_a", FT) == [] and [len(c["inputs"]["records"]) for c in
+                                                  resumed.of("screener_b", FT)] == [4]
+    assert len(store.decisions(ps, 1, phase=FT)) == 8 and len(_finals(env, FT)) == 4
+    assert len(screening_notes(ps, 1, kind="full_text_retrieval")) == 1
+    assert w.gate(ps, 1).ok
+
+
+@pytest.mark.parametrize("env", [SR_P2], indirect=True)
+def test_crash_between_checkpoints_opens_the_missing_one_when_resumed(env, monkeypatch):
+    _, ps, _ = env
+    _freeze(ps)
+    works = [_work("Aspirin split [yes/no]", 1)] + [_work(f"Aspirin d{i} [yes/yes]", 10 + i) for i in range(30)]
+    ex = Screeners(full_text={w.title: "yes/no" for w in works[1:]})
+    src = _sources(env, works)
+    ta_cp = _p2_after_ta(env, works, ex, src)
+    real, opened = screening._open, []
+
+    def crash_on_second(*a, **kw):
+        opened.append(a)
+        if len(opened) == 2:
+            raise RuntimeError("crash between two checkpoints")
+        return real(*a, **kw)
+
+    w = SearchScreenWorker()
+    monkeypatch.setattr(screening, "_open", crash_on_second)
+    with pytest.raises(RuntimeError):
+        w.on_answer(_ctx(env, ex, src), ta_cp)
+    monkeypatch.setattr(screening, "_open", real)
+    calls = len(ex.calls)
+
+    out = w.on_answer(_ctx(env, ex, src), ta_cp)
+    assert out.status == "waiting_human" and len(ex.calls) == calls  # nobody is asked again
+    first, second = [c for c in list_checkpoints(ps, "open") if c["options"]["phase"] == FT]
+    assert out.checkpoint_id == first["id"] and "30 screening disagreements" in out.reason
+    ids1, ids2 = first["options"]["record_ids"], second["options"]["record_ids"]
+    assert (len(ids1), len(ids2)) == (25, 5) and set(ids1) | set(ids2) == {_ids(env)[w.title] for w in works[1:]}
+    assert [(c["options"]["batch"], c["options"]["batches"]) for c in (first, second)] == [(1, 2), (2, 2)]
+    again = w.on_answer(_ctx(env, ex, src), ta_cp)  # no third checkpoint
+    assert again.checkpoint_id == first["id"] and len(list_checkpoints(ps, "open")) == 2
+
+
+@pytest.mark.parametrize("env", [SR_P1], indirect=True)
+def test_exclusion_without_a_screener_reason_is_unreasoned(env):
+    _, ps, _ = env
+    _freeze(ps)
+    works = [_work("Aspirin in [yes/yes]", 1), _work("Aspirin out [no/no]", 2), _work("Aspirin late [yes/yes]", 3),
+             _work("Aspirin vague [yes/yes]", 4)]
+    ex = Screeners(full_text={"Aspirin late [yes/yes]": "no/no", "Aspirin vague [yes/yes]": "no/no"},
+                   reasons={("Aspirin out [no/no]", TA): "", ("Aspirin late [yes/yes]", FT): ""},
+                   criteria={("Aspirin late [yes/yes]", FT): None, ("Aspirin vague [yes/yes]", FT): None})
+    w = SearchScreenWorker()
+    assert w.run(_ctx(env, ex, _sources(env, works))).status == "done"
+    p = prisma_counts(ps, 1)
+    # "late": excluded at full text with neither a reason nor a criterion; "vague": a reason but no criterion
+    assert p.unreasoned_ta == 1 and p.excluded_ft == {"": 1, "no criterion named": 1}
+    assert check_prisma(p) == ["1 title/abstract exclusion has no reason", "1 full-text exclusion has no reason"]
+    gate = w.gate(ps, 1)
+    assert not gate.ok and gate.failures == [f"V-PRISMA: {f}" for f in check_prisma(p)]

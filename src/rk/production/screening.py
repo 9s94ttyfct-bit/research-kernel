@@ -11,7 +11,7 @@ rules), V-PRISMA and the gate.
    back to ``protocol`` with that reason, in P1 and P2. A search the strategy could not finish
    (``SearchResult.incomplete``, kept in the search log, each naming its source and query) sends a systematic or
    scoping review back to ``protocol`` too ("narrow it or drop the source"; the edge limits apply), here and when an
-   answer is applied (``blocks_on_incomplete_search``). A critical review or research proposal goes on: the
+   answer is applied (``reports_prisma``: the PRISMA paper types). A critical review or research proposal goes on: the
    incomplete searches are noted as a limitation (``incomplete_searches``) and named in the stage's reason.
 3. A record in a language outside the protocol's ``languages`` (``language_exclusions``) is excluded without
    screening: final ``no``, decided by ``rule``, reason ``"language"``.
@@ -49,7 +49,11 @@ rules), V-PRISMA and the gate.
    is the vote or human final of a disagreement when it was made on exactly the carried decisions
    (``Carried.settled``: every screener's decision carried, none made after it); a rerun of an attempt that ran to
    completion screens afresh. At full text a decision is carried only when it was made on the same kind of text (a
-   full text, or the abstract alone).
+   full text, or the abstract alone). Within one attempt a phase is resumable too: in P2 the full-text phase runs
+   while an answer is applied, and an interruption there (a rate cap, a budget, a crash) applies the answer again in
+   the same attempt. A phase run again keeps the attempt's own screener decisions and finals, screens only the
+   records that have neither a final nor a checkpoint, and opens checkpoints only for the disagreements none holds
+   yet (``_screen_phase``).
 9. Full text (``_full_text``, once the title/abstract phase is settled): every title/abstract include's full text is
    sought through ``sources.fulltext`` inside the per-item boundary (``rk.discovery.boundary.per_item``: a source,
    IO or parse failure is added to the record's ``problem``, never fatal). A record with a full text is
@@ -69,7 +73,6 @@ rules), V-PRISMA and the gate.
 
 from __future__ import annotations
 
-import json
 import random
 import re
 from collections import Counter
@@ -90,7 +93,13 @@ from rk.fulltext import latest_snapshot
 from rk.llm.drivers import DriverSpec
 from rk.llm.vendors import vendor_of
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
-from rk.production.models import Include, Protocol, ScreeningPhase
+from rk.production.models import (
+    FULL_TEXT,
+    PHASE_WORDS,
+    TITLE_ABSTRACT,
+    Include,
+    Protocol,
+)
 from rk.production.resume import Carried, carried_screening, mark_protocol
 from rk.production.search import (
     check_record_cap,
@@ -102,21 +111,20 @@ from rk.production.search import (
 )
 from rk.production.store import (
     add_decision,
+    add_screening_note,
     decisions,
     finals,
     frozen_protocol,
     record_row,
+    retrieval_note,
+    screening_notes,
     set_final,
     set_record,
 )
 from rk.production.vote import vote
-from rk.store.events import NewEvent
 from rk.store.project import ProjectStore
 from rk.verify.prisma import check_prisma, check_selection_reasons, flow, prisma_counts
 
-TITLE_ABSTRACT: ScreeningPhase = "title_abstract"
-FULL_TEXT: ScreeningPhase = "full_text"
-PHASE_WORDS: dict[str, str] = {"title_abstract": "title/abstract", "full_text": "full-text"}
 KIND = "screening_disagreements"
 BATCH = 25  # records per screener task, and disagreements per checkpoint
 CHOICES = ("include", "exclude")
@@ -124,7 +132,8 @@ CONSERVATIVE = "exclude"
 SCREENERS = ("screener_a", "screener_b")
 SAMPLE_PERCENT = 10  # the scoping review's dual sample, rounded up
 SWITCH_PERCENT = 10  # more differences on included-or-not than this share of the sample: dual for the rest
-ABSTRACT_SHOWN = 800  # characters of an abstract (or a full-text excerpt) a disagreement checkpoint shows
+ABSTRACT_SHOWN = 800  # characters of an abstract a disagreement checkpoint shows
+EXCERPT_SHOWN = 2400  # characters of a full-text excerpt a disagreement checkpoint shows, shared by its sections
 FULLTEXT_CHARS = 6000  # characters of a full text a full-text screener reads
 NO_STUDY = "no study met the criteria"
 
@@ -169,15 +178,10 @@ def screening_mode(paper_type: str) -> ScreeningMode:
     return MODES.get(paper_type, "single")
 
 
-def blocks_on_incomplete_search(paper_type: str) -> bool:
-    """Whether an incomplete search keeps ``search_screen`` from completing (the PRISMA paper types: systematic and
-    scoping reviews); the others go on and record it as a limitation."""
-    return paper_type in PRISMA_TYPES
-
-
 def reports_prisma(paper_type: str) -> bool:
-    """Whether the paper type reports PRISMA counts (V-PRISMA gates its screening): systematic and scoping reviews.
-    The others report the selection reasons instead."""
+    """Whether the paper type reports PRISMA counts (systematic and scoping reviews): V-PRISMA gates its screening and
+    an incomplete search keeps ``search_screen`` from completing. The others report the selection reasons instead,
+    and an incomplete search is a limitation."""
     return paper_type in PRISMA_TYPES
 
 
@@ -232,29 +236,7 @@ def dual_rule(a: str | None, b: str | None) -> Include | None:
 
 # ---- notes ----
 def _note(ctx: StageContext, phase: str | None, kind: str, **fields) -> None:
-    ctx.ps.apply(NewEvent(type="screening.noted", entity_id=None, actor_kind="kernel", actor=ctx.actor,
-                          payload={"attempt": ctx.attempt, "phase": phase, "kind": kind, **fields}))
-
-
-def screening_notes(ps: ProjectStore, attempt: int, *, kind: str | None = None,
-                    phase: str | None = None) -> list[dict]:
-    """What screening noted in the attempt, in order (for the PRISMA notes and the limitations): ``stray_decision``
-    (a decision on a record not in the batch, or a second one, ignored), ``failed_batch`` (a screener task gave no
-    output), ``missing_decision`` (a record a screener left undecided, also when asked again), ``scoping_sample``
-    (the scoping review's dual sample, its differences on included-or-not and whether it switched to dual screening),
-    ``incomplete_searches`` (no phase: the searches a critical review or research proposal could not finish,
-    a limitation) and ``full_text_retrieval`` (the record ids sought for their full text, and those ``retrieved``,
-    ``abstract_only`` and ``not_retrieved``; it also marks that the attempt reached the full-text phase)."""
-    rows = ps.db.execute("SELECT payload FROM events WHERE type='screening.noted' "
-                         "AND json_extract(payload, '$.attempt')=? ORDER BY seq", (attempt,))
-    notes = [json.loads(r["payload"]) for r in rows]
-    return [n for n in notes if (kind is None or n["kind"] == kind) and (phase is None or n["phase"] == phase)]
-
-
-def excluded_by_disagreement(ps: ProjectStore, attempt: int, phase: ScreeningPhase) -> list[dict]:
-    """The finals of the records a P1 vote on a screening disagreement excluded (PRISMA lists them apart, and the
-    limitations name the recall loss)."""
-    return [f for f in finals(ps, attempt, phase=phase) if f["decided_by"] == "vote" and f["include"] == "no"]
+    add_screening_note(ctx.ps, ctx.attempt, phase, kind, actor=ctx.actor, **fields)
 
 
 # ---- screening ----
@@ -414,19 +396,26 @@ def _batch(ctx: StageContext, role: str, phase: str, batch: list[str], records: 
     return [x for x in batch if x not in got]
 
 
+def _decision(rid: str, row: dict) -> ScreenDecision:
+    return ScreenDecision(record_id=rid, include=row["include"], criterion_id=row["criterion"], reason=row["reason"])
+
+
 def _screen(ctx: StageContext, role: str, phase: str, records: dict[str, dict], context: dict,
-            carried: dict[str, dict]) -> dict[str, ScreenDecision]:
-    """``role``'s decisions on ``records`` (record id -> input): first those ``carried`` over from an interrupted
-    attempt (record id -> decision row), then the others in batches of ``BATCH``. The records left undecided go once
-    more, in new batches; those still undecided are noted and get the record's ``problem``."""
+            carried: dict[str, dict], own: dict[str, dict], settled: set[str]) -> dict[str, ScreenDecision]:
+    """``role``'s decisions on ``records`` (record id -> input): first its ``own`` decisions this attempt already
+    stored (record id -> decision row: the phase is run again), then those ``carried`` over from an interrupted
+    attempt (record id -> decision row), then the others in batches of ``BATCH``, except the ``settled`` records (a
+    final or a checkpoint already holds them), which are not asked again. The records left undecided go once more, in
+    new batches; those still undecided are noted and get the record's ``problem``."""
     got: dict[str, ScreenDecision] = {}
     for rid in records:
-        if (row := carried.get(rid)) is not None:
-            got[rid] = ScreenDecision(record_id=rid, include=row["include"], criterion_id=row["criterion"],
-                                      reason=row["reason"])
+        if (row := own.get(rid)) is not None:
+            got[rid] = _decision(rid, row)
+        elif (row := carried.get(rid)) is not None:
+            got[rid] = _decision(rid, row)
             add_decision(ctx.ps, ctx.attempt, rid, phase, role, row["include"], row["reason"], row["criterion"],
                          actor=ctx.actor, actor_kind="kernel", carried_from=row["carried_from"])
-    pending = [r for r in records if r not in got]
+    pending = [r for r in records if r not in got and r not in settled]
     for _ in range(2):
         left: list[str] = []
         for i in range(0, len(pending), BATCH):
@@ -441,10 +430,13 @@ def _screen(ctx: StageContext, role: str, phase: str, records: dict[str, dict], 
 
 
 def _finalize(ctx: StageContext, phase: str, rids: list[str], dual: set[str], a: dict[str, ScreenDecision],
-              b: dict[str, ScreenDecision]) -> list[str]:
-    """Write the final of every record the rules settle; returns the disagreements, in order."""
+              b: dict[str, ScreenDecision], settled: set[str]) -> list[str]:
+    """Write the final of every record the rules settle, except the ``settled`` ones (a final or a checkpoint already
+    holds them); returns the disagreements, in order."""
     disagreements: list[str] = []
     for rid in rids:
+        if rid in settled:
+            continue
         da, db = a.get(rid), b.get(rid)
         if rid in dual:
             inc = dual_rule(_include(a, rid), _include(b, rid))
@@ -507,10 +499,16 @@ def _prompt(ctx: StageContext, protocol: Protocol, phase: str, record_ids: list[
             label = {"sections": "Full text (abstract, methods, results)", "whole_text": "Full text (its beginning)",
                      "abstract_only": "Abstract only (no full text)"}[rec["text_kind"]]
             text, empty = rec["text"], "(no text)"
+            if rec["text_kind"] == "sections":  # every section keeps its share of the room
+                shown = fulltext_excerpt(text, EXCERPT_SHOWN)[0]
+            else:
+                shown = text[:EXCERPT_SHOWN] + "…" if len(text) > EXCERPT_SHOWN else text
         else:
             label, text, empty = "Abstract", rec["abstract"], "(no abstract)"
-        text = text[:ABSTRACT_SHOWN] + "…" if len(text) > ABSTRACT_SHOWN else text or empty
-        lines += ["", f"- {rid}: {rec['title']} ({meta}; language {rec['language']})", f"  {label}: {text}"]
+            shown = text[:ABSTRACT_SHOWN] + "…" if len(text) > ABSTRACT_SHOWN else text
+        body = (shown or empty).splitlines() or [empty]
+        lines += ["", f"- {rid}: {rec['title']} ({meta}; language {rec['language']})", f"  {label}: {body[0]}"]
+        lines += [f"    {line}" for line in body[1:]]
         lines += [f"  {_said(v['screener'], v['include'], v['criterion'], v['reason'])}" for v in _view_of(views, rid)]
     lines += ["", ('Decide each record: {"decisions": {"<record_id>": "include" | "exclude", ...}}, one decision for '
                    "every record above and for no other.")]
@@ -602,8 +600,8 @@ def _summary(ps: ProjectStore, attempt: int, paper_type: str, incomplete: list[s
     """The stage's reason: both phases' counts, the full-text retrieval, and the PRISMA flow (systematic and scoping
     reviews) or whether the selection reasons are complete (the others)."""
     parts = [_phase_summary(ps, attempt, TITLE_ABSTRACT)]
-    if noted := screening_notes(ps, attempt, kind="full_text_retrieval"):
-        n = {k: len(noted[-1][k]) for k in ("sought", "retrieved", "abstract_only", "not_retrieved")}
+    if noted := retrieval_note(ps, attempt):
+        n = {k: len(noted[k]) for k in ("sought", "retrieved", "abstract_only", "not_retrieved")}
         parts.append(f"full text: {n['sought']} sought, {n['retrieved']} retrieved, {n['abstract_only']} assessed on "
                      f"the abstract only, {n['not_retrieved']} not retrieved")
         parts.append(_phase_summary(ps, attempt, FULL_TEXT))
@@ -643,7 +641,7 @@ class SearchScreenWorker:
         if cap:
             return StageOutcome("back_edge", to="protocol", reason=cap)
         if result.incomplete:
-            if blocks_on_incomplete_search(intake.paper_type):
+            if reports_prisma(intake.paper_type):
                 return StageOutcome("back_edge", to="protocol", reason=_incomplete_block(result.incomplete))
             _note(ctx, None, "incomplete_searches", searches=result.incomplete)  # a limitation
         return self._title_abstract(ctx, intake, protocol, row["frozen_hash"], result.record_ids, result.incomplete)
@@ -664,17 +662,21 @@ class SearchScreenWorker:
         return self._screen_phase(ctx, intake, protocol, protocol_hash, phase, eligible, inputs, carried, incomplete)
 
     def _full_text(self, ctx: StageContext, incomplete: list[str]) -> StageOutcome:
-        """Seek the full text of every title/abstract include, then screen those with a full text or an abstract.
-        An attempt that already got here (an answer applied again) only settles its full-text checkpoints."""
+        """Seek the full text of every title/abstract include (once per attempt: the retrieval note), then screen
+        those with a full text or an abstract. Run again in the same attempt (an answer applied again after an
+        interruption), it goes on from what the attempt stored."""
         ps, phase = ctx.ps, FULL_TEXT
-        if screening_notes(ps, ctx.attempt, kind="full_text_retrieval"):
-            return self._settle(ctx, phase, incomplete)
+        note = retrieval_note(ps, ctx.attempt)
+        if note is None:
+            ta = {f["record_id"]: f["include"] for f in finals(ps, ctx.attempt, phase=TITLE_ABSTRACT)}
+            kinds = {r["id"]: _retrieve(ctx, r) for r in deduplicated(ps, ctx.attempt) if ta.get(r["id"]) == "yes"}
+            _note(ctx, phase, "full_text_retrieval", sought=list(kinds),
+                  **{k: [r for r, got in kinds.items() if got == k] for k in ("retrieved", "abstract_only",
+                                                                             "not_retrieved")})
+            note = retrieval_note(ps, ctx.attempt)
         intake, prot = intake_of(ps), frozen_protocol(ps)
-        ta = {f["record_id"]: f["include"] for f in finals(ps, ctx.attempt, phase=TITLE_ABSTRACT)}
-        kinds = {r["id"]: _retrieve(ctx, r) for r in deduplicated(ps, ctx.attempt) if ta.get(r["id"]) == "yes"}
-        _note(ctx, phase, "full_text_retrieval", sought=list(kinds),
-              **{k: [r for r, got in kinds.items() if got == k] for k in ("retrieved", "abstract_only", "not_retrieved")})
-        rows = {rid: record_row(ps, rid) for rid, got in kinds.items() if got != "not_retrieved"}
+        unretrieved = set(note["not_retrieved"])
+        rows = {rid: record_row(ps, rid) for rid in note["sought"] if rid not in unretrieved}
         inputs = {rid: full_text_input(ctx, row) for rid, row in rows.items()}
         by_item = carried_screening(ps, ctx.stage, ctx.attempt, prot["frozen_hash"], phase)
         carried = {rid: _same_text(ps, c, row["retrieved"]) for rid, row in rows.items()
@@ -686,13 +688,20 @@ class SearchScreenWorker:
                       eligible: list[str], inputs: dict[str, dict], carried: dict[str, Carried],
                       incomplete: list[str]) -> StageOutcome:
         """Screen ``eligible`` (their screener ``inputs``) in ``phase`` by the paper type's mode, settle what the rules
-        settle and the disagreements (P2: checkpoints; P1: votes), reusing what is ``carried`` over."""
+        settle and the disagreements (P2: checkpoints; P1: votes), reusing what is ``carried`` over. Resumable within
+        the attempt: the attempt's own decisions are kept, a record with a final or a checkpoint is settled (neither
+        screened again nor finalized again), and only the disagreements no checkpoint holds get one."""
         ps = ctx.ps
         context = _context(protocol, phase, intake.paper_type)
+        own = {(d["record_id"], d["screener"]): d for d in decisions(ps, ctx.attempt, phase=phase)}
+        held = [cp for cp in _checkpoints(ps, ctx.stage, ctx.attempt, phase) if cp["options"]["replaces"] is None]
+        settled = ({f["record_id"] for f in finals(ps, ctx.attempt, phase=phase)}
+                   | {rid for cp in held for rid in cp["options"]["record_ids"]})
 
         def screen(role: str, ids: list[str]) -> dict[str, ScreenDecision]:
             return _screen(ctx, role, phase, {r: inputs[r] for r in ids}, context,
-                           {r: carried[r].decisions[role] for r in ids if r in carried and role in carried[r].decisions})
+                           {r: carried[r].decisions[role] for r in ids if r in carried and role in carried[r].decisions},
+                           {r: own[(r, role)] for r in ids if (r, role) in own}, settled)
 
         mode = screening_mode(intake.paper_type)
         if mode == "sampled" and phase == FULL_TEXT and any(
@@ -718,12 +727,13 @@ class SearchScreenWorker:
             if switched:
                 b |= screen("screener_b", rest)
             dual = taken | (set(rest) if switched else set())
-            _note(ctx, phase, "scoping_sample", protocol_hash=protocol_hash, seed=seed, sample=sample,
-                  disagreements=disagree,
-                  measure="differences on included-or-not (unclear and a missing decision count as include)",
-                  switched=switched)
+            if not screening_notes(ps, ctx.attempt, kind="scoping_sample", phase=phase):
+                _note(ctx, phase, "scoping_sample", protocol_hash=protocol_hash, seed=seed, sample=sample,
+                      disagreements=disagree,
+                      measure="differences on included-or-not (unclear and a missing decision count as include)",
+                      switched=switched)
         disagreements = []
-        for rid in _finalize(ctx, phase, eligible, dual, a, b):
+        for rid in _finalize(ctx, phase, eligible, dual, a, b, settled):
             c = carried.get(rid)
             done = c.settled(SCREENERS) if c is not None else None
             if done is not None and done["decided_by"] in ("vote", "human"):  # settled on exactly these decisions
@@ -731,18 +741,15 @@ class SearchScreenWorker:
                           actor=ctx.actor, carried_from=done["carried_from"])
             else:
                 disagreements.append(rid)
-        if disagreements and intake.production_mode == "collab":
+        if intake.production_mode == "collab":
             chunks = [disagreements[i:i + BATCH] for i in range(0, len(disagreements), BATCH)]
-            cids = [_open(ctx, protocol, phase, ids, batch=i + 1, batches=len(chunks))
-                    for i, ids in enumerate(chunks)]
-            return StageOutcome("waiting_human", checkpoint_id=cids[0],
-                                reason=f"{len(disagreements)} screening disagreements ({PHASE_WORDS[phase]}) await "
-                                       f"you in {len(cids)} checkpoint{'s' if len(cids) > 1 else ''}"
-                                       + _incomplete(incomplete))
-        views = _views(ps, ctx.attempt, phase)
-        for rid in disagreements:
-            _vote_on(ctx, phase, rid, context, inputs[rid], views)
-        return self._after_phase(ctx, phase, incomplete)
+            for i, ids in enumerate(chunks):  # numbered after the checkpoints the attempt already opened
+                _open(ctx, protocol, phase, ids, batch=len(held) + i + 1, batches=len(held) + len(chunks))
+        else:
+            views = _views(ps, ctx.attempt, phase)
+            for rid in disagreements:
+                _vote_on(ctx, phase, rid, context, inputs[rid], views)
+        return self._settle(ctx, phase, incomplete)
 
     def _after_phase(self, ctx: StageContext, phase: str, incomplete: list[str]) -> StageOutcome:
         """Every record of ``phase`` has its final decision: after title/abstract comes the full text, after the full
@@ -767,7 +774,7 @@ class SearchScreenWorker:
                                                  f"({checkpoint['kind']})")
         ps = ctx.ps
         incomplete = incomplete_searches(ps, ctx.attempt)
-        if incomplete and blocks_on_incomplete_search(intake_of(ps).paper_type):
+        if incomplete and reports_prisma(intake_of(ps).paper_type):
             return StageOutcome("back_edge", to="protocol", reason=_incomplete_block(incomplete))
         return self._settle(ctx, phase, incomplete, checkpoint)
 
@@ -794,9 +801,11 @@ class SearchScreenWorker:
                 why = _invalid(checkpoint["answer"], checkpoint["options"]["record_ids"])
                 return StageOutcome("waiting_human", checkpoint_id=mine,
                                     reason=f"your answer could not be applied: {why}")
+            waiting = sum(len(cp["options"]["record_ids"]) for cp in still)
             return StageOutcome("waiting_human", checkpoint_id=still[0]["id"],
-                                reason=f"{len(still)} screening disagreement checkpoint{'s' if len(still) > 1 else ''}"
-                                       f" ({PHASE_WORDS[phase]}) still open")
+                                reason=f"{waiting} screening disagreements ({PHASE_WORDS[phase]}) await you in "
+                                       f"{len(still)} checkpoint{'s' if len(still) > 1 else ''}"
+                                       + _incomplete(incomplete))
         return self._after_phase(ctx, phase, incomplete)
 
     def gate(self, ps: ProjectStore, attempt: int) -> GateResult:
@@ -810,12 +819,13 @@ class SearchScreenWorker:
         if missing := sum(1 for r in recs if r["id"] not in ta):
             failures.append(f"{missing} of {len(recs)} records have no title/abstract decision")
         sought = [r for r in recs if ta.get(r["id"]) == "yes"]
-        noted = screening_notes(ps, attempt, kind="full_text_retrieval")
-        looked = set(noted[-1]["sought"]) if noted else set()
+        note = retrieval_note(ps, attempt)
+        looked = set(note["sought"]) if note else set()
         if unsought := sum(1 for r in sought if r["id"] not in looked):
             failures.append(f"{unsought} of {len(sought)} title/abstract includes were not sought for their full text")
         ft = {f["record_id"]: f["include"] for f in finals(ps, attempt, phase=FULL_TEXT)}
-        reached = [r for r in sought if r["id"] in looked and (r["retrieved"] or r["abstract_only"])]
+        unretrieved = set(note["not_retrieved"]) if note else set()
+        reached = [r for r in sought if r["id"] in looked and r["id"] not in unretrieved]
         if missing := sum(1 for r in reached if r["id"] not in ft):
             failures.append(f"{missing} of {len(reached)} records assessed at full text have no full-text decision")
         if failures:  # the phases are not settled: PRISMA and the selection cannot be judged yet

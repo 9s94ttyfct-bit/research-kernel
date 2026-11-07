@@ -24,18 +24,22 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass, field
 
+from rk.production.models import FULL_TEXT, PHASE_WORDS, PHASES, TITLE_ABSTRACT
 from rk.production.search import (
     deduplicated,
     dropped_entries,
     incomplete_searches,
     search_counts,
 )
-from rk.production.store import decisions, finals, frozen_protocol
+from rk.production.store import (
+    decisions,
+    finals,
+    frozen_protocol,
+    retrieval_note,
+    voted_out,
+)
 from rk.store.project import ProjectStore
 
-TA, FT = "title_abstract", "full_text"
-PHASES = (TA, FT)
-PHASE_WORDS = {TA: "title/abstract", FT: "full-text"}
 VOTED_OUT = "screeners disagreed: excluded by the P1 vote (not reviewed by a human)"
 HUMAN_OUT = "screeners disagreed: excluded by you"
 NO_CRITERION = "no criterion named"
@@ -75,11 +79,21 @@ def _criteria(ps: ProjectStore) -> dict[str, str]:
             | {c["id"]: f"{c['id']}: {c['text']}" for c in elig["exclude"]})
 
 
+def _reasoned(final: dict, said: list[dict], phase: str) -> bool:
+    """Whether an exclusion has a reason. One the screeners made (``single``, ``agreement``) has the reason of a
+    screener who excluded it: a non-blank reason, or at full text the criterion it names (the final's own text only
+    quotes them); a vote's, your or a rule's exclusion its own reason."""
+    if final["decided_by"] in ("single", "agreement"):
+        return any((d["reason"] or "").strip() or (phase == FULL_TEXT and d["criterion"])
+                   for d in said if d["include"] == "no")
+    return bool((final["reason"] or "").strip())
+
+
 def _reason(final: dict, said: list[dict], labels: dict[str, str]) -> str:
-    """The reason a full-text exclusion is counted under: ``""`` without a reason."""
-    if not (final["reason"] or "").strip():
+    """The reason a full-text exclusion is counted under: ``""`` without a reason (``_reasoned``)."""
+    if not _reasoned(final, said, FULL_TEXT):
         return ""
-    if final["decided_by"] == "vote":
+    if voted_out(final):
         return VOTED_OUT
     if final["decided_by"] == "human":
         return HUMAN_OUT
@@ -89,16 +103,24 @@ def _reason(final: dict, said: list[dict], labels: dict[str, str]) -> str:
     return "; ".join(labels.get(c, c) for c in named) or NO_CRITERION
 
 
+def _said(ps: ProjectStore, attempt: int, phase: str) -> dict[str, list[dict]]:
+    """record id -> the screener decisions on it in ``phase``."""
+    out: dict[str, list[dict]] = {}
+    for d in decisions(ps, attempt, phase=phase):
+        out.setdefault(d["record_id"], []).append(d)
+    return out
+
+
 def prisma_counts(ps: ProjectStore, attempt: int) -> Prisma:
-    """The PRISMA flow of the attempt's ``search_screen``, each box counted from the stored records and finals."""
+    """The PRISMA flow of the attempt's ``search_screen``, each box counted from the stored records, finals and the
+    full-text retrieval note (a record counts as not retrieved or abstract-only only once its full text was sought)."""
     search = search_counts(ps, attempt)
     recs = {r["id"]: r for r in deduplicated(ps, attempt)}
-    ta = [f for f in finals(ps, attempt, phase=TA) if f["record_id"] in recs]
-    ft = [f for f in finals(ps, attempt, phase=FT) if f["record_id"] in recs]
-    sought = [recs[f["record_id"]] for f in ta if f["include"] == "yes"]
-    said: dict[str, list[dict]] = {}
-    for d in decisions(ps, attempt, phase=FT):
-        said.setdefault(d["record_id"], []).append(d)
+    ta = [f for f in finals(ps, attempt, phase=TITLE_ABSTRACT) if f["record_id"] in recs]
+    ft = [f for f in finals(ps, attempt, phase=FULL_TEXT) if f["record_id"] in recs]
+    sought = {f["record_id"] for f in ta if f["include"] == "yes"}
+    note = retrieval_note(ps, attempt) or {"not_retrieved": [], "abstract_only": []}
+    said_ta, said_ft = _said(ps, attempt, TITLE_ABSTRACT), _said(ps, attempt, FULL_TEXT)
     labels = _criteria(ps)
     ta_out = [f for f in ta if f["include"] == "no"]
     carried = (sum(1 for d in decisions(ps, attempt) if d["carried_from"] is not None)
@@ -106,15 +128,17 @@ def prisma_counts(ps: ProjectStore, attempt: int) -> Prisma:
     return Prisma(
         identified=search["identified"], duplicates_removed=search["duplicates_removed"], screened=len(ta),
         excluded_ta=len(ta_out), sought=len(sought),
-        not_retrieved=sum(1 for r in sought if not r["retrieved"] and not r["abstract_only"]),
+        not_retrieved=sum(1 for r in note["not_retrieved"] if r in sought),
         assessed_ft=len(ft),
-        excluded_ft=dict(Counter(_reason(f, said.get(f["record_id"], []), labels) for f in ft if f["include"] == "no")),
-        excluded_disagreement={p: sum(1 for f in fs if f["include"] == "no" and f["decided_by"] == "vote")
-                               for p, fs in ((TA, ta), (FT, ft))},
+        excluded_ft=dict(Counter(_reason(f, said_ft.get(f["record_id"], []), labels)
+                                 for f in ft if f["include"] == "no")),
+        excluded_disagreement={p: sum(1 for f in fs if voted_out(f)) for p, fs in ((TITLE_ABSTRACT, ta),
+                                                                                   (FULL_TEXT, ft))},
         included=sum(1 for f in ft if f["include"] == "yes"),
         excluded_language=sum(1 for f in ta_out if f["decided_by"] == "rule"),
-        abstract_only=sum(1 for r in sought if r["abstract_only"]),
-        unreasoned_ta=sum(1 for f in ta_out if not (f["reason"] or "").strip()),
+        abstract_only=sum(1 for r in note["abstract_only"] if r in sought),
+        unreasoned_ta=sum(1 for f in ta_out
+                          if not _reasoned(f, said_ta.get(f["record_id"], []), TITLE_ABSTRACT)),
         carried=carried, incomplete_searches=incomplete_searches(ps, attempt),
         dropped_entries=dropped_entries(ps, attempt))
 
@@ -171,8 +195,9 @@ def flow(p: Prisma) -> str:
 
 def check_selection_reasons(ps: ProjectStore, attempt: int) -> list[str]:
     """For the paper types without PRISMA counts: every selection decision carries its reason. A decision the
-    screeners made (``single``, ``agreement``) needs every screener's reason, and so a screener's decision; a vote's,
-    your or a rule's decision its own reason. ``[]`` when complete."""
+    screeners made (``single``, ``agreement``) needs every screener's reason; at title/abstract a record no screener
+    decided has the reason of the missing-decision rule (it goes on to the full text), at full text it has none. A
+    vote's, your or a rule's decision needs its own reason. ``[]`` when complete."""
     said: dict[tuple[str, str], list[dict]] = {}
     for d in decisions(ps, attempt):
         said.setdefault((d["record_id"], d["phase"]), []).append(d)
@@ -181,7 +206,7 @@ def check_selection_reasons(ps: ProjectStore, attempt: int) -> list[str]:
         for f in finals(ps, attempt, phase=phase):
             if f["decided_by"] in ("single", "agreement"):
                 ds = said.get((f["record_id"], phase), [])
-                ok = bool(ds) and all((d["reason"] or "").strip() for d in ds)
+                ok = all((d["reason"] or "").strip() for d in ds) and (bool(ds) or phase == TITLE_ABSTRACT)
             else:
                 ok = bool((f["reason"] or "").strip())
             if not ok:

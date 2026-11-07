@@ -17,15 +17,15 @@ from rk.production.resume import carry_attempts
 from rk.production.screening import (
     BATCH,
     SearchScreenWorker,
-    excluded_by_disagreement,
     include_differs,
     sample_size,
-    screening_notes,
     switches_to_dual,
 )
 from rk.production.search import SearchResult, deduplicated
+from rk.production.store import excluded_by_disagreement, screening_notes
 from rk.tools.builtin import build_registry
 from rk.tools.registry import ToolError
+from rk.verify.prisma import check_selection_reasons
 from tests.discovery_fakes import FakeSources
 from tests.production_fakes import (
     CappedAt,
@@ -272,6 +272,8 @@ def test_single_screening_unclear_goes_to_full_text(env):  # critical_review, P1
     assert (stray["record_id"], stray["screener"]) == ("rec_not_in_batch", "screener_a")
     assert not any(d["record_id"] == "rec_not_in_batch" for d in store.decisions(ps, 1))
     assert isinstance(default_workers()["search_screen"], SearchScreenWorker)
+    # the missing-decision rule's reason is a selection reason at title/abstract (the full text decides)
+    assert check_selection_reasons(ps, 1) == [] and SearchScreenWorker().gate(ps, 1).ok
 
 
 @pytest.mark.parametrize("env", [SR_P2], indirect=True)

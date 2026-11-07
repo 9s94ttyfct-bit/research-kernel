@@ -190,6 +190,45 @@ def finals(ps: ProjectStore, attempt: int, *, phase: ScreeningPhase | None = Non
     return query_rows(ps, sql + " ORDER BY rowid", params)
 
 
+def voted_out(final: dict) -> bool:
+    """Whether a final is a P1 vote's exclusion of a screening disagreement (PRISMA lists them apart, and the
+    limitations name the recall loss)."""
+    return final["decided_by"] == "vote" and final["include"] == "no"
+
+
+def excluded_by_disagreement(ps: ProjectStore, attempt: int, phase: ScreeningPhase) -> list[dict]:
+    """The finals of the records a P1 vote on a screening disagreement excluded in ``phase``."""
+    return [f for f in finals(ps, attempt, phase=phase) if voted_out(f)]
+
+
+def add_screening_note(ps: ProjectStore, attempt: int, phase: str | None, kind: str, *, actor: str,
+                       **fields) -> None:
+    """Something screening notes in the attempt (``screening_notes``)."""
+    ps.apply(NewEvent(type="screening.noted", entity_id=None, actor_kind="kernel", actor=actor,
+                      payload={"attempt": attempt, "phase": phase, "kind": kind, **fields}))
+
+
+def screening_notes(ps: ProjectStore, attempt: int, *, kind: str | None = None,
+                    phase: str | None = None) -> list[dict]:
+    """What screening noted in the attempt, in order (for the PRISMA notes and the limitations): ``stray_decision``
+    (a decision on a record not in the batch, or a second one, ignored), ``failed_batch`` (a screener task gave no
+    output), ``missing_decision`` (a record a screener left undecided, also when asked again), ``scoping_sample``
+    (the scoping review's dual sample, its differences on included-or-not and whether it switched to dual screening),
+    ``incomplete_searches`` (no phase: the searches a critical review or research proposal could not finish,
+    a limitation) and ``full_text_retrieval`` (the record ids sought for their full text, and those ``retrieved``,
+    ``abstract_only`` and ``not_retrieved``; it also marks that the attempt reached the full-text phase)."""
+    rows = ps.db.execute("SELECT payload FROM events WHERE type='screening.noted' "
+                         "AND json_extract(payload, '$.attempt')=? ORDER BY seq", (attempt,))
+    notes = [json.loads(r["payload"]) for r in rows]
+    return [n for n in notes if (kind is None or n["kind"] == kind) and (phase is None or n["phase"] == phase)]
+
+
+def retrieval_note(ps: ProjectStore, attempt: int) -> dict | None:
+    """The attempt's ``full_text_retrieval`` note, or ``None`` when it never reached the full-text phase."""
+    noted = screening_notes(ps, attempt, kind="full_text_retrieval")
+    return noted[-1] if noted else None
+
+
 def extractions(ps: ProjectStore, attempt: int, *, item_id: str | None = None) -> list[dict]:
     sql, params = "SELECT * FROM extractions WHERE attempt=?", (attempt,)
     if item_id is not None:

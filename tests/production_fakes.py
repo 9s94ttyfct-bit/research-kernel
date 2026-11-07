@@ -63,16 +63,18 @@ class Screeners(ScriptedExecutor):
     """Screeners decide by the record's title. At title/abstract screening the title ends ``[a/b]``: screener_a's and
     screener_b's decision (yes, no, unclear; ``-`` leaves the record out of the output), unless ``overrides[title]``
     gives another ``"a/b"``. At full-text screening ``full_text[title]`` gives the ``"a/b"``, else both say yes.
-    ``reasons[(title, phase)]`` replaces the reason both screeners give. ``extra[role]`` is added to that role's first
-    output (e.g. a decision on a record not in the batch). Judges vote by title: ``votes[(title, phase)]``, else
-    ``votes[title]``, is ``(judge, judge_2)``."""
+    ``reasons[(title, phase)]`` replaces the reason both screeners give, ``criteria[(title, phase)]`` the criterion
+    they name (default ``I1`` for yes, else ``E1``). ``extra[role]`` is added to that role's first output (e.g. a
+    decision on a record not in the batch). Judges vote by title: ``votes[(title, phase)]``, else ``votes[title]``, is
+    ``(judge, judge_2)``."""
 
     def __init__(self, *, votes: dict | None = None, extra: dict[str, list[dict]] | None = None,
                  overrides: dict[str, str] | None = None, full_text: dict[str, str] | None = None,
-                 reasons: dict[tuple[str, str], str] | None = None, **kw):
+                 reasons: dict[tuple[str, str], str] | None = None,
+                 criteria: dict[tuple[str, str], str | None] | None = None, **kw):
         super().__init__({}, **kw)
         self.votes, self.extra, self.overrides = votes or {}, extra or {}, overrides or {}
-        self.full_text, self.reasons = full_text or {}, reasons or {}
+        self.full_text, self.reasons, self.criteria = full_text or {}, reasons or {}, criteria or {}
 
     def says(self, title: str, role: str, phase: str = TA) -> str:
         if phase == FT:
@@ -90,8 +92,9 @@ class Screeners(ScriptedExecutor):
                 inc = self.says(r["title"], role, phase)
                 if inc != "-":
                     reason = self.reasons.get((r["title"], phase), f"{role} read it")
-                    out.append({"record_id": r["record_id"], "include": inc,
-                                "criterion_id": "I1" if inc == "yes" else "E1", "reason": reason})
+                    criterion = self.criteria.get((r["title"], phase), "I1" if inc == "yes" else "E1")
+                    out.append({"record_id": r["record_id"], "include": inc, "criterion_id": criterion,
+                                "reason": reason})
             self.script[(role, "ScreenOut")] = [{"decisions": out + self.extra.pop(role, [])}]
         elif output_schema.__name__ == "VoteOut":
             subject = inputs["subject"]

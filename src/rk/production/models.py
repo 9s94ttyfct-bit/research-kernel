@@ -8,6 +8,10 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 ScreeningPhase = Literal["title_abstract", "full_text"]
+TITLE_ABSTRACT: ScreeningPhase = "title_abstract"
+FULL_TEXT: ScreeningPhase = "full_text"
+PHASES: tuple[ScreeningPhase, ...] = (TITLE_ABSTRACT, FULL_TEXT)
+PHASE_WORDS: dict[str, str] = {TITLE_ABSTRACT: "title/abstract", FULL_TEXT: "full-text"}
 Include = Literal["yes", "no", "unclear"]
 DecidedBy = Literal["agreement", "single", "human", "vote", "rule"]  # rule: a kernel rule (language), no screener
 
