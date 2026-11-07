@@ -12,6 +12,7 @@ from rk.production.models import (
     SearchStrategy,
     SynthesisPlan,
 )
+from rk.store.query import query_rows
 from tests.discovery_fakes import (
     FakeSources,
     ScriptedExecutor,
@@ -57,6 +58,12 @@ def call_phase(call: dict) -> str | None:
     """The screening phase of a recorded screener or judge call (a judge sees it in its subject)."""
     inputs = call["inputs"]
     return inputs.get("phase") or (inputs.get("subject") or {}).get("phase")
+
+
+def votes_on(ps, subject_type: str, subject_id: str) -> list[dict]:
+    """The recorded P1 votes on one subject (the ``votes`` projection), in order."""
+    return query_rows(ps, "SELECT * FROM votes WHERE subject_type=? AND subject_id=? ORDER BY rowid",
+                      (subject_type, subject_id), ("opinions",))
 
 
 class Screeners(ScriptedExecutor):

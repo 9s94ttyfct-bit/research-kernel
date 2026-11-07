@@ -11,7 +11,12 @@ from rk.production.vote import vote
 from rk.roles.policy import JUDGE_ROLES
 from rk.store.projections import rebuild
 from tests.discovery_fakes import ScriptedExecutor
-from tests.production_fakes import a_protocol, make_frozen_project, production_ctx
+from tests.production_fakes import (
+    a_protocol,
+    make_frozen_project,
+    production_ctx,
+    votes_on,
+)
 
 OPTIONS = ["include", "exclude"]
 
@@ -166,7 +171,7 @@ def test_vote_is_recorded_as_not_human_reviewed(env):
     assert [(o["role"], o["vendor"], o["choice"], o["reason"]) for o in payload["opinions"]] == [
         ("judge", "openai", "exclude", "judge says exclude"), ("judge_2", "deepseek", "include", "judge_2 says include"),
         ("judge_3", "anthropic", "exclude", "judge_3 says exclude")]
-    [row] = store.votes(ps, "record", record_id)
+    [row] = votes_on(ps, "record", record_id)
     assert row["id"] == result.id and row["decision"] == "include" and row["conservative"] == 1
     assert row["opinions"] == payload["opinions"]
 
@@ -229,7 +234,7 @@ def _queries(ps, pid: str, rid: str) -> dict:
             "deviations": store.deviations(ps), "records": store.records(ps, 1), "record": store.record_row(ps, rid),
             "decisions": store.decisions(ps, 1), "ta": store.decisions(ps, 1, phase="title_abstract"),
             "finals": store.finals(ps, 1), "extractions": store.extractions(ps, 1),
-            "votes": store.votes(ps, "record", rid)}
+            "votes": votes_on(ps, "record", rid)}
 
 
 def test_production_tables_rebuild(env):

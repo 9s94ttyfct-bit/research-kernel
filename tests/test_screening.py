@@ -22,7 +22,7 @@ from rk.production.screening import (
     switches_to_dual,
 )
 from rk.production.search import SearchResult, deduplicated
-from rk.production.store import excluded_by_disagreement, screening_notes
+from rk.production.store import screening_notes, voted_out
 from rk.tools.builtin import build_registry
 from rk.tools.registry import ToolError
 from rk.verify.prisma import check_selection_reasons
@@ -33,6 +33,7 @@ from tests.production_fakes import (
     a_protocol,
     make_frozen_project,
     production_ctx,
+    votes_on,
 )
 
 TA, FT = "title_abstract", "full_text"
@@ -193,9 +194,9 @@ def test_p1_disagreement_votes_conservative_exclude(env):
     assert f["Aspirin B [no/unclear]"][2].startswith("screeners disagreed; P1 conservative")
     assert f["Aspirin C [yes/yes]"][:2] == ("yes", "agreement")
     t = {v: k for k, v in _titles(env).items()}
-    (va,), (vb,) = store.votes(ps, "record", t["Aspirin A [yes/no]"]), store.votes(ps, "record", t["Aspirin B [no/unclear]"])
+    (va,), (vb,) = votes_on(ps, "record", t["Aspirin A [yes/no]"]), votes_on(ps, "record", t["Aspirin B [no/unclear]"])
     assert (va["decision"], va["conservative"], vb["decision"], vb["conservative"]) == ("include", 0, "exclude", 1)
-    assert [f["record_id"] for f in excluded_by_disagreement(ps, 1, TA)] == [t["Aspirin B [no/unclear]"]]
+    assert [f["record_id"] for f in store.finals(ps, 1, phase=TA) if voted_out(f)] == [t["Aspirin B [no/unclear]"]]
     judge = ex.of("judge")[0]["inputs"]
     assert judge["options"] == ["include", "exclude"]
     assert {s["screener"]: s["include"] for s in judge["subject"]["screeners"]} == {"screener_a": "yes",
@@ -357,8 +358,8 @@ def test_incomplete_searches_are_a_limitation_of_a_critical_review(env, monkeypa
     _incomplete(monkeypatch)
     out = SearchScreenWorker().run(_ctx(env, Screeners(), FakeSources({"aspirin": _works("yes/-")})))
     assert out.status == "done" and WHY in out.reason and "incomplete search" in out.reason
-    (note,) = screening_notes(ps, 1, kind="incomplete_searches")
-    assert (note["searches"], note["phase"]) == ([WHY], None)
+    # the limitation is the stage's reason and the PRISMA notes (from the search log): no screening note repeats it
+    assert all(n["kind"] != "incomplete_searches" for n in screening_notes(ps, 1))
 
 
 @pytest.mark.parametrize("env", [SR_P2], indirect=True)
@@ -375,7 +376,7 @@ def test_incomplete_search_blocks_systematic_screening(env, monkeypatch):
         blocked = w.run(_ctx(env, ex, src, attempt=2))
     assert (blocked.status, blocked.to) == ("back_edge", "protocol")
     assert WHY in blocked.reason and "Narrow it or drop the source" in blocked.reason
-    assert ex.calls == [] and screening_notes(ps, 2, kind="incomplete_searches") == []
+    assert ex.calls == []
 
     # the same rule when an answer is applied
     assert out.status == "waiting_human"

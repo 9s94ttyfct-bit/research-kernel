@@ -43,10 +43,10 @@ class TaskExecutor(Protocol):
 
 class KernelExecutor:
     """Runs role tasks with ``run_task`` and links each to its stage attempt (event ``run.task``). With a ``run_id``
-    (D2) a task in an open stage first checks the stage budget of the run session; the other stages, the enumerated
-    ones (``ENUMERATED_STAGES``: their work grows with the records or studies) included, have none, and neither has
-    D1 (no ``run_id``). The hourly call caps apply to every task. ``provider_for`` (role -> provider) replaces the
-    configured drivers, e.g. in tests; a ``provider`` given to ``run`` takes precedence."""
+    (D2) a task in an open stage (``OPEN_STAGES``) first checks the stage budget of the run session; the other stages,
+    including those that work through every record or included study, have none, and neither has D1 (no
+    ``run_id``). The hourly call caps apply to every task. ``provider_for`` (role -> provider) replaces the configured
+    drivers, e.g. in tests; a ``provider`` given to ``run`` takes precedence."""
 
     def __init__(self, kernel, registry, project: str, *, run_id: str | None, session: int | None,
                  max_tasks_per_stage: int = STAGE_TASK_BUDGET, provider_for: Callable[[str], Provider] | None = None,

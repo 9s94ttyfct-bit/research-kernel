@@ -170,7 +170,6 @@ def test_abstract_only_study_is_marked_low_sufficiency(env):  # Review Focus 4
     assert (study["text"], study["sufficient"]) == ("abstract", "low")
     assert extraction_limitations(ps, 1)["low_sufficiency"] == [ids["Aspirin A"]]
     assert w.gate(ps, 1).ok
-    assert "1 on the abstract alone, sufficient=low" in w.run(_ctx(env, ex)).reason  # read once per attempt
 
     # a quote that is not in the abstract is not verified against it (attempt 1 ran to completion: no carry-over)
     record_ran(ps, "read_extract", 1, "done", "", actor="tester")
@@ -318,10 +317,6 @@ def test_rate_capped_extraction_resumes_without_rereading_finished_studies(env):
         ids["Aspirin A"]: 1, ids["Aspirin B"]: None, ids["Aspirin C"]: None}
     assert w.gate(ps, 2).ok
 
-    rows = len(store.extractions(ps, 2))  # run again in the same attempt: nothing is read or stored twice
-    w.run(_ctx(env, Reader({}), attempt=2))
-    assert len(store.extractions(ps, 2)) == rows and len(store.extraction_notes(ps, 2)) == 3
-
     record_ran(ps, "read_extract", 2, "done", "", actor="tester")  # a completed attempt is never carried over
     again = Reader({"Aspirin A": [GOOD], "Aspirin B": [GOOD], "Aspirin C": [c_out]})
     w.run(_ctx(env, again, attempt=3))
@@ -419,17 +414,6 @@ def test_conflicting_values_are_listed(env):
     assert ReadExtractWorker().run(_ctx(env, ex)).status == "done"
     assert extraction_limitations(ps, 1)["conflicts"] == [
         {"item_id": ids["Aspirin A"], "field": "n", "values": [100, "not_reported"]}]
-
-
-def test_half_read_study_is_replaced_in_the_same_attempt(env):
-    _, ps, _ = env
-    ids = _included(env, {"Aspirin A": "full"})
-    a = ids["Aspirin A"]
-    store.add_extraction(ps, 1, a, "n", 5, None, True, actor="reader", problem=QUOTE_FAILED)  # before a crash
-    w = ReadExtractWorker()
-    assert w.run(_ctx(env, Reader({"Aspirin A": [GOOD]}))).status == "done"
-    assert [(r["field"], r["value"]) for r in store.extractions(ps, 1)] == [("n", 100), ("design", "cohort")]
-    assert w.gate(ps, 1).ok
 
 
 def test_carry_over_needs_the_same_text(env):

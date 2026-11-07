@@ -30,7 +30,12 @@ from rk.production.protocol import (
 from rk.store.projections import rebuild
 from rk.workspace import Kernel
 from tests.discovery_fakes import FakeSources, FakeWorker, ScriptedExecutor
-from tests.production_fakes import a_protocol, make_frozen_project, production_ctx
+from tests.production_fakes import (
+    a_protocol,
+    make_frozen_project,
+    production_ctx,
+    votes_on,
+)
 
 T0 = 1_800_000_000.0
 SR_ITEMS = {"rationale": "Guidelines stop at 80.", "objectives": "Estimate benefit and harm.",
@@ -201,7 +206,7 @@ def test_p2_opens_protocol_approval_p1_votes(env):
     frozen = _events(ps, "protocol.frozen")[0]
     assert (frozen.actor_kind, frozen.actor) == ("human", "researcher")
     assert w.gate(ps, 1).ok
-    assert store.votes(ps, "protocol", row["id"]) == []
+    assert votes_on(ps, "protocol", row["id"]) == []
 
     # P1: the same stage votes instead of asking (here over the frozen version 1: a deviation)
     record_intake(ps, Intake(**{**intake_of(ps).model_dump(), "production_mode": "auto"}), actor="tester",
@@ -212,7 +217,7 @@ def test_p2_opens_protocol_approval_p1_votes(env):
     (p1,) = store.protocols(ps, 2)
     assert len(list_checkpoints(ps)) == n_checkpoints  # no checkpoint in P1
     assert [c["role"] for c in ex1.calls] == ["ideator", "scout", "judge", "judge_2"]
-    assert store.votes(ps, "protocol", p1["id"])[0]["decision"] == "approve"
+    assert votes_on(ps, "protocol", p1["id"])[0]["decision"] == "approve"
     assert store.frozen_protocol(ps)["id"] == p1["id"]
     assert [(d["from_version"], d["to_version"]) for d in store.deviations(ps)] == [(1, 2)]
 
@@ -245,7 +250,7 @@ def test_p1_vote_approves_or_reruns_with_the_judges_reasons(env):
     assert out.status == "rerun"
     assert "judges disagree" in out.reason and "judge: revise" in out.reason and "judge_2: approve" in out.reason
     (first,) = store.protocols(ps, 1)
-    (v1,) = store.votes(ps, "protocol", first["id"])
+    (v1,) = votes_on(ps, "protocol", first["id"])
     assert (v1["decision"], v1["conservative"], v1["question"]) == ("revise", 1, VOTE_QUESTION)
     assert store.frozen_protocol(ps) is None and not w.gate(ps, 1).ok
 
@@ -262,8 +267,8 @@ def test_p1_vote_approves_or_reruns_with_the_judges_reasons(env):
     judged = [c for c in ex.calls if c["schema"] == "VoteOut"]
     assert [c["role"] for c in judged] == ["judge", "judge_2"] * 2
     assert judged[0]["inputs"]["subject"]["protocol"] == first["body"]
-    # generator_vendor is the ideator's (anthropic): both judges (openai, deepseek) were admitted
-    assert [o["vendor"] for o in store.votes(ps, "protocol", second["id"])[0]["opinions"]] == ["openai", "deepseek"]
+    # the generator vendors are the Ideator's and the Scout's (anthropic): both judges (openai, deepseek) were admitted
+    assert [o["vendor"] for o in votes_on(ps, "protocol", second["id"])[0]["opinions"]] == ["openai", "deepseek"]
 
 
 def test_p1_vote_with_a_judge_of_the_ideator_vendor_is_conservative(tmp_home, replay_http):

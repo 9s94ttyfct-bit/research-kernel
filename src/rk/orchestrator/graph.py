@@ -34,12 +34,11 @@ BACK_EDGES: frozenset[tuple[str, str]] = frozenset({
 })
 EDGE_LIMIT = 2  # uses of each edge per project before P2 asks and P1 degrades (§7.2)
 
-# Stages whose role tasks count against the per-session budget (§7.2), and that budget per stage.
+# Stages whose role tasks count against the per-session budget (§7.2), and that budget per stage. The other stages
+# have none; those that work through an enumerated set (search_screen: every record, read_extract: every included
+# study) grow with the set. The hourly call caps of the drivers still apply.
 OPEN_STAGES: frozenset[str] = frozenset({"landscape", "gaps", "topics", "protocol"})
 STAGE_TASK_BUDGET = 40  # role tasks per open stage per run session
-# Stages that work through an enumerated set (every record, every included study): no task budget, since their work
-# grows with the set; the hourly call caps of the drivers still apply.
-ENUMERATED_STAGES: frozenset[str] = frozenset({"search_screen", "read_extract"})
 
 
 def stages_for(paper_type: str) -> list[str]:

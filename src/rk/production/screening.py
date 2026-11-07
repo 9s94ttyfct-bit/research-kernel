@@ -12,7 +12,8 @@ rules), V-PRISMA and the gate.
    (``SearchResult.incomplete``, kept in the search log, each naming its source and query) sends a systematic or
    scoping review back to ``protocol`` too ("narrow it or drop the source"; the edge limits apply), here and when an
    answer is applied (``reports_prisma``: the PRISMA paper types). A critical review or research proposal goes on: the
-   incomplete searches are noted as a limitation (``incomplete_searches``) and named in the stage's reason.
+   incomplete searches (``incomplete_searches``, read from the search log) are a limitation named in the stage's
+   reason and in the PRISMA notes.
 3. A record in a language outside the protocol's ``languages`` (``language_exclusions``) is excluded without
    screening: final ``no``, decided by ``rule``, reason ``"language"``.
 4. The screening mode of the paper type (``screening_mode``):
@@ -41,10 +42,10 @@ rules), V-PRISMA and the gate.
      record of that checkpoint and for no other. An invalid answer gets a replacement checkpoint saying why. Answers
      apply in any order; the attempt waits on the first checkpoint still open. Applying an answer again changes
      nothing (``decided_by`` ``human``).
-   - P1: ``vote()`` per record (``generator_vendor`` None: a record is no generated text; conservative option
+   - P1: ``vote()`` per record (no generator vendors: a record is no generated text; conservative option
      "exclude"). Every vote's final is decided by ``vote`` and its reason starts "screeners disagreed" ("screeners
-     disagreed; P1 conservative" when the vote took the conservative option): ``excluded_by_disagreement`` lists the
-     exclusions for PRISMA and the limitations.
+     disagreed; P1 conservative" when the vote took the conservative option); ``voted_out`` tells its exclusions
+     apart for PRISMA and the limitations.
 8. An attempt interrupted by a rate cap, a budget or a crash is resumed by the next attempt
    (``rk.production.resume``), in both phases: the screener decisions of the interrupted attempts right before it,
    under the same frozen protocol, are carried over by library item (``carried_from``) instead of asked again, and so
@@ -123,6 +124,7 @@ from rk.production.store import (
     screening_notes,
     set_final,
     set_record,
+    voted_out,
 )
 from rk.production.vote import vote
 from rk.store.project import ProjectStore
@@ -627,8 +629,8 @@ def _phase_summary(ps: ProjectStore, attempt: int, phase: str) -> str:
     if excluded["rule"]:
         details.append(f"{excluded['rule']} for language")
     if voted:
-        details.append(f"{voted} disagreements decided by the P1 vote (not reviewed by a human): {excluded['vote']} "
-                       "excluded by the P1 vote on a disagreement")
+        details.append(f"{voted} disagreements decided by the P1 vote (not reviewed by a human): "
+                       f"{sum(1 for f in fs if voted_out(f))} excluded by the P1 vote on a disagreement")
     if human:
         details.append(f"{human} disagreements decided by you")
     out = f"{PHASE_WORDS[phase]} screening: {included} included, {sum(excluded.values())} excluded"
@@ -679,10 +681,8 @@ class SearchScreenWorker:
         cap = check_record_cap(ps, ctx.attempt, protocol)
         if cap:
             return StageOutcome("back_edge", to="protocol", reason=cap)
-        if result.incomplete:
-            if reports_prisma(intake.paper_type):
-                return StageOutcome("back_edge", to="protocol", reason=_incomplete_block(result.incomplete))
-            _note(ctx, None, "incomplete_searches", searches=result.incomplete)  # a limitation
+        if result.incomplete and reports_prisma(intake.paper_type):
+            return StageOutcome("back_edge", to="protocol", reason=_incomplete_block(result.incomplete))
         return self._title_abstract(ctx, intake, protocol, row["frozen_hash"], result.record_ids, result.incomplete)
 
     def _title_abstract(self, ctx: StageContext, intake: Intake, protocol: Protocol, protocol_hash: str,

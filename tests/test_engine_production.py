@@ -20,7 +20,6 @@ from rk.orchestrator.engine import Orchestrator, StageOutcome
 from rk.orchestrator.graph import (
     BACK_EDGES,
     DISCOVERY,
-    ENUMERATED_STAGES,
     OPEN_STAGES,
     PRODUCTION,
     stages_for,
@@ -102,8 +101,8 @@ def test_graph_of_the_production_stages():
     for paper_type in ("systematic_review", "scoping_review", "critical_review", "research_proposal"):
         assert set(stages_for(paper_type)[len(DISCOVERY):]) <= set(PRODUCTION)
     assert {("protocol", "question"), ("search_screen", "protocol"), ("read_extract", "search_screen")} <= BACK_EDGES
-    assert "protocol" in OPEN_STAGES and ENUMERATED_STAGES == {"search_screen", "read_extract"}
-    assert not OPEN_STAGES & ENUMERATED_STAGES
+    # protocol has a task budget; search_screen and read_extract (every record, every study) have none
+    assert "protocol" in OPEN_STAGES and not OPEN_STAGES & {"search_screen", "read_extract"}
 
 
 def test_run_continues_past_question_until_read_extract(project):

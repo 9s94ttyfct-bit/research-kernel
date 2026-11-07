@@ -36,9 +36,8 @@ reason the counts.
 An attempt interrupted by a rate cap, a budget or a crash is resumed by the next one (``rk.production.resume``): a
 study an interrupted attempt right before it finished, under the same frozen protocol and read on the same text (the
 same kind and the same snapshot), is carried over with its values and notes (``carried_from``) instead of being read
-again; any other is read again. Never from an attempt that ran to completion. Within an attempt a study with a
-``study`` note is never read again, and a half-read one (values but no note) is read again in place of its earlier
-values.
+again; any other is read again. Never from an attempt that ran to completion. The stage opens no checkpoint, so an
+attempt never runs twice: every attempt starts with no extraction of its own.
 
 The gate (``gate``, from ``findings``): every non-flagged included study was read and its retraction checked; every
 extraction field of each has a value whose quote note is a verified quote of the text the study was read on (the same
@@ -76,7 +75,6 @@ from rk.production.resume import CarriedStudy, carried_extraction, mark_protocol
 from rk.production.store import (
     add_extraction,
     add_extraction_note,
-    clear_extractions,
     extraction_notes,
     extractions,
     finals,
@@ -490,14 +488,9 @@ class ReadExtractWorker:
             return StageOutcome("failed", reason="no included study to read: search_screen has not passed")
         mark_protocol(ps, ctx.stage, ctx.attempt, row["frozen_hash"], actor=ctx.actor)
         protocol = Protocol.model_validate(row["body"])
-        done = set(_studies(ps, ctx.attempt))
         carried = carried_extraction(ps, ctx.stage, ctx.attempt, row["frozen_hash"])
         for rec in studies:
             iid = rec["item_id"]
-            if iid in done:
-                continue
-            if extractions(ps, ctx.attempt, item_id=iid):  # half-read in this attempt: read again in its place
-                clear_extractions(ps, ctx.attempt, iid, actor=ctx.actor)
             c = carried.get(iid)
             kind, sha, _ = _text(ctx, rec)
             if c is not None and (c.note["flagged"] or (kind is not None and c.note["text"] == kind

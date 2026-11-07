@@ -160,12 +160,6 @@ def mark_extraction(ps: ProjectStore, extraction_id: str, problem: str, *, actor
                       payload={"problem": f"{before}; {problem}" if before else problem}))
 
 
-def clear_extractions(ps: ProjectStore, attempt: int, item_id: str, *, actor: str) -> None:
-    """Remove the attempt's rows of one study (a half-read study read again in the same attempt replaces them)."""
-    ps.apply(NewEvent(type="extraction.cleared", entity_id=item_id, actor_kind="kernel", actor=actor,
-                      payload={"attempt": attempt}))
-
-
 # ---- votes ----
 def add_vote(ps: ProjectStore, *, subject_type: str, subject_id: str, question: str, options: list[str],
              conservative: str, decision: str, conservative_used: bool, reason: str, opinions: list[dict],
@@ -234,11 +228,6 @@ def voted_out(final: dict) -> bool:
     return final["decided_by"] == "vote" and final["include"] == "no"
 
 
-def excluded_by_disagreement(ps: ProjectStore, attempt: int, phase: ScreeningPhase) -> list[dict]:
-    """The finals of the records a P1 vote on a screening disagreement excluded in ``phase``."""
-    return [f for f in finals(ps, attempt, phase=phase) if voted_out(f)]
-
-
 def add_screening_note(ps: ProjectStore, attempt: int, phase: str | None, kind: str, *, actor: str,
                        **fields) -> None:
     """Something screening notes in the attempt (``screening_notes``)."""
@@ -249,12 +238,12 @@ def add_screening_note(ps: ProjectStore, attempt: int, phase: str | None, kind: 
 def screening_notes(ps: ProjectStore, attempt: int, *, kind: str | None = None,
                     phase: str | None = None) -> list[dict]:
     """What screening noted in the attempt, in order (for the PRISMA notes and the limitations): ``stray_decision``
-    (a decision on a record not in the batch, or a second one, ignored), ``failed_batch`` (a screener task gave no
-    output), ``missing_decision`` (a record a screener left undecided, also when asked again), ``scoping_sample``
-    (the scoping review's dual sample, its differences on included-or-not and whether it switched to dual screening),
-    ``incomplete_searches`` (no phase: the searches a critical review or research proposal could not finish,
-    a limitation) and ``full_text_retrieval`` (the record ids sought for their full text, and those ``retrieved``,
-    ``abstract_only`` and ``not_retrieved``; it also marks that the attempt reached the full-text phase)."""
+    (a decision on a record not in the batch, or a second one, ignored), ``unreasoned_decision`` (a decision without
+    the reason its selection needs, ignored and asked again), ``failed_batch`` (a screener task gave no output),
+    ``missing_decision`` (a record a screener left undecided, also when asked again), ``scoping_sample`` (the scoping
+    review's dual sample, its differences on included-or-not and whether it switched to dual screening) and
+    ``full_text_retrieval`` (the record ids sought for their full text, and those ``retrieved``, ``abstract_only`` and
+    ``not_retrieved``; it also marks that the attempt reached the full-text phase)."""
     rows = ps.db.execute("SELECT payload FROM events WHERE type='screening.noted' "
                          "AND json_extract(payload, '$.attempt')=? ORDER BY seq", (attempt,))
     notes = [json.loads(r["payload"]) for r in rows]
@@ -272,13 +261,6 @@ def extractions(ps: ProjectStore, attempt: int, *, item_id: str | None = None) -
     if item_id is not None:
         sql, params = sql + " AND item_id=?", (attempt, item_id)
     return query_rows(ps, sql + " ORDER BY rowid", params, ("value",))
-
-
-def votes(ps: ProjectStore, subject_type: str, subject_id: str) -> list[dict]:
-    """The votes on one subject. Keyed by subject, not attempt: an attempt-keyed subject (a record) already names its
-    attempt, and a vote on a project-level subject (e.g. a protocol) concerns no single attempt."""
-    return query_rows(ps, "SELECT * FROM votes WHERE subject_type=? AND subject_id=? ORDER BY rowid",
-                      (subject_type, subject_id), ("opinions",))
 
 
 # ---- projections ----
@@ -347,11 +329,6 @@ def _extraction(conn: sqlite3.Connection, ev: Event) -> None:
 @projection("extraction.marked")
 def _extraction_marked(conn: sqlite3.Connection, ev: Event) -> None:
     conn.execute("UPDATE extractions SET problem=? WHERE id=?", (ev.payload["problem"], ev.entity_id))
-
-
-@projection("extraction.cleared")
-def _extraction_cleared(conn: sqlite3.Connection, ev: Event) -> None:
-    conn.execute("DELETE FROM extractions WHERE attempt=? AND item_id=?", (ev.payload["attempt"], ev.entity_id))
 
 
 @projection("vote.decided")
