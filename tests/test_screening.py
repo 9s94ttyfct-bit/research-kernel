@@ -634,6 +634,25 @@ def test_critical_review_decision_without_reason_is_asked_again(env):  # critica
     assert check_selection_reasons(ps, 1) == []
 
 
+def test_critical_review_full_text_screener_staying_reasonless_passes_the_gate(env):  # critical_review, P1
+    """At full text the screener is told why a record came back; a record still without a reason gets the
+    missing-decision rule's reason as its selection reason (as at title/abstract), so the gate passes."""
+    _, ps, _ = env
+    _freeze(ps)
+    works = [_work("Aspirin mute [yes/-]", 1), _work("Aspirin said [yes/-]", 2)]
+    ex = Screeners(full_text={"Aspirin mute [yes/-]": "no/-", "Aspirin said [yes/-]": "yes/-"},
+                   reasons={("Aspirin mute [yes/-]", FT): ""}, criteria={("Aspirin mute [yes/-]", FT): None})
+    out = SearchScreenWorker().run(_ctx(env, ex, FakeSources({"aspirin": works})))
+    assert out.status == "done" and _sizes(ex, "screener_a", FT) == [2, 1]
+    first, again = ([r for r in c["inputs"]["records"] if r["title"] == "Aspirin mute [yes/-]"]
+                    for c in ex.of("screener_a", FT))
+    assert "asked_again" not in first[0] and "no reason" in again[0]["asked_again"]
+    t = _titles(env)
+    ft = {t[f["record_id"]]: f for f in store.finals(ps, 1, phase=FT)}
+    assert ft["Aspirin mute [yes/-]"]["include"] == "yes" and "no decision" in ft["Aspirin mute [yes/-]"]["reason"]
+    assert check_selection_reasons(ps, 1) == [] and SearchScreenWorker().gate(ps, 1).ok
+
+
 @pytest.mark.parametrize("env", [SR_P1], indirect=True)
 def test_one_blank_reason_exclusion_does_not_fail_the_stage_through_the_engine(env):
     """The final review's repro: SR, P1, 30 records, one exclusion both screeners give without a reason. The stage

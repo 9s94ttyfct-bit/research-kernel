@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 from rk.library.models import Creator, Ids, ItemIn
-from rk.net.http import HttpClient
+from rk.net.http import BadBody, HttpClient
 from rk.sources.hits import Hits
 
 EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
@@ -56,24 +56,40 @@ def _esummary_params(pmids: list[str]) -> dict:
     return {"db": "pubmed", "id": ",".join(pmids), "retmode": "json"}
 
 
+def _summaries(http: HttpClient, pmids: list[str], *, use_cache: bool = True) -> list[ItemIn] | None:
+    """The works of ``pmids``' esummary body, or ``None`` when it holds no ``result`` (NCBI's error body, a 404). A
+    uid whose entry is an ``error`` (no document summary) is left out."""
+    data, _ = http.get_json(f"{EUTILS}/esummary.fcgi", _esummary_params(pmids), use_cache=use_cache)
+    result = (data or {}).get("result") if isinstance(data, dict) else None
+    if not isinstance(result, dict):
+        return None
+    return [summary_to_item(uid, result[uid]) for uid in result.get("uids", [])
+            if isinstance(result.get(uid), dict) and "error" not in result[uid]]
+
+
 def esummary(http: HttpClient, pmids: list[str], *, use_cache: bool = True) -> list[ItemIn]:
     if not pmids:
         return []
-    data, _ = http.get_json(f"{EUTILS}/esummary.fcgi", _esummary_params(pmids), use_cache=use_cache)
-    result = (data or {}).get("result") or {}
-    return [summary_to_item(uid, result[uid]) for uid in result.get("uids", []) if uid in result]
+    return _summaries(http, pmids, use_cache=use_cache) or []
 
 
 def summaries(http: HttpClient, pmids: list[str]) -> Hits:
     """The works of a page of ``pmids``, as full as its PMID list: a body short of a summary (cut, or a withdrawn
     record) is dropped from the HTTP cache and fetched again at once; a PMID still without one is counted as a
-    dropped entry (``Hits.dropped``, as arXiv's unreadable entries), and that short body is not kept either."""
-    items = esummary(http, pmids)
-    if len(items) < len(pmids):
-        http.forget(f"{EUTILS}/esummary.fcgi", _esummary_params(pmids))
-        items = esummary(http, pmids, use_cache=False)
-        if len(items) < len(pmids):
-            http.forget(f"{EUTILS}/esummary.fcgi", _esummary_params(pmids))
+    dropped entry (``Hits.dropped``, as arXiv's unreadable entries), and that short body is not kept either. A body
+    that is no ``result`` (an error body, a 404), or that gives no summary at all, also when fetched again, is a
+    ``BadBody`` (transient: the run retries after a backoff), never a page of dropped records."""
+    if not pmids:
+        return Hits()
+    url, params = f"{EUTILS}/esummary.fcgi", _esummary_params(pmids)
+    items = _summaries(http, pmids)
+    if items is None or len(items) < len(pmids):
+        http.forget(url, params)
+        items = _summaries(http, pmids, use_cache=False)
+        if items is None or len(items) < len(pmids):
+            http.forget(url, params)
+        if not items:
+            raise BadBody(url, f"no esummary result for {len(pmids)} PMIDs")
     return Hits(items, dropped=len(pmids) - len(items))
 
 

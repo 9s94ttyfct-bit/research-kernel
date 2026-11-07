@@ -281,9 +281,8 @@ def test_single_full_text_screening_rule(env):  # critical_review, P1: single sc
     rid = _ids(env)
     assert missing["record_id"] == rid["Aspirin silent [yes/-]"]
     assert "screener_a gave no full-text decision" in store.record_row(ps, rid["Aspirin silent [yes/-]"])["problem"]
-    # a selection without the screener's reason is no complete selection: the gate fails on it
-    gate = SearchScreenWorker().gate(ps, 1)
-    assert not gate.ok and any("selection reason" in x and rid["Aspirin silent [yes/-]"] in x for x in gate.failures)
+    # the missing-decision rule's reason, which the final states, is its selection reason (as at title/abstract)
+    assert check_selection_reasons(ps, 1) == [] and SearchScreenWorker().gate(ps, 1).ok
 
 
 @pytest.mark.parametrize("env", [SR_P1], indirect=True)
@@ -337,8 +336,10 @@ def test_critical_review_has_reasons_not_prisma(env, monkeypatch):  # critical_r
     monkeypatch.setattr(screening, "check_prisma", lambda p: ["V-PRISMA must not gate a critical review"])
     assert w.gate(ps, 1).ok and check_selection_reasons(ps, 1) == []
 
-    # attempt 2: the screener gives no reason for a study it selects
+    # attempt 2: a selection decision stored without its screener's reason (collected without the reason rule,
+    # ``screening.unreasoned``, e.g. by an older version) is no complete selection
     record_ran(ps, "search_screen", 1, out.status, out.reason, actor="tester")
+    monkeypatch.setattr(screening, "unreasoned", lambda *a: False)
     blank = Screeners(full_text={"Aspirin late [yes/-]": "no/-"}, reasons={("Aspirin in [yes/-]", FT): ""})
     assert w.run(_ctx(env, blank, _sources(env, works), attempt=2)).status == "done"
     (failure,) = check_selection_reasons(ps, 2)

@@ -203,18 +203,18 @@ def flow(p: Prisma) -> str:
 
 def check_selection_reasons(ps: ProjectStore, attempt: int) -> list[str]:
     """For the paper types without PRISMA counts: every selection decision carries its reason. A decision the
-    screeners made (``single``, ``agreement``) needs every screener's reason; at title/abstract a record no screener
-    decided has the reason of the missing-decision rule (it goes on to the full text), at full text it has none. A
-    vote's, your or a rule's decision needs its own reason. ``[]`` when complete."""
+    screeners made (``single``, ``agreement``) needs every screener's reason; a record no screener decided (also when
+    asked again) has the reason of the missing-decision rule its final states, in both phases. A vote's, your or a
+    rule's decision needs its own reason. ``[]`` when complete."""
     said: dict[tuple[str, str], list[dict]] = {}
     for d in decisions(ps, attempt):
         said.setdefault((d["record_id"], d["phase"]), []).append(d)
     missing = []
     for phase in PHASES:
         for f in finals(ps, attempt, phase=phase):
-            if f["decided_by"] in ("single", "agreement"):
-                ds = said.get((f["record_id"], phase), [])
-                ok = all((d["reason"] or "").strip() for d in ds) and (bool(ds) or phase == TITLE_ABSTRACT)
+            ds = said.get((f["record_id"], phase), [])
+            if f["decided_by"] in ("single", "agreement") and ds:
+                ok = all((d["reason"] or "").strip() for d in ds)
             else:
                 ok = bool((f["reason"] or "").strip())
             if not ok:

@@ -29,9 +29,10 @@ rules), V-PRISMA and the gate.
    noted (``stray_decision``); so is a decision without the reason its selection needs (``unreasoned``: for the
    PRISMA types an exclusion with a blank reason, at full text unless it names its criterion; for the others any
    decision with a blank reason), noted ``unreasoned_decision``. The records a batch's output leaves out (a failed
-   task leaves out all of them) go to that screener once more, in new batches; a record still undecided is noted
-   (``missing_decision``) and gets the record's ``problem``, and counts as ``unclear`` in single screening (so it
-   goes to the full text) and as a disagreement in dual screening.
+   task leaves out all of them) go to that screener once more, in new batches (a reasonless one with ``asked_again``
+   saying why); a record still undecided is noted (``missing_decision``) and gets the record's ``problem``, and counts
+   as ``unclear`` in single screening (so it goes to the full text, or is included at full text; the final's reason
+   states that rule and is its selection reason) and as a disagreement in dual screening.
 6. The final decision of a record (``screening.final``):
    - dual: both yes, or yes and unclear: include (``agreement``); both no: exclude (``agreement``); otherwise
      (yes and no, both unclear, no and unclear, a missing decision): a disagreement;
@@ -159,6 +160,8 @@ FULL_TEXT_TASK = (
     "include \"yes\", \"no\" or \"unclear\" (when the text does not settle a criterion), the id of the criterion the "
     "decision rests on, and a short reason. Decide only the given records. Do not search or use tools.")
 TASKS = {TITLE_ABSTRACT: SCREEN_TASK, FULL_TEXT: FULL_TEXT_TASK}
+ASKED_AGAIN = ("your previous decision on this record gave no reason (an exclusion with no reason and, at full text, "
+               "no criterion; in a critical review or research proposal any decision): a reason is required")
 
 
 def _vote_question(phase: str) -> str:
@@ -394,9 +397,12 @@ def _say(screener: str, d: ScreenDecision | None) -> str:
 
 
 def _batch(ctx: StageContext, role: str, phase: str, batch: list[str], records: dict[str, dict], context: dict,
-           got: dict[str, ScreenDecision]) -> list[str]:
-    """One screener task on ``batch``; its decisions go to ``got``. Returns the records it left undecided."""
-    r = ctx.executor.run(role, TASKS[phase], {**context, "records": [records[x] for x in batch]}, ScreenOut,
+            got: dict[str, ScreenDecision], reasonless: set[str]) -> list[str]:
+    """One screener task on ``batch``; its decisions go to ``got``. A record in ``reasonless`` (its earlier decision
+    had no reason) is sent with ``asked_again`` saying so; a decision without its reason adds the record to it.
+    Returns the records it left undecided."""
+    inputs = [records[x] | ({"asked_again": ASKED_AGAIN} if x in reasonless else {}) for x in batch]
+    r = ctx.executor.run(role, TASKS[phase], {**context, "records": inputs}, ScreenOut,
                          stage=ctx.stage, attempt=ctx.attempt, tools=[])
     if not r.ok or r.output is None:
         _note(ctx, phase, "failed_batch", screener=role, record_ids=batch, error=r.error or "no output")
@@ -410,6 +416,7 @@ def _batch(ctx: StageContext, role: str, phase: str, batch: list[str], records: 
         if unreasoned(d, phase, context["paper_type"]):
             _note(ctx, phase, "unreasoned_decision", screener=role, record_id=d.record_id, include=d.include,
                   why="no reason")
+            reasonless.add(d.record_id)
             continue
         got[d.record_id] = d
         add_decision(ctx.ps, ctx.attempt, d.record_id, phase, role, d.include, d.reason, d.criterion_id or None,
@@ -437,10 +444,11 @@ def _screen(ctx: StageContext, role: str, phase: str, records: dict[str, dict], 
             add_decision(ctx.ps, ctx.attempt, rid, phase, role, row["include"], row["reason"], row["criterion"],
                          actor=ctx.actor, actor_kind="kernel", carried_from=row["carried_from"])
     pending = [r for r in records if r not in got and r not in settled]
+    reasonless: set[str] = set()
     for _ in range(2):
         left: list[str] = []
         for i in range(0, len(pending), BATCH):
-            left += _batch(ctx, role, phase, pending[i:i + BATCH], records, context, got)
+            left += _batch(ctx, role, phase, pending[i:i + BATCH], records, context, got, reasonless)
         pending = left
         if not pending:
             break

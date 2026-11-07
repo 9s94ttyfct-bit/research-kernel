@@ -101,7 +101,7 @@ def test_screener_prompts_cover_full_text_screening():
     for role in ("screener_a", "screener_b"):
         p = build_system_prompt(role, None)
         assert "for inclusion using only titles, abstracts and metadata." not in p  # stale: full text is given too
-        for needle in ("Full-text screening", "text_kind", "abstract_only", "whole_text", "sections"):
+        for needle in ("Full-text screening", "text_kind", "abstract_only", "whole_text", "sections", "asked_again"):
             assert needle in p, (role, needle)
 
 

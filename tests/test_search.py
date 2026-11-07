@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -449,6 +450,43 @@ def test_pubmed_summary_missing_for_good_is_dropped_and_not_cached(tmp_path):
     http.close()
 
 
+@pytest.mark.parametrize("error", [lambda: httpx.Response(200, json={"esummaryresult": ["Unable to obtain query #1"]}),
+                                   lambda: httpx.Response(404)], ids=["error_body", "404"])
+def test_pubmed_error_body_raises_for_a_retry_and_drops_nothing(tmp_path, error):
+    """An esummary body with no ``result`` (NCBI's error body, a 404), also when fetched again at once, is a source
+    error the run retries after a backoff, never a page of dropped records; the retry then finds them."""
+    bodies = iter([error, error, lambda: httpx.Response(200, json={"result": {
+        "uids": ["7", "8"], "7": {"title": "P7", "pubdate": "2011"}, "8": {"title": "P8", "pubdate": "2011"}}})])
+
+    def respond(req):
+        if req.url.path.endswith("esearch.fcgi"):
+            return httpx.Response(200, json={"esearchresult": {"idlist": ["7", "8"]}})
+        return next(bodies)()
+
+    http, seen = _client(tmp_path, respond)
+    ctx = SourceContext(http=http, settings=Settings())
+    with pytest.raises(BadBody, match="no esummary result for 2 PMIDs"):
+        resolver.search(ctx, "aspirin", "pubmed", 2)
+    assert transient_source_error(BadBody("u", "x"))
+    hits = resolver.search(ctx, "aspirin", "pubmed", 2)  # the run's retry: the error body was not kept
+    assert ([h.title for h in hits], hits.dropped) == (["P7", "P8"], 0)
+    assert len([r for r in seen if r.url.path.endswith("esummary.fcgi")]) == 3
+    http.close()
+
+
+def test_pubmed_uid_with_an_error_entry_is_dropped(tmp_path):
+    def respond(req):
+        if req.url.path.endswith("esearch.fcgi"):
+            return httpx.Response(200, json={"esearchresult": {"idlist": ["7", "8"]}})
+        return httpx.Response(200, json={"result": {"uids": ["7", "8"], "7": {"title": "P7", "pubdate": "2011"},
+                                                    "8": {"uid": "8", "error": "cannot get document summary"}}})
+
+    http, _ = _client(tmp_path, respond)
+    hits = resolver.search(SourceContext(http=http, settings=Settings()), "aspirin", "pubmed", 2)
+    assert ([h.title for h in hits], hits.dropped) == (["P7"], 1)  # no "(untitled)" record
+    http.close()
+
+
 def _arxiv_feed(*entries: tuple[str | None, str | None], total: int | None = None) -> bytes:
     """An arXiv Atom feed of ``(arxiv id, title)`` entries; ``None`` leaves the element out (a malformed entry).
     ``total`` is its ``opensearch:totalResults``."""
@@ -670,3 +708,23 @@ def test_a_crash_inside_the_migration_leaves_the_project_to_migrate_again(tmp_pa
     conn = open_project_db(db)  # opened again: the columns are added and backfilled
     assert conn.execute("SELECT after_year FROM search_log").fetchone()[0] == 2015
     conn.close()
+
+
+def test_a_new_project_waits_for_another_process_creating_it(tmp_path):
+    """Another process holds the brand-new database (still in rollback-journal mode) while this one opens it: the
+    open waits its busy timeout for the switch to WAL instead of failing with "database is locked"."""
+    db = tmp_path / "new.sqlite"
+    other = sqlite3.connect(db, isolation_level=None, check_same_thread=False)
+    other.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)")  # the other's first write
+    other.execute("BEGIN EXCLUSIVE")
+    # held past the 5 s busy handler Python's sqlite3.connect sets by default: only the busy timeout set before the
+    # switch to WAL (10 s) outlasts it
+    release = threading.Timer(5.5, lambda: other.execute("COMMIT"))
+    release.start()
+    try:
+        conn = open_project_db(db)
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        conn.close()
+    finally:
+        release.join()
+        other.close()
