@@ -34,17 +34,25 @@ class CallCaps:
         return 0.0 if oldest is None else max(0.0, oldest + WINDOW_S - now)
 
     def acquire(self, driver: str, cap: int | None) -> bool:
-        """Record one call if the driver is under its cap for the last hour; uncapped drivers always pass."""
+        """Record one call if the driver is under its cap for the last hour; uncapped drivers always pass. The count
+        and the insert are one write transaction (``BEGIN IMMEDIATE``), so processes sharing the call log (``rk serve``
+        and ``rk eval``) never overrun a cap."""
         if cap is None:
             return True
         with self._lock:
-            now = self._clock()
-            self._db.execute("DELETE FROM call_log WHERE ts<=?", (now - WINDOW_S,))
-            n = self._db.execute("SELECT COUNT(*) FROM call_log WHERE driver=?", (driver,)).fetchone()[0]
-            if n >= cap:
-                return False
-            self._db.execute("INSERT INTO call_log(driver, ts) VALUES (?, ?)", (driver, now))
-            return True
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                now = self._clock()
+                self._db.execute("DELETE FROM call_log WHERE ts<=?", (now - WINDOW_S,))
+                n = self._db.execute("SELECT COUNT(*) FROM call_log WHERE driver=?", (driver,)).fetchone()[0]
+                ok = n < cap
+                if ok:
+                    self._db.execute("INSERT INTO call_log(driver, ts) VALUES (?, ?)", (driver, now))
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
+            self._db.execute("COMMIT")
+            return ok
 
     def close(self) -> None:
         self._db.close()

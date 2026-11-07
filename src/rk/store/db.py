@@ -23,14 +23,33 @@ _BACKFILL: dict[str, str] = {
 }
 
 
-def _add_columns(conn: sqlite3.Connection) -> None:
+def _missing(conn: sqlite3.Connection) -> dict[str, list[tuple[str, str]]]:
+    """table -> its ``_ADDED_COLUMNS`` the table does not have yet."""
+    out = {}
     for table, cols in _ADDED_COLUMNS.items():
         have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
-        missing = [(c, decl) for c, decl in cols if c not in have]
-        for c, decl in missing:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {c} {decl}")
-        if missing and table in _BACKFILL:
-            conn.execute(_BACKFILL[table])
+        if missing := [(c, decl) for c, decl in cols if c not in have]:
+            out[table] = missing
+    return out
+
+
+def _add_columns(conn: sqlite3.Connection) -> None:
+    """Add the missing columns and backfill them in one write transaction (``BEGIN IMMEDIATE``, the columns read again
+    inside it): another process opening the project at the same time finds them added, and a crash adds none, so
+    the next open migrates again."""
+    if not _missing(conn):
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        for table, missing in _missing(conn).items():
+            for c, decl in missing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {c} {decl}")
+            if table in _BACKFILL:
+                conn.execute(_BACKFILL[table])
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")
 
 
 def open_project_db(path: Path) -> sqlite3.Connection:

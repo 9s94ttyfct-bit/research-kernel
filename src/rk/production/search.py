@@ -18,9 +18,10 @@
   totalResults=10 ..."). Paging never ends silently.
 
 A page is full when the source returned ``limit`` entries, counting the ones it returned but could not be read
-(``rk.sources.hits.Hits.dropped``, e.g. an arXiv entry without an id or title): paging goes on past them. A dropped
-entry is one unreadable record, not a truncated search: the page's log counts it (``dropped``, not ``incomplete``)
-and ``dropped_entries`` sums the counts for the PRISMA notes.
+(``rk.sources.hits.Hits.dropped``, e.g. an arXiv entry without an id or title, or a PubMed PMID still without a
+summary when fetched again): paging goes on past them. A dropped entry is one unreadable record, not a truncated
+search: the page's log counts it (``dropped``, not ``incomplete``) and ``dropped_entries`` sums the counts for the
+PRISMA notes.
 
 A failed search is never "nothing found": its error propagates (a transient one steps the run again, spec §11.3).
 

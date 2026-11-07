@@ -6,6 +6,7 @@ import re
 
 from rk.library.models import Creator, Ids, ItemIn
 from rk.net.http import HttpClient
+from rk.sources.hits import Hits
 
 EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 BIOC = "https://www.ncbi.nlm.nih.gov/research/bionlp/RESTful/pmcoa.cgi/BioC_json"
@@ -51,12 +52,29 @@ def _language(langs) -> str | None:
     return "eng" if "eng" in langs else (langs[0] if langs else None)
 
 
-def esummary(http: HttpClient, pmids: list[str]) -> list[ItemIn]:
+def _esummary_params(pmids: list[str]) -> dict:
+    return {"db": "pubmed", "id": ",".join(pmids), "retmode": "json"}
+
+
+def esummary(http: HttpClient, pmids: list[str], *, use_cache: bool = True) -> list[ItemIn]:
     if not pmids:
         return []
-    data, _ = http.get_json(f"{EUTILS}/esummary.fcgi", {"db": "pubmed", "id": ",".join(pmids), "retmode": "json"})
+    data, _ = http.get_json(f"{EUTILS}/esummary.fcgi", _esummary_params(pmids), use_cache=use_cache)
     result = (data or {}).get("result") or {}
     return [summary_to_item(uid, result[uid]) for uid in result.get("uids", []) if uid in result]
+
+
+def summaries(http: HttpClient, pmids: list[str]) -> Hits:
+    """The works of a page of ``pmids``, as full as its PMID list: a body short of a summary (cut, or a withdrawn
+    record) is dropped from the HTTP cache and fetched again at once; a PMID still without one is counted as a
+    dropped entry (``Hits.dropped``, as arXiv's unreadable entries), and that short body is not kept either."""
+    items = esummary(http, pmids)
+    if len(items) < len(pmids):
+        http.forget(f"{EUTILS}/esummary.fcgi", _esummary_params(pmids))
+        items = esummary(http, pmids, use_cache=False)
+        if len(items) < len(pmids):
+            http.forget(f"{EUTILS}/esummary.fcgi", _esummary_params(pmids))
+    return Hits(items, dropped=len(pmids) - len(items))
 
 
 def bioc_json(http: HttpClient, pmcid: str) -> dict | None:

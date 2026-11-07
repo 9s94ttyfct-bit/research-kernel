@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -31,6 +32,7 @@ from rk.production.search import (
 from rk.sources import arxiv, resolver
 from rk.sources.identifiers import Identifier
 from rk.sources.resolver import SourceContext, check_limits
+from rk.store import db as db_mod
 from rk.store.db import open_project_db
 from tests.discovery_fakes import FakeSources, ScriptedExecutor
 from tests.production_fakes import a_protocol, make_frozen_project, production_ctx
@@ -398,13 +400,52 @@ def test_pubmed_arxiv_and_s2_take_the_range_and_offset(tmp_path):
     resolver.search(ctx, "aspirin", "pubmed", 100)
     last = [r for r in seen if r.url.path.endswith("esearch.fcgi")][-1]
     assert set(_params(last)) == {"db", "term", "retmode", "retmax"}  # no range, no offset: as before
-    # a page is as full as its PMID list: a summary missing is an error, not a short (last) page
-    with pytest.raises(BadBody, match="no summary for 1 of 2 PMIDs"):
-        resolver.search(ctx, "two", "pubmed", 100)
+    # a page is as full as its PMID list: a PMID that still has no summary when fetched again is a dropped entry
+    # (counted, so the page is no short last page), never a silent miss
+    n = len(seen)
+    two = resolver.search(ctx, "two", "pubmed", 100)
+    assert ([h.ids.pmid for h in two], two.dropped, two.raw) == (["7"], 1, 2)
+    assert len([r for r in seen[n:] if r.url.path.endswith("esummary.fcgi")]) == 2  # fetched again once
     with pytest.raises(ValueError, match="s2 returns at most 100 results per call and only its first 1000"):
         resolver.search(ctx, "aspirin", "s2", 200)
     with pytest.raises(ValueError, match=r"asked for 100 from 950"):
         resolver.search(ctx, "aspirin", "s2", 100, offset=950)
+    http.close()
+
+
+def test_pubmed_short_summary_is_fetched_again_not_cached(tmp_path):
+    """An esummary body short of its PMIDs (a transient cut) is dropped from the HTTP cache and fetched again at once;
+    the full body found then is kept."""
+    summaries = iter([["7"], ["7", "8"]])
+
+    def respond(req):
+        if req.url.path.endswith("esearch.fcgi"):
+            return httpx.Response(200, json={"esearchresult": {"idlist": ["7", "8"]}})
+        uids = next(summaries)
+        return httpx.Response(200, json={"result": {"uids": uids, **{u: {"title": f"P{u}", "pubdate": "2011"}
+                                                                      for u in uids}}})
+
+    http, seen = _client(tmp_path, respond)
+    ctx = SourceContext(http=http, settings=Settings())
+    for _ in range(3):  # the later searches read the full body from the cache
+        hits = resolver.search(ctx, "aspirin", "pubmed", 2)
+        assert ([h.title for h in hits], hits.dropped) == (["P7", "P8"], 0)
+    assert len([r for r in seen if r.url.path.endswith("esummary.fcgi")]) == 2
+    http.close()
+
+
+def test_pubmed_summary_missing_for_good_is_dropped_and_not_cached(tmp_path):
+    def respond(req):
+        if req.url.path.endswith("esearch.fcgi"):
+            return httpx.Response(200, json={"esearchresult": {"idlist": ["7", "8"]}})
+        return httpx.Response(200, json={"result": {"uids": ["7"], "7": {"title": "P7", "pubdate": "2011"}}})
+
+    http, seen = _client(tmp_path, respond)
+    ctx = SourceContext(http=http, settings=Settings())
+    for _ in range(2):  # a withdrawn record: every search counts it dropped, and its short body is not kept
+        hits = resolver.search(ctx, "aspirin", "pubmed", 2)
+        assert ([h.title for h in hits], hits.dropped) == (["P7"], 1)
+    assert len([r for r in seen if r.url.path.endswith("esummary.fcgi")]) == 4
     http.close()
 
 
@@ -561,7 +602,8 @@ def test_language_codes_are_normalized():
     assert json.loads(ItemIn(title="x").model_dump_json())["language"] is None
 
 
-def test_an_older_search_log_gets_the_new_columns(tmp_path):
+def _old_db(tmp_path):
+    """A project database whose search_log predates the added columns, with one row and its event."""
     db = tmp_path / "old.sqlite"
     conn = open_project_db(db)
     conn.execute("DROP TABLE search_log")
@@ -573,9 +615,58 @@ def test_an_older_search_log_gets_the_new_columns(tmp_path):
                  "VALUES ('evt_1', 't', 'p', 'kernel', 'k', 'search.logged', 'sch_1', ?, 'h')",
                  (json.dumps({"after_year": 2015}),))
     conn.close()
-    conn = open_project_db(db)
+    return db
+
+
+def test_an_older_search_log_gets_the_new_columns(tmp_path):
+    conn = open_project_db(_old_db(tmp_path))
     row = dict(conn.execute("SELECT * FROM search_log").fetchone())
     assert {k: row[k] for k in ("after_year", "offset_n", "date_from", "date_to", "incomplete", "stopped_at_cap",
                                 "dropped")} == {"after_year": 2015, "offset_n": 0, "date_from": None, "date_to": None,
                                                 "incomplete": None, "stopped_at_cap": 0, "dropped": 0}
+    conn.close()
+
+
+class _Conn:
+    """A connection to the old database that runs ``hook(sql)`` before each statement."""
+
+    def __init__(self, db, hook):
+        self._conn = sqlite3.connect(db, isolation_level=None)
+        self._conn.row_factory = sqlite3.Row
+        self.hook = hook
+
+    def execute(self, sql, *args):
+        self.hook(sql)
+        return self._conn.execute(sql, *args)
+
+
+def test_two_opens_of_an_older_project_migrate_it_once(tmp_path):
+    """Another process opens the old project between this one's look at the columns and its ALTER: no "duplicate
+    column name", and the columns are added and backfilled once."""
+    db = _old_db(tmp_path)
+    seen, other = [], []
+
+    def open_other_first(sql):
+        if seen and not other:  # right after this process read search_log's columns
+            other.append(open_project_db(db))  # the other process migrates the project meanwhile
+        if sql.startswith("PRAGMA table_info(search_log)"):
+            seen.append(sql)
+
+    conn = _Conn(db, open_other_first)
+    db_mod._add_columns(conn)
+    assert conn.execute("SELECT after_year FROM search_log").fetchone()[0] == 2015
+    other[0].close()
+
+
+def test_a_crash_inside_the_migration_leaves_the_project_to_migrate_again(tmp_path):
+    db = _old_db(tmp_path)
+
+    def crash_at_backfill(sql):
+        if sql.startswith("UPDATE search_log SET after_year"):
+            raise sqlite3.OperationalError("simulated crash between ALTER and backfill")
+
+    with pytest.raises(sqlite3.OperationalError, match="simulated crash"):
+        db_mod._add_columns(_Conn(db, crash_at_backfill))
+    conn = open_project_db(db)  # opened again: the columns are added and backfilled
+    assert conn.execute("SELECT after_year FROM search_log").fetchone()[0] == 2015
     conn.close()

@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict
 
 from rk.config import Settings
 from rk.library.models import Ids, ItemIn
-from rk.net.http import BadBody, HttpClient
+from rk.net.http import HttpClient
 from rk.sources import arxiv, biorxiv, crossref, europepmc, openalex, pubmed, s2
 from rk.sources.crossref import CrossrefWork, Update
 from rk.sources.hits import Hits, as_hits
@@ -158,11 +158,7 @@ def _search(ctx: SourceContext, query: str, source: SearchSource, limit: int, af
         return europepmc.search(http, query, page_size=limit, offset=offset, date_from=date_from, date_to=date_to)
     if source == "pubmed":
         pmids = pubmed.esearch(http, query, retmax=limit, retstart=offset, date_from=date_from, date_to=date_to)
-        items = pubmed.esummary(http, pmids)
-        if len(items) < len(pmids):  # a page is as full as its PMID list: a missing summary is no missing hit
-            raise BadBody(f"{pubmed.EUTILS}/esummary.fcgi",
-                          f"no summary for {len(pmids) - len(items)} of {len(pmids)} PMIDs")
-        return items
+        return pubmed.summaries(http, pmids)  # a page is as full as its PMID list: a missing summary is dropped
     if source == "arxiv":
         q = f"all:{query}"
         if date_from is not None or date_to is not None:

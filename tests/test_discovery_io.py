@@ -1,5 +1,7 @@
 import itertools
 import json
+import threading
+import time
 
 import httpx
 import pytest
@@ -297,6 +299,44 @@ def test_call_caps_wait_is_the_time_until_the_oldest_call_leaves_the_window(tmp_
     now[0] = 1000.0 + WINDOW_S + 50.0  # the first call has left the window
     assert caps.wait_s("codex_cli") == 1100.0 + WINDOW_S - now[0]
     caps.close()
+
+
+class _SlowCount:
+    """A connection whose call-count read pauses, so another process's acquire can run between count and insert."""
+
+    def __init__(self, db):
+        self._db = db
+
+    def execute(self, sql, *args):
+        cur = self._db.execute(sql, *args)
+        if sql.startswith("SELECT COUNT(*)"):
+            time.sleep(0.2)
+        return cur
+
+    def close(self):
+        self._db.close()
+
+
+def test_call_caps_hold_across_connections(tmp_path):
+    """Two processes (two connections to one call log) acquiring at once never overrun the cap."""
+    caps = [CallCaps(tmp_path / "caps.sqlite") for _ in range(2)]
+    for c in caps:
+        c._db = _SlowCount(c._db)
+    got: list[bool] = []
+    start = threading.Barrier(2)
+
+    def acquire(c):
+        start.wait()
+        got.append(c.acquire("codex_cli", 1))
+
+    threads = [threading.Thread(target=acquire, args=(c,)) for c in caps]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(30)
+    assert sorted(got) == [False, True] and caps[0].used("codex_cli") == 1
+    for c in caps:
+        c.close()
 
 
 def test_fake_sources_presets_by_title(env):
