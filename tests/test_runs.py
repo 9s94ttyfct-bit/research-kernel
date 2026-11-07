@@ -628,6 +628,26 @@ def test_discovery_read_tools_show_the_latest_attempt(env):
     assert [(r["id"], r["stage"], r["feedback"]) for r in rounds(ps)] == [(out["round_id"], "gaps", "More trials.")]
 
 
+def test_read_tools_show_the_latest_attempt_that_ran(env):
+    """An interrupted attempt (no stage.ran) may be partial: the read tools (and the Workbench routes built on them)
+    show the latest attempt that ran instead."""
+    from rk.orchestrator.state import record_attempt, record_ran
+
+    _, ps, _, make = env
+    _, reg = make(_workers())
+    gap = Gap(kind="stated_limitation", statement="Not found within the searched scope.", evidence=GapEvidence())
+    record_attempt(ps, "gaps", 1, run_id=None, guidance="", requested=None, actor="tester")
+    ran = add_gap(ps, 1, gap, verified=True, checks={}, actor="tester")
+    record_ran(ps, "gaps", 1, "done", "", actor="tester")
+    record_attempt(ps, "gaps", 2, run_id=None, guidance="", requested=None, actor="tester")
+    add_gap(ps, 2, gap, verified=False, checks={}, actor="tester")  # attempt 2 was interrupted here
+    out = reg.call("rk_gap_list", {"project": "demo"}, _ctx("lead"))
+    assert out["attempt"] == 1 and [g["id"] for g in out["gaps"]] == [ran]
+    record_attempt(ps, "topics", 1, run_id=None, guidance="", requested=None, actor="tester")
+    assert reg.call("rk_topic_list", {"project": "demo"}, _ctx("lead")) == {"project": "demo", "attempt": None,
+                                                                            "topics": []}
+
+
 def test_rk_run_cli_round_trip(serve_rk):
     from typer.testing import CliRunner
 

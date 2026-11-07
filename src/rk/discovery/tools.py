@@ -13,6 +13,7 @@ from rk.discovery.store import add_round, gaps, hypotheses, intake_of, rqs, topi
 from rk.orchestrator.graph import EDGE_LIMIT
 from rk.orchestrator.state import (
     active_run,
+    attempt_ran,
     current_stage,
     edge_rows,
     latest_attempt,
@@ -55,11 +56,14 @@ class GapList(BaseModel):
 
 
 def _shown_attempt(ps: ProjectStore, stage: str) -> int | None:
-    """The attempt whose artifacts a stage shows: the one that passed, else the latest (``None`` before any)."""
+    """The attempt whose artifacts a stage shows: the one that passed, else the latest that ran (an interrupted
+    attempt, without ``stage.ran``, may be partial); ``None`` before any ran."""
     row = stage_row(ps, stage)
     if row is None:
         return None
-    return row["passed_attempt"] if row["status"] == "passed" else row["attempt"]
+    if row["status"] == "passed":
+        return row["passed_attempt"]
+    return next((n for n in range(row["attempt"], 0, -1) if attempt_ran(ps, stage, n)), None)
 
 
 def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManager | None]) -> None:
@@ -175,7 +179,8 @@ def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManag
         return {"project": a.project, "round_id": rid, "stage": a.stage}
 
     # ---- discovery artifacts ----
-    @tool("rk_gap_list", "The gaps of the gaps stage (the attempt that passed, else the latest); verified means only "
+    @tool("rk_gap_list", "The gaps of the gaps stage (the attempt that passed, else the latest that ran); verified "
+          "means only "
           "that the evidence chain was checked.", GapList, False)
     def _gap_list(ctx: CallContext, a: GapList) -> dict:
         ps = project(a.project)
@@ -183,14 +188,16 @@ def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManag
         return {"project": a.project, "attempt": attempt,
                 "gaps": gaps(ps, attempt, verified=a.verified) if attempt else []}
 
-    @tool("rk_topic_list", "The candidate topics of the topics stage (the attempt that passed, else the latest) with "
+    @tool("rk_topic_list", "The candidate topics of the topics stage (the attempt that passed, else the latest that "
+          "ran) with "
           "their gaps, closest works and status.", ProjectArg, False)
     def _topic_list(ctx: CallContext, a: ProjectArg) -> dict:
         ps = project(a.project)
         attempt = _shown_attempt(ps, "topics")
         return {"project": a.project, "attempt": attempt, "topics": topics(ps, attempt) if attempt else []}
 
-    @tool("rk_rq_get", "The research question of the question stage (the frozen one, else the latest) with its "
+    @tool("rk_rq_get", "The research question of the question stage (the frozen one, else the latest of the latest "
+          "attempt that ran) with its "
           "hypotheses and already-done result.", ProjectArg, False)
     def _rq_get(ctx: CallContext, a: ProjectArg) -> dict:
         ps = project(a.project)
