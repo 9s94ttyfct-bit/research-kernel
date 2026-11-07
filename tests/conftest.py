@@ -96,12 +96,11 @@ def serve_rk(tmp_home, replay_http):
         kernel = Kernel(tmp_home, http=replay_http)
         runs = None
         registry = build_registry(kernel, runs=lambda: runs)
-        orch = orchestrator(kernel, registry) if orchestrator is not None else None
-        if orch is not None:
-            runs = RunManager(kernel, registry, orch, poll_s=0.05)
+        if orchestrator is not None:
+            runs = RunManager(kernel, registry, orchestrator(kernel, registry), poll_s=0.05)
         chats = ChatManager(kernel, registry)
         server = uvicorn.Server(uvicorn.Config(create_app(registry, rt.token, tokens=kernel.tokens, chats=chats,
-                                                          orchestrator=orch, runs=runs), log_level="warning"))
+                                                          runs=runs), log_level="warning"))
         t = threading.Thread(target=server.run, kwargs={"sockets": [rt.sock]}, daemon=True)
         t.start()
         started.append((server, t, kernel, runs, rt))

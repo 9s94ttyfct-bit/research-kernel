@@ -164,12 +164,11 @@ def serve(detach: bool = typer.Option(False, help="Start in the background and r
                         "chromium` or start with --no-browser", fg="yellow", err=True)
     runs: RunManager | None = None
     registry = build_registry(kernel, browser=lambda: service, runs=lambda: runs)
-    orchestrator = Orchestrator(kernel, registry)
-    runs = RunManager(kernel, registry, orchestrator)
+    runs = RunManager(kernel, registry, Orchestrator(kernel, registry))
     chats = ChatManager(kernel, registry)
     server = uvicorn.Server(uvicorn.Config(create_app(registry, rt.token, tokens=kernel.tokens, chats=chats, ui=ui,
-                                                      kernel=kernel, browser=lambda: service,
-                                                      orchestrator=orchestrator, runs=runs), log_level="warning"))
+                                                      kernel=kernel, browser=lambda: service, runs=runs),
+                                           log_level="warning"))
     signal.signal(signal.SIGTERM, lambda *_: setattr(server, "should_exit", True))
     stopped = threading.Event()
 

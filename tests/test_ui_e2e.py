@@ -64,8 +64,7 @@ def workbench_env(tmp_home, replay_http, fake):
     origin = f"http://127.0.0.1:{rt.port}"
     ui = UiAuth(origin)
     chats = ChatManager(kernel, registry)
-    app = create_app(registry, rt.token, tokens=kernel.tokens, chats=chats, ui=ui, kernel=kernel, orchestrator=orch,
-                     runs=runs)
+    app = create_app(registry, rt.token, tokens=kernel.tokens, chats=chats, ui=ui, kernel=kernel, runs=runs)
     server = uvicorn.Server(uvicorn.Config(app, log_level="warning"))
     t = threading.Thread(target=server.run, kwargs={"sockets": [rt.sock]}, daemon=True)
     t.start()

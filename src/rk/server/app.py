@@ -49,11 +49,11 @@ class OpenHuman(BaseModel):
 
 def create_app(registry: ToolRegistry, token: str, *, actor: str = "cli:user",
                tokens: TokenStore | None = None, chats: ChatManager | None = None, ui: UiAuth | None = None,
-               kernel=None, browser: Callable[[], Any] | None = None, orchestrator=None, runs=None) -> FastAPI:
+               kernel=None, browser: Callable[[], Any] | None = None, runs=None) -> FastAPI:
     """The serve token acts as the human CLI (role ``cli``). Any other bearer must be a live task or lead token;
     its calls run with that grant's role, project binding and tool list. With ``ui`` the Workbench is served under
-    ``/ui`` with its own session cookie (``rk.ui.auth``). ``orchestrator`` and ``runs`` (the RunManager) are the ones
-    ``rk serve`` built for the run and stage tools; the Workbench gets ``runs``."""
+    ``/ui`` with its own session cookie (``rk.ui.auth``). ``runs`` is the RunManager ``rk serve`` built for the run
+    and stage tools; the Workbench's run controls use it too."""
     app = FastAPI(title="rk serve", version=__version__)
     browser = browser or (lambda: None)
 

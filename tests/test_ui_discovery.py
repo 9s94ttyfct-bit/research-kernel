@@ -204,8 +204,7 @@ def wb(tmp_home, replay_http):
                         executor_factory=lambda p, r, s: ScriptedExecutor({}), sources_factory=lambda p: FakeSources({}))
     m = holder["m"] = RunManager(k, reg, orch, poll_s=0.02)
     auth = UiAuth(ORIGIN)
-    app = create_app(reg, SERVE_TOKEN, tokens=k.tokens, chats=ChatManager(k, reg), ui=auth, kernel=k,
-                     orchestrator=orch, runs=m)
+    app = create_app(reg, SERVE_TOKEN, tokens=k.tokens, chats=ChatManager(k, reg), ui=auth, kernel=k, runs=m)
     client = TestClient(app)
     client.auth_ui = auth
     login(client)
