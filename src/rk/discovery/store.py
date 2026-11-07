@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from rk.canon import canonical_json, sha256_hex
 from rk.discovery.models import (
@@ -38,17 +38,27 @@ def intake_of(ps: ProjectStore) -> Intake | None:
 
 
 # ---- writes ----
+class SearchNote(NamedTuple):
+    """What a logged search page says beyond its hits: ``incomplete``, why results the search needed were not
+    searched (e.g. a source's paging limit); ``stopped_at_cap``, the search stopped after this page because it had
+    passed the record cap with pages or searches left."""
+    incomplete: str | None = None
+    stopped_at_cap: bool = False
+
+
 def log_search(ps: ProjectStore, *, stage: str, attempt: int, purpose: str, source: str, query: str, limit: int,
                item_ids: list[str], actor: str, actor_kind: ActorKind = "kernel", after_year: int | None = None,
-               offset: int = 0, date_from: int | None = None, date_to: int | None = None) -> str:
+               offset: int = 0, date_from: int | None = None, date_to: int | None = None,
+               note: SearchNote | None = None) -> str:
     """One search; ``after_year`` is the year the search was limited to works published after (or None),
     ``date_from``..``date_to`` the publication years it was limited to (inclusive; None: open), ``offset`` the rank of
-    its first hit (a later page)."""
-    sid = new_id("sch")
+    its first hit (a later page), ``note`` what else it says."""
+    sid, note = new_id("sch"), note or SearchNote()
     ps.apply(NewEvent(type="search.logged", entity_id=sid, actor_kind=actor_kind, actor=actor,
                       payload={"stage": stage, "attempt": attempt, "purpose": purpose, "source": source,
                                "query": query, "limit": limit, "after_year": after_year, "offset": offset,
-                               "date_from": date_from, "date_to": date_to, "item_ids": list(item_ids)}))
+                               "date_from": date_from, "date_to": date_to, "item_ids": list(item_ids),
+                               "incomplete": note.incomplete, "stopped_at_cap": note.stopped_at_cap}))
     return sid
 
 
@@ -160,9 +170,14 @@ def round_for_checkpoint(ps: ProjectStore, checkpoint_id: str) -> str | None:
 
 
 # ---- queries ----
-def searches(ps: ProjectStore, stage: str, attempt: int) -> list[dict]:
-    return query_rows(ps, "SELECT * FROM search_log WHERE stage=? AND attempt=? ORDER BY rowid", (stage, attempt),
-                      ("item_ids",))
+def searches(ps: ProjectStore, stage: str, attempt: int, *, purpose: str | None = None) -> list[dict]:
+    sql, params = "SELECT * FROM search_log WHERE stage=? AND attempt=?", (stage, attempt)
+    if purpose is not None:
+        sql, params = sql + " AND purpose=?", (stage, attempt, purpose)
+    rows = query_rows(ps, sql + " ORDER BY rowid", params, ("item_ids",))
+    for r in rows:
+        r["stopped_at_cap"] = bool(r["stopped_at_cap"])
+    return rows
 
 
 def clusters(ps: ProjectStore, attempt: int) -> list[dict]:
@@ -235,9 +250,11 @@ def _intake(conn: sqlite3.Connection, ev: Event) -> None:
 def _search(conn: sqlite3.Connection, ev: Event) -> None:
     p = ev.payload
     conn.execute("INSERT OR REPLACE INTO search_log(id, stage, attempt, purpose, source, query, limit_n, item_ids, "
-                 "ts) VALUES (?,?,?,?,?,?,?,?,?)",
+                 "ts, after_year, offset_n, date_from, date_to, incomplete, stopped_at_cap) "
+                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                  (ev.entity_id, p["stage"], p["attempt"], p["purpose"], p["source"], p["query"], p["limit"],
-                  json.dumps(p["item_ids"]), ev.ts))
+                  json.dumps(p["item_ids"]), ev.ts, p.get("after_year"), p.get("offset", 0), p.get("date_from"),
+                  p.get("date_to"), p.get("incomplete"), int(bool(p.get("stopped_at_cap")))))
 
 
 @projection("cluster.added")

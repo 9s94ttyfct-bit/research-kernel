@@ -6,7 +6,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol
 
-from rk.discovery.store import log_search
+from rk.discovery.store import SearchNote, log_search
 from rk.fulltext import fulltext_with_fallback, latest_snapshot
 from rk.library.add import add_source
 from rk.library.models import ItemIn
@@ -150,10 +150,11 @@ class KernelSources:
 
 def _add_and_log(ps: ProjectStore, hits: list[ItemIn], *, discovered_via: str, stage: str, attempt: int,
                  purpose: str, query: str, source: str, limit: int, actor: str, after_year: int | None,
-                 offset: int = 0, date_from: int | None = None, date_to: int | None = None) -> list[str]:
+                 offset: int = 0, date_from: int | None = None, date_to: int | None = None,
+                 note: Callable[[list[str]], SearchNote] | None = None) -> list[str]:
     """Add the hits to the library (collection "Search hits"), log the search with their distinct item ids (event
-    ``search.logged``) and return one item id per hit in rank order: a hit the library merged into an earlier hit's
-    item repeats that item's id."""
+    ``search.logged``, with ``note`` of the hit ids when given) and return one item id per hit in rank order: a hit
+    the library merged into an earlier hit's item repeats that item's id."""
     lib = Library(ps)
     col = lib.ensure_default_collections(actor=actor)[HITS_COLLECTION]
     hit_ids: list[str] = []
@@ -165,20 +166,22 @@ def _add_and_log(ps: ProjectStore, hits: list[ItemIn], *, discovered_via: str, s
         hit_ids.append(iid)
     log_search(ps, stage=stage, attempt=attempt, purpose=purpose, source=source, query=query, limit=limit,
                item_ids=list(dict.fromkeys(hit_ids)), actor=actor, after_year=after_year, offset=offset,
-               date_from=date_from, date_to=date_to)
+               date_from=date_from, date_to=date_to, note=note(hit_ids) if note else None)
     return hit_ids
 
 
 def log_and_search_hits(ps: ProjectStore, sources: DiscoverySources, *, stage: str, attempt: int, purpose: str,
                         query: str, source: str, limit: int, actor: str, after_year: int | None = None,
-                        offset: int = 0, date_from: int | None = None, date_to: int | None = None) -> list[str]:
+                        offset: int = 0, date_from: int | None = None, date_to: int | None = None,
+                        note: Callable[[list[str]], SearchNote] | None = None) -> list[str]:
     """``log_and_search`` keeping every hit: one item id per hit in rank order, a hit the library merged into an
-    earlier hit's item repeating that id (so a full page has ``limit`` ids)."""
+    earlier hit's item repeating that id (so a full page has ``limit`` ids). ``note`` gives, from these ids, what the
+    logged search says beyond its hits (``SearchNote``)."""
     hits = sources.search(query, source, limit, after_year=after_year, offset=offset, date_from=date_from,
                           date_to=date_to)
     return _add_and_log(ps, hits, discovered_via="search", stage=stage, attempt=attempt, purpose=purpose, query=query,
                         source=source, limit=limit, actor=actor, after_year=after_year, offset=offset,
-                        date_from=date_from, date_to=date_to)
+                        date_from=date_from, date_to=date_to, note=note)
 
 
 def log_and_search(ps: ProjectStore, sources: DiscoverySources, *, stage: str, attempt: int, purpose: str,

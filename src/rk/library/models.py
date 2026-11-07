@@ -68,9 +68,9 @@ _LANGUAGES = {
 
 
 def normalize_language(code: str | None) -> str | None:
-    """A source's language code as ISO 639-1 where known (``"eng"`` -> ``"en"``), else lower-cased; ``None`` for no
-    language or an undetermined one (``"und"``)."""
-    c = (code or "").strip().lower()
+    """A source's language code as ISO 639-1 where known (``"eng"`` -> ``"en"``), else lower-cased, without a region
+    or script subtag (``"pt-BR"`` -> ``"pt"``); ``None`` for no language or an undetermined one (``"und"``)."""
+    c = re.split(r"[-_]", (code or "").strip().lower(), maxsplit=1)[0]
     if not c or c == "und":
         return None
     return _LANGUAGES.get(c, c)
