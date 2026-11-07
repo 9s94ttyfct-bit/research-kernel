@@ -12,7 +12,10 @@
   incomplete, which the page's log and ``SearchResult.incomplete`` say ("s2 returned only the first 1000 results
   ...");
 - a full page that brings no work this source and query had not already returned (a source ignoring the offset):
-  incomplete too, said the same way. Paging never ends silently.
+  incomplete too, said the same way;
+- a short page that ends before the source's total (``rk.sources.hits.Hits.total``; arXiv's ``totalResults``, its
+  page already fetched again once): incomplete ("arxiv returned a short page (2 of 3 results) at start=0 of
+  totalResults=10 ..."). Paging never ends silently.
 
 A page is full when the source returned ``limit`` entries, counting the ones it returned but could not be read
 (``rk.sources.hits.Hits.dropped``, e.g. an arXiv entry without an id or title): paging goes on past them. A dropped
@@ -44,6 +47,7 @@ from rk.library.models import normalize_language
 from rk.orchestrator.engine import StageContext
 from rk.production.models import Protocol, SearchStrategy
 from rk.production.store import add_record, records
+from rk.sources.hits import Hits
 from rk.sources.resolver import search_limits
 from rk.store.project import ProjectStore
 from rk.store.query import query_rows
@@ -66,20 +70,20 @@ class SearchResult:
 
 class _Paging:
     """One source and query's paging over the search's ``found`` works; ``note`` is passed to
-    ``log_and_search_hits`` and judges each page (its hit ids and the entries the source dropped) before it is
-    logged."""
+    ``log_and_search_hits`` and judges each page (its hit ids and the source's ``Hits``: the entries it dropped and
+    the query's total) before it is logged."""
 
     def __init__(self, source: str, query: str, page: int, depth: int | None, cap: int, found: set[str],
                  more_searches: bool):
         self.source, self.query, self.page, self.depth, self.cap = source, query, page, depth, cap
         self.found, self.more_searches = found, more_searches
-        self.offset, self.dropped = 0, 0
+        self.offset, self.raw = 0, 0
         self.seen: set[str] = set()
         self.ended, self.last = False, SearchNote()
 
-    def note(self, ids: list[str], dropped: int) -> SearchNote:
-        self.dropped = dropped
-        full, new = len(ids) + dropped == self.page, set(ids) - self.seen
+    def note(self, ids: list[str], hits: Hits) -> SearchNote:
+        self.raw = len(ids) + hits.dropped
+        full, new = self.raw == self.page, set(ids) - self.seen
         at_depth = self.depth is not None and self.offset + 2 * self.page > self.depth
         self.ended, note = True, SearchNote()
         if len(self.found | new) > self.cap:
@@ -92,6 +96,10 @@ class _Paging:
             note = SearchNote(incomplete=f"{self.source} returned only the first {self.offset + self.page} results "
                                          f"for query {self.query!r} (its paging limit): later results were not "
                                          "searched")
+        elif not full and hits.total is not None and self.offset + self.raw < hits.total:
+            note = SearchNote(incomplete=f"{self.source} returned a short page ({self.raw} of {self.page} results) at "
+                                         f"start={self.offset} of totalResults={hits.total} for query {self.query!r}: "
+                                         "paging stopped there, so later results were not searched")
         else:
             self.ended = not full
         self.last = note
@@ -100,7 +108,7 @@ class _Paging:
     def took(self, ids: list[str]) -> None:
         self.seen.update(ids)
         self.found.update(ids)
-        self.offset += len(ids) + self.dropped
+        self.offset += self.raw
 
 
 def _search(ctx: StageContext, strategy: SearchStrategy, cap: int) -> tuple[list[str], list[str], bool]:

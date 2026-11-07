@@ -29,6 +29,7 @@ from rk.production.search import (
     search_counts,
 )
 from rk.sources import arxiv, resolver
+from rk.sources.identifiers import Identifier
 from rk.sources.resolver import SourceContext, check_limits
 from rk.store.db import open_project_db
 from tests.discovery_fakes import FakeSources, ScriptedExecutor
@@ -407,12 +408,16 @@ def test_pubmed_arxiv_and_s2_take_the_range_and_offset(tmp_path):
     http.close()
 
 
-def _arxiv_feed(*entries: tuple[str | None, str | None]) -> bytes:
-    """An arXiv Atom feed of ``(arxiv id, title)`` entries; ``None`` leaves the element out (a malformed entry)."""
+def _arxiv_feed(*entries: tuple[str | None, str | None], total: int | None = None) -> bytes:
+    """An arXiv Atom feed of ``(arxiv id, title)`` entries; ``None`` leaves the element out (a malformed entry).
+    ``total`` is its ``opensearch:totalResults``."""
     body = "".join("<entry>" + (f"<id>http://arxiv.org/abs/{i}v1</id>" if i else "")
                    + (f"<title>{t}</title>" if t else "") + "<published>2015-01-01T00:00:00Z</published></entry>"
                    for i, t in entries)
-    return f'<feed xmlns="http://www.w3.org/2005/Atom">{body}</feed>'.encode()
+    if total is not None:
+        body = f"<os:totalResults>{total}</os:totalResults>{body}"
+    return (f'<feed xmlns="http://www.w3.org/2005/Atom" xmlns:os="http://a9.com/-/spec/opensearch/1.1/">{body}'
+            "</feed>").encode()
 
 
 ARXIV_ERROR = (b'<feed xmlns="http://www.w3.org/2005/Atom"><entry>'
@@ -434,6 +439,19 @@ def test_an_arxiv_error_feed_is_a_source_error_not_no_hits(tmp_path):
     http.close()
 
 
+def test_an_arxiv_id_arxiv_rejects_resolves_to_nothing(tmp_path):
+    http, seen = _client(tmp_path, lambda req: httpx.Response(200, content=ARXIV_ERROR))
+    ctx = SourceContext(http=http, settings=Settings())
+    # an id lookup arXiv answers with its error feed is a final answer (not found), not an outage
+    assert resolver.resolve(ctx, Identifier(kind="arxiv", value="1234")) is None
+    assert [r.url.host for r in seen] == ["export.arxiv.org"]
+    # a search query arXiv answers with its error feed stays a transient source error
+    with pytest.raises(BadBody) as e:
+        resolver.search(ctx, "aspirin", "arxiv", 10)
+    assert transient_source_error(e.value)
+    http.close()
+
+
 @pytest.mark.parametrize("body", [b"<html><body>Service unavailable", b"", b"<html><body>busy</body></html>"])
 def test_an_arxiv_body_that_is_no_atom_feed_is_a_bad_body(tmp_path, body):
     http, seen = _client(tmp_path, lambda req: httpx.Response(200, content=body))
@@ -448,10 +466,12 @@ def test_an_arxiv_body_that_is_no_atom_feed_is_a_bad_body(tmp_path, body):
 
 
 def test_arxiv_counts_the_entries_it_drops(tmp_path):
-    feed = _arxiv_feed(("1501.00001", "A"), (None, "No id"), ("1501.00003", None), ("1501.00004", "D"))
+    feed = _arxiv_feed(("1501.00001", "A"), (None, "No id"), ("1501.00003", None), ("1501.00004", "D"),
+                       ("1501.00005", "Error"))
     http, _ = _client(tmp_path, lambda req: httpx.Response(200, content=feed))
-    hits = resolver.search(SourceContext(http=http, settings=Settings()), "aspirin", "arxiv", 4)
-    assert [h.title for h in hits] == ["A", "D"] and hits.dropped == 2 and hits.raw == 4
+    hits = resolver.search(SourceContext(http=http, settings=Settings()), "aspirin", "arxiv", 5)
+    # a real paper titled "Error" (an /abs/ id) is kept: only an /api/errors entry is arXiv's error feed
+    assert [h.title for h in hits] == ["A", "D", "Error"] and hits.dropped == 2 and hits.raw == 5
     assert arxiv.parse_feed(feed).dropped == 2
     http.close()
 
@@ -488,6 +508,48 @@ def test_a_full_arxiv_page_with_a_malformed_entry_keeps_paging_and_counts_it(env
                    source="arxiv", limit=3, actor="t")
     assert [(r["incomplete"], r["dropped"]) for r in searches(ps, "gaps", 1)] == [(None, 1)]
     assert dropped_entries(ps, 1) == {"arxiv": 1}  # the protocol search's only
+    http.close()
+
+
+def test_an_arxiv_page_of_only_malformed_entries_keeps_paging(env, tmp_path, monkeypatch):
+    _, ps, _ = env
+    monkeypatch.setattr("rk.production.search.PAGE_LIMIT", 3)
+    pages = {0: _arxiv_feed((None, "X"), ("1501.00002", None), (None, None)), 3: _arxiv_feed(("1501.00004", "D"))}
+    http, seen = _client(tmp_path, lambda req: httpx.Response(200, content=pages[int(_params(req).get("start", 0))]))
+    res = run_strategy(_ctx(env, ArxivSources(http)), a_protocol(search_strategy=_strategy(sources=["arxiv"])))
+    # a full page of nothing readable is no "full page of results already returned": the second page is fetched
+    assert [_params(r).get("start") for r in seen] == [None, "3"]
+    assert res.incomplete == [] and dropped_entries(ps, 1) == {"arxiv": 3} and len(res.record_ids) == 1
+    http.close()
+
+
+def test_a_short_arxiv_page_inside_the_result_set_is_fetched_again(tmp_path):
+    short = _arxiv_feed(("1501.00001", "A"), total=10)
+    full = _arxiv_feed(("1501.00001", "A"), ("1501.00002", "B"), ("1501.00003", "C"), total=10)
+    answers = [short, full]
+    http, seen = _client(tmp_path, lambda req: httpx.Response(200, content=answers.pop(0)))
+    hits = arxiv.query(http, search_query="all:aspirin", max_results=3)
+    assert [h.title for h in hits] == ["A", "B", "C"] and hits.total == 10 and len(seen) == 2
+    # the last page of the result set is short and that is no fault: not fetched again
+    http2, seen2 = _client(tmp_path / "2", lambda req: httpx.Response(200, content=_arxiv_feed(("1501.00009", "Z"),
+                                                                                               total=10)))
+    assert len(arxiv.query(http2, search_query="all:aspirin", max_results=3, start=9)) == 1 and len(seen2) == 1
+    http.close()
+    http2.close()
+
+
+def test_a_short_arxiv_page_that_stays_short_makes_the_search_incomplete(env, tmp_path, monkeypatch):
+    _, ps, _ = env
+    monkeypatch.setattr("rk.production.search.PAGE_LIMIT", 3)
+    short = _arxiv_feed(("1501.00001", "A"), ("1501.00002", "B"), total=10)
+    http, seen = _client(tmp_path, lambda req: httpx.Response(200, content=short))
+    res = run_strategy(_ctx(env, ArxivSources(http)), a_protocol(search_strategy=_strategy(sources=["arxiv"])))
+    assert [_params(r).get("start") for r in seen] == [None, None]  # fetched again once, short again
+    why = ("arxiv returned a short page (2 of 3 results) at start=0 of totalResults=10 for query 'aspirin stroke': "
+           "paging stopped there, so later results were not searched")
+    assert res.incomplete == [why] == incomplete_searches(ps, 1)
+    resolver.search(ArxivSources(http).ctx, "aspirin stroke", "arxiv", 3)
+    assert len(seen) == 4  # the short page was not cached: a later search fetches it again
     http.close()
 
 

@@ -12,7 +12,7 @@ from rk.library.add import add_source
 from rk.library.models import ItemIn
 from rk.library.service import Library
 from rk.sources import europepmc, openalex, resolver
-from rk.sources.hits import dropped_of
+from rk.sources.hits import Hits, as_hits
 from rk.sources.identifiers import Identifier, parse_identifier
 from rk.store.project import ProjectStore
 from rk.tools.registry import CallContext, ToolError
@@ -153,11 +153,11 @@ class KernelSources:
 def _add_and_log(ps: ProjectStore, hits: list[ItemIn], *, discovered_via: str, stage: str, attempt: int,
                  purpose: str, query: str, source: str, limit: int, actor: str, after_year: int | None,
                  offset: int = 0, date_from: int | None = None, date_to: int | None = None,
-                 note: Callable[[list[str], int], SearchNote] | None = None) -> list[str]:
+                 note: Callable[[list[str], Hits], SearchNote] | None = None) -> list[str]:
     """Add the hits to the library (collection "Search hits"), log the search with their distinct item ids (event
-    ``search.logged``, with ``note`` of the hit ids and the page's dropped entries when given, and the number of
-    entries the source dropped, ``SearchNote.dropped``) and return one item id per hit in rank order: a hit the
-    library merged into an earlier hit's item repeats that item's id."""
+    ``search.logged``, with ``note`` of the hit ids and the page (``Hits``: its dropped entries and the query's total)
+    when given, and the number of entries the source dropped, ``SearchNote.dropped``) and return one item id per hit
+    in rank order: a hit the library merged into an earlier hit's item repeats that item's id."""
     lib = Library(ps)
     col = lib.ensure_default_collections(actor=actor)[HITS_COLLECTION]
     hit_ids: list[str] = []
@@ -167,8 +167,8 @@ def _add_and_log(ps: ProjectStore, hits: list[ItemIn], *, discovered_via: str, s
         if iid not in hit_ids:
             lib.collect(iid, col, actor=actor, actor_kind="kernel")
         hit_ids.append(iid)
-    dropped = dropped_of(hits)
-    said = (note(hit_ids, dropped) if note else SearchNote())._replace(dropped=dropped)
+    page = as_hits(hits)
+    said = (note(hit_ids, page) if note else SearchNote())._replace(dropped=page.dropped)
     log_search(ps, stage=stage, attempt=attempt, purpose=purpose, source=source, query=query, limit=limit,
                item_ids=list(dict.fromkeys(hit_ids)), actor=actor, after_year=after_year, offset=offset,
                date_from=date_from, date_to=date_to, note=said)
@@ -178,10 +178,10 @@ def _add_and_log(ps: ProjectStore, hits: list[ItemIn], *, discovered_via: str, s
 def log_and_search_hits(ps: ProjectStore, sources: DiscoverySources, *, stage: str, attempt: int, purpose: str,
                         query: str, source: str, limit: int, actor: str, after_year: int | None = None,
                         offset: int = 0, date_from: int | None = None, date_to: int | None = None,
-                        note: Callable[[list[str], int], SearchNote] | None = None) -> list[str]:
+                        note: Callable[[list[str], Hits], SearchNote] | None = None) -> list[str]:
     """``log_and_search`` keeping every hit: one item id per hit in rank order, a hit the library merged into an
     earlier hit's item repeating that id (so a full page has ``limit`` ids, less the entries the source dropped).
-    ``note`` gives, from these ids and the number of dropped entries, what the logged search says beyond its hits
+    ``note`` gives, from these ids and the source's page (``Hits``), what the logged search says beyond its hits
     (``SearchNote``)."""
     hits = sources.search(query, source, limit, after_year=after_year, offset=offset, date_from=date_from,
                           date_to=date_to)
