@@ -56,6 +56,14 @@ TOOL_ROLES: dict[str, frozenset[str]] = {
     **{name: _r("lead") for name in ("rk_stage_run", "rk_stage_advance", "rk_exploration_round")},
     **{name: _r(*_DISCOVERY_ROLES) for name in ("rk_gap_list", "rk_topic_list", "rk_rq_get")},
     "rk_stage_status": _r(*_ALL_TOOL_ROLES),
+    # production artifacts (Plan 5a): the roles that reason over the whole project read them all; each production
+    # role reads what its work rests on. The screeners and the Reader work under the protocol, the Scout revises the
+    # search strategy from the PRISMA flow (incomplete searches, the record count), the Reader reads the extraction.
+    # No screener sees the screening decisions: dual screening stays independent.
+    "rk_protocol_get": _r(*_FULL_READERS, "scout", "screener_a", "screener_b", "reader"),
+    "rk_prisma_get": _r(*_FULL_READERS, "scout"),
+    "rk_screening_list": _r(*_FULL_READERS),
+    "rk_extraction_get": _r(*_FULL_READERS, "reader"),
 }
 
 # Spec §5.3/§7.2: the P1/P2 checkpoints and the discovery path depend on these intake fields. The intake cannot change

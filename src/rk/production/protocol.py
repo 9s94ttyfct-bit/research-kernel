@@ -291,7 +291,8 @@ def _field_line(f: dict) -> str:
     return f"- {f['name']} ({kind}): {f['description']}"
 
 
-def _probe_lines(probe: dict | None, cap: int) -> list[str]:
+def probe_lines(probe: dict | None, cap: int) -> list[str]:
+    """The record-cap probe, as the protocol's review shows it."""
     if probe is None:
         return ["Record-cap probe: not run."]
     per = "; ".join(f"{c['query']!r} on {c['source']}: {'no count' if c['count'] is None else c['count']}"
@@ -323,7 +324,7 @@ def render_protocol(ps: ProjectStore, row: dict) -> list[str]:
              "", "Search strategy:", f"- sources: {', '.join(ss['sources'])}", f"- publication years: {dates}",
              f"- languages: {', '.join(ss['languages'])}", "- queries:"]
     lines += [f"  - {q}" for q in ss["queries"]]
-    lines += ["", f"Record cap: {b['record_cap']} records.", *_probe_lines(probe_of(ps, row["id"]), b["record_cap"])]
+    lines += ["", f"Record cap: {b['record_cap']} records.", *probe_lines(probe_of(ps, row["id"]), b["record_cap"])]
     lines += ["", "Eligibility:", "Include:"] + [f"- {c['id']}: {c['text']}" for c in b["eligibility"]["include"]]
     lines += ["Exclude:"] + ([f"- {c['id']}: {c['text']}" for c in b["eligibility"]["exclude"]] or ["- none"])
     lines += ["", "Extraction schema:"] + ([_field_line(f) for f in b["extraction_schema"]] or ["- none"])

@@ -240,9 +240,9 @@ def _note(ctx: StageContext, phase: str | None, kind: str, **fields) -> None:
 
 
 # ---- screening ----
-def record_input(ctx: StageContext, rec: dict) -> dict:
+def record_input(lib, rec: dict) -> dict:
     """What a screener (and a judge) sees of a record at title/abstract screening."""
-    item = ctx.lib.get(rec["item_id"])
+    item = lib.get(rec["item_id"])
     out = {"record_id": rec["id"], "title": item.title, "abstract": item.abstract or "", "year": item.year,
            "venue": item.venue, "language": rec["language"]}
     if note := language_note(rec["language"]):
@@ -302,14 +302,14 @@ def fulltext_excerpt(text: str, limit: int = FULLTEXT_CHARS) -> tuple[str, list[
     return "\n\n".join(f"{s.capitalize()}\n{cut[s]}" for s in names), names
 
 
-def full_text_input(ctx: StageContext, rec: dict) -> dict:
+def full_text_input(ps: ProjectStore, lib, rec: dict) -> dict:
     """What a screener (and a judge) sees of a record at full-text screening: its metadata and ``text``, the
     excerpt of its full text (``text_kind`` ``sections``, with the ``sections`` found, or ``whole_text``) or, for an
     abstract-only record, its abstract (``abstract_only``)."""
-    item = ctx.lib.get(rec["item_id"])
+    item = lib.get(rec["item_id"])
     out = {"record_id": rec["id"], "title": item.title, "year": item.year, "venue": item.venue,
            "language": rec["language"]}
-    snap = latest_snapshot(ctx.ps, rec["item_id"]) if rec["retrieved"] else None
+    snap = latest_snapshot(ps, rec["item_id"]) if rec["retrieved"] else None
     if snap is not None:
         text, sections = fulltext_excerpt(snap[1].full_text())
         out |= {"text_kind": "sections" if sections else "whole_text", "sections": sections, "text": text}
@@ -320,8 +320,8 @@ def full_text_input(ctx: StageContext, rec: dict) -> dict:
     return out
 
 
-def phase_input(ctx: StageContext, phase: str, rec: dict) -> dict:
-    return full_text_input(ctx, rec) if phase == FULL_TEXT else record_input(ctx, rec)
+def phase_input(ps: ProjectStore, lib, phase: str, rec: dict) -> dict:
+    return full_text_input(ps, lib, rec) if phase == FULL_TEXT else record_input(lib, rec)
 
 
 def _add_problem(ctx: StageContext, rid: str, *whys: str) -> None:
@@ -483,33 +483,50 @@ def _checkpoints(ps: ProjectStore, stage: str, attempt: int, phase: str) -> list
     return [get_checkpoint(ps, r["id"]) for r in rows.fetchall()]
 
 
+TEXT_LABELS = {"sections": "Full text (abstract, methods, results)", "whole_text": "Full text (its beginning)",
+               "abstract_only": "Abstract only (no full text)"}
+
+
+def disagreement_view(ps: ProjectStore, lib, attempt: int, phase: str, record_ids: list[str]) -> list[dict]:
+    """What a ``screening_disagreements`` checkpoint shows of each of its records (its prompt, and the Workbench's
+    card): ``record_id``, ``title``, ``year``, ``venue``, ``language``, the ``text`` the screeners read as far as it is
+    shown (an abstract cut to ``ABSTRACT_SHOWN``; at full text the excerpt cut to ``EXCERPT_SHOWN``, every section
+    keeping its share), its ``text_label``, and what each screener decided (``screeners``)."""
+    views = _views(ps, attempt, phase)
+    out = []
+    for rid in record_ids:
+        rec = phase_input(ps, lib, phase, record_row(ps, rid))
+        if phase == FULL_TEXT:
+            label, text = TEXT_LABELS[rec["text_kind"]], rec["text"]
+            if rec["text_kind"] == "sections":  # every section keeps its share of the room
+                shown = fulltext_excerpt(text, EXCERPT_SHOWN)[0]
+            else:
+                shown = text[:EXCERPT_SHOWN] + "…" if len(text) > EXCERPT_SHOWN else text
+        else:
+            label, text = "Abstract", rec["abstract"]
+            shown = text[:ABSTRACT_SHOWN] + "…" if len(text) > ABSTRACT_SHOWN else text
+        out.append({"record_id": rid, "title": rec["title"], "year": rec["year"], "venue": rec["venue"],
+                    "language": rec["language"], "text_label": label, "text": shown,
+                    "screeners": _view_of(views, rid)})
+    return out
+
+
 def _prompt(ctx: StageContext, protocol: Protocol, phase: str, record_ids: list[str], batch: int, batches: int,
             why: str) -> str:
-    views = _views(ctx.ps, ctx.attempt, phase)
     lines = [why, ""] if why else []
     head = (f"Screening disagreements ({PHASE_WORDS[phase]} screening), checkpoint {batch} of {batches}: the two "
             f"screeners disagree on these {len(record_ids)} records.")
     lines += [head, "", "Eligibility criteria:"]
     lines += [f"- {c.id} (include): {c.text}" for c in protocol.eligibility.include]
     lines += [f"- {c.id} (exclude): {c.text}" for c in protocol.eligibility.exclude]
-    for rid in record_ids:
-        rec = phase_input(ctx, phase, record_row(ctx.ps, rid))
+    empty = "(no text)" if phase == FULL_TEXT else "(no abstract)"
+    for rec in disagreement_view(ctx.ps, ctx.lib, ctx.attempt, phase, record_ids):
         meta = ", ".join(str(x) for x in (rec["year"], rec["venue"]) if x) or "no year or venue"
-        if phase == FULL_TEXT:
-            label = {"sections": "Full text (abstract, methods, results)", "whole_text": "Full text (its beginning)",
-                     "abstract_only": "Abstract only (no full text)"}[rec["text_kind"]]
-            text, empty = rec["text"], "(no text)"
-            if rec["text_kind"] == "sections":  # every section keeps its share of the room
-                shown = fulltext_excerpt(text, EXCERPT_SHOWN)[0]
-            else:
-                shown = text[:EXCERPT_SHOWN] + "…" if len(text) > EXCERPT_SHOWN else text
-        else:
-            label, text, empty = "Abstract", rec["abstract"], "(no abstract)"
-            shown = text[:ABSTRACT_SHOWN] + "…" if len(text) > ABSTRACT_SHOWN else text
-        body = (shown or empty).splitlines() or [empty]
-        lines += ["", f"- {rid}: {rec['title']} ({meta}; language {rec['language']})", f"  {label}: {body[0]}"]
+        body = (rec["text"] or empty).splitlines() or [empty]
+        lines += ["", f"- {rec['record_id']}: {rec['title']} ({meta}; language {rec['language']})",
+                  f"  {rec['text_label']}: {body[0]}"]
         lines += [f"    {line}" for line in body[1:]]
-        lines += [f"  {_said(v['screener'], v['include'], v['criterion'], v['reason'])}" for v in _view_of(views, rid)]
+        lines += [f"  {_said(v['screener'], v['include'], v['criterion'], v['reason'])}" for v in rec["screeners"]]
     lines += ["", ('Decide each record: {"decisions": {"<record_id>": "include" | "exclude", ...}}, one decision for '
                    "every record above and for no other.")]
     return "\n".join(lines)
@@ -655,7 +672,7 @@ class SearchScreenWorker:
                 set_final(ps, rid, ctx.attempt, phase, "no", "rule", "language", actor=ctx.actor)
         eligible = [r for r in record_ids if r not in language]
         recs = {r["id"]: r for r in deduplicated(ps, ctx.attempt)}
-        inputs = {rid: record_input(ctx, recs[rid]) for rid in eligible}
+        inputs = {rid: record_input(ctx.lib, recs[rid]) for rid in eligible}
         # the work of the interrupted attempts right before this one (rk.production.resume), by record of this one
         by_item = carried_screening(ps, ctx.stage, ctx.attempt, protocol_hash, phase)
         carried = {rid: c for rid in eligible if (c := by_item.get(recs[rid]["item_id"])) is not None}
@@ -677,7 +694,7 @@ class SearchScreenWorker:
         intake, prot = intake_of(ps), frozen_protocol(ps)
         unretrieved = set(note["not_retrieved"])
         rows = {rid: record_row(ps, rid) for rid in note["sought"] if rid not in unretrieved}
-        inputs = {rid: full_text_input(ctx, row) for rid, row in rows.items()}
+        inputs = {rid: full_text_input(ps, ctx.lib, row) for rid, row in rows.items()}
         by_item = carried_screening(ps, ctx.stage, ctx.attempt, prot["frozen_hash"], phase)
         carried = {rid: _same_text(ps, c, row["retrieved"]) for rid, row in rows.items()
                    if (c := by_item.get(row["item_id"])) is not None}

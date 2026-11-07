@@ -49,6 +49,10 @@ from rk.orchestrator.state import (
     latest_run,
     orchestrator_drives,
 )
+from rk.production.models import PHASE_WORDS
+from rk.production.screening import KIND as DISAGREEMENTS
+from rk.production.screening import disagreement_view
+from rk.production.store import frozen_protocol
 from rk.tools.registry import CallContext, PermissionDenied, ToolError
 from rk.ui.auth import COOKIE, UiAuth
 from rk.ui.drafts import list_drafts, read_draft, render_draft
@@ -486,6 +490,50 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
             t = ps.db.execute("SELECT id, title FROM topics WHERE id=?", (rq["topic_id"],)).fetchone()
             topic = dict(t) if t else None
         return ok({"project": slug, "rq": rq, "hypotheses": hyps, "sentence": sentence, "topic": topic})
+
+    # ---- production: the protocol, the PRISMA flow, screening disagreements and the extraction ---------------
+    @r.get("/ui/api/protocol")
+    def protocol_get(request: Request, protocol_id: str | None = None) -> JSONResponse:
+        """The protocol ``protocol_id`` (default: the version in force, else the latest draft) with its probe, every
+        version and the deviations (``rk_protocol_get``)."""
+        args = {"project": request.query_params.get("project", "")}
+        if protocol_id:
+            args["protocol_id"] = protocol_id
+        return ok(call("rk_protocol_get", args, ctx_dep(request)))
+
+    @r.get("/ui/api/prisma")
+    def prisma_get(request: Request, attempt: int | None = None) -> JSONResponse:
+        """The PRISMA flow of search_screen, or the selection reasons for the paper types without one
+        (``rk_prisma_get``)."""
+        args: dict[str, Any] = {"project": request.query_params.get("project", "")}
+        if attempt is not None:
+            args["attempt"] = attempt
+        return ok(call("rk_prisma_get", args, ctx_dep(request)))
+
+    @r.get("/ui/api/screening/disagreements/{chk_id}")
+    def disagreements(chk_id: str, request: Request) -> JSONResponse:
+        """What the ``screening_disagreements`` checkpoint ``chk_id`` is about: the eligibility criteria and, for each
+        of its records, its metadata, the text the screeners read (as far as the checkpoint shows it) and each
+        screener's decision and reason."""
+        ctx_dep(request)
+        ps, lib = project(request.query_params.get("project", ""))
+        cp = get_checkpoint(ps, chk_id)
+        if cp is None or cp["kind"] != DISAGREEMENTS:
+            raise HTTPException(status_code=404, detail=f"no screening disagreements checkpoint {chk_id}")
+        o = cp["options"]
+        prot = frozen_protocol(ps)
+        return ok({"checkpoint_id": chk_id, "phase": o["phase"], "phase_words": PHASE_WORDS[o["phase"]],
+                   "batch": o["batch"], "batches": o["batches"],
+                   "criteria": prot["body"]["eligibility"] if prot else {"include": [], "exclude": []},
+                   "records": disagreement_view(ps, lib, o["attempt"], o["phase"], o["record_ids"])})
+
+    @r.get("/ui/api/extraction")
+    def extraction_get(request: Request, item_id: str | None = None) -> JSONResponse:
+        """The extraction of read_extract, of every included study or of ``item_id`` (``rk_extraction_get``)."""
+        args = {"project": request.query_params.get("project", "")}
+        if item_id:
+            args["item_id"] = item_id
+        return ok(call("rk_extraction_get", args, ctx_dep(request)))
 
     # ---- drafts -----------------------------------------------------------------------------------------------
     @r.get("/ui/api/drafts")

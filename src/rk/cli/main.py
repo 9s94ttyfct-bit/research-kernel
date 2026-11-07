@@ -31,10 +31,14 @@ checkpoint_app = typer.Typer(help="Checkpoints waiting for you", no_args_is_help
 browser_app = typer.Typer(help="The built-in browser (runs inside rk serve)", no_args_is_help=True)
 run_app = typer.Typer(cls=_RunGroup, no_args_is_help=True,
                       help="Runs in rk serve: rk run <project> --until <stage> runs the project's stages up to "
-                           "<stage>: topics or question (D2 discovery), or a later stage that has a worker (D1 and D2, "
-                           "rk run status lists them). status, pause, resume and cancel act on the project's run.")
-stage_app = typer.Typer(help="Discovery stages", no_args_is_help=True)
+                           "<stage>: topics or question (D2 discovery), or a production stage (protocol, search_screen "
+                           "or read_extract) once question passed (D1 and D2; rk run status lists the stages a run "
+                           "can end at now). status, pause, resume and cancel act on the project's run.")
+stage_app = typer.Typer(help="The project's stages", no_args_is_help=True)
 topic_app = typer.Typer(help="Candidate topics of the discovery stages", no_args_is_help=True)
+protocol_app = typer.Typer(help="The review protocol of the protocol stage", no_args_is_help=True)
+screening_app = typer.Typer(help="Screening decisions of the search_screen stage", no_args_is_help=True)
+extraction_app = typer.Typer(help="Extracted values of the read_extract stage", no_args_is_help=True)
 app.add_typer(project_app, name="project")
 app.add_typer(library_app, name="library")
 app.add_typer(note_app, name="note")
@@ -44,6 +48,9 @@ app.add_typer(browser_app, name="browser")
 app.add_typer(run_app, name="run")
 app.add_typer(stage_app, name="stage")
 app.add_typer(topic_app, name="topic")
+app.add_typer(protocol_app, name="protocol")
+app.add_typer(screening_app, name="screening")
+app.add_typer(extraction_app, name="extraction")
 
 JSON_OPT = typer.Option(False, "--json", help="Print raw JSON")
 KEYWORD_OPT = typer.Option(None, "--keyword", help="Repeatable")
@@ -816,12 +823,12 @@ def _run_line(d: dict) -> None:
 
 @run_app.command("start")
 def run_start(project: str = typer.Argument(..., help="The project (discovery mode d2, or question passed)"),
-              until: str = typer.Option(..., "--until", help="topics, question or a later stage that has a worker "
-                                                            "(rk run status: until_options)"),
+              until: str = typer.Option(..., "--until", help="topics, question, protocol, search_screen or "
+                                                            "read_extract (rk run status: until_options)"),
               as_json: bool = JSON_OPT) -> None:
     """Start a run of the project's stages in rk serve (also: rk run <project> --until ...). The server checks
-    --until: topics or question in D2 discovery, or a later stage that has a worker (after question passed, with a
-    frozen RQ)."""
+    --until: topics or question in D2 discovery, or a production stage (protocol, search_screen or read_extract)
+    after question passed, with a frozen RQ."""
     r = _call("rk_run_start", {"project": project, "until": until}, write=True)
     _out(r, as_json, lambda d: typer.echo(f"started {d['run_id']} on {d['project']} (until {d['until']}); follow it "
                                           "with: rk run status"))
@@ -864,7 +871,7 @@ def run_cancel(project: str | None = typer.Option(None, "--project"), as_json: b
 
 @stage_app.command("status")
 def stage_status(project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
-    """Where the discovery stages stand: status, attempts, waits and the back-edges used."""
+    """Where the project's stages stand: status, attempts, waits and the back-edges used."""
     r = _call("rk_stage_status", {"project": _project(project)})
 
     def render(d):
@@ -888,6 +895,123 @@ def topic_list(project: str | None = typer.Option(None, "--project"), as_json: b
         for t in d["topics"]:
             typer.echo(f"{t['id']}  [{t['status']}] {t['title']}\n  {t['summary'][:300]}\n  gaps: "
                        f"{', '.join(t['gap_ids']) or '-'}; closest works: {len(t['closest'])}")
+
+    _out(r, as_json, render)
+
+
+# ---------------- production: protocol, PRISMA, screening, extraction ----------------
+@protocol_app.command("show")
+def protocol_show(protocol_id: str | None = typer.Argument(None, help="Default: the version in force, else the "
+                                                                      "latest draft"),
+                  project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
+    """The review protocol with its record-cap probe, its versions and the deviations between them."""
+    args = {"project": _project(project)}
+    if protocol_id:
+        args["protocol_id"] = protocol_id
+    r = _call("rk_protocol_get", args)
+
+    def render(d):
+        p = d["protocol"]
+        if p is None:
+            typer.echo(f"{d['project']}: no protocol yet")
+            return
+        state = p["status"] + (f" (hash {p['frozen_hash'][:12]})" if p["frozen_hash"] else "")
+        typer.echo(f"{p['id']}: version {p['version']}, {state}" + (", in force" if p["id"] == d["in_force"] else ""))
+        typer.echo(d["text"])
+        typer.echo("\nversions: " + ", ".join(f"v{v['version']} {v['status']}" for v in d["versions"]))
+        for dev in d["deviations"]:
+            typer.echo(f"deviation v{dev['from_version']} -> v{dev['to_version']} ({dev['stage']}): {dev['reason']}")
+        if d["preregistration"]:
+            typer.echo(f"preregistration (G-PREREG): {'ok' if d['prereg_ok'] else 'not met'}")
+
+    _out(r, as_json, render)
+
+
+@app.command()
+def prisma(project: str | None = typer.Option(None, "--project"),
+           attempt: int | None = typer.Option(None, "--attempt", help="Default: the attempt search_screen shows"),
+           as_json: bool = JSON_OPT) -> None:
+    """The PRISMA flow of search_screen with its V-PRISMA check and notes; for a critical review or research
+    proposal the selection reasons instead."""
+    args: dict = {"project": _project(project)}
+    if attempt is not None:
+        args["attempt"] = attempt
+    r = _call("rk_prisma_get", args)
+
+    def render(d):
+        if d["attempt"] is None or (d["prisma"] is None and not d["selection"]):
+            typer.echo(f"{d['project']}: search_screen has not run yet")
+            return
+        p = d["prisma"]
+        if p is not None:
+            reasons = "; ".join(f"{why or 'no reason'}: {n}" for why, n in p["excluded_ft"].items())
+            typer.echo(f"PRISMA (search_screen attempt {d['attempt']}):\n"
+                       f"  identified {p['identified']}, duplicates removed {p['duplicates_removed']}\n"
+                       f"  screened {p['screened']}, excluded at title/abstract {p['excluded_ta']}\n"
+                       f"  sought {p['sought']}, not retrieved {p['not_retrieved']}\n"
+                       f"  assessed at full text {p['assessed_ft']}, excluded at full text "
+                       f"{sum(p['excluded_ft'].values())}" + (f" ({reasons})" if reasons else "") + "\n"
+                       f"  included {p['included']}")
+            typer.echo("V-PRISMA: the counts add up" if not d["check"] else "V-PRISMA fails: " + "; ".join(d["check"]))
+        else:
+            typer.echo(f"{d['paper_type']}: no PRISMA counts; the selection reasons (search_screen attempt "
+                       f"{d['attempt']}):")
+            for s in d["selection"]:
+                typer.echo(f"  {s['phase']:<14} {s['include']:<7} [{s['decided_by']}] {s['title']}: {s['reason']}")
+            for why in d["selection_check"]:
+                typer.echo(f"selection reasons missing: {why}")
+        for note in d["notes"]:
+            typer.echo(f"note: {note}")
+
+    _out(r, as_json, render)
+
+
+@screening_app.command("list")
+def screening_list(phase: str | None = typer.Option(None, "--phase", help="title_abstract or full_text"),
+                   final: bool = typer.Option(False, "--final", help="The final decisions, not each screener's"),
+                   project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
+    """The screening decisions of search_screen: each screener's, or with --final the final decision per record."""
+    args: dict = {"project": _project(project), "final": final}
+    if phase:
+        args["phase"] = phase
+    r = _call("rk_screening_list", args)
+
+    def render(d):
+        if not d["rows"]:
+            typer.echo(f"{d['project']}: no screening decisions yet")
+        for s in d["rows"]:
+            who = f"[{s['decided_by']}]" if d["final"] else f"{s['screener']}" + (
+                f" ({s['criterion']})" if s["criterion"] else "")
+            typer.echo(f"{s['record_id']} {s['phase']:<14} {s['include']:<7} {who} {s['title']}: {s['reason']}")
+
+    _out(r, as_json, render)
+
+
+@extraction_app.command("show")
+def extraction_show(item_id: str | None = typer.Argument(None, help="One study (library item id)"),
+                    project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
+    """The extraction of read_extract: the usable values with their quote notes (sufficiency low: read on the abstract
+    alone), and apart from them the rows that are no evidence, with their problem."""
+    args = {"project": _project(project)}
+    if item_id:
+        args["item_id"] = item_id
+    r = _call("rk_extraction_get", args)
+
+    def render(d):
+        if not d["studies"]:
+            typer.echo(f"{d['project']}: no extraction yet")
+        for s in d["studies"]:
+            state = (f"read on the {'full text' if s['read_on'] == 'full_text' else s['read_on']}, sufficiency "
+                     f"{s['sufficient']}" if s["in_evidence"] else f"not in the evidence: {s['out_reason']}")
+            typer.echo(f"{s['item_id']} {s['title']}: {state}")
+            for v in s["values"]:
+                note = v["note"] or {}
+                typer.echo(f"  {v['field']} = {v['value']}  [{v['sufficient']}] note {note.get('id')}"
+                           + (" (quote of the abstract)" if note.get("against") == "abstract" else ""))
+            for v in s["set_aside"]:
+                typer.echo(f"  not evidence: {v['field']} = {v['value']}: {v['problem']}")
+            for p in s["problems"]:
+                typer.echo(f"  problem: {p}")
 
     _out(r, as_json, render)
 

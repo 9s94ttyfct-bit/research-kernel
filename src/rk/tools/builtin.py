@@ -33,6 +33,7 @@ from rk.llm.vendors import vendor_of
 from rk.notes import NoteIn, NoteRejected, add_note, list_notes, text_find, text_read
 from rk.orchestrator.runs import no_run_active
 from rk.orchestrator.state import latest_attempt, orchestrator_drives
+from rk.production.tools import register_production_tools
 from rk.roles.policy import (
     INTAKE_HUMAN_ONLY,
     ROLES,
@@ -129,6 +130,7 @@ def build_registry(k: Kernel, browser: Callable[[], BrowserService | None] | Non
 
     register_browser_tools(tool, browser)
     register_discovery_tools(tool, k, runs or (lambda: None))
+    register_production_tools(tool, k)
 
     # ---- projects ----
     class ProjectCreate(BaseModel):

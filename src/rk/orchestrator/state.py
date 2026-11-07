@@ -168,6 +168,17 @@ def stage_rows(ps: ProjectStore) -> list[dict[str, Any]]:
             for s in stages_of(ps)]
 
 
+def shown_attempt(ps: ProjectStore, stage: str) -> int | None:
+    """The attempt whose artifacts a stage shows (the read tools, the Workbench): the one that passed, else the latest
+    that ran (an interrupted attempt, without ``stage.ran``, may be partial); ``None`` before any ran."""
+    row = stage_row(ps, stage)
+    if row is None:
+        return None
+    if row["status"] == "passed":
+        return row["passed_attempt"]
+    return next((n for n in range(row["attempt"], 0, -1) if attempt_ran(ps, stage, n)), None)
+
+
 def current_stage(ps: ProjectStore) -> str | None:
     """The first stage of the project that has not passed; ``None`` once every stage passed."""
     passed = {r["stage"] for r in ps.db.execute("SELECT stage FROM stages WHERE status='passed'")}

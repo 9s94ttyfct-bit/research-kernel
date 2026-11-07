@@ -170,13 +170,10 @@ def check_prisma(p: Prisma) -> list[str]:
     return out
 
 
-def flow(p: Prisma) -> str:
-    """The PRISMA flow and its notes in one line (the stage's reason, the PRISMA notes)."""
-    reasons = "; ".join(f"{reason or 'no reason'}: {n}" for reason, n in p.excluded_ft.items())
-    out = (f"PRISMA: identified {p.identified}, duplicates removed {p.duplicates_removed}, screened {p.screened}, "
-           f"excluded at title/abstract {p.excluded_ta}, sought {p.sought}, not retrieved {p.not_retrieved}, "
-           f"assessed at full text {p.assessed_ft}, excluded at full text {sum(p.excluded_ft.values())}"
-           + (f" ({reasons})" if reasons else "") + f", included {p.included}")
+def prisma_notes(p: Prisma) -> list[str]:
+    """The notes PRISMA reporting needs, in order: the P1 vote's exclusions of screening disagreements, the language
+    exclusions, the abstract-only assessments, the entries sources dropped as unreadable, the searches that could not
+    finish and the screening decisions carried over from interrupted attempts."""
     notes = []
     if voted := sum(p.excluded_disagreement.values()):
         notes.append(f"{voted} excluded by the P1 vote on a screening disagreement (not reviewed by a human)")
@@ -190,6 +187,17 @@ def flow(p: Prisma) -> str:
         notes.append("incomplete searches: " + "; ".join(p.incomplete_searches))
     if p.carried:
         notes.append(f"{p.carried} screening decisions carried over from interrupted attempts")
+    return notes
+
+
+def flow(p: Prisma) -> str:
+    """The PRISMA flow and its notes (``prisma_notes``) in one line (the stage's reason, the PRISMA notes)."""
+    reasons = "; ".join(f"{reason or 'no reason'}: {n}" for reason, n in p.excluded_ft.items())
+    out = (f"PRISMA: identified {p.identified}, duplicates removed {p.duplicates_removed}, screened {p.screened}, "
+           f"excluded at title/abstract {p.excluded_ta}, sought {p.sought}, not retrieved {p.not_retrieved}, "
+           f"assessed at full text {p.assessed_ft}, excluded at full text {sum(p.excluded_ft.values())}"
+           + (f" ({reasons})" if reasons else "") + f", included {p.included}")
+    notes = prisma_notes(p)
     return out + (f"; notes: {'; '.join(notes)}" if notes else "")
 
 

@@ -13,13 +13,12 @@ from rk.discovery.store import add_round, gaps, hypotheses, intake_of, rqs, topi
 from rk.orchestrator.graph import EDGE_LIMIT
 from rk.orchestrator.state import (
     active_run,
-    attempt_ran,
     current_stage,
     edge_rows,
     latest_attempt,
     orchestrator_drives,
     run_drives,
-    stage_row,
+    shown_attempt,
     stage_rows,
 )
 from rk.store.project import ProjectStore
@@ -38,7 +37,7 @@ class ProjectArg(BaseModel):
 
 class RunStart(BaseModel):
     project: str
-    until: str  # topics, question or a later stage of the project (RunManager.start checks it)
+    until: str  # topics, question or a production stage of the project (RunManager.start checks it)
 
 
 class StageRun(BaseModel):
@@ -56,17 +55,6 @@ class RoundArgs(BaseModel):
 class GapList(BaseModel):
     project: str
     verified: bool | None = None
-
-
-def _shown_attempt(ps: ProjectStore, stage: str) -> int | None:
-    """The attempt whose artifacts a stage shows: the one that passed, else the latest that ran (an interrupted
-    attempt, without ``stage.ran``, may be partial); ``None`` before any ran."""
-    row = stage_row(ps, stage)
-    if row is None:
-        return None
-    if row["status"] == "passed":
-        return row["passed_attempt"]
-    return next((n for n in range(row["attempt"], 0, -1) if attempt_ran(ps, stage, n)), None)
 
 
 def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManager | None]) -> None:
@@ -91,13 +79,16 @@ def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManag
         """Guided stage calls are for D1 projects: a D2 project's stages run in a D2 run."""
         intake = intake_of(ps)
         if intake is not None and intake.discovery_mode == "d2":
-            raise ToolError("not_d1", f"{slug} uses autonomous discovery (d2): its stages run in a D2 run (uv run rk "
-                                      f"run {slug} --until topics|question), not through guided stage calls")
+            raise ToolError("not_d1", f"{slug} uses autonomous discovery (d2): its stages run in a run (uv run rk run "
+                                      f"{slug} --until <stage>: topics or question, then protocol, search_screen or "
+                                      "read_extract; rk run status lists where a run can end now), not through guided "
+                                      "stage calls")
 
     # ---- runs (the human only) ----
-    @tool("rk_run_start", "Start a run of the project's stages up to until: topics or question (an autonomous D2 "
-          "discovery run), or a later stage with a worker once question passed and the RQ is frozen (D1 and D2 "
-          "projects); it runs in rk serve.", RunStart, True)
+    @tool("rk_run_start", "Start a run of the project's stages up to until, in rk serve: topics or question (an "
+          "autonomous D2 discovery run), or a production stage (protocol, search_screen or read_extract) once question "
+          "passed and the RQ is frozen (D1 and D2 projects); rk_run_status lists the stages a run can end at now "
+          "(until_options).", RunStart, True)
     def _run_start(ctx: CallContext, a: RunStart) -> dict:
         run_id = manager().start(a.project, a.until, actor=ctx.actor)
         return {"project": a.project, "run_id": run_id, "until": a.until}
@@ -118,7 +109,8 @@ def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManag
         return manager().cancel(a.project, actor=ctx.actor)
 
     @tool("rk_run_status", "The project's latest run, the status of every stage, the stages with a worker "
-          "(runnable) and the stages a run could end at now (until_options).", ProjectArg, False)
+          "(runnable: the discovery stages, protocol, search_screen and read_extract) and the stages a run could end "
+          "at now (until_options).", ProjectArg, False)
     def _run_status(ctx: CallContext, a: ProjectArg) -> dict:
         return manager().status(a.project)
 
@@ -190,7 +182,7 @@ def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManag
           "that the evidence chain was checked.", GapList, False)
     def _gap_list(ctx: CallContext, a: GapList) -> dict:
         ps = project(a.project)
-        attempt = _shown_attempt(ps, "gaps")
+        attempt = shown_attempt(ps, "gaps")
         return {"project": a.project, "attempt": attempt,
                 "gaps": gaps(ps, attempt, verified=a.verified) if attempt else []}
 
@@ -199,7 +191,7 @@ def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManag
           "their gaps, closest works and status.", ProjectArg, False)
     def _topic_list(ctx: CallContext, a: ProjectArg) -> dict:
         ps = project(a.project)
-        attempt = _shown_attempt(ps, "topics")
+        attempt = shown_attempt(ps, "topics")
         return {"project": a.project, "attempt": attempt, "topics": topics(ps, attempt) if attempt else []}
 
     @tool("rk_rq_get", "The research question of the question stage (the frozen one, else the latest of the latest "
@@ -207,7 +199,7 @@ def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManag
           "hypotheses and already-done result.", ProjectArg, False)
     def _rq_get(ctx: CallContext, a: ProjectArg) -> dict:
         ps = project(a.project)
-        attempt = _shown_attempt(ps, "question")
+        attempt = shown_attempt(ps, "question")
         rows = rqs(ps, attempt) if attempt else []
         frozen = [r for r in rows if r["status"] == "frozen"]
         rq = (frozen or rows or [None])[-1]

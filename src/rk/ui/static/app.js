@@ -265,7 +265,7 @@ pages.library = async (root, params) => {
   const detail = el("section", { class: "detail", "aria-live": "polite" }, el("p", { class: "empty" }, "Choose an item to see its sources, files and notes."));
   const items = el("ul", { class: "items", role: "listbox", "aria-label": "Library items" },
     res.items.length ? res.items.map((i) => {
-      const li = el("li", { role: "option", tabindex: "0", "aria-selected": "false" },
+      const li = el("li", { role: "option", tabindex: "0", "aria-selected": "false", "data-item": i.id },
         el("div", { class: "title" }, i.title),
         el("div", { class: "meta" }, [i.creators?.[0]?.family, i.year, i.venue].filter(Boolean).join(", ")),
         badgeList(i.badges));
@@ -275,16 +275,61 @@ pages.library = async (root, params) => {
       return li;
     }) : el("li", { class: "empty" }, q ? "Nothing matches this search." : "The library is empty. Search in the browser, then save a page or import a file."));
   fill(root, el("h1", {}, "Library"), tools, el("div", { class: "split" }, items, detail));
+  const chosen = params.get("item");  // a link to an item (and one of its notes): #/library?item=…&note=…
+  if (chosen) {
+    items.querySelector(`li[data-item="${CSS.escape(chosen)}"]`)?.setAttribute("aria-selected", "true");
+    await showItem(chosen, detail, params.get("note"));
+  }
 };
 
-async function showItem(id, box) {
-  const d = await api(`/ui/api/library/item/${id}`, { query: { project: state.project } });
+// Bring one of the shown item's notes into view and focus it.
+function focusNote(box, noteId) {
+  const q = box.querySelector(`blockquote[data-note-id="${CSS.escape(noteId)}"]`);
+  if (!q) return toast("That note is not one of this item's notes.", "error");
+  box.querySelectorAll("blockquote.target").forEach((x) => x.classList.remove("target"));
+  q.classList.add("target");
+  q.scrollIntoView({ block: "center" });
+  q.focus({ preventScroll: true });
+}
+
+const noteLabel = (against) => `Quote note${against === "abstract" ? " (abstract)" : ""}`;
+
+// The extraction of a study (read_extract): the values that are usable evidence, each linked to its quote note, and
+// apart from them the rows that are no evidence, with their problem.
+function extractionSection(s, itemId, box) {
+  const value = (v) => (v === "not_reported" ? "not reported" : v === null || v === undefined ? "—" : typeof v === "object" ? JSON.stringify(v) : String(v));
+  const state = s.in_evidence
+    ? s.read_on === "abstract" ? "Read on the abstract only: every value from it has sufficiency low." : "Read on the full text."
+    : `Not in the evidence: ${s.out_reason}.`;
+  return [
+    el("h2", {}, "Extraction"),
+    el("p", { class: s.in_evidence ? "hint" : "hint bad" }, state),
+    s.values.length
+      ? el("table", { class: "extraction" }, el("thead", {}, el("tr", {}, ["Field", "Value", "Sufficiency", "Evidence"].map((h) => el("th", {}, h)))),
+          el("tbody", {}, s.values.map((v) => el("tr", {}, el("td", {}, v.field), el("td", {}, value(v.value)),
+            el("td", { class: v.sufficient === "low" ? "low" : "" }, v.sufficient),
+            el("td", {}, v.note ? el("a", { href: `#/library?item=${encodeURIComponent(itemId)}&note=${encodeURIComponent(v.note.id)}`,
+              onclick: (e) => { e.preventDefault(); focusNote(box, v.note.id); } }, noteLabel(v.note.against)) : "—")))))
+      : el("p", { class: "empty" }, "No value of this study is usable evidence."),
+    s.set_aside.length
+      ? el("div", { class: "set-aside" }, el("h3", {}, "Not used as evidence"),
+          el("ul", {}, s.set_aside.map((r) => el("li", {}, el("strong", {}, r.field), ` = ${value(r.value)}: `, r.problem))))
+      : null,
+    s.problems.length ? el("ul", { class: "hint" }, s.problems.map((p) => el("li", {}, p))) : null,
+  ];
+}
+
+async function showItem(id, box, noteId = null) {
+  const [d, ex] = await Promise.all([api(`/ui/api/library/item/${encodeURIComponent(id)}`, { query: { project: state.project } }),
+    api("/ui/api/extraction", { query: { project: state.project, item_id: id } }).catch((err) => ({ error: err.message }))]);
   const it = d.item;
   const ids = Object.entries(it.ids).filter(([, v]) => v);
+  const study = ex.studies?.[0];
   fill(box, el("h2", {}, it.title),
   el("p", { class: "meta" }, [it.creators.map((c) => [c.given, c.family].filter(Boolean).join(" ")).join(", "), it.year, it.venue].filter(Boolean).join(" — ")),
   badgeList(d.badges),
   ids.length ? el("p", { class: "hint" }, ids.map(([k, v]) => `${k}: ${v}`).join("   ")) : null,
+  study ? extractionSection(study, id, box) : ex.error ? el("p", { class: "error" }, `Could not load the extraction: ${ex.error}`) : null,
   el("h2", {}, "Files"),
   d.attachments.length
     ? el("ul", {}, d.attachments.map((a) => el("li", {},
@@ -293,9 +338,10 @@ async function showItem(id, box) {
     : el("p", { class: "empty" }, "No file yet. The Reader fetches open-access text first, then the library page in the browser."),
   el("h2", {}, "Notes"),
   d.notes.length
-    ? el("div", {}, d.notes.map((n) => el("blockquote", { class: `note ${n.kind === "quote" && !n.verified?.quote?.ok ? "unverified" : ""}` },
+    ? el("div", {}, d.notes.map((n) => el("blockquote", { class: `note ${n.kind === "quote" && !n.verified?.quote?.ok ? "unverified" : ""}`, "data-note-id": n.id, tabindex: "-1" },
         n.text, el("div", { class: "hint" }, `${n.kind}${n.verified?.quote?.against === "abstract" ? ", abstract" : n.locator ? `, page ${n.locator.page}` : ""}`))))
     : el("p", { class: "empty" }, "No notes yet."));
+  if (noteId) focusNote(box, noteId);
 }
 
 async function savePage() {
@@ -442,9 +488,162 @@ function blockedCard(c, answer) {
   ];
 }
 
-const CARDS = { topic_review: topicReviewCard, rq_approval: rqCard, significance_novelty: rqCard, stage_blocked: blockedCard };
+// ---------------------------------------------------------------------------------------------------------------
+// production: the protocol and screening disagreement cards, the PRISMA flow, the extraction of a study
+
+function criteria(list) {
+  return list.length ? el("ul", { class: "criteria" }, list.map((x) => el("li", {}, el("strong", {}, x.id), " ", x.text))) : el("p", { class: "empty" }, "None.");
+}
+
+// "selection_process" -> "Selection process"; "screener_a" -> "Screener A".
+const label = (key) => { const w = words(key); return w ? w[0].toUpperCase() + w.slice(1) : w; };
+const screener = (role) => String(role).replace(/^screener_(\w)$/, (_, x) => `Screener ${x.toUpperCase()}`);
+
+async function protocolCard(c, answer) {
+  const d = await api("/ui/api/protocol", { query: { project: state.project, protocol_id: c.options?.protocol_id } });
+  const p = d.protocol, b = p.body, ss = b.search_strategy;
+  const earlier = d.in_force && d.in_force !== p.id ? d.versions.find((v) => v.id === d.in_force) : null;
+  const cap = el("input", { type: "number", name: "record_cap", min: "1", step: "1", inputmode: "numeric", placeholder: String(b.record_cap) });
+  const approve = el("form", { class: "approve" },
+    el("label", { class: "field" }, "Record cap (optional)", cap, el("span", { class: "hint" }, `Leave it empty to keep ${b.record_cap} records.`)),
+    el("button", { type: "submit" }, "Approve this protocol"));
+  approve.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const raw = cap.value.trim();
+    if (!raw) return answer({ decision: "approve" });
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 1) return toast("The record cap is a whole number of records, at least 1.", "error");
+    answer({ decision: "approve", record_cap: n });
+  });
+  const why = el("textarea", { name: "back_comment" });
+  const back = el("form", { class: "revise" }, el("label", { class: "field" }, "Why go back (optional)", why),
+    el("button", { type: "submit", class: "secondary" }, "Back to the research question"));
+  back.addEventListener("submit", (e) => { e.preventDefault(); const comment = why.value.trim(); answer(comment ? { decision: "back", comment } : { decision: "back" }); });
+  const plan = Object.entries(b.synthesis_plan || {}).filter(([, v]) => v !== null && v !== undefined);
+  const prismaP = Object.entries(b.prisma_p || {});
+  return [
+    el("p", { class: "hint" }, `Version ${p.version} · ${words(d.paper_type)} · `,
+      d.preregistration ? "freezing it counts as preregistration (G-PREREG)" : "freezing it is for traceability only, not preregistration"),
+    earlier ? el("p", { class: "notice" }, `Version ${earlier.version} is frozen: approving this one records a deviation from it.`) : null,
+    el("h4", {}, "Research question"), el("p", { class: "rq-sentence" }, b.question),
+    el("h4", {}, "Search strategy"),
+    facts([["Sources", ss.sources.join(", ")], ["Publication years", `${ss.date_from ?? "any year"} to ${ss.date_to ?? "now"}`], ["Languages", ss.languages.join(", ")]]),
+    el("ul", { class: "queries", "aria-label": "Queries" }, ss.queries.map((q) => el("li", {}, el("code", {}, q)))),
+    el("h4", {}, "Record cap"), el("p", {}, `${b.record_cap} records after deduplication.`),
+    d.probe_lines.map((line) => el("p", { class: "hint" }, line)),
+    el("h4", {}, "Eligibility"),
+    el("div", { class: "eligibility" }, el("div", {}, el("div", { class: "hint" }, "Include"), criteria(b.eligibility.include)),
+      el("div", {}, el("div", { class: "hint" }, "Exclude"), criteria(b.eligibility.exclude))),
+    el("h4", {}, "Extraction schema"),
+    b.extraction_schema.length
+      ? el("table", { class: "schema" }, el("thead", {}, el("tr", {}, ["Field", "Type", "Description"].map((h) => el("th", {}, h)))),
+          el("tbody", {}, b.extraction_schema.map((f) => el("tr", {}, el("td", {}, f.name),
+            el("td", {}, f.type, f.categories ? `: ${f.categories.join(" | ")}` : "", f.unit ? ` (${f.unit})` : ""), el("td", {}, f.description)))))
+      : el("p", { class: "empty" }, "No extraction field."),
+    el("h4", {}, "Synthesis plan"),
+    plan.length ? facts(plan.map(([k, v]) => [label(k), k === "method" ? words(v) : v])) : el("p", { class: "empty" }, "None."),
+    prismaP.length ? [el("h4", {}, "PRISMA-P"), facts(prismaP.map(([k, v]) => [label(k), v]))] : null,
+    el("div", { class: "other-answers" }, approve,
+      reviseForm("What should change in the protocol", (comment) => answer({ decision: "revise", comment })), back),
+  ];
+}
+
+const SAID = { yes: "Include", no: "Exclude", unclear: "Unclear" };
+
+async function disagreementCard(c, answer) {
+  const d = await api(`/ui/api/screening/disagreements/${encodeURIComponent(c.id)}`, { query: { project: state.project } });
+  const chosen = new Map();
+  const status = el("p", { class: "hint", role: "status" });
+  const submit = el("button", { type: "button", disabled: true, onclick: () => answer({ decisions: Object.fromEntries(chosen) }) }, "Submit decisions");
+  const update = () => {
+    status.textContent = `${chosen.size} of ${count(d.records.length, "record")} decided`;
+    submit.disabled = chosen.size !== d.records.length;  // every record of the checkpoint needs your decision
+  };
+  update();
+  const said = (s) => el("td", { class: "said" }, el("div", { class: "who" }, screener(s.screener)),
+    el("strong", {}, s.include ? SAID[s.include] || s.include : "No decision"), s.criterion ? ` (${s.criterion})` : "",
+    s.reason ? el("div", { class: "reason" }, s.reason) : null);
+  const names = (d.records[0]?.screeners || []).map((s) => screener(s.screener));
+  const rows = d.records.map((r) => {
+    const group = `decide-${c.id}-${r.record_id}`;
+    const radio = (value, label) => el("label", { class: "choice" },
+      el("input", { type: "radio", name: group, value, "aria-label": `${label}: ${r.title}`, onchange: () => { chosen.set(r.record_id, value); update(); } }), label);
+    return el("tr", { "data-record": r.record_id },
+      el("td", { class: "record" }, el("div", { class: "record-title" }, r.title),
+        el("div", { class: "hint" }, [r.year, r.venue, r.language && `language ${r.language}`].filter(Boolean).join(" · ")),
+        el("div", { class: "hint text-label" }, r.text_label),
+        el("div", { class: "excerpt", tabindex: "0", role: "region", "aria-label": `${r.text_label}: ${r.title}` }, r.text || "(no text)")),
+      r.screeners.map(said),
+      el("td", { class: "decide" }, el("div", { class: "who" }, "Your decision"),
+        el("div", { role: "radiogroup", "aria-label": `Your decision: ${r.title}` }, radio("include", "Include"), radio("exclude", "Exclude"))));
+  });
+  return [
+    el("p", { class: "hint" }, `${d.phase_words[0].toUpperCase()}${d.phase_words.slice(1)} screening, checkpoint ${d.batch} of ${d.batches}: the two screeners disagree on ${count(d.records.length, "record")}. Decide each one.`),
+    el("h4", {}, "Eligibility criteria"),
+    el("div", { class: "eligibility" }, el("div", {}, el("div", { class: "hint" }, "Include"), criteria(d.criteria.include)),
+      el("div", {}, el("div", { class: "hint" }, "Exclude"), criteria(d.criteria.exclude))),
+    el("div", { class: "table-wrap" }, el("table", { class: "disagreements" },
+      el("thead", {}, el("tr", {}, el("th", {}, "Record"), names.map((n) => el("th", {}, n)), el("th", {}, "Your decision"))),
+      el("tbody", {}, rows))),
+    el("div", { class: "toolbar" }, submit, status),
+  ];
+}
+
+const CARDS = { topic_review: topicReviewCard, rq_approval: rqCard, significance_novelty: rqCard, stage_blocked: blockedCard,
+  protocol_approval: protocolCard, screening_disagreements: disagreementCard };
 const KINDS = { topic_review: "Topic review", rq_approval: "Research question approval",
-  significance_novelty: "Already answered? The judges split", stage_blocked: "Stage blocked at its back-edge limit" };
+  significance_novelty: "Already answered? The judges split", stage_blocked: "Stage blocked at its back-edge limit",
+  protocol_approval: "Protocol approval", screening_disagreements: "Screening disagreements" };
+
+const DECIDED_BY = { agreement: "both screeners", single: "one screener", human: "you", vote: "the P1 vote (not reviewed by a human)", rule: "the language rule" };
+const PHASE_NAMES = { title_abstract: "Title and abstract", full_text: "Full text" };
+
+// The PRISMA flow (systematic and scoping reviews): each box with its count and what it holds, the full-text
+// exclusions by reason, V-PRISMA and the notes. The other paper types: the selection reasons of every decision.
+function prismaPanel(d) {
+  if (d.attempt === null || (!d.prisma && !d.selection.length))
+    return el("p", { class: "empty" }, "Search and screening have not run yet.");
+  const notes = d.notes.length ? [el("h3", {}, "Notes"), el("ul", { class: "prisma-notes" }, d.notes.map((n) => el("li", {}, n)))] : null;
+  if (!d.prisma) {
+    const phase = (ph) => {
+      const rows = d.selection.filter((s) => s.phase === ph);
+      if (!rows.length) return null;
+      const inc = rows.filter((s) => s.include === "yes").length;
+      return el("details", { class: "selection", open: ph === "full_text" },
+        el("summary", {}, `${PHASE_NAMES[ph]}: ${inc} included, ${rows.length - inc} not included`),
+        el("table", {}, el("thead", {}, el("tr", {}, ["Record", "Decision", "Decided by", "Selection reason"].map((h) => el("th", {}, h)))),
+          el("tbody", {}, rows.map((s) => el("tr", {}, el("td", {}, s.title), el("td", {}, SAID[s.include] || s.include),
+            el("td", {}, DECIDED_BY[s.decided_by] || s.decided_by),
+            el("td", {}, s.screeners.length ? s.screeners.map((x) => el("div", {}, `${screener(x.screener)}: `, x.reason || "(no reason)")) : s.reason))))));
+    };
+    return [
+      el("p", { class: "hint" }, `A ${words(d.paper_type)} reports the selection reasons, not PRISMA counts (search_screen attempt ${d.attempt}).`),
+      d.selection_check.length ? el("ul", { class: "check bad" }, d.selection_check.map((f) => el("li", {}, f))) : el("p", { class: "check ok" }, "Every selection decision has its reason."),
+      phase("title_abstract"), phase("full_text"), notes];
+  }
+  const p = d.prisma;
+  const sub = (pairs) => pairs.filter(([n]) => n).map(([n, text]) => el("div", { class: "hint" }, `${n} ${text}`));
+  const box = (label, n, ...more) => el("li", {}, el("span", { class: "box-label" }, label), el("span", { class: "box-count" }, String(n)), more);
+  const reasons = Object.entries(p.excluded_ft);
+  return [
+    el("p", { class: "hint" }, `PRISMA flow of search_screen attempt ${d.attempt}. Each count is taken from the stored records and decisions.`),
+    el("ol", { class: "prisma-flow" },
+      box("Identified", p.identified, el("div", { class: "hint" }, "every hit of every source and query")),
+      box("Duplicates removed", p.duplicates_removed),
+      box("Screened on title and abstract", p.screened),
+      box("Excluded at title/abstract", p.excluded_ta, sub([[p.excluded_language, "for language"],
+        [p.excluded_disagreement.title_abstract, "by the P1 vote on a disagreement"], [p.unreasoned_ta, "without a reason"]])),
+      box("Sought for full text", p.sought),
+      box("Not retrieved", p.not_retrieved, el("div", { class: "hint" }, "no full text and no abstract")),
+      box("Assessed at full text", p.assessed_ft, sub([[p.abstract_only, "on the abstract only"]])),
+      box("Excluded at full text", reasons.reduce((a, [, n]) => a + n, 0),
+        reasons.length ? el("ul", { class: "reasons" }, reasons.map(([why, n]) => el("li", {}, `${why || "no reason"}: ${n}`))) : null),
+      box("Included", p.included)),
+    d.check.length ? [el("p", { class: "check bad" }, "The counts do not add up (V-PRISMA):"), el("ul", { class: "check bad" }, d.check.map((f) => el("li", {}, f)))]
+      : el("p", { class: "check ok" }, "The counts add up (V-PRISMA)."),
+    notes,
+  ];
+}
 
 pages.checkpoints = async (root) => {
   if (needProject()) return;
@@ -588,17 +787,25 @@ function redrawKeeping(box, redraw) {
 
 pages.progress = async (root) => {
   if (needProject()) return;
-  const [p, first] = await Promise.all([api("/ui/api/progress", { query: { project: state.project } }),
-    api("/ui/api/stages", { query: { project: state.project } })]);
+  const [p, first, firstPrisma] = await Promise.all([api("/ui/api/progress", { query: { project: state.project } }),
+    api("/ui/api/stages", { query: { project: state.project } }), api("/ui/api/prisma", { query: { project: state.project } })]);
   const graphBox = el("div", {});
   const runStatus = el("div", { "aria-live": "polite" });  // only the status line is announced
   const runButtons = el("div", {});
-  let asked = 0, timer = null, graphShown = null, runShown = null;
+  const prismaBox = el("div", { class: "prisma" });
+  let asked = 0, timer = null, graphShown = null, runShown = null, prismaShown = null;
+  const showPrisma = (d) => {
+    const now = JSON.stringify(d);
+    if (now === prismaShown) return;
+    prismaShown = now;
+    redrawKeeping(prismaBox, () => fill(prismaBox, prismaPanel(d)));
+  };
   const refresh = async () => {
     const n = ++asked;
     try {
-      const g = await api("/ui/api/stages", { query: { project: state.project } });
-      if (n === asked) draw(g);  // a slower, older answer does not draw over a newer one
+      const [g, d] = await Promise.all([api("/ui/api/stages", { query: { project: state.project } }),
+        api("/ui/api/prisma", { query: { project: state.project } })]);
+      if (n === asked) { draw(g); showPrisma(d); }  // a slower, older answer does not draw over a newer one
     } catch (err) { toast(err.message, "error"); }
   };
   const act = async (action, until) => {
@@ -622,7 +829,7 @@ pages.progress = async (root) => {
       graphShown = graphNow;
       const used = g.back_edges.filter((e) => e.count || e.allowed);
       redrawKeeping(graphBox, () => fill(graphBox,
-        el("p", { class: "hint" }, g.paper_type ? `Paper type: ${words(g.paper_type)}. ` : "No paper type yet. ", "The stages after the research question are not available yet."),
+        el("p", { class: "hint" }, g.paper_type ? `Paper type: ${words(g.paper_type)}. ` : "No paper type yet. ", "Stages marked “Not yet available” come in a later version."),
         el("ol", { class: "stages", "aria-label": "Stages" }, g.graph.map(stageChip)),
         el("p", { class: "hint" }, `Back-edges and reruns used (each up to ${g.edge_limit} times, plus any you allow): `,
           used.length ? used.map((e) => `${words(e.from)} ${e.from === e.to ? "reruns" : `→ ${words(e.to)}`} ${e.count} of ${e.limit + e.allowed}`).join(" · ") : "none")));
@@ -636,6 +843,7 @@ pages.progress = async (root) => {
     }
   };
   draw(first);
+  showPrisma(firstPrisma);
   const feed = el("ul", { class: "feed", "aria-live": "polite" });
   const row = (e) => el("li", {}, el("time", { datetime: e.ts }, e.ts.replace("T", " ").slice(0, 19)), `${e.type} `, el("span", { class: "hint" }, `${e.actor}${e.entity_id ? ` · ${e.entity_id}` : ""}`));
   feed.append(...p.events.map(row));
@@ -644,13 +852,14 @@ pages.progress = async (root) => {
   root.listen((msg) => {
     if (msg.type === "event") {
       feed.prepend(row(msg.event));
-      if (/^(stage|run|edge)\./.test(msg.event.type)) later();
+      if (/^(stage|run|edge|screening)\./.test(msg.event.type)) later();
     } else if (msg.type === "run") later();
   });
   fill(root, el("h1", {}, "Progress"),
-    el("p", { class: "lead" }, "Where discovery stands, and what the agents and you did in this project, newest first."),
+    el("p", { class: "lead" }, "Where the stages stand, and what the agents and you did in this project, newest first."),
     el("h2", {}, "Stages"), graphBox,
     el("h2", {}, "Run"), el("div", { class: "run-controls" }, runStatus, runButtons),
+    el("h2", {}, "Search and screening"), prismaBox,
     el("h2", {}, "Tasks"),
     p.tasks.length ? el("table", {}, el("thead", {}, el("tr", {}, ["Task", "Role", "Driver", "Status", "Tries", "Error"].map((h) => el("th", {}, h)))),
       el("tbody", {}, p.tasks.map((t) => el("tr", {}, el("td", {}, t.id), el("td", {}, t.role), el("td", {}, t.driver), el("td", {}, t.status), el("td", {}, t.attempts), el("td", {}, t.error || "")))))
