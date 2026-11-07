@@ -78,6 +78,22 @@ def test_no_source_returns_none(ps, lib, tmp_path):
     assert fetch_fulltext(ps, lib, ctx, iid, actor="t") is None
 
 
+def test_http_error_on_one_channel_falls_through_to_the_next(ps, lib, tmp_path):
+    pdf = (DOCS / "two_pages.pdf").read_bytes()
+
+    def handler(req):
+        if req.url.host == "example.org":
+            return httpx.Response(200, content=pdf, headers={"content-type": "application/pdf"})
+        return httpx.Response(500)  # Europe PMC and BioC both fail
+
+    ctx = SourceContext(http=HttpClient(tmp_path / "h.sqlite", user_agent="t", sleep=lambda s: None,
+                                        transport=httpx.MockTransport(handler)), settings=Settings())
+    iid = lib.add_item(ItemIn(title="Copper catalysts", year=2021, ids=Ids(pmcid="PMC1234567", doi="10.1/x"),
+                              oa_urls=["https://example.org/paper.pdf"]), added_by="agent", actor="t").item_id
+    r = fetch_fulltext(ps, lib, ctx, iid, actor="t")
+    assert r is not None and r.kind == "pdf"
+
+
 def test_html_hidden_text_removed():
     html = (DOCS / "hidden.html").read_text()
     assert "IGNORE" not in sanitize_html(html).replace("<title>", "")

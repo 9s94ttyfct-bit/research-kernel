@@ -92,18 +92,27 @@ def fetch_fulltext(ps: ProjectStore, lib: Library, ctx: SourceContext, item_id: 
     item = lib.get(item_id)
     http = ctx.http
     if not item.ids.pmcid and item.ids.doi:
-        oa = openalex.get_work(http, Identifier(kind="doi", value=item.ids.doi), ctx.settings.openalex_key)
+        try:
+            oa = openalex.get_work(http, Identifier(kind="doi", value=item.ids.doi), ctx.settings.openalex_key)
+        except HttpError:
+            oa = None
         if oa:
             lib.add_item(oa.item, added_by="agent", actor=actor)
             item = lib.get(item_id)
     if item.ids.pmcid:
-        xml = europepmc.fulltext_xml(http, item.ids.pmcid)
+        try:
+            xml = europepmc.fulltext_xml(http, item.ids.pmcid)
+        except HttpError:
+            xml = None
         if xml:
             layer = jats_to_layer(xml, "")
             if layer.pages[0].text.strip():
                 return _record_snapshot(ps, item.id, xml, layer, "jats",
                                         f"{europepmc.BASE}/{item.ids.pmcid}/fullTextXML", actor)
-        doc = pubmed.bioc_json(http, item.ids.pmcid)
+        try:
+            doc = pubmed.bioc_json(http, item.ids.pmcid)
+        except HttpError:
+            doc = None
         if doc:
             raw = canonical_json(doc).encode()
             layer = bioc_to_layer(doc, "")
