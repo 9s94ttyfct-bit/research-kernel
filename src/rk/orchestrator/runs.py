@@ -2,18 +2,26 @@
 
 The thread waits while the run waits on a checkpoint (it polls every ``poll_s``, so your answer resumes the run) or on
 an hourly call cap (``min(wait, max_rate_wait_s)``, the wait taken from the kernel's ``CallCaps`` for the capped
-driver). It ends when the run is ``paused``, ``paused_budget``, done, failed or cancelled, and on ``close``.
+driver, at least ``poll_s``). It ends when the run is ``paused``, ``paused_budget``, done, failed or cancelled, and on
+``close``.
 
 While its thread lives, the thread is the only writer of the run's status: ``pause`` and ``cancel`` ask it and take
-effect between steps (a role task in flight finishes first); without a thread they are written at once. A step that
-raises fails the run with the error as its reason. ``resume_all`` restarts the threads after ``rk serve`` restarts;
-the event-sourced stage state makes every step start from what already passed."""
+effect between steps (a role task in flight finishes first, also when ``close`` comes in the meantime); without a
+thread they are written at once. A step that raises fails the run with the error as its reason. ``resume_all``
+restarts the threads after ``rk serve`` restarts; the event-sourced stage state makes every step start from what
+already passed.
+
+One writer of a project's stages at a time: a guided (D1) stage call goes through ``d1``, refused while a run of the
+project is active, and while it runs ``start`` and ``resume`` of the project are refused."""
 
 from __future__ import annotations
 
 import logging
 import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import TypeVar
 
 from rk.discovery.store import intake_of
 from rk.llm.drivers import DriverSpec
@@ -35,12 +43,14 @@ from rk.tools.registry import ToolError
 log = logging.getLogger(__name__)
 
 ACTOR = "orchestrator"
+RUN_UNTIL = ("topics", "question")  # the stages a run may end at
 STOPPED = frozenset({"paused", "paused_budget"}) | TERMINAL_RUN_STATES  # the thread ends on these
 STEPPED = frozenset({"running", "waiting_human", "paused_waiting_human"})  # a thread steps these
 WAITING = frozenset({"waiting_human", "paused_waiting_human"})  # the thread polls the checkpoints
 MAX_RATE_WAIT_S = 300.0  # longest single wait on a call cap before the run steps again
-UNKNOWN_RATE_WAIT_S = 60.0  # wait on a call cap whose driver is unknown (or reports no wait)
+UNKNOWN_RATE_WAIT_S = 60.0  # wait on a call cap whose driver is unknown
 REASONS = {"paused": "paused by you", "cancelled": "cancelled by you"}
+T = TypeVar("T")
 
 
 @dataclass
@@ -58,14 +68,18 @@ class RunManager:
         self.kernel, self.registry, self.orchestrator = kernel, registry, orchestrator
         self.poll_s, self.max_rate_wait_s, self.unknown_rate_wait_s = poll_s, max_rate_wait_s, unknown_rate_wait_s
         self.join_timeout_s = join_timeout_s
-        self._lock = threading.Lock()  # guards _runners, _closed and every status write outside a step
+        self._lock = threading.Lock()  # guards _runners, _d1, _closed and every status write outside a step
         self._runners: dict[str, _Runner] = {}
+        self._d1: set[str] = set()  # projects with a guided (D1) stage call in flight
         self._closed = False
 
     # ---- controls ----
     def start(self, project: str, until: str, *, actor: str) -> str:
-        """Start a D2 run of ``project`` up to the stage ``until`` (the tools offer ``topics`` or ``question``) and its
-        thread. Refused while another run of the project is not terminal, without an intake, and in D1."""
+        """Start a D2 run of ``project`` up to the stage ``until`` (``topics`` or ``question``) and its thread.
+        Refused while another run of the project is not terminal or a D1 stage call runs, without an intake, and in
+        D1."""
+        if until not in RUN_UNTIL:
+            raise ToolError("stage_unavailable", f"a run ends at topics or question, not {until!r}")
         ps = self._ps(project)
         intake = intake_of(ps)
         if intake is None:
@@ -75,6 +89,7 @@ class RunManager:
                                       "record the intake again with discovery mode d2")
         with self._lock:
             self._check_open()
+            self._check_no_d1(project)
             old = self._runners.get(project)
             if old is not None:
                 raise ToolError("run_active", f"run {old.run_id} of {project} is still stopping",
@@ -98,6 +113,7 @@ class RunManager:
         ps = self._ps(project)
         with self._lock:
             self._check_open()
+            self._check_no_d1(project)
             run = self._active(ps, project)
             r = self._runners.get(project)
             if r is not None:
@@ -123,6 +139,30 @@ class RunManager:
         return {"project": project, "run": latest_run(ps), "current": current_stage(ps), "stages": stage_rows(ps),
                 "stepping": stepping, "requested": requested}
 
+    def d1(self, project: str, call: Callable[[], T]) -> T:
+        """Run a guided (D1) stage call (``rk_stage_run``, ``rk_stage_advance``) of ``project``: refused while a run
+        of the project is active (or its thread is still stopping) or another D1 call of it runs; until ``call``
+        returns, ``start`` and ``resume`` of the project are refused, so the stages have one writer at a time."""
+        ps = self._ps(project)
+        with self._lock:
+            self._check_open()
+            if project in self._d1:
+                raise ToolError("stage_busy", f"another guided stage call of {project} is in progress; try again "
+                                              "when it returns")
+            run = active_run(ps)
+            r = self._runners.get(project)
+            if run is not None or r is not None:
+                run_id = run["id"] if run is not None else r.run_id
+                state = run["status"] if run is not None else "still stopping"
+                raise ToolError("run_active", f"run {run_id} is {state}; a D2 run drives the stages until it is "
+                                              "done, failed or cancelled (rk run cancel)", {"run_id": run_id})
+            self._d1.add(project)
+        try:
+            return call()
+        finally:
+            with self._lock:
+                self._d1.discard(project)
+
     def resume_all(self) -> list[str]:
         """At ``rk serve`` start: a thread for every run that is ``running``, ``waiting_human`` or
         ``paused_waiting_human``. Returns their run ids."""
@@ -141,29 +181,32 @@ class RunManager:
         return resumed
 
     def close(self, timeout: float | None = None) -> None:
-        """Stop every thread between steps and join it (``timeout`` each, default ``join_timeout_s``). A thread still
-        in a step after that is left to the process exit; its attempt reruns after the restart."""
+        """Stop every thread between steps and join them all within one deadline (``timeout``, default
+        ``join_timeout_s``). A thread still in a step after that is left to the process exit: it still applies a
+        pending pause or cancel, and its attempt reruns after the restart."""
         with self._lock:
             self._closed = True
             runners = list(self._runners.items())
         for _, r in runners:
             r.wake.set()
+        deadline = time.monotonic() + (self.join_timeout_s if timeout is None else timeout)
         for project, r in runners:
-            r.thread.join(self.join_timeout_s if timeout is None else timeout)
+            r.thread.join(max(0.0, deadline - time.monotonic()))
             if r.thread.is_alive():
                 log.warning("run %s of %s is still in a step at shutdown; it resumes after the restart", r.run_id,
                             project)
 
     def rate_wait_s(self, project: str, run_id: str) -> float:
-        """Seconds until the driver of the run's latest rate-capped task may be called again (``CallCaps``), or
-        ``unknown_rate_wait_s`` when that driver is unknown or reports no wait."""
+        """Seconds until the driver of the run's latest rate-capped task may be called again (``CallCaps``), at
+        least ``poll_s``; ``unknown_rate_wait_s`` when that driver is unknown."""
         driver = rate_capped_driver(self._ps(project), run_id)
         try:
             provider = DriverSpec.parse(driver).provider if driver else None
         except ValueError:
             provider = None
-        wait = self.kernel.caps.wait_s(provider) if provider else 0.0
-        return wait if wait > 0 else self.unknown_rate_wait_s
+        if provider is None:
+            return self.unknown_rate_wait_s
+        return max(self.kernel.caps.wait_s(provider), self.poll_s)
 
     # ---- internals ----
     def _ps(self, project: str) -> ProjectStore:
@@ -176,6 +219,11 @@ class RunManager:
     def _check_open(self) -> None:
         if self._closed:
             raise ToolError("unavailable", "rk serve is shutting down", status=503)
+
+    def _check_no_d1(self, project: str) -> None:
+        if project in self._d1:
+            raise ToolError("run_active", f"a guided (D1) stage call of {project} is in progress; start or resume "
+                                          "the run when it returns")
 
     @staticmethod
     def _active(ps: ProjectStore, project: str) -> dict:
@@ -215,15 +263,14 @@ class RunManager:
 
     def _between_steps(self, ps: ProjectStore, project: str, r: _Runner, status: str | None) -> bool:
         """Apply a pending pause or cancel; ``True`` ends the thread (also once the run stopped or on close). The
-        check and the thread's removal are one locked step, so no request is left to a thread that is gone."""
+        check and the thread's removal are one locked step, so no request is left to a thread that is gone. A request
+        is applied on close too (``close`` joins the threads before the kernel closes), so ``resume_all`` does not
+        restart a run you paused or cancelled."""
         with self._lock:
-            if self._closed:
-                self._drop(project, r)
-                return True
-            if r.request is None and status not in STOPPED:
-                return False
             if r.request is not None:
                 self._apply(ps, r.run_id, *r.request)
+            elif not self._closed and status not in STOPPED:
+                return False
             self._drop(project, r)
             return True
 

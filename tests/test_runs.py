@@ -11,19 +11,33 @@ import pytest
 
 from rk.checkpoints import answer_checkpoint, create_checkpoint, list_checkpoints
 from rk.discovery.executor import KernelExecutor, RateCapped
-from rk.discovery.models import Gap, GapEvidence, HypothesisIn, RQBody, Topic
-from rk.discovery.store import add_gap, add_rq, add_topic, freeze_rq, rounds
+from rk.discovery.models import Gap, GapEvidence, HypothesisIn, Intake, RQBody, Topic
+from rk.discovery.store import (
+    add_gap,
+    add_rq,
+    add_topic,
+    freeze_rq,
+    record_intake,
+    rounds,
+)
 from rk.llm.drivers import DriverSpec
 from rk.orchestrator.engine import Orchestrator, StageOutcome
 from rk.orchestrator.graph import DISCOVERY
 from rk.orchestrator.runs import RunManager
-from rk.orchestrator.state import current_stage, run_row, stage_rows, tasks_used
+from rk.orchestrator.state import (
+    current_stage,
+    latest_run,
+    run_row,
+    stage_rows,
+    tasks_used,
+)
 from rk.tools.builtin import build_registry
 from rk.tools.registry import CallContext, PermissionDenied, ToolError
 from rk.verify.judge import JudgeVerdict
 from rk.workspace import Kernel
 
 from .discovery_fakes import (
+    DEFAULT_INTAKE,
     FakeJudge,
     FakeSources,
     FakeWorker,
@@ -163,6 +177,49 @@ def test_start_needs_a_d2_intake(tmp_home, replay_http):
         k.close()
 
 
+def test_start_runs_until_topics_or_question(env):
+    _, ps, _, make = env
+    m, _ = make(_workers())
+    for until in ("intake", "landscape", "gaps", "protocol"):
+        with pytest.raises(ToolError) as e:
+            m.start("demo", until, actor="tester")
+        assert e.value.type == "stage_unavailable", until
+    assert latest_run(ps) is None and not _run_threads()
+
+
+def test_d1_stage_call_holds_off_a_run(env):
+    _, ps, _, make = env
+    entered, release = threading.Event(), threading.Event()
+
+    def slow(ctx):
+        entered.set()
+        assert release.wait(TIMEOUT)
+        return StageOutcome("done")
+
+    m, reg = make({**_workers(), "intake": FakeWorker(runs=[slow])})
+    outs: list = []
+    d1 = threading.Thread(target=lambda: outs.append(
+        reg.call("rk_stage_run", {"project": "demo", "stage": "intake"}, _ctx())), name="d1-call")
+    d1.start()
+    try:
+        assert entered.wait(TIMEOUT)
+        for call in (lambda: m.start("demo", "question", actor="tester"), lambda: m.resume("demo")):
+            with pytest.raises(ToolError) as e:
+                call()
+            assert e.value.type == "run_active" and "guided" in e.value.message
+        with pytest.raises(ToolError) as e:
+            reg.call("rk_stage_advance", {"project": "demo"}, _ctx())
+        assert e.value.type == "stage_busy"
+        assert latest_run(ps) is None and not _run_threads()
+    finally:
+        release.set()
+        d1.join(TIMEOUT)
+    assert not d1.is_alive() and outs[0]["status"] == "done"
+    run_id = m.start("demo", "question", actor="tester")
+    _wait(lambda: run_row(ps, run_id)["status"] == "done")
+    assert reg.call("rk_stage_status", {"project": "demo"}, _ctx())["current"] is None
+
+
 def test_stage_run_refused_while_run_active(env):
     _, ps, _, make = env
     m, reg = make(_workers(topics=FakeWorker(runs=[_review, _review])))
@@ -199,7 +256,7 @@ def test_resume_starts_a_new_session_budget(env):
 
     m, reg = make(_workers(landscape=FakeWorker(runs=[scout_calls(3), scout_calls(2)])), executor_factory=executor)
     holder["reg"] = reg
-    run_id = m.start("demo", "landscape", actor="tester")
+    run_id = m.start("demo", "topics", actor="tester")
     _wait(lambda: run_row(ps, run_id)["status"] == "paused_budget")
     assert "2 of 2 role tasks" in run_row(ps, run_id)["reason"]
     _wait(lambda: not _run_threads())
@@ -221,7 +278,7 @@ def test_pause_takes_effect_between_steps(env):
 
     w = _workers(landscape=FakeWorker(runs=[slow]))
     m, _ = make(w)
-    run_id = m.start("demo", "gaps", actor="tester")
+    run_id = m.start("demo", "topics", actor="tester")
     _wait(lambda: w["landscape"].calls)
     assert m.pause("demo")["requested"] == "paused"
     assert run_row(ps, run_id)["status"] == "running"
@@ -237,6 +294,55 @@ def test_pause_takes_effect_between_steps(env):
     assert e.value.type == "no_run"
 
 
+@pytest.mark.parametrize("control,status", [("pause", "paused"), ("cancel", "cancelled")])
+def test_pause_or_cancel_survives_shutdown_mid_step(env, control, status):
+    _, ps, _, make = env
+    release = threading.Event()
+
+    def slow(ctx):
+        assert release.wait(TIMEOUT)
+        return StageOutcome("done")
+
+    w = _workers(landscape=FakeWorker(runs=[slow]))
+    m, _ = make(w, join_timeout_s=0.05)
+    run_id = m.start("demo", "topics", actor="tester")
+    _wait(lambda: w["landscape"].calls)
+    (thread,) = _run_threads()
+    assert getattr(m, control)("demo")["requested"] == status
+    m.close()
+    assert thread.is_alive()
+    release.set()
+    thread.join(TIMEOUT)
+    assert not thread.is_alive()
+    assert run_row(ps, run_id)["status"] == status and run_row(ps, run_id)["reason"].endswith("by you")
+
+
+def test_close_joins_every_thread_within_one_deadline(env):
+    k, _, _, make = env
+    k.create_project("other", "Other project", actor="tester")
+    record_intake(k.project("other")[0], Intake(**DEFAULT_INTAKE), actor="tester", actor_kind="human")
+    release = threading.Event()
+
+    def slow(ctx):
+        assert release.wait(TIMEOUT)
+        return StageOutcome("done")
+
+    w = _workers(landscape=FakeWorker(runs=[slow, slow]))
+    m, _ = make(w, join_timeout_s=0.5)
+    m.start("demo", "topics", actor="tester")
+    m.start("other", "topics", actor="tester")
+    _wait(lambda: len(w["landscape"].calls) == 2)
+    threads = _run_threads("demo") + _run_threads("other")
+    t0 = time.monotonic()
+    m.close()
+    elapsed = time.monotonic() - t0
+    release.set()
+    for t in threads:
+        t.join(TIMEOUT)
+    assert not any(t.is_alive() for t in threads)
+    assert 0.4 <= elapsed < 0.9, elapsed
+
+
 def test_cancel_wakes_a_waiting_run(env):
     _, ps, _, make = env
     m, _ = make(_workers(topics=FakeWorker(runs=[_review])), poll_s=60)
@@ -247,7 +353,7 @@ def test_cancel_wakes_a_waiting_run(env):
     _wait(lambda: not _run_threads(), timeout=2)
 
 
-def test_rate_cap_waits_on_the_capped_driver_then_steps_again(env):
+def test_rate_cap_waits_on_the_capped_driver_then_steps_again(env, monkeypatch):
     k, ps, _, make = env
     judge = FakeJudge("supported", [])
     holder: dict = {}
@@ -265,12 +371,14 @@ def test_rate_cap_waits_on_the_capped_driver_then_steps_again(env):
     w = _workers(landscape=FakeWorker(runs=[capped, RateCapped("unknown", 1.0)]))
     m, reg = make(w, executor_factory=executor, max_rate_wait_s=0.05)
     holder["reg"] = reg
-    run_id = m.start("demo", "landscape", actor="tester")
+    run_id = m.start("demo", "topics", actor="tester")
     _wait(lambda: run_row(ps, run_id)["status"] == "done")
     assert [c[0] for c in w["landscape"].calls].count("run") == 3
     assert 3500 < m.rate_wait_s("demo", run_id) <= 3600
     m2, _ = make(_workers(), unknown_rate_wait_s=42.0)
     assert m2.rate_wait_s("demo", "run_none") == 42.0
+    monkeypatch.setattr(k.caps, "wait_s", lambda driver: 0.0)  # the known driver's window emptied: no 60 s wait
+    assert m.rate_wait_s("demo", run_id) == m.poll_s
 
 
 def test_step_error_fails_the_run_with_its_reason(env):
