@@ -6,7 +6,7 @@ that judge's opinion becomes ``uncertain``."""
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 
@@ -16,6 +16,9 @@ from rk.llm.types import TaskResult
 from rk.llm.vendors import vendor_of
 from rk.text.layer import build_norm_keys, normalize_query
 from rk.verify.quote import find_verbatim
+
+if TYPE_CHECKING:
+    from rk.orchestrator.engine import StageContext
 
 JudgeLabel = Literal["supported", "partial", "unsupported", "contradicted"]
 NEEDS_SPANS = frozenset({"supported", "partial", "contradicted"})
@@ -72,6 +75,26 @@ def judge_vendor_error(vendor: str | None, generator_vendor: str | None, seen: s
     if vendor in seen:
         return "duplicate_vendor"
     return None
+
+
+def admitted_judges(ctx: StageContext, generator_vendor: str | None,
+                    judges: list[DriverSpec] | None) -> tuple[list[tuple[str, DriverSpec, str]], dict[str, str]]:
+    """The judges (``judges``, else the configured ``judge`` and ``judge_2``) that may judge work of
+    ``generator_vendor``, as ``(role, driver, vendor)``, and the skipped ones as role -> why (``judge_vendor_error``:
+    a known, non-human vendor that is not the generator's and not another admitted judge's)."""
+    admitted: list[tuple[str, DriverSpec, str]] = []
+    skipped: dict[str, str] = {}
+    seen: set[str] = set()
+    for i, spec in enumerate(judge_drivers(ctx.kernel.settings(), judges)):
+        role = "judge" if i == 0 else "judge_2"
+        vendor = vendor_of(spec.provider, spec.model)
+        error = judge_vendor_error(vendor, generator_vendor, seen)
+        if error is not None:
+            skipped[role] = error
+            continue
+        seen.add(vendor)
+        admitted.append((role, spec, vendor))
+    return admitted, skipped
 
 
 def run_judges(kernel, registry, *, project: str, claim_text: str, evidence_text: str,

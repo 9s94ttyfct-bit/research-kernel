@@ -1,6 +1,6 @@
 """The P1 two-vendor vote: where P2 asks the human, P1 asks the two judges (``judge`` and ``judge_2``) the same
 question. They must be distinct known, non-human vendors, neither the generator's (the shared admission of
-``rk.verify.novelty.admitted_judges``). The decision is their common choice; a disagreement, a failed or invalid
+``rk.verify.judge.admitted_judges``). The decision is their common choice; a disagreement, a failed or invalid
 answer, or fewer than two admitted judges gives the conservative option. Every vote is recorded (``vote.decided``)
 as not human-reviewed."""
 
@@ -11,9 +11,8 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from rk.llm.drivers import DriverSpec
 from rk.production.store import add_vote
-from rk.verify.novelty import admitted_judges
+from rk.verify.judge import admitted_judges
 
 if TYPE_CHECKING:
     from rk.orchestrator.engine import StageContext
@@ -41,15 +40,15 @@ class VoteResult:
 
 
 def vote(ctx: StageContext, subject_type: str, subject_id: str, question: str, options: list[str], conservative: str,
-         inputs: dict, *, generator_vendor: str | None = None, judges: list[DriverSpec] | None = None) -> VoteResult:
-    """Ask both judges ``question`` about the subject (``inputs``, what they see of it) through ``ctx.executor``.
-    ``generator_vendor`` is the vendor that generated the subject, or None when it is not generated text (e.g. a
-    screened record); ``judges`` replaces the configured judge drivers (tests)."""
+         inputs: dict, *, generator_vendor: str | None = None) -> VoteResult:
+    """Ask both configured judges ``question`` about the subject (``inputs``, what they see of it) through
+    ``ctx.executor``. ``generator_vendor`` is the vendor that generated the subject, or None when it is not generated
+    text (e.g. a screened record)."""
     if not options or len(set(options)) != len(options):
         raise ValueError(f"options must be distinct and non-empty: {options!r}")
     if conservative not in options:
         raise ValueError(f"the conservative option {conservative!r} is not one of {options!r}")
-    admitted, skipped = admitted_judges(ctx, generator_vendor, judges)
+    admitted, skipped = admitted_judges(ctx, generator_vendor, None)
     opinions: list[dict] = []
     if len(admitted) < 2:
         reason = f"fewer than two admitted judges (skipped: {skipped})"

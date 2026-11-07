@@ -18,11 +18,10 @@ from rk.discovery.models import (
     TopicStatus,
 )
 from rk.ids import new_id
-from rk.store.events import Event, NewEvent
+from rk.store.events import ActorKind, Event, NewEvent
 from rk.store.project import ProjectStore
 from rk.store.projections import projection
-
-ActorKind = Literal["human", "agent", "kernel"]
+from rk.store.query import query_rows, require_row
 
 
 # ---- intake ----
@@ -61,7 +60,7 @@ def add_cluster(ps: ProjectStore, attempt: int, cluster: Cluster, *, actor: str,
 def remove_cluster(ps: ProjectStore, cluster_id: str, *, reason: str, actor: str,
                    actor_kind: ActorKind = "kernel") -> None:
     """Drop a cluster (P1 degrade); the event keeps it dropped when the projections are rebuilt."""
-    row = _require(ps, "clusters", cluster_id)
+    row = require_row(ps, "clusters", cluster_id)
     ps.apply(NewEvent(type="cluster.removed", entity_id=cluster_id, actor_kind=actor_kind, actor=actor,
                       payload={"attempt": row["attempt"], "reason": reason}))
 
@@ -91,14 +90,14 @@ def set_topic_status(ps: ProjectStore, topic_id: str, status: TopicStatus, *, ac
                      actor_kind: ActorKind) -> None:
     if status not in ("candidate", "approved", "rejected"):
         raise ValueError(f"unknown topic status {status!r}")
-    _require(ps, "topics", topic_id)
+    require_row(ps, "topics", topic_id)
     ps.apply(NewEvent(type="topic.status_set", entity_id=topic_id, actor_kind=actor_kind, actor=actor,
                       payload={"status": status}))
 
 
 def add_rq(ps: ProjectStore, attempt: int, topic_id: str, body: RQBody, hypotheses: list[HypothesisIn], *,
            actor: str, actor_kind: ActorKind = "agent") -> str:
-    _require(ps, "topics", topic_id)
+    require_row(ps, "topics", topic_id)
     rid = new_id("rq")
     hyps = [{"id": new_id("hyp"), **h.model_dump(mode="json")} for h in hypotheses]
     ps.apply(NewEvent(type="rq.added", entity_id=rid, actor_kind=actor_kind, actor=actor,
@@ -109,7 +108,7 @@ def add_rq(ps: ProjectStore, attempt: int, topic_id: str, body: RQBody, hypothes
 
 def set_already_done(ps: ProjectStore, rq_id: str, result: dict, *, actor: str,
                      actor_kind: ActorKind = "kernel") -> None:
-    _require(ps, "rqs", rq_id)
+    require_row(ps, "rqs", rq_id)
     ps.apply(NewEvent(type="rq.already_done", entity_id=rq_id, actor_kind=actor_kind, actor=actor,
                       payload={"result": result}))
 
@@ -126,7 +125,7 @@ def freeze_rq(ps: ProjectStore, rq_id: str, *, adopted_by: Literal["human", "age
     if adopted_by not in ("human", "agent"):
         raise ValueError(f"adopted_by must be 'human' or 'agent', not {adopted_by!r}")
     with ps.lock:
-        r = _require(ps, "rqs", rq_id)
+        r = require_row(ps, "rqs", rq_id)
         if r["status"] == "frozen":
             raise ValueError("rq already frozen")
         h = rq_text_hash(json.loads(r["body"]), hypotheses(ps, rq_id))
@@ -157,32 +156,15 @@ def round_for_checkpoint(ps: ProjectStore, checkpoint_id: str) -> str | None:
     return r["entity_id"] if r else None
 
 
-def _require(ps: ProjectStore, table: str, entity_id: str) -> sqlite3.Row:
-    r = ps.db.execute(f"SELECT * FROM {table} WHERE id=?", (entity_id,)).fetchone()
-    if r is None:
-        raise KeyError(f"no {table[:-1]} {entity_id}")
-    return r
-
-
 # ---- queries ----
-def _rows(ps: ProjectStore, sql: str, params: tuple, json_cols: tuple[str, ...] = ()) -> list[dict]:
-    out = []
-    for r in ps.db.execute(sql, params):
-        d = dict(r)
-        for c in json_cols:
-            d[c] = json.loads(d[c]) if d[c] is not None else None
-        out.append(d)
-    return out
-
-
 def searches(ps: ProjectStore, stage: str, attempt: int) -> list[dict]:
-    return _rows(ps, "SELECT * FROM search_log WHERE stage=? AND attempt=? ORDER BY rowid", (stage, attempt),
-                 ("item_ids",))
+    return query_rows(ps, "SELECT * FROM search_log WHERE stage=? AND attempt=? ORDER BY rowid", (stage, attempt),
+                      ("item_ids",))
 
 
 def clusters(ps: ProjectStore, attempt: int) -> list[dict]:
-    rows = _rows(ps, "SELECT * FROM clusters WHERE attempt=? ORDER BY rowid", (attempt,),
-                 ("item_ids", "representative_ids", "year_counts"))
+    rows = query_rows(ps, "SELECT * FROM clusters WHERE attempt=? ORDER BY rowid", (attempt,),
+                      ("item_ids", "representative_ids", "year_counts"))
     for d in rows:
         d["year_counts"] = {int(y): n for y, n in d["year_counts"].items()}
     return rows
@@ -192,14 +174,14 @@ def gaps(ps: ProjectStore, attempt: int, verified: bool | None = None) -> list[d
     sql, params = "SELECT * FROM gaps WHERE attempt=?", (attempt,)
     if verified is not None:
         sql, params = sql + " AND verified=?", (attempt, int(verified))
-    rows = _rows(ps, sql + " ORDER BY rowid", params, ("evidence", "details", "checks"))
+    rows = query_rows(ps, sql + " ORDER BY rowid", params, ("evidence", "details", "checks"))
     for d in rows:
         d["verified"] = bool(d["verified"])
     return rows
 
 
 def topics(ps: ProjectStore, attempt: int) -> list[dict]:
-    return _rows(ps, "SELECT * FROM topics WHERE attempt=? ORDER BY rowid", (attempt,), ("gap_ids", "closest"))
+    return query_rows(ps, "SELECT * FROM topics WHERE attempt=? ORDER BY rowid", (attempt,), ("gap_ids", "closest"))
 
 
 def topic_novelty(ps: ProjectStore, topic_id: str) -> dict | None:
@@ -210,27 +192,27 @@ def topic_novelty(ps: ProjectStore, topic_id: str) -> dict | None:
 
 
 def rqs(ps: ProjectStore, attempt: int) -> list[dict]:
-    return _rows(ps, "SELECT * FROM rqs WHERE attempt=? ORDER BY rowid", (attempt,), ("body", "already_done"))
+    return query_rows(ps, "SELECT * FROM rqs WHERE attempt=? ORDER BY rowid", (attempt,), ("body", "already_done"))
 
 
 def rq_row(ps: ProjectStore, rq_id: str) -> dict | None:
-    rows = _rows(ps, "SELECT * FROM rqs WHERE id=?", (rq_id,), ("body", "already_done"))
+    rows = query_rows(ps, "SELECT * FROM rqs WHERE id=?", (rq_id,), ("body", "already_done"))
     return rows[0] if rows else None
 
 
 def frozen_rq(ps: ProjectStore) -> dict | None:
     """The frozen research question (the latest frozen, should there be several), else ``None``."""
-    rows = _rows(ps, "SELECT * FROM rqs WHERE status='frozen' ORDER BY rowid DESC LIMIT 1", (),
-                 ("body", "already_done"))
+    rows = query_rows(ps, "SELECT * FROM rqs WHERE status='frozen' ORDER BY rowid DESC LIMIT 1", (),
+                      ("body", "already_done"))
     return rows[0] if rows else None
 
 
 def hypotheses(ps: ProjectStore, rq_id: str) -> list[dict]:
-    return _rows(ps, "SELECT * FROM hypotheses WHERE rq_id=? ORDER BY rowid", (rq_id,))
+    return query_rows(ps, "SELECT * FROM hypotheses WHERE rq_id=? ORDER BY rowid", (rq_id,))
 
 
 def rounds(ps: ProjectStore) -> list[dict]:
-    return _rows(ps, "SELECT * FROM exploration_rounds ORDER BY n", ())
+    return query_rows(ps, "SELECT * FROM exploration_rounds ORDER BY n", ())
 
 
 def guidance(ps: ProjectStore, stage: str) -> str:

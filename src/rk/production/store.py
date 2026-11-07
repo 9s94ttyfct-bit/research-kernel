@@ -1,6 +1,6 @@
 """Event-sourced production artifacts: protocols and their deviations, records, screening decisions and final
-decisions, extractions and votes. Every write is one event; the tables below are projections of them. The queries
-read one attempt, as the discovery store does."""
+decisions, extractions and votes. Every write is one event; the tables below are projections of them. The queries of
+attempt-keyed artifacts (records, screening, extractions) read one attempt, as the discovery store does."""
 
 from __future__ import annotations
 
@@ -9,12 +9,12 @@ import sqlite3
 from typing import Any, get_args
 
 from rk.canon import canonical_json, sha256_hex
-from rk.discovery.store import ActorKind, _require, _rows
 from rk.ids import new_id
 from rk.production.models import DecidedBy, Include, Protocol, ScreeningPhase
-from rk.store.events import Event, NewEvent
+from rk.store.events import ActorKind, Event, NewEvent
 from rk.store.project import ProjectStore
 from rk.store.projections import projection
+from rk.store.query import query_rows, require_row
 
 RECORD_FIELDS = frozenset({"retrieved", "abstract_only", "problem"})
 
@@ -41,7 +41,7 @@ def protocol_hash(body: dict) -> str:
 def freeze_protocol(ps: ProjectStore, protocol_id: str, *, actor: str, actor_kind: ActorKind = "agent") -> str:
     """Freeze the protocol; returns the hash of its body. A protocol freezes once."""
     with ps.lock:
-        r = _require(ps, "protocols", protocol_id)
+        r = require_row(ps, "protocols", protocol_id)
         if r["status"] == "frozen":
             raise ValueError("protocol already frozen")
         h = protocol_hash(json.loads(r["body"]))
@@ -52,9 +52,16 @@ def freeze_protocol(ps: ProjectStore, protocol_id: str, *, actor: str, actor_kin
 
 def add_deviation(ps: ProjectStore, from_v: int, to_v: int, reason: str, stage: str, *, actor: str,
                   actor_kind: ActorKind = "agent") -> str:
-    """A deviation from protocol version ``from_v`` to ``to_v``; returns its id (the event's ``evt_id``)."""
-    ev = ps.apply(NewEvent(type="protocol.deviation", entity_id=None, actor_kind=actor_kind, actor=actor,
-                           payload={"from_version": from_v, "to_version": to_v, "reason": reason, "stage": stage}))
+    """A deviation from protocol version ``from_v`` (a stored version) to a later ``to_v``; returns its id (the
+    event's ``evt_id``)."""
+    if to_v <= from_v:
+        raise ValueError(f"a deviation goes to a later version: {from_v} -> {to_v}")
+    with ps.lock:
+        if ps.db.execute("SELECT 1 FROM protocols WHERE version=?", (from_v,)).fetchone() is None:
+            raise ValueError(f"no protocol version {from_v} to deviate from")
+        ev = ps.apply(NewEvent(type="protocol.deviation", entity_id=None, actor_kind=actor_kind, actor=actor,
+                               payload={"from_version": from_v, "to_version": to_v, "reason": reason,
+                                        "stage": stage}))
     return ev.evt_id
 
 
@@ -69,10 +76,12 @@ def add_record(ps: ProjectStore, attempt: int, item_id: str, *, dedup_of: str | 
 
 def set_record(ps: ProjectStore, record_id: str, *, actor: str, actor_kind: ActorKind = "kernel", **fields) -> None:
     """Set ``retrieved``, ``abstract_only`` (bools) and/or ``problem`` (text or None) of a record."""
+    if not fields:
+        raise ValueError(f"no record fields given; expected some of {sorted(RECORD_FIELDS)}")
     unknown = set(fields) - RECORD_FIELDS
-    if unknown or not fields:
+    if unknown:
         raise ValueError(f"unknown record field(s) {sorted(unknown)}; expected some of {sorted(RECORD_FIELDS)}")
-    _require(ps, "records", record_id)
+    require_row(ps, "records", record_id)
     payload = {k: bool(v) if k != "problem" else v for k, v in fields.items()}
     ps.apply(NewEvent(type="record.set", entity_id=record_id, actor_kind=actor_kind, actor=actor, payload=payload))
 
@@ -84,7 +93,7 @@ def add_decision(ps: ProjectStore, attempt: int, record_id: str, phase: Screenin
     """One screener's decision on a record in a phase; ``criterion`` is the eligibility criterion id it rests on."""
     _check("phase", phase, ScreeningPhase)
     _check("include", include, Include)
-    _require(ps, "records", record_id)
+    require_row(ps, "records", record_id)
     sid = new_id("scr")
     ps.apply(NewEvent(type="screening.decided", entity_id=sid, actor_kind=actor_kind, actor=actor,
                       payload={"attempt": attempt, "record_id": record_id, "phase": phase, "screener": screener,
@@ -98,7 +107,7 @@ def set_final(ps: ProjectStore, record_id: str, attempt: int, phase: ScreeningPh
     _check("phase", phase, ScreeningPhase)
     _check("include", include, Include)
     _check("decided_by", decided_by, DecidedBy)
-    _require(ps, "records", record_id)
+    require_row(ps, "records", record_id)
     ps.apply(NewEvent(type="screening.final", entity_id=record_id, actor_kind=actor_kind, actor=actor,
                       payload={"attempt": attempt, "phase": phase, "include": include, "decided_by": decided_by,
                                "reason": reason}))
@@ -133,30 +142,33 @@ def add_vote(ps: ProjectStore, *, subject_type: str, subject_id: str, question: 
 
 # ---- queries ----
 def protocols(ps: ProjectStore, attempt: int) -> list[dict]:
-    return _rows(ps, "SELECT * FROM protocols WHERE attempt=? ORDER BY rowid", (attempt,), ("body",))
+    return query_rows(ps, "SELECT * FROM protocols WHERE attempt=? ORDER BY rowid", (attempt,), ("body",))
 
 
 def protocol_row(ps: ProjectStore, protocol_id: str) -> dict | None:
-    rows = _rows(ps, "SELECT * FROM protocols WHERE id=?", (protocol_id,), ("body",))
+    rows = query_rows(ps, "SELECT * FROM protocols WHERE id=?", (protocol_id,), ("body",))
     return rows[0] if rows else None
 
 
 def frozen_protocol(ps: ProjectStore) -> dict | None:
-    """The frozen protocol (the latest frozen, should there be several), else ``None``."""
-    rows = _rows(ps, "SELECT * FROM protocols WHERE status='frozen' ORDER BY rowid DESC LIMIT 1", (), ("body",))
+    """The frozen protocol in force, else ``None``. Project-level, not attempt-scoped: the protocol frozen in one
+    attempt binds every later stage and attempt; should there be several, the highest version (then the latest)."""
+    rows = query_rows(ps, "SELECT * FROM protocols WHERE status='frozen' ORDER BY version DESC, rowid DESC LIMIT 1",
+                      (), ("body",))
     return rows[0] if rows else None
 
 
 def deviations(ps: ProjectStore) -> list[dict]:
-    return _rows(ps, "SELECT * FROM protocol_deviations ORDER BY rowid", ())
+    """Every deviation, project-level: a deviation links protocol versions, which span attempts and stages."""
+    return query_rows(ps, "SELECT * FROM protocol_deviations ORDER BY rowid", ())
 
 
 def records(ps: ProjectStore, attempt: int) -> list[dict]:
-    return _rows(ps, "SELECT * FROM records WHERE attempt=? ORDER BY rowid", (attempt,))
+    return query_rows(ps, "SELECT * FROM records WHERE attempt=? ORDER BY rowid", (attempt,))
 
 
 def record_row(ps: ProjectStore, record_id: str) -> dict | None:
-    rows = _rows(ps, "SELECT * FROM records WHERE id=?", (record_id,))
+    rows = query_rows(ps, "SELECT * FROM records WHERE id=?", (record_id,))
     return rows[0] if rows else None
 
 
@@ -164,26 +176,28 @@ def decisions(ps: ProjectStore, attempt: int, *, phase: ScreeningPhase | None = 
     sql, params = "SELECT * FROM screening WHERE attempt=?", (attempt,)
     if phase is not None:
         sql, params = sql + " AND phase=?", (attempt, phase)
-    return _rows(ps, sql + " ORDER BY rowid", params)
+    return query_rows(ps, sql + " ORDER BY rowid", params)
 
 
 def finals(ps: ProjectStore, attempt: int, *, phase: ScreeningPhase | None = None) -> list[dict]:
     sql, params = "SELECT * FROM screening_final WHERE attempt=?", (attempt,)
     if phase is not None:
         sql, params = sql + " AND phase=?", (attempt, phase)
-    return _rows(ps, sql + " ORDER BY rowid", params)
+    return query_rows(ps, sql + " ORDER BY rowid", params)
 
 
 def extractions(ps: ProjectStore, attempt: int, *, item_id: str | None = None) -> list[dict]:
     sql, params = "SELECT * FROM extractions WHERE attempt=?", (attempt,)
     if item_id is not None:
         sql, params = sql + " AND item_id=?", (attempt, item_id)
-    return _rows(ps, sql + " ORDER BY rowid", params, ("value",))
+    return query_rows(ps, sql + " ORDER BY rowid", params, ("value",))
 
 
 def votes(ps: ProjectStore, subject_type: str, subject_id: str) -> list[dict]:
-    return _rows(ps, "SELECT * FROM votes WHERE subject_type=? AND subject_id=? ORDER BY rowid",
-                 (subject_type, subject_id), ("opinions",))
+    """The votes on one subject. Keyed by subject, not attempt: an attempt-keyed subject (a record) already names its
+    attempt, and a vote on a project-level subject (e.g. a protocol) concerns no single attempt."""
+    return query_rows(ps, "SELECT * FROM votes WHERE subject_type=? AND subject_id=? ORDER BY rowid",
+                      (subject_type, subject_id), ("opinions",))
 
 
 # ---- projections ----

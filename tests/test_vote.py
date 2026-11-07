@@ -2,7 +2,10 @@ import json
 
 import pytest
 
+from rk.canon import canonical_json, sha256_hex
 from rk.config import DEFAULT_DRIVERS, Settings, save_settings
+from rk.ids import new_id
+from rk.llm.types import TaskResult
 from rk.production import store
 from rk.production.vote import vote
 from rk.store.projections import rebuild
@@ -35,6 +38,16 @@ def _vote(k, ps, lib, ex, **kw):
     return record_id, result
 
 
+class FailingJudge2(ScriptedExecutor):
+    """``judge`` answers as scripted; the ``judge_2`` task fails (no output)."""
+
+    def run(self, role, instructions, inputs, output_schema, **kw):
+        if role != "judge_2":
+            return super().run(role, instructions, inputs, output_schema, **kw)
+        self.calls.append({"role": role, "schema": output_schema.__name__})
+        return TaskResult(new_id("tsk"), False, None, "", "ollama", "deepseek-v4.1-flash:cloud", 0.0, "timeout")
+
+
 def _decided(ps) -> list[dict]:
     return [json.loads(r["payload"]) for r in ps.db.execute("SELECT payload FROM events WHERE type='vote.decided'")]
 
@@ -63,6 +76,16 @@ def test_vote_disagreement_is_conservative(env):
     _, result = _vote(k, ps, lib, _votes("exclude", "include"))
     assert (result.decision, result.conservative_used) == ("include", True)
     assert "disagree" in result.reason
+
+
+def test_vote_with_a_failed_judge_task_is_conservative(env):
+    k, ps, lib = env
+    ex = FailingJudge2({("judge", "VoteOut"): [{"choice": "exclude", "reason": "animal study"}]})
+    _, result = _vote(k, ps, lib, ex)
+    assert (result.decision, result.conservative_used) == ("include", True)
+    assert [c["role"] for c in ex.calls] == ["judge", "judge_2"]
+    assert result.opinions[1] == {"role": "judge_2", "vendor": "deepseek", "choice": None, "reason": "timeout"}
+    assert "no valid choice" in result.reason and _decided(ps)[0]["conservative_used"] is True
 
 
 def test_vote_with_a_choice_outside_the_options_is_conservative(env):
@@ -116,8 +139,10 @@ def test_vote_is_recorded_as_not_human_reviewed(env):
 
 def test_protocol_freezes_once_on_the_hash_of_its_body(env):
     _, ps, _ = env
-    pid = store.add_protocol(ps, 1, a_protocol(), version=1, actor="lead")
+    body = a_protocol()
+    pid = store.add_protocol(ps, 1, body, version=1, actor="lead")
     h = store.freeze_protocol(ps, pid, actor="lead")
+    assert h == sha256_hex(canonical_json(body.model_dump(mode="json")))
     row = store.protocol_row(ps, pid)
     assert (row["status"], row["frozen_hash"]) == ("frozen", h) and row["frozen_at"]
     assert row["body"]["record_cap"] == 3000
@@ -126,9 +151,33 @@ def test_protocol_freezes_once_on_the_hash_of_its_body(env):
         store.freeze_protocol(ps, pid, actor="lead")
 
 
+def test_frozen_protocol_is_the_highest_frozen_version(env):
+    _, ps, _ = env
+    v2 = store.add_protocol(ps, 2, a_protocol(), version=2, actor="lead")
+    store.freeze_protocol(ps, v2, actor="lead")
+    v1 = store.add_protocol(ps, 3, a_protocol(), version=1, actor="lead")
+    store.freeze_protocol(ps, v1, actor="lead")  # frozen later, but a lower version
+    assert store.frozen_protocol(ps)["id"] == v2
+
+
+def test_deviation_goes_from_a_stored_version_to_a_later_one(env):
+    _, ps, _ = env
+    with pytest.raises(ValueError, match="no protocol version 1"):
+        store.add_deviation(ps, 1, 2, "added a source", "search_screen", actor="lead")
+    store.add_protocol(ps, 1, a_protocol(), version=1, actor="lead")
+    for to_v in (1, 0):
+        with pytest.raises(ValueError, match="later version"):
+            store.add_deviation(ps, 1, to_v, "r", "search_screen", actor="lead")
+    assert store.deviations(ps) == []
+    store.add_deviation(ps, 1, 2, "added a source", "search_screen", actor="lead")
+    assert [(d["from_version"], d["to_version"]) for d in store.deviations(ps)] == [(1, 2)]
+
+
 def test_store_rejects_unknown_values(env):
     _, ps, _ = env
     rid = store.add_record(ps, 1, "src_1", language="en", actor="scout")
+    with pytest.raises(ValueError, match="no record fields given"):
+        store.set_record(ps, rid, actor="kernel")
     with pytest.raises(ValueError, match="unknown record field"):
         store.set_record(ps, rid, actor="kernel", status="x")
     with pytest.raises(ValueError, match="phase"):

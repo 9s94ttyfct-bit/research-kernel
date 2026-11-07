@@ -6,8 +6,8 @@ hits are fused by reciprocal rank (RRF) and the top ``k`` kept. Then ``judge`` a
 text differs from every closest work, keyed by the judge's vendor; a judge whose vendor fails the ``run_judges`` rules
 (unknown, human, the generator's, or another judge's) is skipped. Cost: 1 scout task + at most 2 judge tasks.
 
-``search_closest``, ``admitted_judges`` and ``work_inputs`` are shared with the already-done check
-(``rk.discovery.already_done``)."""
+``search_closest`` and ``work_inputs`` are shared with the already-done check (``rk.discovery.already_done``); the
+judges are admitted by ``rk.verify.judge.admitted_judges``."""
 
 from __future__ import annotations
 
@@ -20,8 +20,7 @@ from pydantic import BaseModel
 from rk.discovery.models import ClosestWork, LandscapeQueries
 from rk.discovery.sources import log_and_search
 from rk.llm.drivers import DriverSpec
-from rk.llm.vendors import vendor_of
-from rk.verify.judge import judge_drivers, judge_vendor_error
+from rk.verify.judge import admitted_judges
 
 if TYPE_CHECKING:
     from rk.orchestrator.engine import StageContext
@@ -130,26 +129,6 @@ def search_closest(ctx: StageContext, text: str, *, task: str, purpose: str, que
                                source=s, limit=SEARCH_LIMIT, actor=ctx.actor)
                 for q in queries for s in sources]
     return ClosestSearch(queries, sources, rrf(rankings))
-
-
-def admitted_judges(ctx: StageContext, generator_vendor: str | None,
-                    judges: list[DriverSpec] | None) -> tuple[list[tuple[str, DriverSpec, str]], dict[str, str]]:
-    """The judges (``judges``, else the configured ``judge`` and ``judge_2``) that may judge work of
-    ``generator_vendor``, as ``(role, driver, vendor)``, and the skipped ones as role -> why (``judge_vendor_error``:
-    a known, non-human vendor that is not the generator's and not another admitted judge's)."""
-    admitted: list[tuple[str, DriverSpec, str]] = []
-    skipped: dict[str, str] = {}
-    seen: set[str] = set()
-    for i, spec in enumerate(judge_drivers(ctx.kernel.settings(), judges)):
-        role = "judge" if i == 0 else "judge_2"
-        vendor = vendor_of(spec.provider, spec.model)
-        error = judge_vendor_error(vendor, generator_vendor, seen)
-        if error is not None:
-            skipped[role] = error
-            continue
-        seen.add(vendor)
-        admitted.append((role, spec, vendor))
-    return admitted, skipped
 
 
 def work_inputs(ctx: StageContext, item_ids: list[str], *, abstract_chars: int = ABSTRACT_CHARS) -> list[dict]:

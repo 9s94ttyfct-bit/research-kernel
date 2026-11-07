@@ -22,8 +22,8 @@ from pydantic import BaseModel
 from rk.discovery.models import RQBody
 from rk.discovery.store import hypotheses, rq_row
 from rk.llm.drivers import DriverSpec
-from rk.verify.judge import span_in
-from rk.verify.novelty import admitted_judges, search_closest, work_inputs
+from rk.verify.judge import admitted_judges, span_in
+from rk.verify.novelty import search_closest, work_inputs
 
 if TYPE_CHECKING:
     from rk.orchestrator.engine import StageContext
