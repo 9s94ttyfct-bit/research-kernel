@@ -140,7 +140,7 @@ def _run_omp_listing(omp_bin: str, runner: OmpRunner) -> OmpListing:
     except subprocess.CalledProcessError as e:
         tail = (e.stderr or e.output or "").strip()[-300:]
         error = f"{command} failed (exit {e.returncode})" + (f": {tail}" if tail else "")
-    except (OSError, ValueError, TypeError) as e:  # ValueError: invalid JSON or no `models` list
+    except (OSError, ValueError, TypeError, RuntimeError) as e:  # invalid JSON, no `models` list, nesting too deep
         error = f"{command} failed: {type(e).__name__}: {e}"
     return OmpListing([], error, 0)
 

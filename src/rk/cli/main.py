@@ -589,14 +589,14 @@ def models(as_json: bool = JSON_OPT) -> None:
 
     cat = model_catalog(load_settings())
 
-    def render(rows):
-        for m in rows:
+    def render(data):
+        for m in data["models"]:
             state = "ok" if m["available"] else f"UNAVAILABLE ({m['reason']})"
             typer.echo(f"{m['driver']:<52} vendor={m['vendor'] or '?':<9} {state}")
-        if cat.omp_status:
-            typer.secho(f"omp: {cat.omp_status}", fg="yellow")
+        if data["omp_status"]:
+            typer.secho(f"omp: {data['omp_status']}", fg="yellow")
 
-    _out([m.as_dict() for m in cat.models], as_json, render)
+    _out({"models": [m.as_dict() for m in cat.models], "omp_status": cat.omp_status}, as_json, render)
 
 
 driver_app = typer.Typer(help="Per-role drivers (the model each role runs on)", no_args_is_help=True)

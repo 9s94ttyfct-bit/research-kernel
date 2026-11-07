@@ -124,7 +124,7 @@ def test_malformed_omp_entries_are_skipped_not_raised():
                                            ollama_runner=no_ollama).omp_status
 
 
-@pytest.mark.parametrize("out", ["not json", '{"models": "x"}', "[1, 2]", '{"models": null}'])
+@pytest.mark.parametrize("out", ["not json", '{"models": "x"}', "[1, 2]", '{"models": null}', "[" * 100_000])
 def test_unreadable_omp_listing_is_reported_and_not_cached_as_good(out, monkeypatch):
     monkeypatch.setattr(catalog, "default_omp_runner", lambda argv, t: out)
     cat = model_catalog(Settings(), ollama_runner=no_ollama)
@@ -162,6 +162,7 @@ def test_cold_catalog_runs_omp_once_for_concurrent_loads(monkeypatch):
         t.start()
     for t in threads:
         t.join(5)
+    assert not any(t.is_alive() for t in threads)  # every load finished, none still waiting on the lock
     assert len(calls) == 1
 
 
@@ -281,7 +282,9 @@ def test_cli_models_and_driver_set(tmp_home, monkeypatch):
     runner = CliRunner()
     r = runner.invoke(app, ["models", "--json"])
     assert r.exit_code == 0, r.output
-    assert {m["driver"]: m["vendor"] for m in json.loads(r.output) if m["provider"] == "omp_gateway"} == GATEWAY
+    out = json.loads(r.output)
+    assert {m["driver"]: m["vendor"] for m in out["models"] if m["provider"] == "omp_gateway"} == GATEWAY
+    assert "omp_status" in out and out["omp_status"] is None
     assert "omp_gateway:openai-codex/gpt-6-luna" in runner.invoke(app, ["models"]).output
 
     r = runner.invoke(app, ["driver", "set", "judge", "omp_gateway:openai-codex/gpt-6-luna"])
