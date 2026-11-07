@@ -576,3 +576,28 @@ def test_scoping_carry_over_keeps_the_sample_and_the_switch(env):
     assert (len(note["sample"]), note["disagreements"], note["switched"]) == (3, 3, True)
     carried_b = {d["record_id"] for d in store.decisions(ps, 2) if d["screener"] == "screener_b" and d["carried_from"]}
     assert carried_b == set(note["sample"])
+
+
+@pytest.mark.parametrize("env", [SR_P1], indirect=True)
+def test_carried_final_is_reused_only_on_the_decisions_it_was_made_on(env):
+    _, ps, _ = env
+    _freeze(ps)
+    src = FakeSources({"aspirin": [_work("Aspirin X [yes/-]", 1), _work("Aspirin Y [yes/no]", 2)]})
+    with pytest.raises(RateCapped):  # attempt 1: screener_b silent on X, the vote includes X; Y's vote is capped
+        SearchScreenWorker().run(_ctx(env, CappedAt("judge", 2, votes={"Aspirin X [yes/-]": ("include", "include")}),
+                                      src))
+    with pytest.raises(RateCapped):  # attempt 2: screener_b now says no on X; the judge is capped before X's vote
+        SearchScreenWorker().run(_ctx(env, CappedAt("judge", 1, overrides={"Aspirin X [yes/-]": "yes/no"}), src,
+                                      attempt=2))
+
+    # attempt 3: screener_a's decision on X comes from attempt 1, screener_b's from attempt 2, the vote from attempt 1
+    # (made while screener_b was silent): the vote is not reused, X is voted on again
+    resumed = Screeners(overrides={"Aspirin X [yes/-]": "yes/no"},
+                        votes={"Aspirin X [yes/-]": ("exclude", "exclude"), "Aspirin Y [yes/no]": ("include", "include")})
+    assert SearchScreenWorker().run(_ctx(env, resumed, src, attempt=3)).status == "done"
+    assert (_sizes(resumed, "screener_a"), _sizes(resumed, "screener_b")) == ([], [])
+    t = _titles(env, 3)
+    got = {t[f["record_id"]]: (f["include"], f["decided_by"], f["carried_from"]) for f in store.finals(ps, 3, phase=TA)}
+    assert got["Aspirin X [yes/-]"] == ("no", "vote", None)
+    assert {(d["screener"], d["carried_from"]) for d in store.decisions(ps, 3) if t[d["record_id"]].startswith(
+        "Aspirin X")} == {("screener_a", 1), ("screener_b", 2)}

@@ -62,6 +62,15 @@ class Carried:
     decisions: dict[str, dict] = field(default_factory=dict)
     final: dict | None = None
 
+    def settled(self, screeners: tuple[str, ...]) -> dict | None:
+        """The carried final when it was made on exactly the carried decisions: every screener's decision is carried
+        and none was made after the final (a screener asked again in a later attempt may have decided otherwise, and
+        a final made while a decision was missing rests on less), else ``None``."""
+        if self.final is None or any(s not in self.decisions for s in screeners):
+            return None
+        newest = max(self.decisions[s]["carried_from"] for s in screeners)
+        return self.final if self.final["carried_from"] >= newest else None
+
 
 def carried_screening(ps: ProjectStore, stage: str, attempt: int, protocol_hash: str,
                       phase: ScreeningPhase) -> dict[str, Carried]:

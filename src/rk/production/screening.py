@@ -516,8 +516,8 @@ class SearchScreenWorker:
         disagreements = []
         for rid in _finalize(ctx, phase, eligible, dual, a, b):
             c = carried.get(rid)
-            done = c.final if c is not None and all(s in c.decisions for s in SCREENERS) else None
-            if done is not None and done["decided_by"] in ("vote", "human"):  # settled before, on the same decisions
+            done = c.settled(SCREENERS) if c is not None else None
+            if done is not None and done["decided_by"] in ("vote", "human"):  # settled on exactly these decisions
                 set_final(ps, rid, ctx.attempt, phase, done["include"], done["decided_by"], done["reason"],
                           actor=ctx.actor, carried_from=done["carried_from"])
             else:
