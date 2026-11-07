@@ -1,7 +1,8 @@
 """The question stage: the Ideator writes one research question (RQ) with its rival hypotheses for the approved topic;
 the kernel checks its structure (``check_rq``), stores it, runs the already-done check (``already_done``) and then:
 
-- ``already_done``: D2 goes back to ``topics``; D1 fails ("already done: …") so the Lead tells you;
+- ``already_done``: back to ``topics`` (D1 and D2), a use of ``question->topics``; at its limit P2 asks
+  (``stage_blocked``) and P1 narrows the RQ (``degrade``);
 - ``split``: P2 opens ``significance_novelty``; P1 treats it as already done;
 - ``not_found_in_scope``: D1, and D2 in P2, open ``rq_approval``; D2 in P1 adopts the RQ (``freeze_rq(adopted_by=
   "agent")``). "Not found" holds only within the searched scope; nothing here calls an RQ novel.
@@ -244,11 +245,8 @@ class QuestionWorker:
         if report.result == "split" and intake.production_mode == "collab":
             cid = _open(ctx, "significance_novelty", rq_id)
             return StageOutcome("waiting_human", checkpoint_id=cid, reason="the already-done judges split")
-        if report.result != "not_found_in_scope":
-            why = _done_reason(report)
-            if intake.discovery_mode == "d1":
-                return StageOutcome("failed", reason=why)
-            return StageOutcome("back_edge", to="topics", reason=why)
+        if report.result != "not_found_in_scope":  # D1 and D2: back to topics, under question->topics's limit
+            return StageOutcome("back_edge", to="topics", reason=_done_reason(report))
         return self._not_found(ctx, intake, rq_id)
 
     @staticmethod

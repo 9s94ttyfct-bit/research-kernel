@@ -537,14 +537,32 @@ def test_d1_always_asks_rq_approval(env):
 
 
 @pytest.mark.parametrize("env", [{"discovery_mode": "d1"}], indirect=True)
-def test_d1_already_done_fails_with_the_works(env):
+def test_d1_already_done_goes_back_to_topics(env):
+    """D1 has a way back from an RQ that is already done: the stage sends the project back to topics (counted on
+    question->topics), instead of failing with nothing but a rerun of the same topic left."""
     k, ps, lib = env
     sources, ids = _sources(lib)
     ex = _executor([_rq()], [_verdicts(lib, ids, (ids[1],))], [_verdicts(lib, ids, (ids[1],))])
     o = _d1_to_question(k, ps, ex, sources)
     out = o.run_stage("demo", "question", actor="tester")
-    assert out.status == "failed" and out.reason.startswith("already done: Aspirin trial 1")
-    assert current_stage(ps) == "question"
+    assert (out.status, out.to) == ("back_edge", "topics") and out.reason.startswith("already done: Aspirin trial 1")
+    assert current_stage(ps) == "topics" and edge_count(ps, "question->topics") == 1
+
+
+@pytest.mark.parametrize("env", [{"discovery_mode": "d1", "production_mode": "collab"}], indirect=True)
+def test_d1_already_done_at_the_edge_limit_asks_in_p2(env):
+    from rk.orchestrator.state import record_edge_taken
+
+    k, ps, lib = env
+    sources, ids = _sources(lib)
+    ex = _executor([_rq()], [_verdicts(lib, ids, (ids[1],))], [_verdicts(lib, ids, (ids[1],))])
+    o = _d1_to_question(k, ps, ex, sources)
+    record_edge_taken(ps, "question->topics", 2, actor="tester")
+    out = o.run_stage("demo", "question", actor="tester")
+    assert out.status == "waiting_human"
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    assert cp["kind"] == "stage_blocked" and cp["options"]["to"] == "topics"
+    assert current_stage(ps) == "question" and edge_count(ps, "question->topics") == 2
 
 
 def test_already_done_needs_three_queries_two_sources(env):
