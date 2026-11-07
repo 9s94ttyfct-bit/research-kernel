@@ -123,6 +123,14 @@ degrades.
   refused. A stage runs only when it has a worker; the others show as "not yet available" and a run cannot end at or
   pass them (`stage_unavailable`). The back-edges protocol→question, search_screen→protocol and
   read_extract→search_screen follow the same limit of two uses per project.
+- **Screening (search_screen).** The frozen search strategy runs (above the record cap the stage goes back to
+  protocol), records in other languages are excluded ("language"), and screener_a (and screener_b where dual
+  screening applies: systematic reviews, the scoping review's 10% sample) decide on titles and abstracts in batches
+  of 25. Dual screening needs two screeners of different vendors: a run that would reach search_screen without them
+  is refused at start (`screeners_unusable`). Disagreements go to you in `screening_disagreements` checkpoints of up
+  to 25 records (P2, `{"decisions": {record_id: "include"|"exclude"}}`) or to the two-vendor vote (P1, which excludes
+  when the judges disagree). An attempt interrupted by an hourly cap is resumed: the next attempt reuses the
+  decisions already made under the same frozen protocol.
 
 ```bash
 uv run rk project intake --audience "…" --paper-type critical_review --mode d2 --production p2 --topics-n 6

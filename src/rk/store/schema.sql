@@ -334,7 +334,8 @@ CREATE TABLE IF NOT EXISTS screening (
     screener  TEXT NOT NULL,
     include   TEXT NOT NULL,                   -- yes | no | unclear
     reason    TEXT NOT NULL,
-    criterion TEXT
+    criterion TEXT,
+    carried_from INTEGER                       -- the interrupted attempt it was made in, when carried over
 );
 CREATE INDEX IF NOT EXISTS screening_attempt ON screening(attempt, phase);
 
@@ -343,8 +344,9 @@ CREATE TABLE IF NOT EXISTS screening_final (
     attempt    INTEGER NOT NULL,
     phase      TEXT NOT NULL,
     include    TEXT NOT NULL,
-    decided_by TEXT NOT NULL,                  -- agreement | single | human | vote
+    decided_by TEXT NOT NULL,                  -- agreement | single | human | vote | rule
     reason     TEXT NOT NULL,
+    carried_from INTEGER,                      -- the interrupted attempt it was made in, when carried over
     PRIMARY KEY (record_id, attempt, phase)
 );
 

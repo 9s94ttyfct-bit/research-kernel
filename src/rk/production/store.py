@@ -89,28 +89,32 @@ def set_record(ps: ProjectStore, record_id: str, *, actor: str, actor_kind: Acto
 # ---- screening ----
 def add_decision(ps: ProjectStore, attempt: int, record_id: str, phase: ScreeningPhase, screener: str,
                  include: Include, reason: str, criterion: str | None, *, actor: str,
-                 actor_kind: ActorKind = "agent") -> str:
-    """One screener's decision on a record in a phase; ``criterion`` is the eligibility criterion id it rests on."""
+                 actor_kind: ActorKind = "agent", carried_from: int | None = None) -> str:
+    """One screener's decision on a record in a phase; ``criterion`` is the eligibility criterion id it rests on;
+    ``carried_from``, the interrupted attempt it was made in when it is carried over (``rk.production.resume``)."""
     _check("phase", phase, ScreeningPhase)
     _check("include", include, Include)
     require_row(ps, "records", record_id)
     sid = new_id("scr")
     ps.apply(NewEvent(type="screening.decided", entity_id=sid, actor_kind=actor_kind, actor=actor,
                       payload={"attempt": attempt, "record_id": record_id, "phase": phase, "screener": screener,
-                               "include": include, "reason": reason, "criterion": criterion}))
+                               "include": include, "reason": reason, "criterion": criterion,
+                               "carried_from": carried_from}))
     return sid
 
 
 def set_final(ps: ProjectStore, record_id: str, attempt: int, phase: ScreeningPhase, include: Include,
-              decided_by: DecidedBy, reason: str, *, actor: str, actor_kind: ActorKind = "kernel") -> None:
-    """The final decision on a record in a phase of an attempt; a later one replaces it."""
+              decided_by: DecidedBy, reason: str, *, actor: str, actor_kind: ActorKind = "kernel",
+              carried_from: int | None = None) -> None:
+    """The final decision on a record in a phase of an attempt; a later one replaces it. ``carried_from``: the
+    interrupted attempt it was made in when it is carried over (``rk.production.resume``)."""
     _check("phase", phase, ScreeningPhase)
     _check("include", include, Include)
     _check("decided_by", decided_by, DecidedBy)
     require_row(ps, "records", record_id)
     ps.apply(NewEvent(type="screening.final", entity_id=record_id, actor_kind=actor_kind, actor=actor,
                       payload={"attempt": attempt, "phase": phase, "include": include, "decided_by": decided_by,
-                               "reason": reason}))
+                               "reason": reason, "carried_from": carried_from}))
 
 
 # ---- extractions ----
@@ -238,9 +242,10 @@ def _record_set(conn: sqlite3.Connection, ev: Event) -> None:
 @projection("screening.decided")
 def _decision(conn: sqlite3.Connection, ev: Event) -> None:
     p = ev.payload
-    conn.execute("INSERT OR REPLACE INTO screening(id, attempt, record_id, phase, screener, include, reason, criterion) "
-                 "VALUES (?,?,?,?,?,?,?,?)", (ev.entity_id, p["attempt"], p["record_id"], p["phase"], p["screener"],
-                                              p["include"], p["reason"], p["criterion"]))
+    conn.execute("INSERT OR REPLACE INTO screening(id, attempt, record_id, phase, screener, include, reason, criterion, "
+                 "carried_from) VALUES (?,?,?,?,?,?,?,?,?)",
+                 (ev.entity_id, p["attempt"], p["record_id"], p["phase"], p["screener"], p["include"], p["reason"],
+                  p["criterion"], p.get("carried_from")))
 
 
 @projection("screening.final")
@@ -248,9 +253,9 @@ def _final(conn: sqlite3.Connection, ev: Event) -> None:
     p = ev.payload
     conn.execute("DELETE FROM screening_final WHERE record_id=? AND attempt=? AND phase=?",
                  (ev.entity_id, p["attempt"], p["phase"]))
-    conn.execute("INSERT INTO screening_final(record_id, attempt, phase, include, decided_by, reason) "
-                 "VALUES (?,?,?,?,?,?)", (ev.entity_id, p["attempt"], p["phase"], p["include"], p["decided_by"],
-                                          p["reason"]))
+    conn.execute("INSERT INTO screening_final(record_id, attempt, phase, include, decided_by, reason, carried_from) "
+                 "VALUES (?,?,?,?,?,?,?)", (ev.entity_id, p["attempt"], p["phase"], p["include"], p["decided_by"],
+                                            p["reason"], p.get("carried_from")))
 
 
 @projection("extraction.added")

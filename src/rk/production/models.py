@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, model_validator
 
 ScreeningPhase = Literal["title_abstract", "full_text"]
 Include = Literal["yes", "no", "unclear"]
-DecidedBy = Literal["agreement", "single", "human", "vote"]
+DecidedBy = Literal["agreement", "single", "human", "vote", "rule"]  # rule: a kernel rule (language), no screener
 
 RECORD_CAP = 3000  # records a search_screen attempt screens at most, unless the protocol sets another cap
 

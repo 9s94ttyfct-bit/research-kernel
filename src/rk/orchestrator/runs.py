@@ -52,6 +52,7 @@ from rk.orchestrator.state import (
     stage_rows,
     start_run,
 )
+from rk.production.screening import screeners_problem
 from rk.store.project import ProjectStore
 from rk.tools.registry import ToolError
 from rk.verify.judge import judge_vendor_error
@@ -344,7 +345,9 @@ class RunManager:
         """A run needs an intake; in D1 a run starts only once the orchestrator drives the project
         (``orchestrator_drives``: question passed, or production began; before, the Lead drives discovery). It ends at
         a stage of ``_ends``; one that starts after question passed and ends past it needs a frozen RQ (a run that
-        starts before goes through question, whose gate freezes one). And two usable judges (``_judges_problem``)."""
+        starts before goes through question, whose gate freezes one). And two usable judges (``_judges_problem``), and
+        a run that reaches ``search_screen`` with dual screening two screeners of different vendors
+        (``screeners_problem``)."""
         intake = intake_of(ps)
         if intake is None:
             raise ToolError("intake_missing", f"{project} has no intake yet; record it first (rk project intake)")
@@ -361,6 +364,12 @@ class RunManager:
         problem = self._judges_problem()
         if problem:
             raise ToolError("judges_missing", problem)
+        current = current_stage(ps)
+        if ("search_screen" in stages and current is not None
+                and stages.index(current) <= stages.index("search_screen") <= stages.index(until)):
+            problem = screeners_problem(self.kernel.settings(), intake.paper_type)
+            if problem:
+                raise ToolError("screeners_unusable", problem)
 
     def _why_not_an_end(self, ps: ProjectStore, until: str) -> str:
         stages, current = stages_of(ps), current_stage(ps)
