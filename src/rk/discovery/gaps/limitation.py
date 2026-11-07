@@ -9,9 +9,9 @@ from rk.discovery.gaps import (
     READ_TOOLS,
     Checks,
     MinerResult,
+    checked_search,
     cluster_of,
     fulltext_clusters,
-    gap_check_search,
     gap_check_sources,
     in_record,
     task_context,
@@ -120,13 +120,15 @@ def _check(ctx: StageContext, it: LimitationOut, cluster_of: dict[str, str]) -> 
             checks.failed("later_search", "source year unknown")
         else:
             sources = gap_check_sources(ctx)
-            later = [i for i in gap_check_search(ctx, it.later_query, after_year=source.year) if i != it.source_id]
-            details["after_year"], details["later_ids"], details["sources"] = source.year, later, sources
-            checks.passed("later_search")
-            _judge_later(ctx, it, later, checks, details)
-            if checks.ok:
-                statement += (f"; no later work (published after {source.year}) addressing it was found within the "
-                              f'searched scope (query "{it.later_query}" on {", ".join(sources)})')
+            found = checked_search(ctx, checks, "later_search", "the later-work search", it.later_query,
+                                   after_year=source.year)
+            if found is not None:
+                later = [i for i in found if i != it.source_id]
+                details["after_year"], details["later_ids"], details["sources"] = source.year, later, sources
+                _judge_later(ctx, it, later, checks, details)
+                if checks.ok:
+                    statement += (f"; no later work (published after {source.year}) addressing it was found within "
+                                  f'the searched scope (query "{it.later_query}" on {", ".join(sources)})')
 
     gap = Gap(kind="stated_limitation", statement=statement, cluster_id=cluster_id, evidence=evidence,
               details=details)

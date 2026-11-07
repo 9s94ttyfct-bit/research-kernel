@@ -11,7 +11,7 @@ import math
 from rk.discovery.gaps import (
     Checks,
     MinerResult,
-    gap_check_search,
+    checked_search,
     gap_check_sources,
     task_context,
     work,
@@ -69,10 +69,11 @@ def _check_cell(ctx: StageContext, dims: list[Dim], a: str, b: str, query: str, 
     else:
         checks.passed("map_coverage")
         checks.passed("placed_neighbours")
-        found = gap_check_search(ctx, query)
-        details["searched_ids"] = found
-        checks.passed("targeted_search")
-        if not found:
+        found = checked_search(ctx, checks, "targeted_search", "the targeted search", query)
+        details["searched_ids"] = found or []
+        if found is None:
+            pass  # the search failed: the cell stays unconfirmed (never "nothing found")
+        elif not found:
             checks.passed("cell_match")
         else:
             res = ctx.executor.run("triage", CELL_TASK,

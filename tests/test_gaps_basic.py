@@ -212,6 +212,111 @@ def test_retracted_cited_after_retraction_is_a_gap(env):
     assert lib.get(after).discovered_via == "forward"
 
 
+def test_retraction_miner_reads_the_recorded_v_retract_and_survives_a_lookup_error(env):
+    from rk.net.http import HttpError
+    from rk.verify.records import record_verification
+
+    k, ps, lib = env
+    retracted, broken, quiet = _landscape(ps, lib, {"Stroke": [RETRACTED, NO_DATE, QUIET]})["Stroke"]
+    record_verification(ps, "item", retracted, "V-RETRACT", "retracted",
+                        RetractionInfo(status="retracted", sources=["crossref:publisher"],
+                                       date="2016-05-03").model_dump(), actor="tester")
+    sources = FakeSources({}, lib=lib, citing={RETRACTED.title: [
+        ItemIn(title="Cited after", year=2019, ids=Ids(doi="10.1000/c3"))]})
+    real = sources.retraction
+
+    def lookup(iid):
+        if iid == broken:
+            raise HttpError(500, "https://api.crossref.org/works/10.1000/nodate")
+        return real(iid)
+
+    sources.retraction = lookup
+    out = GapsWorker(miners=[retraction.mine]).run(_ctx(k, ps, lib, ScriptedExecutor({}), sources))
+    assert out.status == "done"
+    assert f"retraction lookup of {broken} failed (HttpError: HTTP 500" in out.reason
+    assert ("retraction", retracted) not in sources.calls  # the V-RETRACT result landscape recorded
+    assert ("retraction", quiet) in sources.calls
+    [gap] = gaps(ps, 1)
+    assert gap["verified"] is True and gap["evidence"]["item_ids"][0] == retracted
+
+
+def test_a_failed_citation_lookup_is_no_gap_and_is_reported(env):
+    from rk.net.http import HttpError
+
+    k, ps, lib = env
+    [_] = _landscape(ps, lib, {"Stroke": [RETRACTED]})["Stroke"]
+    sources = FakeSources({}, lib=lib, retractions={RETRACTED.title: RetractionInfo(
+        status="retracted", sources=["crossref:publisher"], date="2016-05-03")})
+
+    def cited_by(iid, after_year):
+        raise HttpError(429, "https://api.openalex.org/works")
+
+    sources.cited_by = cited_by
+    out = GapsWorker(miners=[retraction.mine]).run(_ctx(k, ps, lib, ScriptedExecutor({}), sources))
+    [gap] = gaps(ps, 1)
+    assert gap["verified"] is False and gap["checks"]["cited_after_retraction"] == "fail"
+    assert "citation lookup of" in gap["checks"]["reasons"]["cited_after_retraction"]
+    assert "HTTP 429" in gap["checks"]["reasons"]["cited_after_retraction"] and out.status == "done"
+
+
+def test_one_full_text_error_does_not_fail_the_gaps_attempt(env):
+    from rk.net.http import HttpError
+
+    k, ps, lib = env
+    items = [ItemIn(title=f"Rep {i}", year=2015, ids=Ids(doi=f"10.1000/rep-{i}")) for i in range(3)]
+    ids = _landscape(ps, lib, {"Stroke": items}, reps=3)["Stroke"]
+    sources = FakeSources({}, lib=lib)
+    seen = []
+
+    def fulltext(iid):
+        seen.append(iid)
+        if iid == ids[0]:
+            raise HttpError(500, "https://www.ebi.ac.uk/europepmc/x")
+        if iid == ids[1]:
+            raise UnicodeEncodeError("utf-8", "\ud800", 0, 1, "surrogates not allowed")
+        return False
+
+    sources.fulltext = fulltext
+    out = GapsWorker(miners=[_gap_miner(True)]).run(_ctx(k, ps, lib, ScriptedExecutor({}), sources))
+    assert seen == ids and out.status == "done"
+    assert f"full text of {ids[0]} failed (HttpError: HTTP 500" in out.reason
+    assert f"full text of {ids[1]} failed (UnicodeEncodeError" in out.reason
+
+
+def _failing_search(sources):
+    from rk.net.http import HttpError
+
+    def search(query, source, limit=25, after_year=None):
+        raise HttpError(503, "https://api.openalex.org/works")
+
+    sources.search = search
+    return sources
+
+
+def test_a_failed_targeted_search_is_no_hole(env):
+    k, ps, lib = env
+    a, b, c, d, e, f = _landscape(ps, lib, {"Aspirin": CELL_ITEMS})["Aspirin"]
+    plan = {"dims": [{"name": "population", "values": ["adults", "children"]},
+                     {"name": "outcome", "values": ["stroke", "bleeding"]}],
+            "cells": {a: ["adults", "stroke"], b: ["adults", "bleeding"], c: ["children", "stroke"],
+                      d: ["adults", "stroke"], e: ["adults", "bleeding"], f: ["children", "stroke"]},
+            "empty_cell_queries": {"children|bleeding": "aspirin bleeding children"}}
+    ex = ScriptedExecutor({("gapminer", "MapPlan"): [plan]})
+    GapsWorker(miners=[maphole.mine]).run(_ctx(k, ps, lib, ex, _failing_search(FakeSources({}, lib=lib))))
+    [cell] = gaps(ps, 1)
+    assert cell["verified"] is False and cell["checks"]["targeted_search"] == "fail"
+    assert "targeted search failed (HttpError: HTTP 503" in cell["checks"]["reasons"]["targeted_search"]
+    assert cell["details"]["searched_ids"] == [] and cell["checks"]["cell_match"] == "skipped"
+
+
+def test_a_failed_later_search_does_not_verify_a_limitation(env):
+    k, ps, lib = env
+    _, _, _, sources, script = _limitation_setup(lib, ps, quote=LIMITATION)
+    _, [gap] = _run_limitation(k, ps, lib, _failing_search(sources), script)
+    assert gap["verified"] is False and gap["checks"]["later_search"] == "fail"
+    assert "later-work search failed (HttpError: HTTP 503" in gap["checks"]["reasons"]["later_search"]
+
+
 CELL_ITEMS = [ItemIn(title=f"Aspirin study {i}", year=2015 + i, abstract=f"Abstract {i}.",
                      ids=Ids(doi=f"10.1000/cell-{i}")) for i in range(6)]
 MATCH = ItemIn(title="Aspirin and mortality in children", year=2020, ids=Ids(doi="10.1000/match"),

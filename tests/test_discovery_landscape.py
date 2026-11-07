@@ -100,6 +100,33 @@ def test_guidance_reaches_the_scout(env):
         assert "exclude animal studies" in json.dumps(call["inputs"])
 
 
+def test_one_items_verify_error_or_a_trend_error_does_not_fail_the_stage(env):
+    from rk.net.http import HttpError
+
+    k, ps, lib = env
+    stroke, _, sources = _stroke_bleeding(lib)
+    real_verify = sources.verify
+
+    def verify(iid):
+        if iid == stroke[1]:
+            raise HttpError(500, "https://api.crossref.org/works/x")
+        return real_verify(iid)
+
+    def year_counts(query):
+        raise HttpError(503, "https://api.openalex.org/works")
+
+    sources.verify, sources.year_counts = verify, year_counts
+    ex = ScriptedExecutor({("scout", "LandscapeQueries"): [{"queries": QUERIES}],
+                           ("scout", "ClusterPlan"): [{"clusters": [_cluster("Stroke", QUERIES[0], stroke)]}]})
+    out = LandscapeWorker().run(_ctx(k, ps, lib, ex, sources))
+    assert out.status == "done"
+    assert f"verification of {stroke[1]} failed (HttpError: HTTP 500" in out.reason
+    assert "publication trend of 'aspirin stroke prevention' failed (HttpError: HTTP 503" in out.reason
+    assert lib.get(stroke[1]).ref_status == "unverified" and lib.get(stroke[2]).ref_status == "pass"
+    [c] = clusters(ps, 1)
+    assert c["year_counts"] == {} and c["item_ids"] == stroke
+
+
 def test_cluster_items_outside_the_search_are_dropped(env):
     k, ps, lib = env
     stroke, bleeding, sources = _stroke_bleeding(lib)

@@ -279,6 +279,22 @@ def test_distortion_needs_the_cited_work_to_pass_v_ref(env):
     assert all(j.inputs == [] for j in judges["judge_providers"].values())
 
 
+@pytest.mark.parametrize("call, check", [("add", "cited"), ("verify", "cited_ref"), ("fulltext", "fulltext")])
+def test_distortion_source_error_fails_its_check_not_the_run(env, call, check):
+    from rk.net.http import HttpError
+
+    _, sources, ex = _distortion_setup(env, cited={"doi": "10.1000/cited"})
+
+    def broken(*args):
+        raise HttpError(502, f"https://example.org/{call}")
+
+    setattr(sources, call, broken)
+    gap, miner = _run_distortion(env, sources, ex, _judges((OPENAI, "unsupported"), (DEEPSEEK, "unsupported")))
+    assert gap["verified"] is False and gap["checks"][check] == "fail"
+    assert "failed (HttpError: HTTP 502" in gap["checks"]["reasons"][check]
+    assert miner.layer1.calls == []
+
+
 def test_distortion_with_a_rejected_kernel_passage_is_unverified(env, monkeypatch):
     _k, _ps, _lib = env
     _, sources, ex = _distortion_setup(env, cited={"doi": "10.1000/cited"})

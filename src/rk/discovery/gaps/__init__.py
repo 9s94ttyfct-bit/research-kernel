@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pydantic import ValidationError
 
 from rk.argument import ArgumentService, ClaimIn, EvidenceIn
+from rk.discovery.boundary import per_item
 from rk.discovery.models import Gap
 from rk.discovery.sources import log_and_search
 from rk.discovery.store import add_gap, clusters, gaps, intake_of
@@ -99,12 +100,25 @@ def gap_check_sources(ctx: StageContext) -> list[str]:
 
 
 def gap_check_search(ctx: StageContext, query: str, *, after_year: int | None = None) -> list[str]:
-    """Run a gap-check search (purpose ``gap_check``, logged) on ``gap_check_sources``; the hit ids, de-duplicated."""
+    """Run a gap-check search (purpose ``gap_check``, logged) on ``gap_check_sources``; the hit ids, de-duplicated.
+    A source error propagates: a failed search is never "nothing found" (callers use ``checked_search``)."""
     found: list[str] = []
     for source in gap_check_sources(ctx):
         ids = log_and_search(ctx.ps, ctx.sources, stage=ctx.stage, attempt=ctx.attempt, purpose="gap_check",
                              query=query, source=source, limit=GAP_CHECK_LIMIT, actor=ctx.actor, after_year=after_year)
         found += [i for i in ids if i not in found]
+    return found
+
+
+def checked_search(ctx: StageContext, checks: Checks, name: str, what: str, query: str, *,
+                   after_year: int | None = None) -> list[str] | None:
+    """``gap_check_search`` behind the per-item boundary: the hit ids with check ``name`` passed, or ``None`` with it
+    failed when the search raised (``what`` names the search in the reason)."""
+    found, err = per_item(what, lambda: gap_check_search(ctx, query, after_year=after_year))
+    if err:
+        checks.failed(name, err)
+        return None
+    checks.passed(name)
     return found
 
 
@@ -215,10 +229,13 @@ class GapsWorker:
         if landscape is None or landscape["passed_attempt"] is None:
             return StageOutcome("failed", reason="landscape has not passed")
         cls = clusters(ctx.ps, landscape["passed_attempt"])
+        problems: list[str] = []
         for c in cls:
             for iid in c["representative_ids"][:FULLTEXT_PER_CLUSTER]:
-                ctx.sources.fulltext(iid)
-        verified, problems = 0, []
+                _, err = per_item(f"full text of {iid}", lambda iid=iid: ctx.sources.fulltext(iid))
+                if err:  # the work has no full text for the miners; the others are still fetched
+                    problems.append(err)
+        verified = 0
         for miner in self.miners:
             result = miner(ctx, cls)
             for gap, ok, checks in result.gaps:

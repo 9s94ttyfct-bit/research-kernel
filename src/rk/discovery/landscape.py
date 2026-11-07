@@ -4,6 +4,7 @@ cluster, and every cluster has >= 5 verified items, all from this attempt's sear
 
 from __future__ import annotations
 
+from rk.discovery.boundary import per_item
 from rk.discovery.models import Cluster, ClusterPlan, LandscapeQueries
 from rk.discovery.sources import log_and_search
 from rk.discovery.store import (
@@ -90,9 +91,12 @@ class LandscapeWorker:
                 found += [i for i in ids if i not in found]
         if not found:
             return StageOutcome("rerun", reason="the landscape searches found no works")
+        problems: list[str] = []
         for iid in found:
             if ctx.lib.get(iid).ref_status == "unverified":
-                ctx.sources.verify(iid)
+                _, err = per_item(f"verification of {iid}", lambda iid=iid: ctx.sources.verify(iid))
+                if err:  # the item stays unverified (the gate counts verified items only)
+                    problems.append(err)
 
         works = []
         for iid in found:
@@ -110,11 +114,14 @@ class LandscapeWorker:
             if not items:
                 continue
             reps = [i for i in dict.fromkeys(c.representative_ids) if i in items]
+            trend, err = per_item(f"publication trend of {c.query!r}", lambda q=c.query: ctx.sources.year_counts(q))
+            if err:
+                problems.append(err)
             add_cluster(ctx.ps, ctx.attempt,
                         Cluster(label=c.label, description=c.description, query=c.query, item_ids=items,
-                                representative_ids=reps, year_counts=ctx.sources.year_counts(c.query)),
+                                representative_ids=reps, year_counts=trend or {}),
                         actor=ctx.actor)
-        return StageOutcome("done")
+        return StageOutcome("done", reason="; ".join(problems))
 
     def on_answer(self, ctx: StageContext, checkpoint: dict) -> StageOutcome:
         return StageOutcome("done")  # landscape opens no checkpoint

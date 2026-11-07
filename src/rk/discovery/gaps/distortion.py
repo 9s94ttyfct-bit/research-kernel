@@ -6,6 +6,7 @@ agreeing cross-vendor judges, no checkpoint). Verified when the verdict is "unsu
 
 from __future__ import annotations
 
+from rk.discovery.boundary import per_item
 from rk.discovery.gaps import (
     READ_TOOLS,
     Checks,
@@ -50,9 +51,14 @@ def _cited_id(ctx: StageContext, it: DistortionOut, checks: Checks) -> str | Non
             checks.failed("cited", f"unknown item {it.cited.item_id}")
             return None
     elif it.cited.doi:
-        cited = ctx.lib.find_by_ids(Ids(doi=it.cited.doi)) or ctx.sources.add(it.cited.doi)
+        doi = it.cited.doi
+        cited, err = per_item(f"adding the cited work {doi}",
+                              lambda: ctx.lib.find_by_ids(Ids(doi=doi)) or ctx.sources.add(doi))
+        if err:
+            checks.failed("cited", err)
+            return None
         if cited is None:
-            checks.failed("cited", f"DOI {it.cited.doi} resolves to no work")
+            checks.failed("cited", f"DOI {doi} resolves to no work")
             return None
     else:
         checks.failed("cited", "no item id or DOI of the cited work")
@@ -97,12 +103,19 @@ def _check(ctx: StageContext, miner: SupportMiner, it: DistortionOut, of: dict[s
     evidence.item_ids.append(cited)
     cited_label = title_year(ctx.lib, cited)
     possible = f'Possible citation distortion: {citing} cites {cited_label} for "{it.quote}"'
-    data["ref_status"] = ctx.sources.verify(cited)
+    data["ref_status"], err = per_item(f"V-REF of the cited work {cited}", lambda: ctx.sources.verify(cited))
+    if err:
+        checks.failed("cited_ref", err)
+        return result(possible, cluster_id)
     if data["ref_status"] != "pass":  # V-REF: otherwise the work checked may not be the paper the source cites
         checks.failed("cited_ref", f"V-REF of the cited work is {data['ref_status']}, not pass")
         return result(possible, cluster_id)
     checks.passed("cited_ref")
-    passages = top_passages(ctx.ps, cited, it.quote, k=PASSAGES) if ctx.sources.fulltext(cited) else []
+    has_text, err = per_item(f"full text of the cited work {cited}", lambda: ctx.sources.fulltext(cited))
+    if err:
+        checks.failed("fulltext", err)
+        return result(possible, cluster_id)
+    passages = top_passages(ctx.ps, cited, it.quote, k=PASSAGES) if has_text else []
     if not passages:
         checks.failed("fulltext", "the cited work has no full text", value="missing")
         return result(possible, cluster_id)
