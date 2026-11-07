@@ -30,6 +30,16 @@ def test_bioc(replay_http):
     assert doc and doc.get("documents")
 
 
+def test_bioc_non_json_body_is_no_document(tmp_path):
+    import httpx
+
+    from rk.net.http import HttpClient
+
+    transport = httpx.MockTransport(lambda req: httpx.Response(200, content=b"[Error] : No result can be found."))
+    http = HttpClient(tmp_path / "h.sqlite", user_agent="t", sleep=lambda s: None, transport=transport)
+    assert pubmed.bioc_json(http, "PMC1234567") is None
+
+
 def test_arxiv_query(replay_http):
     items = arxiv.query(replay_http, id_list=["2404.10774"], max_results=1)
     assert len(items) == 1 and items[0].ids.arxiv == "2404.10774" and items[0].item_type == "preprint"

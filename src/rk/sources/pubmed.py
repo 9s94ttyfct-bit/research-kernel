@@ -47,7 +47,10 @@ def bioc_json(http: HttpClient, pmcid: str) -> dict | None:
     res = http.get(f"{BIOC}/{pmcid}/unicode")
     if res.status != 200 or not res.body.strip().startswith((b"{", b"[")):
         return None
-    data = res.json()
+    try:
+        data = res.json()
+    except ValueError:  # a 200 whose body starts like JSON but is not (an error text): no document
+        return None
     if isinstance(data, list):
         data = data[0] if data else None
     return data
