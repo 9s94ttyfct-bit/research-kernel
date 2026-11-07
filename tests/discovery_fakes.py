@@ -75,8 +75,8 @@ class FakeWorker:
 PRODUCTION_FIRST = ("protocol", "search_screen", "read_extract")  # the production stages Plan 5a runs
 
 
-def freeze_an_rq(ps) -> str:
-    """Add a topic and an RQ with one hypothesis (attempt 1) and freeze the RQ as the human; returns its id."""
+def add_an_rq(ps) -> str:
+    """Add a topic and a draft RQ with one hypothesis (attempt 1); returns the RQ's id."""
     tid = add_topic(ps, 1, Topic(title="Aspirin over 80", summary="S.", gap_ids=[], feasibility="F.",
                                  data_needed="D.", paper_type="critical_review", risks="R."), actor="tester")
     body = RQBody.model_validate({
@@ -84,7 +84,12 @@ def freeze_an_rq(ps) -> str:
         "problem": {"condition": "Guidelines stop at 80.", "consequences": ["A.", "B."]},
         "finer": {"feasible": "F.", "interesting": "I.", "novel": "N.", "ethical": "E.", "relevant": "R."},
         "clinical": False})
-    rq = add_rq(ps, 1, tid, body, [HypothesisIn(statement="H.", falsification="X.")], actor="tester")
+    return add_rq(ps, 1, tid, body, [HypothesisIn(statement="H.", falsification="X.")], actor="tester")
+
+
+def freeze_an_rq(ps) -> str:
+    """Add a topic and an RQ with one hypothesis (attempt 1) and freeze the RQ as the human; returns its id."""
+    rq = add_an_rq(ps)
     freeze_rq(ps, rq, adopted_by="human", actor="tester")
     return rq
 

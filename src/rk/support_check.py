@@ -12,7 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rk.argument import ArgumentService, ClaimIn, ClaimKind, EvidenceIn
+from rk.argument import AgentClaimKind, ArgumentService, ClaimIn, EvidenceIn
 from rk.eval.metrics import confusion
 from rk.llm.drivers import DriverSpec, build_provider
 from rk.llm.runner import run_task
@@ -26,7 +26,7 @@ PRED_LABELS = ["supported", "unsupported", "contradicted", "uncertain"]
 class ExtractedClaim(BaseModel):
     sentence_index: int
     text: str
-    kind: ClaimKind = "fact"
+    kind: AgentClaimKind = "fact"
 
 
 class ExtractedClaims(BaseModel):

@@ -130,33 +130,53 @@ def set_already_done(ps: ProjectStore, rq_id: str, result: dict, *, actor: str,
 
 
 HypothesisStatus = Literal["proposed", "tested_by_design", "dropped"]
+# The status changes allowed: a design tests a proposed hypothesis (a later frozen design may test it again), either
+# may be dropped, and dropped is final.
+_HYPOTHESIS_MOVES: dict[str, frozenset[str]] = {
+    "proposed": frozenset({"tested_by_design", "dropped"}),
+    "tested_by_design": frozenset({"tested_by_design", "dropped"}),
+    "dropped": frozenset(),
+}
 
 
 def add_hypothesis(ps: ProjectStore, rq_id: str, statement: str, falsification: str, *, rival_of: str | None = None,
                    actor: str, actor_kind: ActorKind = "agent") -> str:
-    """A hypothesis of the RQ added after it (e.g. a rival the argue stage found), ``proposed``; ``rival_of`` the
-    hypothesis it rivals. A frozen RQ keeps its stored text hash, that of the hypotheses it was frozen with."""
-    require_row(ps, "rqs", rq_id)
-    if rival_of is not None:
-        require_row(ps, "hypotheses", rival_of)
-    hid = new_id("hyp")
-    ps.apply(NewEvent(type="hypothesis.added", entity_id=hid, actor_kind=actor_kind, actor=actor,
-                      payload={"rq_id": rq_id, "statement": statement, "falsification": falsification,
-                               "rival_of": rival_of}))
+    """A hypothesis added to the frozen RQ (e.g. a rival the argue stage found), ``proposed``; ``rival_of`` the
+    hypothesis of the same RQ it rivals. The RQ keeps its stored text hash, that of the hypotheses it was frozen
+    with."""
+    with ps.lock:
+        if require_row(ps, "rqs", rq_id)["status"] != "frozen":
+            raise ValueError(f"research question {rq_id} is not frozen: its hypotheses come with it")
+        if rival_of is not None and require_row(ps, "hypotheses", rival_of)["rq_id"] != rq_id:
+            raise ValueError(f"hypothesis {rival_of} belongs to another research question")
+        hid = new_id("hyp")
+        ps.apply(NewEvent(type="hypothesis.added", entity_id=hid, actor_kind=actor_kind, actor=actor,
+                          payload={"rq_id": rq_id, "statement": statement, "falsification": falsification,
+                                   "rival_of": rival_of}))
     return hid
 
 
 def set_hypothesis_status(ps: ProjectStore, hyp_id: str, status: HypothesisStatus, *, prereg_hash: str | None = None,
                           actor: str, actor_kind: ActorKind = "kernel") -> None:
-    """``tested_by_design`` names the frozen design that tests it (``prereg_hash``); ``dropped`` and ``proposed`` have
-    none."""
+    """Move the hypothesis on (``_HYPOTHESIS_MOVES``). ``tested_by_design`` names the frozen design that tests it:
+    ``prereg_hash`` is that design's frozen hash, and the design lists the hypothesis; the other statuses have none."""
     if status not in get_args(HypothesisStatus):
         raise ValueError(f"unknown hypothesis status {status!r}; expected one of {get_args(HypothesisStatus)}")
     if (status == "tested_by_design") != (prereg_hash is not None):
         raise ValueError("tested_by_design needs the prereg_hash of the frozen design (and only it has one)")
-    require_row(ps, "hypotheses", hyp_id)
-    ps.apply(NewEvent(type="hypothesis.status_set", entity_id=hyp_id, actor_kind=actor_kind, actor=actor,
-                      payload={"status": status, "prereg_hash": prereg_hash}))
+    with ps.lock:
+        current = require_row(ps, "hypotheses", hyp_id)["status"]
+        if status not in _HYPOTHESIS_MOVES[current]:
+            raise ValueError("dropped is final" if current == "dropped" else f"{current} -> {status} is not allowed")
+        if prereg_hash is not None:
+            bodies = [json.loads(r["body"]) for r in ps.db.execute(
+                "SELECT body FROM designs WHERE status='frozen' AND frozen_hash=?", (prereg_hash,))]
+            if not bodies:
+                raise ValueError(f"no frozen design has the hash {prereg_hash}")
+            if not any(hyp_id in item["hypothesis_ids"] for b in bodies for item in b["items"]):
+                raise ValueError(f"the frozen design {prereg_hash} does not test {hyp_id}")
+        ps.apply(NewEvent(type="hypothesis.status_set", entity_id=hyp_id, actor_kind=actor_kind, actor=actor,
+                          payload={"status": status, "prereg_hash": prereg_hash}))
 
 
 def rq_text_hash(body: dict, hypotheses: list[dict]) -> str:

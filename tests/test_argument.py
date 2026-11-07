@@ -17,6 +17,9 @@ from rk.discovery.store import add_hypothesis, hypotheses, set_hypothesis_status
 from rk.fulltext import attach_pdf
 from rk.library.models import Creator, ItemIn
 from rk.notes import NoteIn, add_note
+from rk.production.artifacts import ArtifactIn, add_artifact
+from rk.production.models import DesignIn
+from rk.production.store import freeze_design, set_design
 from rk.store.db import open_project_db
 from rk.store.events import NewEvent
 from rk.store.projections import rebuild
@@ -25,7 +28,7 @@ from rk.tools.registry import CallContext, PermissionDenied, ToolError
 from rk.workspace import Kernel
 
 from .conftest import DOCS
-from .discovery_fakes import freeze_an_rq
+from .discovery_fakes import add_an_rq, freeze_an_rq
 
 
 @pytest.fixture
@@ -151,9 +154,9 @@ def test_withdraw_and_narrow_claims(env):
         svc.add_claim(ClaimIn(text="x", narrowed_from="clm_missing"), generator_vendor=None, actor="a")
     with pytest.raises(KeyError):  # an artifact a claim cites must exist
         svc.add_claim(ClaimIn(text="x", kind="stat_result", artifact_ids=["stt_missing"]), generator_vendor=None,
-                      actor="kernel", origin="synthesis")
+                      actor="kernel", actor_kind="kernel", origin="synthesis")
     stat = svc.add_claim(ClaimIn(text="Pooled RR 0.62.", kind="stat_result"), generator_vendor=None, actor="kernel",
-                         origin="synthesis")
+                         actor_kind="kernel", origin="synthesis")
     feas = svc.add_claim(ClaimIn(text="The cells can be built in a month.", kind="feasibility"),
                          generator_vendor="openai", actor="arguer")
     assert {x["id"] for x in svc.list_claims()} == {broad, narrow, feas}
@@ -165,6 +168,46 @@ def test_withdraw_and_narrow_claims(env):
     assert _snapshot(ps) == before
 
 
+def test_a_withdrawn_claim_stays_withdrawn(env):
+    _, _, ps, _, _ = env
+    svc = ArgumentService(ps)
+    c = svc.add_claim(ClaimIn(text="Copper catalysts reduce CO2."), generator_vendor="openai", actor="arguer")
+    svc.withdraw_claim(c, reason="uncertain in P1", actor="kernel")
+    for status in ("supported", "uncertain", "draft"):
+        with pytest.raises(ValueError, match="withdrawn"):
+            svc.set_claim_status(c, status, verification_id="ver_X")
+    assert svc.get_claim(c)["status"] == "withdrawn"
+
+
+def test_stat_claims_and_artifact_links_are_kernel_only(env):
+    _, reg, ps, _, _ = env
+    svc = ArgumentService(ps)
+    sid = add_artifact(ps, ArtifactIn(kind="stt", code_path="rk.stats.pool:pool", code_version="c0de",
+                                      input_hashes=[], values={"k": 2}, output_path=None),
+                       stage="synthesize", attempt=1, actor="kernel")
+    # the agent tool does not offer them
+    schema = json.dumps(reg.get("rk_claim_add").input_model.model_json_schema())
+    assert "stat_result" not in schema and "artifact_ids" not in schema and "feasibility" in schema
+    agent = CallContext(role="arguer", actor="arguer@x", idempotency_key="s1", project="arg")
+    with pytest.raises(ValidationError):
+        reg.call("rk_claim_add", {"claim": {"text": "Pooled RR 0.62.", "kind": "stat_result"}}, agent)
+    with pytest.raises(ValidationError):
+        reg.call("rk_claim_add", {"claim": {"text": "Pooled RR 0.62.", "artifact_ids": [sid]}},
+                 CallContext(role="arguer", actor="arguer@x", idempotency_key="s2", project="arg"))
+    feas = reg.call("rk_claim_add", {"claim": {"text": "Copper works.", "kind": "feasibility"}},
+                    CallContext(role="arguer", actor="arguer@x", idempotency_key="s3", project="arg"))
+    assert svc.get_claim(feas["claim_id"])["kind"] == "feasibility"
+    # and the service refuses them to anyone but the kernel
+    for c in (ClaimIn(text="Pooled RR 0.62.", kind="stat_result"), ClaimIn(text="See the table.", artifact_ids=[sid])):
+        for kind in ("agent", "human"):
+            with pytest.raises(ValueError, match="only the kernel"):
+                svc.add_claim(c, generator_vendor=None, actor="a", actor_kind=kind, origin="synthesis")
+    k = svc.add_claim(ClaimIn(text="Pooled RR 0.62.", kind="stat_result", artifact_ids=[sid]), generator_vendor=None,
+                      actor="kernel", actor_kind="kernel", origin="synthesis")
+    assert svc.get_claim(k)["artifact_ids"] == [sid]
+    assert [x["id"] for x in svc.list_claims(origin="synthesis")] == [k]
+
+
 def test_objection_response_lifecycle(env):
     _, _, ps, iid, nid = env
     svc = ArgumentService(ps)
@@ -174,20 +217,28 @@ def test_objection_response_lifecycle(env):
     o1 = svc.add_objection(ObjectionIn(target_id=cid, category="counterexample", text="Nickel too.", source_id=iid),
                            actor="skeptic")
     o2 = svc.add_objection(ObjectionIn(target_id=cid, category="definition", text="Reduce how?"), actor="skeptic")
-    assert {o["id"] for o in svc.list_objections(target_id=cid, status="open")} == {o1, o2}
+    o3 = svc.add_objection(ObjectionIn(target_id=cid, category="problem", text="Too small."), actor="skeptic")
+    assert {o["id"] for o in svc.list_objections(target_id=cid, status="open")} == {o1, o2, o3}
+    assert all(o["note"] is None and o["response_claim_id"] is None for o in svc.list_objections())
     resp = svc.add_claim(ClaimIn(text="Nickel works only at high overpotential."), generator_vendor="anthropic",
                          actor="a")
-    g = svc.add_edge(EdgeIn(from_id=resp, to_id=o1, type="response_to"), actor="a")
     with pytest.raises(ValueError, match="needs the response claim"):
         svc.respond_objection(o1, response_claim_id=None, status="responded", note="", actor="a")
+    with pytest.raises(ValueError, match="only a responded objection"):
+        svc.respond_objection(o2, response_claim_id=resp, status="conceded", note="", actor="a")
     with pytest.raises(KeyError):
         svc.respond_objection(o1, response_claim_id="clm_missing", status="responded", note="", actor="a")
     with pytest.raises(KeyError):
         svc.respond_objection("obj_missing", response_claim_id=None, status="conceded", note="", actor="a")
-    svc.respond_objection(o1, response_claim_id=resp, status="responded", note="scope limited", actor="a")
+    g = svc.respond_objection(o1, response_claim_id=resp, status="responded", note="scope limited", actor="a")
     svc.respond_objection(o2, response_claim_id=None, status="rejected_invalid", note="the claim defines it",
                           actor="kernel")
-    with pytest.raises(ValueError, match="not open"):
+    svc.respond_objection(o3, response_claim_id=None, status="conceded", note="narrowed the claim", actor="kernel")
+    for o in (o2, o3):  # conceded and rejected answers are final
+        with pytest.raises(ValueError, match="already answered"):
+            svc.respond_objection(o, response_claim_id=resp, status="responded", note="", actor="a")
+    svc.set_claim_status(resp, "supported", verification_id="ver_R")
+    with pytest.raises(ValueError, match="its response .* is supported"):
         svc.respond_objection(o1, response_claim_id=None, status="conceded", note="", actor="a")
     by_id = {o["id"]: o for o in svc.list_objections(target_id=cid)}
     assert (by_id[o1]["status"], by_id[o1]["response_claim_id"], by_id[o1]["note"]) == ("responded", resp,
@@ -195,11 +246,39 @@ def test_objection_response_lifecycle(env):
     assert (by_id[o2]["status"], by_id[o2]["response_claim_id"]) == ("rejected_invalid", None)
     assert svc.list_objections(status="open") == []
     assert [o["id"] for o in svc.list_objections(status="responded")] == [o1]
-    assert {o["status"] for o in svc.get_claim(cid)["objections"]} == {"responded", "rejected_invalid"}
-    assert [e["id"] for e in svc.list_edges(to_id=o1, type="response_to")] == [g]
+    assert {o["status"] for o in svc.get_claim(cid)["objections"]} == {"responded", "rejected_invalid", "conceded"}
+    (edge,) = svc.list_edges(to_id=o1, type="response_to")  # the kernel added the response edge
+    assert (edge["id"], edge["from_id"]) == (g, resp)
+    assert svc.list_edges(type="response_to") == [edge]
     assert [e["type"] for e in svc.list_edges(to_id=cid)] == ["evidence_of"]
     assert svc.list_edges(from_id=resp, type="evidence_of") == []
     assert [e["id"] for e in svc.list_evidence(cid)] == [eid] and svc.list_evidence(resp) == []
+    before = _snapshot(ps)
+    rebuild(ps.db)
+    assert _snapshot(ps) == before
+
+
+def test_objection_answered_again_once_its_response_is_narrowed(env):
+    _, _, ps, _, _ = env
+    svc = ArgumentService(ps)
+    cid = svc.add_claim(ClaimIn(text="Copper catalysts may reduce CO2."), generator_vendor="anthropic", actor="a")
+    o = svc.add_objection(ObjectionIn(target_id=cid, category="counterexample", text="Nickel too."), actor="skeptic")
+    resp = svc.add_claim(ClaimIn(text="Nickel never reduces CO2."), generator_vendor="anthropic", actor="a")
+    g1 = svc.respond_objection(o, response_claim_id=resp, status="responded", note="first", actor="a")
+    svc.set_claim_status(resp, "uncertain", verification_id="ver_1")
+    svc.withdraw_claim(resp, reason="uncertain in P1; narrowed", actor="kernel")
+    narrow = svc.add_claim(ClaimIn(text="Nickel reduces CO2 only at high overpotential.", narrowed_from=resp),
+                           generator_vendor="anthropic", actor="a")
+    g2 = svc.respond_objection(o, response_claim_id=narrow, status="responded", note="narrowed", actor="a")
+    (got,) = svc.list_objections(target_id=cid)
+    assert (got["status"], got["response_claim_id"], got["note"]) == ("responded", narrow, "narrowed")  # latest wins
+    assert {(e["id"], e["from_id"]) for e in svc.list_edges(to_id=o, type="response_to")} == {(g1, resp),
+                                                                                             (g2, narrow)}
+    answers = [e.payload for e in ps.log.iter() if e.type == "objection.responded"]
+    assert [(p["response_claim_id"], p["note"]) for p in answers] == [(resp, "first"), (narrow, "narrowed")]
+    svc.set_claim_status(narrow, "supported", verification_id="ver_2")
+    with pytest.raises(ValueError, match="is supported"):
+        svc.respond_objection(o, response_claim_id=resp, status="responded", note="again", actor="a")
     before = _snapshot(ps)
     rebuild(ps.db)
     assert _snapshot(ps) == before
@@ -240,8 +319,20 @@ def test_warrant_shape_validated_and_tests_recorded(env):
     assert _snapshot(ps) == before
 
 
+def _a_design(hyp_ids: list[str]) -> DesignIn:
+    return DesignIn.model_validate({
+        "items": [{"id": "D1", "kind": "experiment", "sample": "40 cells", "controls": ["bare carbon"],
+                   "measurements": [{"id": "M1", "what": "C2 efficiency", "instrument": "GC", "unit": "%"}],
+                   "analysis": "t test", "data_source": "new measurements", "hypothesis_ids": hyp_ids}],
+        "expected_results": "Copper beats nickel.", "alternative_explanations": ["surface area"]})
+
+
 def test_hypothesis_add_with_rival_and_status(env):
     _, _, ps, _, _ = env
+    draft_rq = add_an_rq(ps)
+    (other,) = hypotheses(ps, draft_rq)
+    with pytest.raises(ValueError, match="not frozen"):
+        add_hypothesis(ps, draft_rq, "S.", "F.", actor="ideator")
     rq_id = freeze_an_rq(ps)
     (h0,) = hypotheses(ps, rq_id)  # added with the RQ: the defaults
     assert (h0["rival_of"], h0["status"], h0["prereg_hash"]) == (None, "proposed", None)
@@ -252,18 +343,31 @@ def test_hypothesis_add_with_rival_and_status(env):
         add_hypothesis(ps, "rq_missing", "S.", "F.", actor="ideator")
     with pytest.raises(KeyError):
         add_hypothesis(ps, rq_id, "S.", "F.", rival_of="hyp_missing", actor="ideator")
+    with pytest.raises(ValueError, match="another research question"):
+        add_hypothesis(ps, rq_id, "S.", "F.", rival_of=other["id"], actor="ideator")
     with pytest.raises(ValueError, match="needs the prereg_hash"):
         set_hypothesis_status(ps, h1, "tested_by_design", actor="kernel")
     with pytest.raises(ValueError, match="unknown hypothesis status"):
         set_hypothesis_status(ps, h1, "maybe", actor="kernel")  # type: ignore[arg-type]
     with pytest.raises(KeyError):
         set_hypothesis_status(ps, "hyp_missing", "dropped", actor="kernel")
-    set_hypothesis_status(ps, h1, "tested_by_design", prereg_hash="ab" * 32, actor="kernel")
+    draft = set_design(ps, _a_design([h1]), stage="design", attempt=1, actor="ideator")
+    with pytest.raises(ValueError, match="no frozen design"):
+        set_hypothesis_status(ps, h1, "tested_by_design", prereg_hash="ab" * 32, actor="kernel")
+    prereg = freeze_design(ps, draft, actor="kernel")
+    with pytest.raises(ValueError, match="does not test"):
+        set_hypothesis_status(ps, h0["id"], "tested_by_design", prereg_hash=prereg, actor="kernel")
+    set_hypothesis_status(ps, h1, "tested_by_design", prereg_hash=prereg, actor="kernel")
+    with pytest.raises(ValueError, match="tested_by_design -> proposed"):
+        set_hypothesis_status(ps, h1, "proposed", actor="kernel")
     set_hypothesis_status(ps, h0["id"], "dropped", actor="kernel")
+    for status, prereg_hash in (("proposed", None), ("dropped", None), ("tested_by_design", prereg)):
+        with pytest.raises(ValueError, match="dropped is final"):
+            set_hypothesis_status(ps, h0["id"], status, prereg_hash=prereg_hash, actor="kernel")
     rows = {h["id"]: h for h in hypotheses(ps, rq_id)}
     assert [*rows] == [h0["id"], h1]
     assert (rows[h1]["rival_of"], rows[h1]["status"], rows[h1]["prereg_hash"]) == (h0["id"], "tested_by_design",
-                                                                                   "ab" * 32)
+                                                                                   prereg)
     assert (rows[h0["id"]]["status"], rows[h0["id"]]["prereg_hash"]) == ("dropped", None)
     before = _snapshot(ps)
     rebuild(ps.db)

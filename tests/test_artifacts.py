@@ -14,7 +14,7 @@ from rk.production.models import DesignIn
 from rk.production.store import design, freeze_design, latest_design, set_design
 from rk.store.projections import rebuild
 
-from .discovery_fakes import freeze_an_rq, make_project
+from .discovery_fakes import add_an_rq, freeze_an_rq, make_project
 
 
 @pytest.fixture
@@ -67,6 +67,24 @@ def test_artifact_round_trip_with_file_hash(ps, tmp_path):
     assert _table(ps, "artifacts") == before
 
 
+def test_artifact_file_is_kept_only_once_recorded(ps, tmp_path, monkeypatch):
+    svg = tmp_path / "forest.svg"
+    svg.write_text("<svg/>", encoding="utf-8")
+    fig = ArtifactIn(kind="fig", code_path="rk.stats.forest:forest_svg", code_version="c0de", input_hashes=[],
+                     values={}, output_path=str(svg))
+
+    def refuse(e):
+        raise RuntimeError("the event log refused it")
+
+    monkeypatch.setattr(ps, "apply", refuse)
+    for a in (fig, fig.model_copy(update={"kind": "stt", "output_path": None})):
+        with pytest.raises(RuntimeError, match="refused"):
+            add_artifact(ps, a, stage="synthesize", attempt=1, actor="kernel")
+    folder = ps.root / "artifacts"
+    assert not folder.exists() or list(folder.iterdir()) == []
+    assert artifacts(ps, "synthesize", 1) == []
+
+
 def _design(hyp_id: str) -> dict:
     return {
         "items": [{"id": "D1", "kind": "experiment", "sample": "40 cells per arm", "controls": ["bare carbon"],
@@ -104,8 +122,11 @@ def test_design_freeze_hash_is_canonical(ps):
         freeze_design(ps, did, actor="kernel")
     with pytest.raises(KeyError):
         freeze_design(ps, "dsg_missing", actor="kernel")
-    with pytest.raises(ValueError, match="unknown hypotheses"):
+    with pytest.raises(ValueError, match="not hypotheses of the frozen research question"):
         set_design(ps, DesignIn.model_validate(_design("hyp_missing")), stage="design", attempt=3, actor="ideator")
+    (draft_h,) = hypotheses(ps, add_an_rq(ps))  # a draft RQ's hypothesis
+    with pytest.raises(ValueError, match=rf"not hypotheses of the frozen research question: \['{draft_h['id']}'\]"):
+        set_design(ps, DesignIn.model_validate(_design(draft_h["id"])), stage="design", attempt=3, actor="ideator")
     dup = _design(h["id"])
     dup["items"].append(dup["items"][0])
     with pytest.raises(ValidationError, match="duplicate design item ids"):

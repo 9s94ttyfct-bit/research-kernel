@@ -10,6 +10,7 @@ import sqlite3
 from typing import Any, get_args
 
 from rk.canon import canonical_json, sha256_hex
+from rk.discovery.store import frozen_rq, hypotheses
 from rk.ids import new_id
 from rk.production.models import DecidedBy, DesignIn, Include, Protocol, ScreeningPhase
 from rk.store.events import ActorKind, Event, NewEvent
@@ -69,12 +70,12 @@ def add_deviation(ps: ProjectStore, from_v: int, to_v: int, reason: str, stage: 
 # ---- method designs (research proposals) ----
 def set_design(ps: ProjectStore, d: DesignIn, *, stage: str, attempt: int, actor: str,
                actor_kind: ActorKind = "agent") -> str:
-    """A draft design; every hypothesis it tests must exist."""
+    """A draft design; every hypothesis it tests must be one of the frozen research question's."""
     wanted = {h for item in d.items for h in item.hypothesis_ids}
-    known = {r["id"] for r in ps.db.execute(f"SELECT id FROM hypotheses WHERE id IN ({','.join('?' * len(wanted))})",
-                                            tuple(wanted))} if wanted else set()
+    rq = frozen_rq(ps)
+    known = {h["id"] for h in hypotheses(ps, rq["id"])} if rq else set()
     if missing := sorted(wanted - known):
-        raise ValueError(f"the design tests unknown hypotheses: {missing}")
+        raise ValueError(f"the design tests what are not hypotheses of the frozen research question: {missing}")
     did = new_id("dsg")
     ps.apply(NewEvent(type="design.set", entity_id=did, actor_kind=actor_kind, actor=actor,
                       payload={"stage": stage, "attempt": attempt, "body": d.model_dump(mode="json")}))
@@ -91,7 +92,6 @@ def freeze_design(ps: ProjectStore, design_id: str, *, actor: str, actor_kind: A
         ps.apply(NewEvent(type="design.frozen", entity_id=design_id, actor_kind=actor_kind, actor=actor,
                           payload={"frozen_hash": h}))
     return h
-
 
 
 # ---- records ----

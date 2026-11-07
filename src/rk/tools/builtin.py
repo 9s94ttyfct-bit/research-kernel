@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from rk.argument import (
     ArgumentService,
+    ClaimDraft,
     ClaimIn,
     ClaimOrigin,
     EdgeIn,
@@ -242,13 +243,14 @@ def build_registry(k: Kernel, browser: Callable[[], BrowserService | None] | Non
 
     class ClaimAdd(BaseModel):
         project: str
-        claim: ClaimIn
+        claim: ClaimDraft  # no stat_result and no artifact links: only the kernel writes those
 
     @tool("rk_claim_add", "Add an atomic claim (status starts as draft; only V-SUPPORT changes it).", ClaimAdd, True)
     def _claim_add(ctx: CallContext, a: ClaimAdd) -> Out:
         svc = _arg(a.project)
         vendor = svc.generator_vendor(ctx.task_id, ctx.role)
-        cid = svc.add_claim(a.claim, generator_vendor=vendor, actor=ctx.actor, actor_kind=_added_by(ctx))
+        cid = _arg_call(lambda: svc.add_claim(ClaimIn(**a.claim.model_dump()), generator_vendor=vendor,
+                                              actor=ctx.actor, actor_kind=_added_by(ctx)))
         return Out(claim_id=cid, generator_vendor=vendor)
 
     class EvidenceLink(BaseModel):
@@ -265,7 +267,9 @@ def build_registry(k: Kernel, browser: Callable[[], BrowserService | None] | Non
         project: str
         edge: EdgeIn
 
-    @tool("rk_edge_add", "Add an argument edge (reason, evidence, warrant, objection, response).", EdgeAdd, True)
+    @tool("rk_edge_add", "Add an argument edge (reason, evidence, warrant, objection, response). A warrant_of edge "
+          "goes from the warrant's claim to the reason/evidence edge it licenses and carries warrant {circumstance, "
+          "consequence, type: causal|conditional|generalization|analogy|authority|definition}.", EdgeAdd, True)
     def _edge_add(ctx: CallContext, a: EdgeAdd) -> Out:
         svc = _arg(a.project)
         return Out(edge_id=_arg_call(lambda: svc.add_edge(a.edge, actor=ctx.actor, actor_kind=_added_by(ctx))))

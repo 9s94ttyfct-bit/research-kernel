@@ -9,7 +9,7 @@ import json
 import sqlite3
 from typing import Literal, get_args
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from rk.ids import new_id
 from rk.store.events import Event, NewEvent
@@ -17,7 +17,10 @@ from rk.store.project import ProjectStore
 from rk.store.projections import projection
 from rk.verify.hedge import hedge_level
 
-ClaimKind = Literal["fact", "definition", "cause", "evaluation", "policy", "stat_result", "feasibility"]
+# What a role may claim; a ``stat_result`` (a number computed by kernel code, reported from its stt_ artifact) only the
+# kernel writes.
+AgentClaimKind = Literal["fact", "definition", "cause", "evaluation", "policy", "feasibility"]
+ClaimKind = Literal[AgentClaimKind, "stat_result"]
 ClaimStatus = Literal["draft", "supported", "uncertain", "unsupported", "contradicted", "withdrawn"]
 # Which part of the kernel wrote a claim: the argument (the default); gap mining, whose claims are evidence checks of a
 # candidate gap (a quoted finding checked against another source) and stay out of the argument's listings; or the
@@ -45,13 +48,21 @@ class Criterion(BaseModel):
     reason: str
 
 
-class ClaimIn(BaseModel):
+class ClaimDraft(BaseModel):
+    """A claim as a role writes it (``rk_claim_add``): no statistical kind and no artifact links, which only the
+    kernel writes (``ClaimIn``)."""
+    model_config = ConfigDict(extra="forbid")
+
     text: str = Field(min_length=1, max_length=2000)
-    kind: ClaimKind = "fact"
+    kind: AgentClaimKind = "fact"
     scope_limits: list[str] = []
     contested: bool = False
-    artifact_ids: list[str] = []  # the stt_/fig_ artifacts the claim reports (a stat_result's numbers)
     narrowed_from: str | None = None  # the claim this one rewrites narrower and weaker (P1, §5.3)
+
+
+class ClaimIn(ClaimDraft):
+    kind: ClaimKind = "fact"
+    artifact_ids: list[str] = []  # the stt_/fig_ artifacts the claim reports (a stat_result's numbers)
 
 
 class EvidenceIn(BaseModel):
@@ -193,7 +204,10 @@ class ArgumentService:
 
     def add_claim(self, c: ClaimIn, *, generator_vendor: str | None, actor: str, actor_kind: str = "agent",
                   origin: ClaimOrigin = "argument") -> str:
-        """A draft claim. The claim it narrows (``narrowed_from``) and the artifacts it reports must exist."""
+        """A draft claim. The claim it narrows (``narrowed_from``) and the artifacts it reports must exist; only the
+        kernel writes a ``stat_result`` or links artifacts."""
+        if actor_kind != "kernel" and (c.kind == "stat_result" or c.artifact_ids):
+            raise ValueError("only the kernel writes a stat_result claim or links a claim to artifacts")
         if c.narrowed_from is not None and self._row("claims", c.narrowed_from) is None:
             raise KeyError(c.narrowed_from)
         for a in c.artifact_ids:
@@ -242,28 +256,53 @@ class ArgumentService:
         if not self.exists(o.target_id):
             raise KeyError(o.target_id)
         oid = new_id("obj")
-        data = {**o.model_dump(), "id": oid, "status": "open", "response_claim_id": None}
+        data = {**o.model_dump(), "id": oid, "status": "open", "response_claim_id": None, "note": None}
         self._ev("objection.added", oid, {"objection": data}, actor, actor_kind)
         return oid
 
     def respond_objection(self, obj_id: str, *, response_claim_id: str | None, status: ObjectionResponse, note: str,
-                          actor: str, actor_kind: str = "agent") -> None:
-        """Answer an open objection: ``responded`` with the response claim, ``conceded`` or ``rejected_invalid``
-        (the note says why). An objection is answered once."""
+                          actor: str, actor_kind: str = "agent") -> str | None:
+        """Answer an objection: ``responded`` with the response claim, ``conceded`` or ``rejected_invalid`` (the note
+        says why). A responded answer also records the claim's ``response_to`` edge, in the same event (an edge the
+        claim already has to the objection is kept). Returns that edge's id (``None`` without a response claim).
+
+        An open objection is answered; a responded one again while its response claim is not supported (uncertain,
+        withdrawn and narrowed, not yet verified): the latest answer wins, the events keep every answer. Conceded and
+        rejected answers are final, as is an answer whose response claim is supported."""
         if status not in get_args(ObjectionResponse):
             raise ValueError(f"unknown objection response {status!r}; expected one of {get_args(ObjectionResponse)}")
         if status == "responded" and response_claim_id is None:
             raise ValueError("a responded objection needs the response claim (response_claim_id)")
+        if status != "responded" and response_claim_id is not None:
+            raise ValueError(f"only a responded objection names a response claim, not a {status} one")
         with self.ps.lock:
             o = self._row("objections", obj_id)
             if o is None:
                 raise KeyError(obj_id)
-            if response_claim_id is not None and self._row("claims", response_claim_id) is None:
-                raise KeyError(response_claim_id)
-            if o["status"] != "open":
-                raise ValueError(f"objection {obj_id} is not open (it is {o['status']})")
+            if o["status"] in ("conceded", "rejected_invalid"):
+                raise ValueError(f"objection {obj_id} is already answered ({o['status']}); that answer is final")
+            if o["status"] == "responded":
+                current = self._row("claims", o["response_claim_id"])
+                if current is not None and current["status"] == "supported":
+                    raise ValueError(f"objection {obj_id} is answered and its response {current['id']} is supported")
+            if response_claim_id is not None:
+                r = self._row("claims", response_claim_id)
+                if r is None:
+                    raise KeyError(response_claim_id)
+                if r["status"] == "withdrawn":
+                    raise ValueError(f"the response claim {response_claim_id} is withdrawn")
+            edge, edge_id = None, None
+            if response_claim_id is not None:
+                had = self.list_edges(from_id=response_claim_id, to_id=obj_id, type="response_to")
+                if had:
+                    edge_id = had[0]["id"]
+                else:
+                    edge_id = new_id("edg")
+                    edge = {**EdgeIn(from_id=response_claim_id, to_id=obj_id, type="response_to").model_dump(),
+                            "id": edge_id}
             self._ev("objection.responded", obj_id, {"status": status, "response_claim_id": response_claim_id,
-                                                     "note": note}, actor, actor_kind)
+                                                     "note": note, "edge": edge}, actor, actor_kind)
+        return edge_id
 
     def record_warrant_tests(self, edge_id: str, tests: WarrantTests, *, actor: str,
                              actor_kind: str = "agent") -> None:
@@ -277,8 +316,14 @@ class ArgumentService:
 
     def set_claim_status(self, claim_id: str, status: ClaimStatus, *, verification_id: str | None,
                          actor: str = "kernel") -> None:
-        if self._row("claims", claim_id) is None:
+        """V-SUPPORT's verdict. A withdrawn claim stays withdrawn; withdrawing goes through ``withdraw_claim``."""
+        c = self._row("claims", claim_id)
+        if c is None:
             raise KeyError(claim_id)
+        if c["status"] == "withdrawn":
+            raise ValueError(f"claim {claim_id} is withdrawn: its status is final")
+        if status == "withdrawn":
+            raise ValueError("withdraw a claim with withdraw_claim (it keeps the reason)")
         self._ev("claim.status_set", claim_id, {"status": status, "verification_id": verification_id}, actor,
                  "kernel")
 
@@ -337,6 +382,9 @@ def _objection_responded(conn: sqlite3.Connection, ev: Event) -> None:
     p = ev.payload
     _update(conn, "objections", ev.entity_id, status=p["status"], response_claim_id=p["response_claim_id"],
             note=p["note"])
+    if (e := p.get("edge")) is not None:  # the response claim's response_to edge, recorded with the answer
+        conn.execute("INSERT OR REPLACE INTO edges(id, from_id, to_id, data) VALUES (?,?,?,?)",
+                     (e["id"], e["from_id"], e["to_id"], json.dumps(e)))
 
 
 @projection("warrant.tested")
