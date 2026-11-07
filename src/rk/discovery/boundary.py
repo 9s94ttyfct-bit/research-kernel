@@ -13,11 +13,13 @@ run again after a backoff instead of failing it: an HTTP 429, a 5xx, a transport
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
 from typing import TypeVar
 
 import httpx
+import pydantic
 import pypdfium2
 from lxml import etree
 
@@ -27,10 +29,10 @@ from rk.sources.s2 import NotConfigured
 log = logging.getLogger(__name__)
 T = TypeVar("T")
 # what one item's source work raises when the source, the disk or the bytes fail: HTTP errors (``BadBody`` too),
-# transport errors, OSError, ValueError (JSON, Unicode and pydantic validation errors), XML and PDF parse errors and
-# an unconfigured source
-SOURCE_ERRORS = (HttpError, httpx.HTTPError, OSError, ValueError, etree.LxmlError, pypdfium2.PdfiumError,
-                 NotConfigured)
+# transport errors, OSError, the parse errors of JSON, text encodings, validated records, XML and PDF, and an
+# unconfigured source. A bare ValueError is not among them: it is a bug.
+SOURCE_ERRORS = (HttpError, httpx.HTTPError, OSError, json.JSONDecodeError, UnicodeError, pydantic.ValidationError,
+                 etree.LxmlError, pypdfium2.PdfiumError, NotConfigured)
 
 
 def error_text(e: BaseException) -> str:

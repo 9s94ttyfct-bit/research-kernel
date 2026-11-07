@@ -337,7 +337,7 @@ def _source_errors() -> list[BaseException]:
     except ValueError as e:
         not_json = e
     return [HttpError(503, "https://api.openalex.org/works"), BadBody("https://api.openalex.org/works", "not JSON"),
-            httpx.ConnectError("refused"), httpx.ReadTimeout("slow"), OSError("disk"), ValueError("bad year"),
+            httpx.ConnectError("refused"), httpx.ReadTimeout("slow"), OSError("disk"),
             UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"), not_json, invalid, xml_error,
             pypdfium2.PdfiumError("broken PDF"), NotConfigured("s2_key")]
 
@@ -362,12 +362,14 @@ def test_per_item_records_a_source_error_and_the_loop_goes_on(error):
 
 
 def _propagating() -> list[BaseException]:
-    """Errors no per-item boundary records: bugs in kernel code, and an exhausted source budget (the run pauses on it,
-    spec §11.3)."""
+    """Errors no per-item boundary records: bugs in kernel code (a bare ValueError too: only JSON, Unicode and
+    validation errors are parse errors), the run-control exceptions, and an exhausted source budget (the run pauses
+    on it, spec §11.3)."""
     from rk.net.http import BudgetExhausted
 
     return [TypeError("unsupported operand"), AttributeError("no attribute 'ids'"), KeyError("itm_9"),
-            RuntimeError("bug"), AssertionError("invariant"), BudgetExhausted("openalex", 0.0)]
+            RuntimeError("bug"), AssertionError("invariant"), ValueError("bad year"),
+            BudgetExceeded("gaps", 6, 6), RateCapped("claude:sonnet", 30.0), BudgetExhausted("openalex", 0.0)]
 
 
 @pytest.mark.parametrize("error", _propagating(), ids=lambda e: type(e).__name__)
