@@ -14,6 +14,10 @@
 - a full page that brings no work this source and query had not already returned (a source ignoring the offset):
   incomplete too, said the same way. Paging never ends silently.
 
+A page is full when the source returned ``limit`` entries, counting the ones it returned but could not be read
+(``rk.sources.hits.Hits.dropped``, e.g. an arXiv entry without an id or title): paging goes on past them, and the
+page's log and ``SearchResult.incomplete`` say how many were dropped (``dropped_reason``).
+
 A failed search is never "nothing found": its error propagates (a transient one steps the run again, spec §11.3).
 
 Every hit is a record. The library merges a hit into the item of the same work (identifier, then title and year), so
@@ -33,7 +37,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from rk.discovery.sources import log_and_search_hits
+from rk.discovery.sources import dropped_reason, log_and_search_hits
 from rk.discovery.store import SearchNote
 from rk.library.models import normalize_language
 from rk.orchestrator.engine import StageContext
@@ -61,23 +65,25 @@ class SearchResult:
 
 class _Paging:
     """One source and query's paging over the search's ``found`` works; ``note`` is passed to
-    ``log_and_search_hits`` and judges each page before it is logged."""
+    ``log_and_search_hits`` and judges each page (its hit ids and the entries the source dropped) before it is
+    logged."""
 
     def __init__(self, source: str, query: str, page: int, depth: int | None, cap: int, found: set[str],
                  more_searches: bool):
         self.source, self.query, self.page, self.depth, self.cap = source, query, page, depth, cap
         self.found, self.more_searches = found, more_searches
-        self.offset = 0
+        self.offset, self.dropped = 0, 0
         self.seen: set[str] = set()
         self.ended, self.last = False, SearchNote()
 
-    def note(self, ids: list[str]) -> SearchNote:
-        full, new = len(ids) == self.page, set(ids) - self.seen
+    def note(self, ids: list[str], dropped: int) -> SearchNote:
+        self.dropped = dropped
+        full, new = len(ids) + dropped == self.page, set(ids) - self.seen
         at_depth = self.depth is not None and self.offset + 2 * self.page > self.depth
         self.ended, note = True, SearchNote()
         if len(self.found | new) > self.cap:
             note = SearchNote(stopped_at_cap=self.more_searches or (full and not at_depth))
-        elif full and not new:
+        elif full and ids and not new:
             note = SearchNote(incomplete=f"{self.source} returned a full page of results it had already returned for "
                                          f"query {self.query!r} (from rank {self.offset}): paging stopped there, so "
                                          "later results were not searched")
@@ -87,13 +93,16 @@ class _Paging:
                                          "searched")
         else:
             self.ended = not full
+        if dropped:
+            why = dropped_reason(self.source, self.query, self.offset, dropped)
+            note = note._replace(incomplete=f"{why}; {note.incomplete}" if note.incomplete else why)
         self.last = note
         return note
 
     def took(self, ids: list[str]) -> None:
         self.seen.update(ids)
         self.found.update(ids)
-        self.offset += len(ids)
+        self.offset += len(ids) + self.dropped
 
 
 def _search(ctx: StageContext, strategy: SearchStrategy, cap: int) -> tuple[list[str], list[str], bool]:

@@ -125,6 +125,11 @@ class HttpClient:
                 (key, res.url, res.status, json.dumps(res.headers), res.body, self._wall()),
             )
 
+    def forget(self, url: str, params: dict | None = None) -> None:
+        """Drop the cached response of ``url`` with ``params`` (a 200 whose body turned out to be an error)."""
+        with self._lock:
+            self._db.execute("DELETE FROM http_cache WHERE key=?", (self._key(url, params),))
+
     def _check_budget(self, budget_key: str | None) -> None:
         if not budget_key:
             return
@@ -226,8 +231,7 @@ class HttpClient:
         try:
             return res.json(), res
         except ValueError as e:  # JSONDecodeError, or bytes that are no UTF-8
-            with self._lock:
-                self._db.execute("DELETE FROM http_cache WHERE key=?", (self._key(url, params),))
+            self.forget(url, params)
             raise BadBody(res.url, f"the body is not JSON ({type(e).__name__})") from e
 
     def close(self) -> None:

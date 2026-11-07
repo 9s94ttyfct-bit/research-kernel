@@ -11,6 +11,7 @@ from rk.library.models import Ids, ItemIn
 from rk.net.http import BadBody, HttpClient
 from rk.sources import arxiv, biorxiv, crossref, europepmc, openalex, pubmed, s2
 from rk.sources.crossref import CrossrefWork, Update
+from rk.sources.hits import Hits, dropped_of
 from rk.sources.identifiers import Identifier
 from rk.sources.openalex import OpenAlexWork
 
@@ -115,22 +116,22 @@ def resolve(ctx: SourceContext, ident: Identifier) -> ResolvedWork | None:
 
 def search(ctx: SourceContext, query: str, source: SearchSource, limit: int = 25, *,
            after_year: int | None = None, offset: int = 0, date_from: int | None = None,
-           date_to: int | None = None) -> list[ItemIn]:
+           date_to: int | None = None) -> Hits:
     """Search one source: ``limit`` hits from ``offset``, within the source's ``SEARCH_LIMITS`` (else
     ``ValueError``; OpenAlex and Europe PMC page, so there ``offset`` must be a multiple of ``limit``).
     ``date_from``..``date_to`` (publication years, inclusive, either end open) is filtered on every source's server.
     With ``after_year`` only works published in a later year are returned: OpenAlex filters on the server; the other
     sources' hits are filtered here, so fewer than ``limit`` may be left (undated hits drop). An empty year range
-    (``date_from`` after ``date_to``, or ``after_year`` at or after ``date_to``) has no hits."""
+    (``date_from`` after ``date_to``, or ``after_year`` at or after ``date_to``) has no hits. ``Hits.dropped`` counts
+    the page's entries the source returned but that could not be read (arXiv's)."""
     check_limits(source, limit, offset)
     lo = max((y for y in (date_from, after_year + 1 if after_year is not None else None) if y is not None),
              default=None)
     if lo is not None and date_to is not None and lo > date_to:
-        return []
+        return Hits()
     hits = _search(ctx, query, source, limit, after_year, offset, date_from, date_to)
-    if after_year is None:
-        return hits
-    return [h for h in hits if h.year is not None and h.year > after_year]
+    kept = hits if after_year is None else [h for h in hits if h.year is not None and h.year > after_year]
+    return Hits(kept, dropped_of(hits))
 
 
 def _openalex_years(after_year: int | None, date_from: int | None, date_to: int | None) -> str | None:

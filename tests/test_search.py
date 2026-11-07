@@ -10,6 +10,8 @@ import pytest
 
 from rk.checkpoints import answer_checkpoint, get_checkpoint
 from rk.config import Settings
+from rk.discovery.boundary import transient_source_error
+from rk.discovery.sources import log_and_search
 from rk.discovery.store import searches
 from rk.library.models import Ids, ItemIn
 from rk.net.http import BadBody, HttpClient
@@ -25,7 +27,7 @@ from rk.production.search import (
     run_strategy,
     search_counts,
 )
-from rk.sources import resolver
+from rk.sources import arxiv, resolver
 from rk.sources.resolver import SourceContext, check_limits
 from rk.store.db import open_project_db
 from tests.discovery_fakes import FakeSources, ScriptedExecutor
@@ -401,6 +403,75 @@ def test_pubmed_arxiv_and_s2_take_the_range_and_offset(tmp_path):
         resolver.search(ctx, "aspirin", "s2", 200)
     with pytest.raises(ValueError, match=r"asked for 100 from 950"):
         resolver.search(ctx, "aspirin", "s2", 100, offset=950)
+    http.close()
+
+
+def _arxiv_feed(*entries: tuple[str | None, str | None]) -> bytes:
+    """An arXiv Atom feed of ``(arxiv id, title)`` entries; ``None`` leaves the element out (a malformed entry)."""
+    body = "".join("<entry>" + (f"<id>http://arxiv.org/abs/{i}v1</id>" if i else "")
+                   + (f"<title>{t}</title>" if t else "") + "<published>2015-01-01T00:00:00Z</published></entry>"
+                   for i, t in entries)
+    return f'<feed xmlns="http://www.w3.org/2005/Atom">{body}</feed>'.encode()
+
+
+ARXIV_ERROR = (b'<feed xmlns="http://www.w3.org/2005/Atom"><entry>'
+               b"<id>http://arxiv.org/api/errors#incorrect_id_format_for_1234</id><title>Error</title>"
+               b"<summary>incorrect id format for 1234</summary></entry></feed>")
+
+
+def test_an_arxiv_error_feed_is_a_source_error_not_no_hits(tmp_path):
+    http, seen = _client(tmp_path, lambda req: httpx.Response(200, content=ARXIV_ERROR))
+    ctx = SourceContext(http=http, settings=Settings())
+    with pytest.raises(BadBody, match="incorrect id format for 1234") as e:
+        resolver.search(ctx, "aspirin", "arxiv", 10)
+    assert transient_source_error(e.value)  # stepped again in a run, recorded by the per-item boundary
+    with pytest.raises(BadBody):
+        arxiv.query(http, id_list=["1234"])
+    with pytest.raises(BadBody):
+        resolver.search(ctx, "aspirin", "arxiv", 10)
+    assert len(seen) == 3  # the error body was not cached
+    http.close()
+
+
+def test_arxiv_counts_the_entries_it_drops(tmp_path):
+    feed = _arxiv_feed(("1501.00001", "A"), (None, "No id"), ("1501.00003", None), ("1501.00004", "D"))
+    http, _ = _client(tmp_path, lambda req: httpx.Response(200, content=feed))
+    hits = resolver.search(SourceContext(http=http, settings=Settings()), "aspirin", "arxiv", 4)
+    assert [h.title for h in hits] == ["A", "D"] and hits.dropped == 2 and hits.raw == 4
+    assert arxiv.parse_feed(feed).dropped == 2
+    http.close()
+
+
+class ArxivSources(FakeSources):
+    """``FakeSources`` whose search is the real arXiv adapter over ``http``."""
+
+    def __init__(self, http: HttpClient):
+        super().__init__({})
+        self.ctx = SourceContext(http=http, settings=Settings())
+
+    def search(self, query, source, limit=25, after_year=None, *, offset=0, date_from=None, date_to=None):
+        return resolver.search(self.ctx, query, source, limit, after_year=after_year, offset=offset,
+                               date_from=date_from, date_to=date_to)
+
+
+def test_a_full_arxiv_page_with_a_malformed_entry_keeps_paging_and_says_so(env, tmp_path, monkeypatch):
+    _, ps, _ = env
+    monkeypatch.setattr("rk.production.search.PAGE_LIMIT", 3)
+    pages = {0: _arxiv_feed(("1501.00001", "A"), (None, "Broken"), ("1501.00003", "C")),
+             3: _arxiv_feed(("1501.00004", "D"))}
+    http, seen = _client(tmp_path, lambda req: httpx.Response(200, content=pages[int(_params(req).get("start", 0))]))
+    res = run_strategy(_ctx(env, ArxivSources(http)), a_protocol(search_strategy=_strategy(sources=["arxiv"])))
+    # the first page came back full (3 entries, one unreadable): paging goes on from rank 3, and ends on a short page
+    assert [_params(r).get("start") for r in seen] == [None, "3"]
+    why = ("arxiv returned 1 malformed result for query 'aspirin stroke' (from rank 0) that could not be read: it "
+           "was dropped, so not searched")
+    assert res.incomplete == [why] == incomplete_searches(ps, 1)
+    assert [r["incomplete"] for r in searches(ps, "search_screen", 1)] == [why, None]
+    assert len(res.record_ids) == 3 and not res.stopped_at_cap
+    # a discovery search records the drop too
+    log_and_search(ps, ArxivSources(http), stage="gaps", attempt=1, purpose="gap_check", query="aspirin stroke",
+                   source="arxiv", limit=3, actor="t")
+    assert [r["incomplete"] for r in searches(ps, "gaps", 1)] == [why]
     http.close()
 
 
