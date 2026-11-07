@@ -705,9 +705,15 @@ def test_state_rebuilds_from_events(project):
     assert (stage_rows(ps), run_row(ps, run_id), edge_count(ps, "topics->gaps")) == before
 
 
-def test_stage_blocked_is_a_soft_checkpoint_kind(project):
+def test_stage_blocked_is_answered_by_a_human_only(project):
+    """Allowing one more use of an edge is the researcher's decision: a P1 vote may never answer stage_blocked."""
+    from rk.checkpoints import HARD_HUMAN_KINDS
+
     _k, ps = project
+    assert "stage_blocked" in HARD_HUMAN_KINDS
     cid = create_checkpoint(ps, "stage_blocked", "limit", None, stage="gaps", actor="tester")
-    answer_checkpoint(ps, cid, {"decision": "stop"}, answered_by="vote", actor="tester")  # not refused by kind
-    cp = get_checkpoint(ps, cid)
-    assert (cp["status"], cp["answered_by"]) == ("answered", "vote")
+    with pytest.raises(ValueError, match="stage_blocked checkpoints can only be answered by a human"):
+        answer_checkpoint(ps, cid, {"decision": "stop"}, answered_by="vote", actor="tester")
+    assert get_checkpoint(ps, cid)["status"] == "open"
+    answer_checkpoint(ps, cid, {"decision": "stop"}, answered_by="human", actor="tester")
+    assert get_checkpoint(ps, cid)["answered_by"] == "human"

@@ -15,11 +15,11 @@ from rk.store.events import Event, NewEvent
 from rk.store.project import ProjectStore
 from rk.store.projections import projection
 
-# Spec §5.3: the AI-weak-spot checkpoints plus login/captcha waits. In P2 every one of them needs a human; the
-# vote path (P1) arrives with the orchestrator and may never answer these.
+# Spec §5.3: the AI-weak-spot checkpoints plus login/captcha waits, and stage_blocked (only the researcher may allow
+# one more use of an edge). In P2 every one of them needs a human; the vote path (P1) may never answer these.
 HARD_HUMAN_KINDS = frozenset({
     "topic_review", "rq_approval", "captcha_wait", "login_wait", "uncertain_support", "protocol_approval",
-    "screening_disagreements", "evidence_conflict", "significance_novelty", "final_review",
+    "screening_disagreements", "evidence_conflict", "significance_novelty", "final_review", "stage_blocked",
 })
 
 
