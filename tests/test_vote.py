@@ -9,6 +9,7 @@ from rk.llm.types import TaskResult
 from rk.production import store
 from rk.production.vote import vote
 from rk.store.projections import rebuild
+from rk.verify.judge import JUDGE_ROLES
 from tests.discovery_fakes import ScriptedExecutor
 from tests.production_fakes import a_protocol, make_frozen_project, production_ctx
 
@@ -22,12 +23,12 @@ def env(tmp_home, replay_http):
     k.close()
 
 
-def _votes(judge: str | None, judge_2: str | None) -> ScriptedExecutor:
+def _votes(*choices: str | None) -> ScriptedExecutor:
+    """The judges' choices in role order (``judge``, ``judge_2``, ``judge_3``); None leaves that role unscripted."""
     script = {}
-    if judge is not None:
-        script[("judge", "VoteOut")] = [{"choice": judge, "reason": f"judge says {judge}"}]
-    if judge_2 is not None:
-        script[("judge_2", "VoteOut")] = [{"choice": judge_2, "reason": f"judge_2 says {judge_2}"}]
+    for role, choice in zip(JUDGE_ROLES, choices, strict=False):
+        if choice is not None:
+            script[(role, "VoteOut")] = [{"choice": choice, "reason": f"{role} says {choice}"}]
     return ScriptedExecutor(script)
 
 
@@ -39,7 +40,7 @@ def _vote(k, ps, lib, ex, **kw):
 
 
 class FailingJudge2(ScriptedExecutor):
-    """``judge`` answers as scripted; the ``judge_2`` task fails (no output)."""
+    """The other judges answer as scripted; the ``judge_2`` task fails (no output)."""
 
     def run(self, role, instructions, inputs, output_schema, **kw):
         if role != "judge_2":
@@ -54,66 +55,90 @@ def _decided(ps) -> list[dict]:
 
 def test_vote_agreement_passes(env):
     k, ps, lib = env
-    ex = _votes("exclude", "exclude")
+    ex = _votes("exclude", "exclude", "exclude")
     _, result = _vote(k, ps, lib, ex)
     assert (result.decision, result.conservative_used) == ("exclude", False)
-    assert [(o["vendor"], o["choice"]) for o in result.opinions] == [("openai", "exclude"), ("deepseek", "exclude")]
-    # Both tasks went through the stage's executor (counted against the stage attempt).
+    assert [(o["vendor"], o["choice"]) for o in result.opinions] == [
+        ("openai", "exclude"), ("deepseek", "exclude"), ("anthropic", "exclude")]
+    # Every task went through the stage's executor (counted against the stage attempt).
     assert [(c["role"], c["schema"], c["stage"], c["attempt"]) for c in ex.calls] == [
-        ("judge", "VoteOut", "search_screen", 1), ("judge_2", "VoteOut", "search_screen", 1)]
+        (role, "VoteOut", "search_screen", 1) for role in JUDGE_ROLES]
     assert ex.calls[0]["inputs"]["options"] == OPTIONS and ex.calls[0]["inputs"]["subject"] == {
         "title": "Aspirin over 80"}
 
 
 def test_vote_agreement_on_the_conservative_option_is_not_the_fallback(env):
     k, ps, lib = env
-    _, result = _vote(k, ps, lib, _votes("include", "include"))
+    _, result = _vote(k, ps, lib, _votes("include", "include", "include"))
     assert (result.decision, result.conservative_used) == ("include", False)
 
 
 def test_vote_disagreement_is_conservative(env):
     k, ps, lib = env
-    _, result = _vote(k, ps, lib, _votes("exclude", "include"))
+    _, result = _vote(k, ps, lib, _votes("exclude", "include", "exclude"))
     assert (result.decision, result.conservative_used) == ("include", True)
     assert "disagree" in result.reason
 
 
+def test_vote_uses_every_admitted_judge(env):
+    k, ps, lib = env
+    ex = _votes("exclude", "exclude", "include")
+    _, result = _vote(k, ps, lib, ex)
+    assert [c["role"] for c in ex.calls] == list(JUDGE_ROLES)
+    assert [o["choice"] for o in result.opinions] == ["exclude", "exclude", "include"]
+    assert (result.decision, result.conservative_used) == ("include", True) and "disagree" in result.reason
+
+
 def test_vote_with_a_failed_judge_task_is_conservative(env):
     k, ps, lib = env
-    ex = FailingJudge2({("judge", "VoteOut"): [{"choice": "exclude", "reason": "animal study"}]})
+    ex = FailingJudge2({("judge", "VoteOut"): [{"choice": "exclude", "reason": "animal study"}],
+                        ("judge_3", "VoteOut"): [{"choice": "exclude", "reason": "animal study"}]})
     _, result = _vote(k, ps, lib, ex)
     assert (result.decision, result.conservative_used) == ("include", True)
-    assert [c["role"] for c in ex.calls] == ["judge", "judge_2"]
+    assert [c["role"] for c in ex.calls] == list(JUDGE_ROLES)
     assert result.opinions[1] == {"role": "judge_2", "vendor": "deepseek", "choice": None, "reason": "timeout"}
     assert "no valid choice" in result.reason and _decided(ps)[0]["conservative_used"] is True
 
 
 def test_vote_with_a_choice_outside_the_options_is_conservative(env):
     k, ps, lib = env
-    _, result = _vote(k, ps, lib, _votes("exclude", "maybe"))
+    _, result = _vote(k, ps, lib, _votes("exclude", "maybe", "exclude"))
     assert (result.decision, result.conservative_used) == ("include", True)
     assert result.opinions[1]["choice"] is None and "maybe" in result.opinions[1]["reason"]
 
 
 def test_vote_with_one_vendor_is_conservative(env):
     k, ps, lib = env
-    # Both judges configured on the same vendor: judge_2 is not admitted, so no task runs and the vote is conservative.
+    # Every judge configured on the same vendor: only judge is admitted, so no task runs and the vote is conservative.
     save_settings(Settings(email="rk-fixtures@users.noreply.github.com",
-                           drivers={**DEFAULT_DRIVERS, "judge_2": DEFAULT_DRIVERS["judge"]}))
-    ex = _votes("exclude", "exclude")
+                           drivers={**DEFAULT_DRIVERS, "judge_2": DEFAULT_DRIVERS["judge"],
+                                    "judge_3": DEFAULT_DRIVERS["judge"]}))
+    ex = _votes("exclude", "exclude", "exclude")
     _, result = _vote(k, ps, lib, ex)
     assert (result.decision, result.conservative_used) == ("include", True)
     assert ex.calls == [] and result.opinions == []
     assert "fewer than two" in result.reason and "duplicate_vendor" in result.reason
-    assert _decided(ps)[0]["skipped"] == {"judge_2": "duplicate_vendor"}
+    assert _decided(ps)[0]["skipped"] == {"judge_2": "duplicate_vendor", "judge_3": "duplicate_vendor"}
 
 
 def test_vote_skips_a_judge_of_the_generator_vendor(env):
     k, ps, lib = env
-    ex = _votes("exclude", "exclude")
+    ex = _votes("include", "exclude", "exclude")
+    _, result = _vote(k, ps, lib, ex, generator_vendor="openai")
+    # judge (openai) is skipped; judge_2 and judge_3 decide
+    assert (result.decision, result.conservative_used) == ("exclude", False)
+    assert [c["role"] for c in ex.calls] == ["judge_2", "judge_3"]
+    assert _decided(ps)[0]["skipped"] == {"judge": "same_or_unknown_vendor"}
+
+
+def test_vote_with_one_admitted_judge_is_conservative(env):
+    k, ps, lib = env
+    save_settings(Settings(email="rk-fixtures@users.noreply.github.com",
+                           drivers={**DEFAULT_DRIVERS, "judge_3": DEFAULT_DRIVERS["judge"]}))
+    ex = _votes("exclude", "exclude", "exclude")
     _, result = _vote(k, ps, lib, ex, generator_vendor="openai")
     assert (result.decision, result.conservative_used) == ("include", True)
-    assert ex.calls == [] and "same_or_unknown_vendor" in result.reason
+    assert ex.calls == [] and "fewer than two" in result.reason and "same_or_unknown_vendor" in result.reason
 
 
 def test_vote_rejects_a_conservative_option_outside_the_options(env):
@@ -124,14 +149,15 @@ def test_vote_rejects_a_conservative_option_outside_the_options(env):
 
 def test_vote_is_recorded_as_not_human_reviewed(env):
     k, ps, lib = env
-    record_id, result = _vote(k, ps, lib, _votes("exclude", "include"))
+    record_id, result = _vote(k, ps, lib, _votes("exclude", "include", "exclude"))
     [payload] = _decided(ps)
     assert payload["human_reviewed"] is False
     assert (payload["subject_type"], payload["subject_id"]) == ("record", record_id)
     assert payload["question"] == "Does the record meet the criteria?" and payload["options"] == OPTIONS
     assert (payload["decision"], payload["conservative"], payload["conservative_used"]) == ("include", "include", True)
     assert [(o["role"], o["vendor"], o["choice"], o["reason"]) for o in payload["opinions"]] == [
-        ("judge", "openai", "exclude", "judge says exclude"), ("judge_2", "deepseek", "include", "judge_2 says include")]
+        ("judge", "openai", "exclude", "judge says exclude"), ("judge_2", "deepseek", "include", "judge_2 says include"),
+        ("judge_3", "anthropic", "exclude", "judge_3 says exclude")]
     [row] = store.votes(ps, "record", record_id)
     assert row["id"] == result.id and row["decision"] == "include" and row["conservative"] == 1
     assert row["opinions"] == payload["opinions"]
@@ -203,7 +229,7 @@ def test_production_tables_rebuild(env):
     pid = store.add_protocol(ps, 1, a_protocol(), version=1, actor="lead")
     store.freeze_protocol(ps, pid, actor="lead")
     store.add_deviation(ps, 1, 2, "added a source", "search_screen", actor="lead")
-    rid, _ = _vote(k, ps, lib, _votes("exclude", "exclude"))
+    rid, _ = _vote(k, ps, lib, _votes("exclude", "exclude", "exclude"))
     dup = store.add_record(ps, 1, "src_2", dedup_of=rid, language="de", actor="scout")
     store.set_record(ps, rid, actor="kernel", retrieved=True, abstract_only=False)
     store.set_record(ps, dup, actor="kernel", problem="no full text")

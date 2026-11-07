@@ -113,12 +113,14 @@ def _verdicts(lib, ids: list[str], answering: tuple[str, ...] = (), *, quote=Non
 
 
 def _executor(rq_outputs: list[dict], judge: list[dict], judge_2: list[dict],
-              queries: list[str] | None = None) -> ScriptedExecutor:
+              queries: list[str] | None = None, judge_3: list[dict] | None = None) -> ScriptedExecutor:
+    """``judge_3`` (anthropic by default) runs only when the RQ author is not anthropic."""
     return ScriptedExecutor({
         ("ideator", "RQOut"): list(rq_outputs),
         ("scout", "LandscapeQueries"): [{"queries": queries or QUERIES}] * 20,
         ("judge", "AnsweredOut"): list(judge),
         ("judge_2", "AnsweredOut"): list(judge_2),
+        ("judge_3", "AnsweredOut"): list(judge_3 or []),
     })
 
 
@@ -398,7 +400,7 @@ def test_judge_quote_counts_only_from_what_the_judge_saw(env):
 def test_unknown_author_vendor_is_split(env):
     k, ps, lib = env
     sources, ids = _sources(lib)
-    ex = _executor([_rq()], [_verdicts(lib, ids)], [_verdicts(lib, ids)])
+    ex = _executor([_rq()], [_verdicts(lib, ids)], [_verdicts(lib, ids)], judge_3=[_verdicts(lib, ids)])
     ex.drivers["ideator"] = "ollama:mystery-model"  # a driver whose vendor is unknown
     o = _orch(k, ps, ex, sources)
     run_id = _to_question(o, ps)

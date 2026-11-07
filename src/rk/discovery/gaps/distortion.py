@@ -74,7 +74,7 @@ def _check(ctx: StageContext, miner: SupportMiner, it: DistortionOut, of: dict[s
            vendor: str | None) -> tuple[Gap, bool, dict]:
     checks = Checks(CHECKS)
     data: dict = {"cited_id": None, "ref_status": None, "passage_note_ids": [], "rejected_passages": [],
-                  "claim_id": None, "verdict": None, "p": None, "opinions": []}
+                  "claim_id": None, "verdict": None, "opinions": []}
     details: dict = {"citing_source_id": it.citing_source_id, "quote": it.quote, "cited": it.cited.model_dump(),
                      "cited_id": None}
     evidence = GapEvidence()

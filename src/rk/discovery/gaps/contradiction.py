@@ -36,7 +36,7 @@ MINE_TASK = (
 def _check(ctx: StageContext, miner: SupportMiner, p: ContradictionOut, members: dict[str, set[str]],
            vendor: str | None) -> tuple[Gap, bool, dict]:
     checks = Checks(CHECKS)
-    data: dict = {"claim_id": None, "verdict": None, "p": None, "opinions": []}
+    data: dict = {"claim_id": None, "verdict": None, "opinions": []}
     details: dict = {"a": p.a.model_dump(), "b": p.b.model_dump()}
     evidence = GapEvidence()
 

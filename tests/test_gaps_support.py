@@ -24,16 +24,16 @@ from rk.verify.support import verify_support
 
 from .discovery_fakes import (
     FakeJudge,
-    FakeLayer1,
     FakeSources,
     ScriptedExecutor,
     add_text_layer,
     make_project,
 )
 
-# The gapminer runs on claude_cli (vendor anthropic), so judges from two other vendors are needed.
+# The gapminer runs on claude_cli (vendor anthropic), so judges from two other vendors are needed; an anthropic judge
+# is skipped.
 OPENAI, DEEPSEEK = DriverSpec("codex_cli"), DriverSpec.parse("ollama:deepseek-v4.1-flash:cloud")
-ANTHROPIC = DriverSpec("omp_gateway", "anthropic/claude-haiku-4-5")
+ANTHROPIC = DriverSpec("claude_cli", "claude-haiku-5-5")
 
 FILLER = "Aspirin is widely used for the prevention of cardiovascular events in older adults. " * 3
 QUOTE_A = "In our cohort, aspirin lowered the stroke rate in adults over 70."
@@ -102,14 +102,14 @@ def _note_texts(ps, ids: list[str]) -> list[str]:
 
 
 # ---- contradiction ----
-def _contradiction(env, label: str, p: float):
+def _contradiction(env, label: str):
     k, ps, lib = env
     a, b = _landscape(ps, lib, [TRIAL_A, TRIAL_B], [PAGES_A, PAGES_B])
     pair = {"cluster_id": _cluster_id(ps), "a": {"source_id": a, "quote": QUOTE_A},
             "b": {"source_id": b, "quote": QUOTE_B}}
     ex = ScriptedExecutor({("gapminer", "ContradictionsOut"): [{"pairs": [pair]}]})
-    miner = ContradictionMiner(layer1=FakeLayer1(p), **_judges((OPENAI, label), (DEEPSEEK, label),
-                                                                 spans=["did not lower the stroke rate"]))
+    miner = ContradictionMiner(**_judges((OPENAI, label), (DEEPSEEK, label), (ANTHROPIC, label),
+                                         spans=["did not lower the stroke rate"]))
     GapsWorker(miners=[miner]).run(_ctx(k, ps, lib, ex, FakeSources({}, lib=lib)))
     (gap,) = gaps(ps, 1)
     return gap, ex, (a, b)
@@ -117,11 +117,13 @@ def _contradiction(env, label: str, p: float):
 
 def test_contradiction_needs_contradicted_verdict(env):
     _k, ps, _lib = env
-    gap, ex, (a, b) = _contradiction(env, "contradicted", 0.03)
+    gap, ex, (a, b) = _contradiction(env, "contradicted")
     assert gap["kind"] == "contradiction" and gap["verified"] is True
     assert gap["checks"]["same_cluster"] == gap["checks"]["quote_a"] == gap["checks"]["quote_b"] == "pass"
-    assert gap["checks"]["support"] == "pass" and gap["checks"]["verdict"] == "contradicted"
-    assert gap["checks"]["p"] == 0.03 and [o["label"] for o in gap["checks"]["opinions"]] == ["contradicted"] * 2
+    assert gap["checks"]["support"] == "pass" and gap["checks"]["verdict"] == "contradicted" and "p" not in gap["checks"]
+    # the anthropic judge shares the gapminer's vendor: skipped, and the two others decide
+    assert [(o["label"], o["error"]) for o in gap["checks"]["opinions"]] == [
+        ("contradicted", None), ("contradicted", None), ("uncertain", "same_or_unknown_vendor")]
     assert _note_texts(ps, gap["evidence"]["note_ids"]) == [QUOTE_A, QUOTE_B]
     assert gap["evidence"]["item_ids"] == [a, b]
     # claim A is quote A, written by the gapminer's vendor, with note B as its evidence
@@ -142,7 +144,7 @@ def test_contradiction_needs_contradicted_verdict(env):
 
 
 def test_contradiction_uncertain_verdict_is_stored_unverified(env):
-    gap, _, _ = _contradiction(env, "partial", 0.5)  # judges who see only partial support: the verdict is uncertain
+    gap, _, _ = _contradiction(env, "partial")  # judges who see only partial support: the verdict is uncertain
     assert gap["verified"] is False and gap["checks"]["support"] == "fail"
     assert gap["checks"]["verdict"] == "uncertain" and "uncertain" in gap["checks"]["reasons"]["support"]
     assert gap["statement"].startswith("Possible contradiction")
@@ -157,7 +159,7 @@ def test_contradiction_across_clusters_is_not_verified(env):
             "b": {"source_id": other, "quote": QUOTE_B}}
     ex = ScriptedExecutor({("gapminer", "ContradictionsOut"): [{"pairs": [pair]}]})
     judge = _judges((OPENAI, "contradicted"), (DEEPSEEK, "contradicted"), spans=["did not lower"])
-    GapsWorker(miners=[ContradictionMiner(layer1=FakeLayer1(0.01), **judge)]).run(
+    GapsWorker(miners=[ContradictionMiner(**judge)]).run(
         _ctx(k, ps, lib, ex, FakeSources({}, lib=lib)))
     (gap,) = gaps(ps, 1)
     assert gap["verified"] is False and gap["checks"]["same_cluster"] == "fail"
@@ -171,7 +173,7 @@ def test_contradiction_pairs_are_capped(env):
     pair = {"cluster_id": _cluster_id(ps), "a": {"source_id": a, "quote": QUOTE_A},
             "b": {"source_id": b, "quote": "not verbatim"}}
     ex = ScriptedExecutor({("gapminer", "ContradictionsOut"): [{"pairs": [pair] * (MAX_PAIRS + 2)}]})
-    GapsWorker(miners=[ContradictionMiner(layer1=FakeLayer1(0.01))]).run(_ctx(k, ps, lib, ex, FakeSources({}, lib=lib)))
+    GapsWorker(miners=[ContradictionMiner()]).run(_ctx(k, ps, lib, ex, FakeSources({}, lib=lib)))
     assert MAX_PAIRS == 4 and len(gaps(ps, 1)) == MAX_PAIRS
     assert all(g["checks"]["quote_b"] == "fail" and g["checks"]["support"] == "skipped" for g in gaps(ps, 1))
 
@@ -183,7 +185,7 @@ def test_contradiction_quote_too_long_for_a_claim_is_not_verified(env):
     pair = {"cluster_id": _cluster_id(ps), "a": {"source_id": a, "quote": long_a},
             "b": {"source_id": b, "quote": QUOTE_B}}
     ex = ScriptedExecutor({("gapminer", "ContradictionsOut"): [{"pairs": [pair]}]})
-    GapsWorker(miners=[ContradictionMiner(layer1=FakeLayer1(0.01))]).run(_ctx(k, ps, lib, ex, FakeSources({}, lib=lib)))
+    GapsWorker(miners=[ContradictionMiner()]).run(_ctx(k, ps, lib, ex, FakeSources({}, lib=lib)))
     (gap,) = gaps(ps, 1)
     assert gap["checks"]["quote_a"] == gap["checks"]["quote_b"] == "pass" and gap["checks"]["support"] == "fail"
     assert "cannot be checked as a claim" in gap["checks"]["reasons"]["support"] and gap["verified"] is False
@@ -200,9 +202,9 @@ def _distortion_setup(env, *, cited: dict, fulltexts: dict | None = None):
     return citing, sources, ex
 
 
-def _run_distortion(env, sources, ex, judges: dict, p: float = 0.04):
+def _run_distortion(env, sources, ex, judges: dict):
     k, ps, lib = env
-    miner = DistortionMiner(layer1=FakeLayer1(p), **judges)
+    miner = DistortionMiner(**judges)
     GapsWorker(miners=[miner]).run(_ctx(k, ps, lib, ex, sources))
     (gap,) = gaps(ps, 1)
     return gap, miner
@@ -213,7 +215,7 @@ def test_distortion_uses_kernel_passages_not_miner_text(env):
     citing, sources, ex = _distortion_setup(env, cited={"doi": "10.1000/cited", "quote": MINER_TEXT,
                                                          "text": MINER_TEXT})
     judges = _judges((OPENAI, "unsupported"), (DEEPSEEK, "unsupported"))
-    gap, miner = _run_distortion(env, sources, ex, judges)
+    gap, _ = _run_distortion(env, sources, ex, judges)
     cited = gap["details"]["cited_id"]
     assert lib.get(cited).title == CITED.title and lib.get(cited).discovered_via == "backward"
     assert ("add", "10.1000/cited") in sources.calls and ("verify", cited) in sources.calls
@@ -226,11 +228,11 @@ def test_distortion_uses_kernel_passages_not_miner_text(env):
     assert all(MINER_TEXT not in n["text"] for n in list_notes(ps))
     judged = [i["evidence"] for j in judges["judge_providers"].values() for i in j.inputs]
     assert len(judged) == 2 and all(MINER_TEXT not in e and passages[0] in e for e in judged)
-    assert miner.layer1.calls[0][1] == CITING_QUOTE
+    assert [i["claim"] for j in judges["judge_providers"].values() for i in j.inputs] == [CITING_QUOTE] * 2
     (cid,) = gap["evidence"]["claim_ids"]
     claim = ArgumentService(ps).get_claim(cid)
     assert claim["text"] == CITING_QUOTE and claim["generator_vendor"] == "anthropic" and claim["origin"] == "gaps"
-    assert gap["checks"]["p"] == 0.04 and len(gap["checks"]["opinions"]) == 2
+    assert "p" not in gap["checks"] and len(gap["checks"]["opinions"]) == 2
     assert gap["evidence"]["item_ids"] == [citing, cited] and gap["cluster_id"] == _cluster_id(ps)
     assert CITING.title in gap["statement"] and CITED.title in gap["statement"]
     assert "within the searched scope" in gap["statement"]
@@ -241,11 +243,11 @@ def test_distortion_without_fulltext_is_unverified(env):
     cited = lib.add_item(CITED, added_by="agent", actor="tester").item_id
     _, sources, ex = _distortion_setup(env, cited={"item_id": cited}, fulltexts={})
     judges = _judges((OPENAI, "unsupported"), (DEEPSEEK, "unsupported"))
-    gap, miner = _run_distortion(env, sources, ex, judges)
+    gap, _ = _run_distortion(env, sources, ex, judges)
     assert gap["verified"] is False and gap["checks"]["fulltext"] == "missing"
     assert gap["checks"]["citing_quote"] == gap["checks"]["cited"] == gap["checks"]["cited_ref"] == "pass"
     assert gap["checks"]["passages"] == gap["checks"]["support"] == "skipped"
-    assert gap["checks"]["passage_note_ids"] == [] and miner.layer1.calls == []
+    assert gap["checks"]["passage_note_ids"] == []
     assert ("add", "10.1000/cited") not in sources.calls
     assert all(j.inputs == [] for j in judges["judge_providers"].values())
 
@@ -272,10 +274,10 @@ def test_distortion_needs_the_cited_work_to_pass_v_ref(env):
     _, sources, ex = _distortion_setup(env, cited={"doi": "10.1000/cited"})
     sources.statuses = {CITED.title: "mismatch"}
     judges = _judges((OPENAI, "unsupported"), (DEEPSEEK, "unsupported"))
-    gap, miner = _run_distortion(env, sources, ex, judges)
+    gap, _ = _run_distortion(env, sources, ex, judges)
     assert gap["verified"] is False and gap["checks"]["cited"] == "pass" and gap["checks"]["cited_ref"] == "fail"
     assert gap["checks"]["ref_status"] == "mismatch" and "mismatch" in gap["checks"]["reasons"]["cited_ref"]
-    assert gap["checks"]["fulltext"] == gap["checks"]["support"] == "skipped" and miner.layer1.calls == []
+    assert gap["checks"]["fulltext"] == gap["checks"]["support"] == "skipped"
     assert all(j.inputs == [] for j in judges["judge_providers"].values())
 
 
@@ -289,10 +291,11 @@ def test_distortion_source_error_fails_its_check_not_the_run(env, call, check):
         raise HttpError(502, f"https://example.org/{call}")
 
     setattr(sources, call, broken)
-    gap, miner = _run_distortion(env, sources, ex, _judges((OPENAI, "unsupported"), (DEEPSEEK, "unsupported")))
+    judges = _judges((OPENAI, "unsupported"), (DEEPSEEK, "unsupported"))
+    gap, _ = _run_distortion(env, sources, ex, judges)
     assert gap["verified"] is False and gap["checks"][check] == "fail"
     assert "failed (HttpError: HTTP 502" in gap["checks"]["reasons"][check]
-    assert miner.layer1.calls == []
+    assert all(j.inputs == [] for j in judges["judge_providers"].values())
 
 
 def test_distortion_with_a_rejected_kernel_passage_is_unverified(env, monkeypatch):
@@ -302,9 +305,9 @@ def test_distortion_with_a_rejected_kernel_passage_is_unverified(env, monkeypatc
     monkeypatch.setattr(distortion, "top_passages", lambda *a, **kw: [
         *real(*a, **kw), Passage(text="A sentence the cited work never contains.", page=1, start=0, end=41)])
     judges = _judges((OPENAI, "unsupported"), (DEEPSEEK, "unsupported"))
-    gap, miner = _run_distortion(env, sources, ex, judges)
+    gap, _ = _run_distortion(env, sources, ex, judges)
     assert gap["verified"] is False and gap["checks"]["passages"] == "fail"
-    assert gap["checks"]["support"] == "skipped" and miner.layer1.calls == []
+    assert gap["checks"]["support"] == "skipped" and all(j.inputs == [] for j in judges["judge_providers"].values())
     assert [r["reason"] for r in gap["checks"]["rejected_passages"]] == ["quote_not_found"]
     assert "1 of 4 passages" in gap["checks"]["reasons"]["passages"]
 
@@ -329,7 +332,7 @@ def test_distortion_items_are_capped(env):
     citing, sources, _ = _distortion_setup(env, cited={"doi": "10.1000/cited"})
     item = {"citing_source_id": citing, "quote": "not in the text", "cited": {"doi": "10.1000/cited"}}
     ex = ScriptedExecutor({("gapminer", "DistortionsOut"): [{"items": [item] * (MAX_ITEMS + 3)}]})
-    GapsWorker(miners=[DistortionMiner(layer1=FakeLayer1(0.01))]).run(_ctx(k, ps, lib, ex, sources))
+    GapsWorker(miners=[DistortionMiner()]).run(_ctx(k, ps, lib, ex, sources))
     assert MAX_ITEMS == 4 and len(gaps(ps, 1)) == MAX_ITEMS
     assert all(g["checks"]["citing_quote"] == "fail" for g in gaps(ps, 1)) and sources.calls == []
 
@@ -345,14 +348,14 @@ def test_gap_mining_opens_no_uncertain_support_checkpoint(collab):
                            ("gapminer", "DistortionsOut"): [{"items": [item]}]})
     sources = FakeSources({}, lib=lib, resolvable={"10.1000/cited": CITED}, fulltexts={CITED.title: PAGES_CITED})
     judges = _judges((OPENAI, "partial"), (DEEPSEEK, "partial"), spans=["did not lower"])
-    miners = [ContradictionMiner(layer1=FakeLayer1(0.5), **judges), DistortionMiner(layer1=FakeLayer1(0.5), **judges)]
+    miners = [ContradictionMiner(**judges), DistortionMiner(**judges)]
     GapsWorker(miners=miners).run(_ctx(k, ps, lib, ex, sources))
     stored = gaps(ps, 1)
     assert [g["checks"]["verdict"] for g in stored] == ["uncertain", "uncertain"]
     assert list_checkpoints(ps) == []
     # the project is in collab mode: the same claim checked outside gap mining opens the checkpoint
     cid = stored[0]["evidence"]["claim_ids"][0]
-    verify_support(k, None, ps, cid, actor="tester", layer1=FakeLayer1(0.5), min_judges=2, **judges)
+    verify_support(k, None, ps, cid, actor="tester", min_judges=2, **judges)
     assert [c["kind"] for c in list_checkpoints(ps)] == ["uncertain_support"]
 
 
@@ -383,7 +386,7 @@ def _kernel_executor_run(env, *, max_tasks: int = 40, calls_per_hour: dict | Non
     judges = _judges((OPENAI, "contradicted"), (DEEPSEEK, "contradicted"), spans=["did not lower the stroke rate"])
     ctx = StageContext(kernel=k, registry=reg, ps=ps, lib=lib, project="demo", stage="gaps", attempt=1, run_id="run_g",
                        guidance="", executor=ex, sources=FakeSources({}, lib=lib), actor="tester")
-    return GapsWorker(miners=[ContradictionMiner(layer1=FakeLayer1(0.02), **judges)]), ctx
+    return GapsWorker(miners=[ContradictionMiner(**judges)]), ctx
 
 
 def test_gap_judges_count_toward_the_stage_budget(env):
@@ -420,7 +423,7 @@ def test_rate_capped_gap_judge_pauses_instead_of_an_uncertain_verdict(env):
 
 def test_gap_claims_stay_out_of_the_argument_listing(env):
     _k, ps, _lib = env
-    _contradiction(env, "contradicted", 0.03)
+    _contradiction(env, "contradicted")
     svc = ArgumentService(ps)
     assert svc.list_claims() == [] and svc.list_claims("contradicted") == []
     assert [c["text"] for c in svc.list_claims(origin="gaps")] == [QUOTE_A]

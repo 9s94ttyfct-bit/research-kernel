@@ -1,73 +1,79 @@
+import tomllib
+
 import pytest
 
 from rk.argument import ArgumentService, ClaimIn, EvidenceIn
-from rk.checkpoints import list_checkpoints
-from rk.config import Settings, save_settings
+from rk.checkpoints import create_checkpoint, list_checkpoints
+from rk.config import (
+    DEFAULT_DRIVERS,
+    Settings,
+    config_path,
+    load_settings,
+    save_settings,
+)
 from rk.fulltext import attach_pdf
 from rk.library.models import Creator, ItemIn
 from rk.llm.drivers import DriverSpec
+from rk.llm.types import TaskResult
+from rk.llm.vendors import vendor_of
 from rk.notes import NoteIn, add_note
 from rk.store.projections import rebuild
 from rk.tools.builtin import build_registry
 from rk.tools.registry import CallContext
 from rk.verify import support
-from rk.verify.judge import JudgeOpinion
-from rk.verify.support import combine, verify_support
+from rk.verify.judge import JUDGE_ROLES, JudgeOpinion
+from rk.verify.records import record_verification
+from rk.verify.support import SupportResult, combine, verify_support
 from rk.workspace import Kernel
 
 from .conftest import DOCS
-from .discovery_fakes import FakeJudge, FakeLayer1
+from .discovery_fakes import FakeJudge
 
 QUOTE = "about copper catalysts for CO2 reduction"
-CODEX, LUNA_A = DriverSpec("codex_cli"), DriverSpec("omp_gateway", "anthropic/claude-haiku-4-5")
+LUNA = DriverSpec("codex_cli", "gpt-6-luna")
+DEEPSEEK = DriverSpec("ollama", "deepseek-v4.1-flash:cloud")
+HAIKU = DriverSpec("claude_cli", "claude-haiku-5-5")
+CLAIM = "Copper catalysts are studied for CO2 reduction."
 
 
 def op(label, error=None):
     return JudgeOpinion(driver="d", vendor="v", label=label, error=error)
 
 
-@pytest.mark.parametrize(("p", "labels", "k", "expected"), [
-    (0.9, ["supported", "supported"], 2, "supported"),
-    (0.9, ["supported"], 2, "uncertain"),            # one vote is not enough
-    (0.9, ["supported"], 1, "supported"),
-    (0.9, ["supported", "partial"], 2, "uncertain"),
-    (0.5, ["supported", "supported"], 2, "uncertain"),  # layer 1 in the grey zone
-    (0.1, ["contradicted", "contradicted"], 2, "contradicted"),
-    (0.1, ["contradicted", "unsupported"], 2, "uncertain"),  # split negative labels are not agreement
-    (0.1, ["unsupported", "unsupported"], 2, "unsupported"),
-    (0.1, ["supported", "unsupported"], 2, "uncertain"),
-    (0.9, ["unsupported", "unsupported"], 2, "uncertain"),  # layers disagree
-    (None, ["supported", "supported"], 2, "uncertain"),
+@pytest.mark.parametrize(("labels", "k", "expected"), [
+    (["supported", "supported"], 2, "supported"),
+    (["supported"], 2, "uncertain"),            # one vote is not enough
+    (["supported"], 1, "supported"),
+    (["supported", "partial"], 2, "uncertain"),
+    (["supported", "supported", "supported"], 2, "supported"),
+    (["supported", "supported", "unsupported"], 2, "uncertain"),  # every valid judge must agree
+    (["contradicted", "contradicted"], 2, "contradicted"),
+    (["contradicted", "unsupported"], 2, "uncertain"),  # split negative labels are not agreement
+    (["unsupported", "unsupported"], 2, "unsupported"),
+    (["unsupported", "unsupported", "unsupported"], 2, "unsupported"),
+    (["supported", "unsupported"], 2, "uncertain"),
+    (["uncertain", "uncertain"], 2, "uncertain"),
+    ([], 0, "uncertain"),                         # no valid judge never passes
 ])
-def test_combine_truth_table(p, labels, k, expected):
-    assert combine(p, [op(lbl) for lbl in labels], tau_hi=0.85, tau_lo=0.15, min_judges=k) == expected
+def test_combine_truth_table(labels, k, expected):
+    assert combine([op(lbl) for lbl in labels], min_judges=k) == expected
 
 
 def test_failed_judges_do_not_count():
     ops = [op("supported"), op("uncertain", error="same_or_unknown_vendor")]
-    assert combine(0.95, ops, tau_hi=0.85, tau_lo=0.15, min_judges=2) == "uncertain"
+    assert combine(ops, min_judges=2) == "uncertain"
 
 
-@pytest.mark.parametrize(("p", "labels", "k", "expected"), [
-    (0.5, ["supported", "supported"], 2, "supported"),      # two agreeing judges: τ_hi_judged = 0.4 applies
-    (0.3, ["supported", "supported"], 2, "uncertain"),      # still below the judged threshold
-    (0.5, ["supported"], 1, "uncertain"),                   # one judge: layer-1-only τ_hi = 0.85 applies
-    (0.5, ["supported", "partial"], 2, "uncertain"),        # judges disagree: no verdict at any p
-    (0.55, ["unsupported", "unsupported"], 2, "unsupported"),  # τ_lo_judged = 0.6
-    (0.55, ["unsupported", "contradicted"], 2, "uncertain"),   # split: no agreement, no relaxation
-    (0.55, ["unsupported"], 1, "uncertain"),
-    (0.7, ["contradicted", "contradicted"], 2, "uncertain"),
-])
-def test_combine_judged_tier(p, labels, k, expected):
-    assert combine(p, [op(lbl) for lbl in labels], tau_hi=0.85, tau_lo=0.15, min_judges=k,
-                   tau_hi_judged=0.4, tau_lo_judged=0.6) == expected
+def test_support_result_has_no_layer1_fields():
+    assert not {"p", "layer1_reason", "n_chunks", "tau_hi", "tau_lo", "tau_hi_judged",
+                "tau_lo_judged"} & set(SupportResult.model_fields)
 
 
-def test_judged_thresholds_never_tighten():
-    ops = [op("supported"), op("supported")]
-    assert combine(0.9, ops, tau_hi=0.85, tau_lo=0.15, min_judges=2, tau_hi_judged=0.95) == "supported"
-    neg = [op("unsupported"), op("unsupported")]
-    assert combine(0.1, neg, tau_hi=0.85, tau_lo=0.15, min_judges=2, tau_lo_judged=0.05) == "unsupported"
+def test_judge_roles_and_default_judges():
+    assert JUDGE_ROLES == ("judge", "judge_2", "judge_3")
+    judges = [DriverSpec.parse(DEFAULT_DRIVERS[r]) for r in JUDGE_ROLES]
+    assert [str(j) for j in judges] == [str(LUNA), str(DEEPSEEK), str(HAIKU)]
+    assert [vendor_of(j.provider, j.model) for j in judges] == ["openai", "deepseek", "anthropic"]
 
 
 @pytest.fixture
@@ -92,16 +98,31 @@ def env(tmp_home, replay_http):
     k.close()
 
 
-def judges(label="supported", spans=("copper catalysts",)):
-    j = FakeJudge(label, list(spans))
-    return {"judge_drivers": [CODEX, LUNA_A], "judge_providers": {str(CODEX): j, str(LUNA_A): j}}
+class FailedJudge(FakeJudge):
+    """A judge whose task fails without an error message."""
+
+    def run(self, spec, ctx):
+        self.inputs.append(spec.inputs)
+        return TaskResult(spec.task_id, False, None, "", "fake", "fake", 0.1, None)
 
 
-def test_supported_end_to_end_with_records(env):
+def judges(*pairs, spans=("copper catalysts",)):
+    """``(driver, label)`` per judge, in role order; the label ``"failed"`` makes that judge's task fail."""
+    providers = {str(d): FailedJudge("supported", []) if label == "failed" else FakeJudge(label, list(spans))
+                 for d, label in pairs}
+    return {"judge_drivers": [d for d, _ in pairs], "judge_providers": providers}
+
+
+def test_supported_needs_two_agreeing_cross_vendor_judges(env):
     k, reg, ps, svc, claim = env
-    cid = claim("Copper catalysts are studied for CO2 reduction.", vendor="google")
-    r = verify_support(k, reg, ps, cid, actor="t", layer1=FakeLayer1(0.97), **judges())
-    assert r.verdict == "supported" and r.numbers_ok and [o.label for o in r.opinions] == ["supported", "supported"]
+    cid = claim(CLAIM, vendor="anthropic")
+    js = judges((LUNA, "supported"), (DEEPSEEK, "supported"), (HAIKU, "supported"))
+    r = verify_support(k, reg, ps, cid, actor="t", **js)
+    assert r.verdict == "supported" and r.min_judges == 2 and r.numbers_ok
+    assert [(o.vendor, o.label, o.error) for o in r.opinions] == [
+        ("openai", "supported", None), ("deepseek", "supported", None),
+        ("anthropic", "uncertain", "same_or_unknown_vendor")]
+    assert js["judge_providers"][str(HAIKU)].inputs == []  # the generator's vendor never judges
     assert svc.get_claim(cid)["status"] == "supported"
     rows = ps.db.execute("SELECT verifier, verdict FROM verifications WHERE target_id=? ORDER BY verifier",
                          (cid,)).fetchall()
@@ -111,74 +132,119 @@ def test_supported_end_to_end_with_records(env):
     assert svc.get_claim(cid) == before
 
 
-def test_calibrated_judged_thresholds_apply_in_verify_support(env):
+def test_one_dissent_makes_it_uncertain(env):
+    k, reg, ps, svc, claim = env
+    cid = claim(CLAIM)
+    r = verify_support(k, reg, ps, cid, actor="t", **judges((LUNA, "supported"), (DEEPSEEK, "unsupported")))
+    assert r.verdict == "uncertain" and svc.get_claim(cid)["status"] == "uncertain"
+
+
+def test_shared_negative_label_is_kept(env):
+    k, reg, ps, svc, claim = env
+    spans = ["copper catalysts for CO2 reduction"]
+    cid = claim("Copper catalysts cannot reduce CO2.")
+    r = verify_support(k, reg, ps, cid, actor="t",
+                       **judges((LUNA, "contradicted"), (DEEPSEEK, "contradicted"), spans=spans))
+    assert r.verdict == "contradicted" and svc.get_claim(cid)["status"] == "contradicted"
+    assert list_checkpoints(ps) == []
+    r = verify_support(k, reg, ps, cid, actor="t",
+                       **judges((LUNA, "unsupported"), (DEEPSEEK, "contradicted"), spans=spans))
+    assert r.verdict == "uncertain"
+
+
+def test_one_valid_judge_is_not_enough(env):
     k, reg, ps, _, claim = env
-    cid = claim("Copper catalysts are studied for CO2 reduction.", vendor="google")
-    assert verify_support(k, reg, ps, cid, actor="t", layer1=FakeLayer1(0.6), **judges()).verdict == "uncertain"
-    save_settings(Settings(email="rk-fixtures@users.noreply.github.com", support_tau_hi_judged=0.5))
-    r = verify_support(k, reg, ps, cid, actor="t", layer1=FakeLayer1(0.6), **judges())
-    assert r.verdict == "supported" and r.tau_hi_judged == 0.5 and r.tau_hi == 0.85
+    cid = claim(CLAIM)
+    r = verify_support(k, reg, ps, cid, actor="t", **judges((LUNA, "supported"), (DEEPSEEK, "failed")))
+    assert [o.error for o in r.opinions] == [None, "failed"] and r.verdict == "uncertain"
 
 
-def test_single_judge_never_supported(env):
+def test_three_admitted_judges_all_must_agree(env):
     k, reg, ps, _, claim = env
-    cid = claim("Copper catalysts are studied for CO2 reduction.", vendor="anthropic")  # the claude-hosted judge is out
-    r = verify_support(k, reg, ps, cid, actor="t", layer1=FakeLayer1(0.99), **judges())
-    assert [o.error for o in r.opinions] == [None, "same_or_unknown_vendor"] and r.verdict == "uncertain"
-
-
-def test_layer1_unavailable_is_uncertain(env):
-    k, reg, ps, _, claim = env
-    cid = claim("Copper catalysts are studied for CO2 reduction.", vendor="google")
-    r = verify_support(k, reg, ps, cid, actor="t", layer1=FakeLayer1(fail=True), **judges())
-    assert r.verdict == "uncertain" and r.p is None and "layer1_unavailable" in r.layer1_reason
+    # OpenAI generator: luna is skipped, haiku and deepseek decide (and must agree).
+    cid = claim(CLAIM, vendor="openai")
+    r = verify_support(k, reg, ps, cid, actor="t",
+                       **judges((LUNA, "supported"), (DEEPSEEK, "supported"), (HAIKU, "unsupported")))
+    assert [o.error for o in r.opinions] == ["same_or_unknown_vendor", None, None] and r.verdict == "uncertain"
+    # Human generator: all three are admitted; two "supported" and one "unsupported" is not agreement.
+    cid = claim(CLAIM, vendor="human")
+    r = verify_support(k, reg, ps, cid, actor="t",
+                       **judges((LUNA, "supported"), (DEEPSEEK, "supported"), (HAIKU, "unsupported")))
+    assert [o.error for o in r.opinions] == [None, None, None] and r.verdict == "uncertain"
+    r = verify_support(k, reg, ps, cid, actor="t",
+                       **judges((LUNA, "supported"), (DEEPSEEK, "supported"), (HAIKU, "supported")))
+    assert r.verdict == "supported"
 
 
 def test_ungrounded_number_blocks_supported(env):
     k, reg, ps, svc, claim = env
     cid = claim("Copper catalysts reduce CO2 by 40%.", vendor="google")
-    r = verify_support(k, reg, ps, cid, actor="t", layer1=FakeLayer1(0.97), **judges())
+    r = verify_support(k, reg, ps, cid, actor="t", **judges((LUNA, "supported"), (DEEPSEEK, "supported")))
     assert r.verdict == "uncertain" and not r.numbers_ok and [n.text for n in r.ungrounded_numbers] == ["40%"]
     assert svc.get_claim(cid)["status"] == "uncertain"
 
 
 def test_uncertain_creates_checkpoint_in_collab_and_no_evidence(env):
-    k, reg, ps, svc, _ = env
+    k, reg, ps, svc, claim = env
     cid = svc.add_claim(ClaimIn(text="An orphan claim."), generator_vendor="google", actor="a")
-    r = verify_support(k, reg, ps, cid, actor="t", layer1=FakeLayer1(0.9), **judges())
+    r = verify_support(k, reg, ps, cid, actor="t", **judges((LUNA, "supported"), (DEEPSEEK, "supported")))
     assert r.verdict == "uncertain" and r.reason == "no_evidence"
     (cp,) = list_checkpoints(ps, "open")
-    assert cp["kind"] == "uncertain_support" and cp["options"]["claim_id"] == cid
+    assert cp["kind"] == "uncertain_support" and cp["options"] == {"claim_id": cid, "opinions": [],
+                                                                   "reason": "no_evidence"}
+    cid = claim(CLAIM)
+    verify_support(k, reg, ps, cid, actor="t", **judges((LUNA, "supported"), (DEEPSEEK, "unsupported")))
+    cp = list_checkpoints(ps, "open")[-1]
+    assert set(cp["options"]) == {"claim_id", "opinions", "reason"} and len(cp["options"]["opinions"]) == 2
 
 
-def test_contradicted(env):
-    k, reg, ps, svc, claim = env
-    cid = claim("Copper catalysts cannot reduce CO2.", vendor="google")
-    r = verify_support(k, reg, ps, cid, actor="t", layer1=FakeLayer1(0.02),
-                       **judges("contradicted", ["copper catalysts for CO2 reduction"]))
-    assert r.verdict == "contradicted" and svc.get_claim(cid)["status"] == "contradicted"
-    assert list_checkpoints(ps) == []
-
-
-def test_thresholds_for_another_model_are_not_used(env, monkeypatch):
-    k, reg, ps, _, claim = env
-    save_settings(Settings(email="rk-fixtures@users.noreply.github.com", support_tau_hi=0.5,
-                           support_model="ollama:bespoke-minicheck:7b-q8_0",
-                           support_calibration={"model": "lytang/MiniCheck-Flan-T5-Large"}))
-    monkeypatch.setattr("rk.verify.support.get_minicheck", lambda *a: FakeLayer1(0.99))
-    cid = claim("Copper catalysts are studied for CO2 reduction.", vendor="google")
-    r = verify_support(k, reg, ps, cid, actor="t", **judges())
-    assert r.verdict == "uncertain" and r.p is None and "calibrated for lytang/MiniCheck-Flan-T5-Large" in r.layer1_reason
-
-
-def test_rk_verify_claim_tool_reports_layer1_state(env, monkeypatch):
+def test_rk_verify_claim_tool_returns_the_judges_verdict(env, monkeypatch):
     _k, reg, _ps, _, claim = env
-    cid = claim("Copper catalysts are studied for CO2 reduction.", vendor="google")
-    monkeypatch.setattr("rk.verify.support.get_minicheck", lambda *a: FakeLayer1(fail=True))
-    fake = judges()  # the tool takes no judge providers, so the configured (real CLI) judges are replaced here
+    cid = claim(CLAIM)
+    fake = judges((LUNA, "supported"), (DEEPSEEK, "supported"))
+    # the tool takes no judge providers, so the configured (real CLI) judges are replaced here
     real_run_judges = support.run_judges
     monkeypatch.setattr(support, "run_judges", lambda *a, **kw: real_run_judges(
         *a, **{**kw, "drivers": fake["judge_drivers"], "providers": fake["judge_providers"]}))
     out = reg.call("rk_verify", {"project": "sp", "target_type": "claim", "target_id": cid},
                    CallContext(role="cli", actor="u", idempotency_key="v1"))
-    assert out["support"]["verdict"] == "uncertain" and "layer1_unavailable" in out["support"]["layer1_reason"]
+    assert out["support"]["verdict"] == "supported" and "p" not in out["support"]
+
+
+def test_old_config_keys_are_ignored(tmp_home):
+    config_path().parent.mkdir(parents=True, exist_ok=True)
+    config_path().write_text(
+        'email = "rk-fixtures@users.noreply.github.com"\n'
+        'support_model = "ollama:bespoke-minicheck:7b-q8_0"\n'
+        'support_tau_hi = 0.9\nsupport_tau_lo = 0.1\nsupport_tau_hi_judged = 0.5\nsupport_tau_lo_judged = 0.6\n'
+        'support_min_judges = 2\n'
+        'support_calibration = { model = "ollama:bespoke-minicheck:7b-q8_0", tau_hi = 0.9 }\n')
+    s = load_settings()
+    assert s.email == "rk-fixtures@users.noreply.github.com" and s.support_min_judges == 2
+    save_settings(s)
+    stored = tomllib.loads(config_path().read_text())
+    assert not {k for k in stored if k.startswith("support_")} - {"support_min_judges"}
+    assert stored["drivers"]["judge_3"] == DEFAULT_DRIVERS["judge_3"]
+
+
+def test_old_support_records_still_render(env):
+    _k, reg, ps, svc, claim = env
+    cid = claim(CLAIM)
+    old = {"verdict": "uncertain", "p": 0.42, "layer1_reason": "layer1_unavailable: no torch", "n_chunks": 1,
+           "opinions": [], "numbers_ok": True, "ungrounded_numbers": [], "tau_hi": 0.85, "tau_lo": 0.15,
+           "tau_hi_judged": None, "tau_lo_judged": None, "min_judges": 2, "reason": None}
+    vid = record_verification(ps, "claim", cid, "V-SUPPORT", "uncertain", old, actor="t")
+    svc.set_claim_status(cid, "uncertain", verification_id=vid, actor="t")
+    chk = create_checkpoint(ps, "uncertain_support", f"Is this claim supported by its evidence?\n\n{CLAIM}",
+                            {"claim_id": cid, "p": 0.42, "opinions": [], "reason": "layer1_unavailable: no torch"},
+                            stage="argue", actor="t")
+    ctx = CallContext(role="cli", actor="u")
+    got = reg.call("rk_claim_get", {"project": "sp", "claim_id": cid}, ctx)["claim"]
+    assert got["status"] == "uncertain" and got["verification_id"] == vid
+    (cp,) = reg.call("rk_checkpoint_list", {"project": "sp", "status": "open"}, ctx)["checkpoints"]
+    assert cp["id"] == chk and cp["options"]["p"] == 0.42
+    reg.call("rk_checkpoint_answer", {"project": "sp", "checkpoint_id": chk, "answer": {"supported": False}},
+             CallContext(role="cli", actor="u", idempotency_key="a1"))
+    assert list_checkpoints(ps, "open") == []
+    rebuild(ps.db)
+    assert svc.get_claim(cid)["status"] == "uncertain"

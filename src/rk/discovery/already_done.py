@@ -1,17 +1,17 @@
 """The already-done check (spec §8.3): does published work already answer the research question?
 
 The Scout writes 3-5 English queries; each runs on the first two discovery sources (logged, purpose ``already_done``);
-the hits are fused by reciprocal rank (RRF) and the top 10 judged by ``judge`` and ``judge_2`` (``AnsweredOut``):
+the hits are fused by reciprocal rank (RRF) and the top 10 judged by each judge (``JUDGE_ROLES``, ``AnsweredOut``):
 does each work already answer the RQ, with a quote from its title or abstract (the judge sees the first
 ``ABSTRACT_CHARS`` of the abstract). A judgement is valid only if its judge's vendor is admitted (known, not human, not
-the RQ author's and not the other judge's: ``admitted_judges``) and its quote is verbatim in the title or in the part of
+the RQ author's and not another judge's: ``admitted_judges``) and its quote is verbatim in the title or in the part of
 the abstract the judge saw (``span_in``); an invalid judgement counts as missing.
 
 Result: ``already_done`` when some work is judged answered by two valid judges (of different vendors);
 ``not_found_in_scope`` when every work is judged not answered by two such judges; ``split`` otherwise, including when
 fewer than two judge vendors gave valid judgements and when the RQ author's vendor is unknown (no judge can then be
 shown to differ from it; ``split_reason`` says so). "Not found" holds only within the searched scope: nothing here
-says the RQ is novel. Cost: 1 scout task + at most 2 judge tasks."""
+says the RQ is novel. Cost: 1 scout task + at most 3 judge tasks."""
 
 from __future__ import annotations
 

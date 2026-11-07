@@ -55,7 +55,7 @@ from rk.orchestrator.state import (
 from rk.production.screening import screeners_problem
 from rk.store.project import ProjectStore
 from rk.tools.registry import ToolError
-from rk.verify.judge import judge_vendor_error
+from rk.verify.judge import JUDGE_ROLES, judge_vendor_error
 
 log = logging.getLogger(__name__)
 
@@ -393,7 +393,7 @@ class RunManager:
                       for s in [DriverSpec.parse(settings.drivers[r])]}
         seen: set[str] = set()
         unusable = []
-        for role in ("judge", "judge_2"):
+        for role in JUDGE_ROLES:
             if role not in settings.drivers:
                 unusable.append(f"{role} is not configured")
                 continue
@@ -408,7 +408,8 @@ class RunManager:
         if len(seen) >= 2:
             return ""
         return ("a run needs two judges of different known vendors, neither the vendor of the scout, gapminer or "
-                f"ideator: {'; '.join(unusable)}. Set drivers.judge and drivers.judge_2 in config.toml (rk providers)")
+                f"ideator: {'; '.join(unusable)}. Set drivers.{', drivers.'.join(JUDGE_ROLES)} in config.toml "
+                "(rk providers)")
 
     def _start_locked(self, ps: ProjectStore, project: str, until: str, actor: str) -> str:
         """Start the run and its thread (lock held)."""

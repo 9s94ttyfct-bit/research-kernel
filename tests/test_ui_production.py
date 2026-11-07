@@ -172,7 +172,7 @@ def test_read_tools_policy(api):
         assert {"rk_protocol_get"} == set(READ_TOOLS) & set(role_tools(role, api.reg))
     assert {"rk_protocol_get", "rk_extraction_get"} == set(READ_TOOLS) & set(role_tools("reader", api.reg))
     assert {"rk_protocol_get", "rk_prisma_get"} == set(READ_TOOLS) & set(role_tools("scout", api.reg))
-    for role in ("judge", "judge_2", "triage"):
+    for role in ("judge", "judge_2", "judge_3", "triage"):
         assert not set(READ_TOOLS) & set(role_tools(role, api.reg))
     for name in READ_TOOLS:
         tool = api.reg.get(name)
@@ -180,7 +180,7 @@ def test_read_tools_policy(api):
         assert tool.roles == TOOL_ROLES[name]
     with pytest.raises(PermissionDenied):
         api.reg.call("rk_screening_list", {"project": "demo"}, CallContext(role="screener_a", actor="t"))
-    assert set(ROLES) - {"judge", "judge_2", "triage"} >= {r for n in READ_TOOLS for r in TOOL_ROLES[n]} - {"cli"}
+    assert set(ROLES) - {"judge", "judge_2", "judge_3", "triage"} >= {r for n in READ_TOOLS for r in TOOL_ROLES[n]} - {"cli"}
 
 
 def test_run_descriptions_name_the_production_stages(api):

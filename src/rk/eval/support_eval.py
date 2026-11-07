@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from rk import __version__
-from rk.config import load_settings, rk_home, save_settings
+from rk.config import load_settings, save_settings
 from rk.eval.data import SupportPair, eval_dir, load_scifact
 from rk.eval.metrics import (
     calibrate_joint,
@@ -33,7 +33,6 @@ from rk.eval.metrics import (
 from rk.eval.scratch import eval_provider, scratch_kernel
 from rk.llm.drivers import DriverSpec
 from rk.verify.judge import JudgeOpinion, run_judges
-from rk.verify.minicheck import get_minicheck
 from rk.verify.numbers import check_numbers
 from rk.verify.support import combine
 
@@ -122,7 +121,8 @@ def run_support_eval(*, judges: list[DriverSpec], min_judges: int, limit: int = 
                      report_dir: Path = Path("docs/eval"), loader: Callable = load_scifact, layer1=None,
                      providers: dict | None = None, cache_dir: Path | None = None, workers: int = 4) -> dict:
     settings = load_settings()
-    layer1 = layer1 or get_minicheck(rk_home() / "models", settings.support_model)
+    if layer1 is None:  # the layer-1 model was removed (2026-11-07); the judges-only evaluation replaces this module
+        raise ValueError("rk eval support needs a layer-1 scorer, which V-SUPPORT no longer has")
     cache_dir = cache_dir or eval_dir()
     model_tag = layer1.model_id.replace("/", "_")
     train, dev = loader("train"), loader("dev")

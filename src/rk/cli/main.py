@@ -614,7 +614,7 @@ def task_run(role: str = typer.Option(..., "--role"), instructions: str = typer.
 # ---------------- evaluation (local; scratch kernel, never the live project database) ----------------
 eval_app = typer.Typer(help="Evaluations on external human-labelled datasets", no_args_is_help=True)
 app.add_typer(eval_app, name="eval")
-JUDGES_OPT = typer.Option(None, "--judges", help="Comma-separated driver specs (default: config judge, judge_2)")
+JUDGES_OPT = typer.Option(None, "--judges", help="Comma-separated driver specs (default: the configured judges)")
 EVAL_OUT_OPT = typer.Option(Path("docs/eval"), "--out", help="Report directory")
 
 
@@ -721,8 +721,7 @@ def support_check_cmd(text: Path = TEXT_FILE_OPT, sources: str = typer.Option(..
         typer.echo(f"driver {d['driver']} (vendor {d['vendor']})")
         for row in d["rows"]:
             gold_s = f"  gold={row['gold']}" if row.get("gold") else ""
-            p = "-" if row["p"] is None else f"{row['p']:.3f}"
-            typer.echo(f"[{row['sentence_index']}] {row['verdict'].upper():<12} p={p} nums={'ok' if row['numbers_ok'] else 'UNGROUNDED'}"
+            typer.echo(f"[{row['sentence_index']}] {row['verdict'].upper():<12} nums={'ok' if row['numbers_ok'] else 'UNGROUNDED'}"
                        f"{gold_s}\n    {row['claim']}\n    judges: {'; '.join(row['judges']) or '-'}")
             if row.get("reader_error"):
                 typer.secho(f"    reader task FAILED: {row['reader_error']} (no evidence gathered)", fg="red")

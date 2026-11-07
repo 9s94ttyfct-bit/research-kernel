@@ -1,13 +1,14 @@
-"""V-SUPPORT (spec §9.1, rule amended 2026-11-06): does the linked evidence support the claim?
+"""V-SUPPORT (spec §9.1, rule amended 2026-11-07: cloud judges only, no layer-1 model): does the linked evidence
+support the claim?
 
-supported      ≥ min_judges cross-vendor judges, all "supported" (with verbatim quotes), and p ≥ τ_hi —
-               or p ≥ τ_hi_judged when at least two such judges agree
-unsupported /  ≥ min_judges judges sharing one label ("unsupported", or "contradicted"), and p ≤ τ_lo —
-contradicted   or p ≤ τ_lo_judged when at least two such judges agree (a split between the two is not agreement)
-uncertain      everything else, including a missing layer 1, missing evidence, or too few eligible judges
+supported      ≥ min_judges valid judges, and every valid judge says "supported" (with verbatim quotes)
+unsupported /  ≥ min_judges valid judges, all sharing that one label (a split between the two is not agreement)
+contradicted
+uncertain      everything else, including missing evidence or too few valid judges
 
-τ_hi/τ_lo are calibrated on layer 1 alone; τ_*_judged jointly on layer 1 plus two judges (``rk eval support``).
-V-NUM runs alongside: a number in the claim that its evidence does not contain keeps the claim from "supported".
+A judge is valid when it ran and its vendor is admitted (``rk.verify.judge.run_judges``: a known, non-human vendor
+that is neither the claim author's nor another judge's); a failed or skipped judge does not count. V-NUM runs
+alongside: a number in the claim that its evidence does not contain keeps the claim from "supported".
 """
 
 from __future__ import annotations
@@ -20,7 +21,6 @@ from rk.argument import ArgumentService
 from rk.checkpoints import create_checkpoint
 from rk.llm.drivers import DriverSpec
 from rk.verify.judge import JudgeOpinion, JudgeRunner, run_judges
-from rk.verify.minicheck import Layer1Unavailable, get_minicheck
 from rk.verify.numbers import Num, check_numbers
 from rk.verify.records import record_verification
 
@@ -29,41 +29,22 @@ Verdict = Literal["supported", "uncertain", "unsupported", "contradicted"]
 
 class SupportResult(BaseModel):
     verdict: Verdict
-    p: float | None
-    layer1_reason: str | None = None
-    n_chunks: int | None = None
     opinions: list[JudgeOpinion] = []
     numbers_ok: bool = True
     ungrounded_numbers: list[Num] = []
-    tau_hi: float
-    tau_lo: float
-    tau_hi_judged: float | None = None
-    tau_lo_judged: float | None = None
     min_judges: int
     reason: str | None = None
 
 
-def combine(p: float | None, opinions: list[JudgeOpinion], *, tau_hi: float, tau_lo: float, min_judges: int,
-            tau_hi_judged: float | None = None, tau_lo_judged: float | None = None) -> Verdict:
-    """Spec §9.1 (rule amended 2026-11-06): when at least two valid judges (each from a vendor other than the claim's
-    author, and distinct from each other) agree, layer 1 only has to clear the lower jointly calibrated thresholds
-    ``tau_*_judged``; otherwise the layer-1-only thresholds apply. A judged threshold never makes the rule stricter."""
+def combine(opinions: list[JudgeOpinion], *, min_judges: int) -> Verdict:
+    """Spec §9.1 (amended 2026-11-07): the verdict is the one label shared by every valid judge (``error is None``)
+    when there are at least ``min_judges`` of them and that label is a verdict; anything else is ``uncertain``."""
     valid = [o for o in opinions if o.error is None]
     labels = {o.label for o in valid}
-    if p is None or not valid or len(valid) < min_judges:
+    if not valid or len(valid) < min_judges or len(labels) != 1:
         return "uncertain"
-    hi, lo = tau_hi, tau_lo
-    if len(valid) >= 2:
-        if tau_hi_judged is not None:
-            hi = min(tau_hi, tau_hi_judged)
-        if tau_lo_judged is not None:
-            lo = max(tau_lo, tau_lo_judged)
-    if p >= hi and labels == {"supported"}:
-        return "supported"
-    # Agreement means one shared label: a split between "unsupported" and "contradicted" is not agreement.
-    if p <= lo and labels in ({"unsupported"}, {"contradicted"}):
-        return labels.pop()
-    return "uncertain"
+    (label,) = labels
+    return label if label in ("supported", "unsupported", "contradicted") else "uncertain"
 
 
 def evidence_texts(claim: dict) -> list[str]:
@@ -80,7 +61,7 @@ def evidence_texts(claim: dict) -> list[str]:
     return out
 
 
-def verify_support(kernel, registry, ps, claim_id: str, *, actor: str, layer1=None,
+def verify_support(kernel, registry, ps, claim_id: str, *, actor: str,
                    judge_drivers: list[DriverSpec] | None = None, judge_providers: dict | None = None,
                    min_judges: int | None = None, checkpoint: bool = True,
                    run: JudgeRunner | None = None) -> SupportResult:
@@ -89,38 +70,23 @@ def verify_support(kernel, registry, ps, claim_id: str, *, actor: str, layer1=No
     their claims are evidence checks of a candidate gap, not claims of the argument). ``run`` replaces ``run_task`` for
     the judge tasks (``run_judges``), e.g. a stage's task executor; its exceptions propagate, and no verification of
     the claim is recorded then."""
-    s = kernel.settings()
-    tau_hi, tau_lo = s.support_tau_hi, s.support_tau_lo
-    judged = {"tau_hi_judged": s.support_tau_hi_judged, "tau_lo_judged": s.support_tau_lo_judged}
-    k = s.support_min_judges if min_judges is None else min_judges
+    k = kernel.settings().support_min_judges if min_judges is None else min_judges
     svc = ArgumentService(ps)
     claim = svc.get_claim(claim_id)
     texts = evidence_texts(claim)
-    base = {"tau_hi": tau_hi, "tau_lo": tau_lo, "min_judges": k, **judged}
     if not texts:
-        result = SupportResult(verdict="uncertain", p=None, reason="no_evidence", **base)
+        result = SupportResult(verdict="uncertain", min_judges=k, reason="no_evidence")
     else:
         doc = "\n\n".join(texts)
-        p = n_chunks = reason = None
-        calibrated_for = (s.support_calibration or {}).get("model")
-        try:
-            if layer1 is None and calibrated_for and calibrated_for != s.support_model:
-                # τ are model-specific: thresholds fitted to another layer-1 model would mean nothing here
-                raise Layer1Unavailable(f"thresholds were calibrated for {calibrated_for}, not {s.support_model}; "
-                                        "run `rk eval support --write-config`")
-            score = (layer1 or get_minicheck(kernel.home / "models", s.support_model)).score(doc, claim["text"])
-            p, n_chunks = score.p, score.n_chunks
-        except Layer1Unavailable as e:
-            reason = f"layer1_unavailable: {e}"
         opinions = run_judges(kernel, registry, project=_slug(ps), claim_text=claim["text"], evidence_text=doc,
                               generator_vendor=claim.get("generator_vendor"), drivers=judge_drivers,
                               providers=judge_providers, run=run)
-        verdict = combine(p, opinions, tau_hi=tau_hi, tau_lo=tau_lo, min_judges=k, **judged)
+        verdict = combine(opinions, min_judges=k)
         nums = check_numbers(claim["text"], texts)
         if verdict == "supported" and not nums.ok:
             verdict = "uncertain"
-        result = SupportResult(verdict=verdict, p=p, layer1_reason=reason, n_chunks=n_chunks, opinions=opinions,
-                               numbers_ok=nums.ok, ungrounded_numbers=nums.ungrounded, **base)
+        result = SupportResult(verdict=verdict, opinions=opinions, numbers_ok=nums.ok,
+                               ungrounded_numbers=nums.ungrounded, min_judges=k)
         record_verification(ps, "claim", claim_id, "V-NUM", "pass" if nums.ok else "ungrounded_number",
                             {"ungrounded": [n.model_dump() for n in nums.ungrounded]}, actor=actor)
     vid = record_verification(ps, "claim", claim_id, "V-SUPPORT", result.verdict, result.model_dump(mode="json"),
@@ -128,8 +94,8 @@ def verify_support(kernel, registry, ps, claim_id: str, *, actor: str, layer1=No
     svc.set_claim_status(claim_id, result.verdict, verification_id=vid, actor=actor)
     if checkpoint and result.verdict == "uncertain" and (ps.meta("production_mode") or "collab") == "collab":
         create_checkpoint(ps, "uncertain_support", f"Is this claim supported by its evidence?\n\n{claim['text']}",
-                          {"claim_id": claim_id, "p": result.p, "opinions": [o.model_dump() for o in result.opinions],
-                           "reason": result.reason or result.layer1_reason}, stage="argue", actor=actor)
+                          {"claim_id": claim_id, "opinions": [o.model_dump() for o in result.opinions],
+                           "reason": result.reason}, stage="argue", actor=actor)
     return result
 
 

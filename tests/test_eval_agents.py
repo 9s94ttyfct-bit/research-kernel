@@ -11,7 +11,6 @@ from rk.llm.drivers import DriverSpec
 from rk.llm.types import Availability, TaskResult
 from rk.notes import NoteIn, add_note
 from rk.verify.judge import JudgeVerdict
-from rk.verify.minicheck import Layer1Score
 
 from .conftest import DOCS
 
@@ -53,20 +52,13 @@ class Judge:
         return TaskResult(spec.task_id, True, v, "", "j", "j", 0.0, None)
 
 
-class L1:
-    model_id = "fake"
-
-    def score(self, doc, claim):
-        return Layer1Score(p=0.99, chunk_index=0, n_chunks=1, model="fake")
-
-
 def test_deepfact_mapping_and_report(tmp_home, tmp_path, replay_http):
     claims = [DeepFactClaim(id="r:1", sentence="Copper catalysts are studied for CO2 reduction.", report_id="r",
                             domain="chemistry", gold="supported"),
               DeepFactClaim(id="r:2", sentence="Zinc fixes everything.", report_id="r", domain="chemistry",
                             gold="contradictory")]
     r = run_deepfact(driver=LUNA, judges=[LUNA], min_judges=1, limit=2, claims=claims, provider=Scripted(),
-                     judge_providers={str(LUNA): Judge()}, layer1=L1(), report_dir=tmp_path, http=replay_http)
+                     judge_providers={str(LUNA): Judge()}, report_dir=tmp_path, http=replay_http)
     rows = {row["id"]: row for row in r["rows"]}
     assert rows["r:1"]["pred"] == "supported" and rows["r:1"]["notes"] == 1 and rows["r:1"]["sources"] == 1
     assert rows["r:2"]["pred"] == "inconclusive" and rows["r:2"]["sources"] == 0  # no evidence found → inconclusive

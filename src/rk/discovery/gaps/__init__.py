@@ -171,19 +171,18 @@ def title_year(lib: Library, item_id: str) -> str:
 
 
 class SupportMiner:
-    """A miner that checks a quoted statement against evidence notes with V-SUPPORT (two agreeing cross-vendor judges,
-    no ``uncertain_support`` checkpoint). The judge tasks run through the stage's task executor, so they count toward
-    the stage budget and a rate-capped judge pauses the run (``BudgetExceeded`` / ``RateCapped`` propagate).
-    ``layer1``, ``judge_drivers`` and ``judge_providers`` replace the configured layer-1 model and judges (tests)."""
+    """A miner that checks a quoted statement against evidence notes with V-SUPPORT (at least ``SUPPORT_JUDGES``
+    cross-vendor judges, all agreeing; no ``uncertain_support`` checkpoint). The judge tasks run through the stage's task
+    executor, so they count toward the stage budget and a rate-capped judge pauses the run (``BudgetExceeded`` /
+    ``RateCapped`` propagate). ``judge_drivers`` and ``judge_providers`` replace the configured judges (tests)."""
 
-    def __init__(self, layer1=None, judge_drivers: list[DriverSpec] | None = None,
-                 judge_providers: dict | None = None):
-        self.layer1, self.judge_drivers, self.judge_providers = layer1, judge_drivers, judge_providers
+    def __init__(self, judge_drivers: list[DriverSpec] | None = None, judge_providers: dict | None = None):
+        self.judge_drivers, self.judge_providers = judge_drivers, judge_providers
 
     def check_support(self, ctx: StageContext, text: str, note_ids: list[str], *, generator_vendor: str | None,
                       checks: Checks, data: dict) -> SupportResult | None:
         """Store ``text`` as a gap-mining claim (written by ``generator_vendor``) with the notes as its evidence and run
-        V-SUPPORT on it; records ``claim_id``, ``verdict``, ``p`` and ``opinions`` in ``data``. The check
+        V-SUPPORT on it; records ``claim_id``, ``verdict`` and ``opinions`` in ``data``. The check
         ``support`` is left to the caller (which verdict passes depends on the gap)."""
 
         def run(*, role: str, instructions: str, inputs: dict, output_schema, **task):
@@ -198,11 +197,10 @@ class SupportMiner:
             return None
         cid = svc.add_claim(claim, generator_vendor=generator_vendor, actor=ctx.actor, origin="gaps")
         svc.link_evidence(EvidenceIn(claim_id=cid, note_ids=note_ids), actor=ctx.actor)
-        res = verify_support(ctx.kernel, ctx.registry, ctx.ps, cid, actor=ctx.actor, layer1=self.layer1,
+        res = verify_support(ctx.kernel, ctx.registry, ctx.ps, cid, actor=ctx.actor,
                              judge_drivers=self.judge_drivers, judge_providers=self.judge_providers,
                              min_judges=SUPPORT_JUDGES, checkpoint=False, run=run)
-        data.update(claim_id=cid, verdict=res.verdict, p=res.p,
-                    opinions=[o.model_dump(mode="json") for o in res.opinions])
+        data.update(claim_id=cid, verdict=res.verdict, opinions=[o.model_dump(mode="json") for o in res.opinions])
         return res
 
 

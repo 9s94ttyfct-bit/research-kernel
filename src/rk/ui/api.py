@@ -64,7 +64,7 @@ SECRET_FIELDS = ("openalex_key", "s2_key", "anthropic_api_key", "openai_api_key"
 PUBLIC_FIELDS = ("email", "unpaywall_email", "current_project", "library_name", "library_portal_url", "library_proxy",
                  "library_discovery", "primo_base", "primo_vid", "primo_tab", "primo_scope", "summon_base",
                  "translation_server_url", "browser_allow_hosts", "fulltext_browser_fallback", "browser_enabled",
-                 "drivers", "support_model")
+                 "drivers")
 
 
 class SettingsPatch(BaseModel):

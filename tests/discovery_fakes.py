@@ -19,7 +19,6 @@ from rk.llm.types import Availability, TaskResult, TaskSpec
 from rk.orchestrator.engine import GateResult, StageOutcome
 from rk.text.layer import Page, TextLayer
 from rk.verify.judge import JudgeVerdict
-from rk.verify.minicheck import Layer1Score, Layer1Unavailable
 from rk.verify.retract import RetractionInfo
 from rk.workspace import Kernel
 
@@ -139,20 +138,6 @@ class ScriptedExecutor:
         spec = driver or DriverSpec.parse(self.drivers[role])
         return TaskResult(new_id("tsk"), True, output_schema.model_validate(out), json.dumps(out), spec.provider,
                           spec.model, 0.0, None)
-
-
-class FakeLayer1:
-    """A V-SUPPORT layer 1 that returns ``p`` (or is unavailable with ``fail``); the scored inputs are in ``calls``."""
-
-    def __init__(self, p=None, fail=False):
-        self.p, self.fail = p, fail
-        self.calls: list[tuple[str, str]] = []
-
-    def score(self, doc, claim):
-        self.calls.append((doc, claim))
-        if self.fail:
-            raise Layer1Unavailable("no torch")
-        return Layer1Score(p=self.p, chunk_index=0, n_chunks=1, model="fake")
 
 
 class FakeJudge:

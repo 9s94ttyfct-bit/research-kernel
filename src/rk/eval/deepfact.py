@@ -45,7 +45,7 @@ READER = ("For each source id given, fetch its full text with rk_source_fetch_fu
 
 
 def check_claim(k, reg, c: DeepFactClaim, *, slug: str, driver: DriverSpec, provider, judges: list[DriverSpec],
-                judge_providers, min_judges: int, layer1=None) -> dict:
+                judge_providers, min_judges: int) -> dict:
     """Runs in its own project so no claim sees another claim's sources or notes."""
     ps = k.create_project(slug, f"DeepFact {c.id}", actor="eval")
     scout = run_task(k, reg, project=slug, role="scout", instructions=SCOUT, inputs={"claim": c.sentence},
@@ -60,16 +60,16 @@ def check_claim(k, reg, c: DeepFactClaim, *, slug: str, driver: DriverSpec, prov
     cid = svc.add_claim(ClaimIn(text=c.sentence), generator_vendor="human", actor="eval")
     if notes:
         svc.link_evidence(EvidenceIn(claim_id=cid, note_ids=notes), actor="eval")
-    r = verify_support(k, reg, ps, cid, actor="eval", layer1=layer1, judge_drivers=judges,
-                       judge_providers=judge_providers, min_judges=min_judges)
+    r = verify_support(k, reg, ps, cid, actor="eval", judge_drivers=judges, judge_providers=judge_providers,
+                       min_judges=min_judges)
     return {"id": c.id, "domain": c.domain, "gold": c.gold, "pred": MAP.get(r.verdict, "inconclusive"),
-            "verdict": r.verdict, "p": r.p, "sources": len(sources), "notes": len(notes),
+            "verdict": r.verdict, "sources": len(sources), "notes": len(notes),
             "scout_ok": scout.ok, "reader_ok": bool(reader and reader.ok)}
 
 
 def run_deepfact(*, driver: DriverSpec, judges: list[DriverSpec], min_judges: int, limit: int = 30, seed: int = 13,
                  report_dir: Path = Path("docs/eval"), claims: list[DeepFactClaim] | None = None, provider=None,
-                 judge_providers: dict | None = None, layer1=None, http=None) -> dict:
+                 judge_providers: dict | None = None, http=None) -> dict:
     settings = load_settings()
     provider = provider or eval_provider(driver, settings)
     judge_providers = judge_providers or {str(j): eval_provider(j, settings) for j in judges}
@@ -78,7 +78,7 @@ def run_deepfact(*, driver: DriverSpec, judges: list[DriverSpec], min_judges: in
     k, reg = scratch_kernel("eval-deepfact", "DeepFact-Bench evaluation", http=http)
     try:
         rows = [check_claim(k, reg, c, slug=f"df-{i:03d}", driver=driver, provider=provider, judges=judges,
-                            judge_providers=judge_providers, min_judges=min_judges, layer1=layer1)
+                            judge_providers=judge_providers, min_judges=min_judges)
                 for i, c in enumerate(sample)]
     finally:
         k.close()

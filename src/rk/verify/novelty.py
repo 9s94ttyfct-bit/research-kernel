@@ -2,9 +2,9 @@
 person who reviews it. It is never a novelty verdict: nothing here says, or may say, that the text is novel.
 
 The Scout writes 2-3 English queries; each runs on the first two discovery sources (logged, purpose ``novelty``); the
-hits are fused by reciprocal rank (RRF) and the top ``k`` kept. Then ``judge`` and ``judge_2`` each describe how the
+hits are fused by reciprocal rank (RRF) and the top ``k`` kept. Then each judge (``JUDGE_ROLES``) describes how the
 text differs from every closest work, keyed by the judge's vendor; a judge whose vendor fails the ``run_judges`` rules
-(unknown, human, the generator's, or another judge's) is skipped. Cost: 1 scout task + at most 2 judge tasks.
+(unknown, human, the generator's, or another judge's) is skipped. Cost: 1 scout task + at most 3 judge tasks.
 
 ``search_closest`` and ``work_inputs`` are shared with the already-done check (``rk.discovery.already_done``); the
 judges are admitted by ``rk.verify.judge.admitted_judges``."""

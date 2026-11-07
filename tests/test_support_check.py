@@ -14,7 +14,6 @@ from rk.support_check import (
 )
 from rk.tools.builtin import build_registry
 from rk.verify.judge import JudgeVerdict
-from rk.verify.minicheck import Layer1Score
 from rk.workspace import Kernel
 
 from .conftest import DOCS
@@ -62,13 +61,6 @@ class Judge:
         return TaskResult(spec.task_id, True, v, "", "j", "j", 0.0, None)
 
 
-class L1:
-    model_id = "fake"
-
-    def score(self, doc, claim):
-        return Layer1Score(p=0.97, chunk_index=0, n_chunks=1, model="fake")
-
-
 @pytest.fixture
 def env(tmp_home, replay_http):
     save_settings(Settings(email="rk-fixtures@users.noreply.github.com"))
@@ -88,10 +80,11 @@ def test_support_check_end_to_end_offline(env):
     judge = Judge()
     rep = support_check(k, reg, project="sc", text=" ".join(CLAIMS), source_ids=[iid], driver=DriverSpec("ollama",
                         "gemma4:31b-cloud"), provider=Driver(vendor="google"), judge_drivers=[CODEX, LUNA_A],
-                        judge_providers={str(CODEX): judge, str(LUNA_A): judge}, layer1=L1(),
+                        judge_providers={str(CODEX): judge, str(LUNA_A): judge},
                         gold={0: "supported", 1: "unsupported"})
     first, second = rep.rows
     assert first.verdict == "supported" and first.evidence and first.evidence[0].startswith("p2[")
+    assert "p" not in first.model_dump()
     assert second.verdict == "uncertain" and not second.numbers_ok  # 40% is in no evidence
     assert rep.accuracy == 0.5 and rep.confusion["unsupported"]["uncertain"] == 1
 
@@ -101,7 +94,7 @@ def test_generator_vendor_drives_judge_exclusion(env):
     judge = Judge()
     rep = support_check(k, reg, project="sc", text=CLAIMS[0], source_ids=[iid], driver=CODEX,
                         provider=Driver(vendor="openai"), judge_drivers=[CODEX, LUNA_A],
-                        judge_providers={str(CODEX): judge, str(LUNA_A): judge}, layer1=L1(), min_judges=1)
+                        judge_providers={str(CODEX): judge, str(LUNA_A): judge}, min_judges=1)
     row = rep.rows[0]
     assert row.judges[0].startswith("codex_cli=uncertain (same_or_unknown_vendor)")
     assert row.judges[1].startswith("omp_gateway:anthropic/claude-haiku-4-5=supported") and judge.calls == 2
@@ -140,7 +133,7 @@ def test_missing_gold_scored_and_reader_failure_reported(env):
     judge = Judge()
     rep = support_check(k, reg, project="sc", text=" ".join(CLAIMS), source_ids=[iid], driver=CODEX,
                         provider=BadArguer([(0, CLAIMS[0])], reader_fails=True), judge_drivers=[CODEX, LUNA_A],
-                        judge_providers={str(CODEX): judge, str(LUNA_A): judge}, layer1=L1(),
+                        judge_providers={str(CODEX): judge, str(LUNA_A): judge},
                         gold={0: "supported", 1: "unsupported"})
     (row,) = rep.rows
     assert row.reader_error == "provider_error: quota" and row.evidence == [] and row.verdict == "uncertain"

@@ -4,10 +4,10 @@
 from __future__ import annotations
 
 ROLES: tuple[str, ...] = ("lead", "scout", "screener_a", "screener_b", "reader", "gapminer", "ideator", "arguer",
-                          "skeptic", "simreader", "writer", "judge", "judge_2", "triage")
+                          "skeptic", "simreader", "writer", "judge", "judge_2", "judge_3", "triage")
 
-# Roles that take inline inputs only and never call tools.
-NO_TOOL_ROLES = frozenset({"judge", "judge_2", "triage"})
+# Roles that take inline inputs only and never call tools (the judges are ``rk.verify.judge.JUDGE_ROLES``).
+NO_TOOL_ROLES = frozenset({"judge", "judge_2", "judge_3", "triage"})
 # Spec §8.1 "读取" (read everything in the project): roles that reason over the whole project. Screeners see
 # metadata and abstracts only; the Scout sees metadata plus discovery tools; the Reader sees full text and notes.
 _FULL_READERS = frozenset({"lead", "gapminer", "ideator", "arguer", "skeptic", "simreader", "writer"})

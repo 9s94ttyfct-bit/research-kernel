@@ -3,7 +3,7 @@
 1. An Arguer task (on the chosen driver) turns each sentence into one atomic claim; the Kernel records the claims
    with the driver's vendor as generator, so V-SUPPORT excludes same-vendor judges.
 2. For each claim a Reader task quotes passages from the given sources (verified quote notes).
-3. V-SUPPORT (MiniCheck + cross-vendor judges + V-NUM) decides; with gold labels a confusion matrix is added.
+3. V-SUPPORT (cross-vendor cloud judges + V-NUM) decides; with gold labels a confusion matrix is added.
 """
 
 from __future__ import annotations
@@ -50,7 +50,6 @@ class CheckRow(BaseModel):
     claim_id: str
     claim: str
     verdict: str
-    p: float | None
     judges: list[str]
     evidence: list[str]
     numbers_ok: bool
@@ -70,7 +69,7 @@ class CheckReport(BaseModel):
 def support_check(kernel, registry, *, project: str, text: str, source_ids: list[str], driver: DriverSpec,
                   gold: dict[int, Literal["supported", "unsupported", "contradicted"]] | None = None,
                   judge_drivers: list[DriverSpec] | None = None, min_judges: int | None = None, provider=None,
-                  judge_providers: dict | None = None, layer1=None, actor: str = "kernel") -> CheckReport:
+                  judge_providers: dict | None = None, actor: str = "kernel") -> CheckReport:
     ps, lib = kernel.project(project)
     for sid in source_ids:
         lib.get(sid)  # KeyError for unknown sources
@@ -95,9 +94,9 @@ def support_check(kernel, registry, *, project: str, text: str, source_ids: list
         new = [n for n in list_notes(ps) if n["id"] not in known and n["kind"] == "quote" and n["item_id"] in source_ids]
         if new:
             svc.link_evidence(EvidenceIn(claim_id=cid, note_ids=[n["id"] for n in new]), actor=actor)
-        r = verify_support(kernel, registry, ps, cid, actor=actor, layer1=layer1, judge_drivers=judge_drivers,
+        r = verify_support(kernel, registry, ps, cid, actor=actor, judge_drivers=judge_drivers,
                            judge_providers=judge_providers, min_judges=min_judges)
-        rows.append(CheckRow(sentence_index=c.sentence_index, claim_id=cid, claim=c.text, verdict=r.verdict, p=r.p,
+        rows.append(CheckRow(sentence_index=c.sentence_index, claim_id=cid, claim=c.text, verdict=r.verdict,
                              judges=[f"{o.driver}={o.label}{'' if o.error is None else f' ({o.error})'}"
                                      for o in r.opinions],
                              evidence=[f"p{n['locator']['page']}[{n['locator']['start']}:{n['locator']['end']}] "

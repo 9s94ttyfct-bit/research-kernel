@@ -1,8 +1,8 @@
-"""The P1 two-vendor vote: where P2 asks the human, P1 asks the two judges (``judge`` and ``judge_2``) the same
-question. They must be distinct known, non-human vendors, neither the generator's (the shared admission of
-``rk.verify.judge.admitted_judges``). The decision is their common choice; a disagreement, a failed or invalid
-answer, or fewer than two admitted judges gives the conservative option. Every vote is recorded (``vote.decided``)
-as not human-reviewed."""
+"""The P1 multi-vendor vote: where P2 asks the human, P1 asks the judges (``rk.verify.judge.JUDGE_ROLES``) the same
+question. Only admitted judges vote: distinct known, non-human vendors, none the generator's (the shared admission of
+``rk.verify.judge.admitted_judges``). The decision is the choice shared by every admitted judge; fewer than two
+admitted judges, any disagreement, or a failed or invalid answer gives the conservative option. Every vote is recorded
+(``vote.decided``) as not human-reviewed."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ class VoteResult:
 
 def vote(ctx: StageContext, subject_type: str, subject_id: str, question: str, options: list[str], conservative: str,
          inputs: dict, *, generator_vendor: str | None = None) -> VoteResult:
-    """Ask both configured judges ``question`` about the subject (``inputs``, what they see of it) through
+    """Ask every admitted judge ``question`` about the subject (``inputs``, what they see of it) through
     ``ctx.executor``. ``generator_vendor`` is the vendor that generated the subject, or None when it is not generated
     text (e.g. a screened record)."""
     if not options or len(set(options)) != len(options):

@@ -273,7 +273,7 @@ def test_scripted_executor_pops_outputs_and_records_calls():
                           drivers={"judge_2": "ollama:deepseek-v4.1-flash:cloud"})
     r1 = ex.run("judge", "do", {"x": 1}, Found, stage="question", attempt=2)
     r2 = ex.run("judge", "do", {"x": 2}, Found, stage="question", attempt=2)
-    assert (r1.ok, r1.output, r1.provider, r1.model) == (True, Found(found=True), "codex_cli", None)
+    assert (r1.ok, r1.output, r1.provider, r1.model) == (True, Found(found=True), "codex_cli", "gpt-6-luna")
     assert r2.output == Found(found=False) and json.loads(r2.raw) == {"found": False}
     r3 = ex.run("judge_2", "do", {}, Found, stage="question", attempt=2)
     assert (r3.provider, r3.model) == ("ollama", "deepseek-v4.1-flash:cloud")

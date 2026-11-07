@@ -118,6 +118,7 @@ def _executor(diffs_for: list[str] | None = None) -> ScriptedExecutor:
         ("scout", "LandscapeQueries"): [{"queries": QUERIES}] * 40,
         ("judge", "DifferencesOut"): [diffs] * 40,
         ("judge_2", "DifferencesOut"): [diffs] * 40,
+        ("judge_3", "DifferencesOut"): [diffs] * 40,
     })
 
 
@@ -402,9 +403,9 @@ def test_novelty_skips_a_judge_of_the_generator_vendor(env):
     sources, aspirin, _ = _sources(lib)
     ex = _executor(diffs_for=aspirin)
     report = novelty_reference(_ctx(k, ps, lib, ex, sources), "Aspirin in the elderly", generator_vendor="openai")
-    assert report.skipped == {"judge": "same_or_unknown_vendor"} and report.judged == ["deepseek"]
-    assert [c["role"] for c in ex.calls] == ["scout", "judge_2"]
-    assert set(report.closest[0].differences) == {"deepseek"}
+    assert report.skipped == {"judge": "same_or_unknown_vendor"} and report.judged == ["deepseek", "anthropic"]
+    assert [c["role"] for c in ex.calls] == ["scout", "judge_2", "judge_3"]
+    assert set(report.closest[0].differences) == {"deepseek", "anthropic"}
 
 
 @pytest.mark.parametrize("env", [{"discovery_mode": "d1"}], indirect=True)

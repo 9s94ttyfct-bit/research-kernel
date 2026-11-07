@@ -12,8 +12,11 @@ from pydantic import BaseModel, Field
 
 DEFAULT_DRIVERS: dict[str, str] = {
     **{r: "claude_cli" for r in ("lead", "scout", "screener_a", "reader", "gapminer", "ideator", "arguer", "writer")},
-    **{r: "codex_cli" for r in ("screener_b", "skeptic", "simreader", "judge")},
+    **{r: "codex_cli" for r in ("screener_b", "skeptic", "simreader")},
+    # the V-SUPPORT and P1-vote judges: three vendors, so any one generator vendor still leaves two (spec §8.1)
+    "judge": "codex_cli:gpt-6-luna",
     "judge_2": "ollama:deepseek-v4.1-flash:cloud",
+    "judge_3": "claude_cli:claude-haiku-5-5",
     "triage": "ollama:deepseek-v4.1-flash:cloud",
 }
 
@@ -37,18 +40,8 @@ class Settings(BaseModel):
     drivers: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_DRIVERS))
     calls_per_hour: dict[str, int] = Field(default_factory=lambda: {"claude_cli": 30, "codex_cli": 20})
     cli_paths: dict[str, str] = Field(default_factory=dict)
-    # ---- V-SUPPORT (spec §9.1); calibrated values and their record replace the initial thresholds ----
-    support_tau_hi: float = 0.85
-    support_tau_lo: float = 0.15
-    # Lower layer-1 thresholds used when ≥2 cross-vendor judges agree (joint calibration); None = not calibrated, so
-    # the layer-1-only thresholds above apply in every case.
-    support_tau_hi_judged: float | None = None
-    support_tau_lo_judged: float | None = None
+    # ---- V-SUPPORT (spec §9.1): cloud judges only ----
     support_min_judges: int = 2  # spec §8.1: one cross-vendor vote is not enough to pass
-    # Layer 1: Bespoke-MiniCheck-7B in local Ollama (CC BY-NC 4.0; rk is non-commercial). Alternative, MIT-licensed:
-    # "lytang/MiniCheck-Flan-T5-Large" (in-process, needs the 'support' extra).
-    support_model: str = "ollama:bespoke-minicheck:7b-q8_0"
-    support_calibration: dict | None = None
     # ---- built-in browser (spec §8.5) and library access ----
     browser_enabled: bool = True
     browser_headless: bool = False  # RK_BROWSER_HEADLESS=1 overrides (tests, agent smoke runs)
