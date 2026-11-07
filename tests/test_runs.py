@@ -177,6 +177,22 @@ def test_start_needs_a_d2_intake(tmp_home, replay_http):
         k.close()
 
 
+@pytest.mark.parametrize("judge_2", ["claude_cli", "codex_cli", "human", "ollama:mystery-model"])
+def test_start_fails_fast_without_two_judge_vendors(env, judge_2):
+    """A run whose judges cannot give two cross-vendor opinions could never pass topics or question: it fails at
+    once, saying which judge is unusable, instead of after hours of stages and reviews."""
+    from rk.config import save_settings
+
+    k, ps, _, make = env
+    s = k.settings()
+    save_settings(s.model_copy(update={"drivers": {**s.drivers, "judge_2": judge_2}}))
+    m, _ = make(_workers())
+    with pytest.raises(ToolError) as e:
+        m.start("demo", "question", actor="tester")
+    assert e.value.type == "judges_missing" and "judge_2" in e.value.message and "two judges" in e.value.message
+    assert latest_run(ps) is None and not _run_threads()
+
+
 def test_start_runs_until_topics_or_question(env):
     _, ps, _, make = env
     m, _ = make(_workers())

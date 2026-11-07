@@ -27,6 +27,7 @@ from typing import TypeVar
 
 from rk.discovery.store import intake_of
 from rk.llm.drivers import DriverSpec
+from rk.llm.vendors import vendor_of
 from rk.orchestrator.state import (
     TERMINAL_RUN_STATES,
     active_run,
@@ -43,11 +44,13 @@ from rk.orchestrator.state import (
 )
 from rk.store.project import ProjectStore
 from rk.tools.registry import ToolError
+from rk.verify.judge import judge_vendor_error
 
 log = logging.getLogger(__name__)
 
 ACTOR = "orchestrator"
 RUN_UNTIL = ("topics", "question")  # the stages a run may end at
+GENERATOR_ROLES = ("scout", "gapminer", "ideator")  # the discovery roles whose output the judges check
 STOPPED = frozenset({"paused", "paused_budget"}) | TERMINAL_RUN_STATES  # the thread ends on these
 STEPPED = frozenset({"running", "waiting_human", "paused_waiting_human"})  # a thread steps these
 WAITING = frozenset({"waiting_human", "paused_waiting_human"})  # the thread polls the checkpoints
@@ -272,13 +275,42 @@ class RunManager:
                                           "the run when it returns")
 
     def _check_startable(self, ps: ProjectStore, project: str) -> None:
-        """A run needs an intake with discovery mode d2."""
+        """A run needs an intake with discovery mode d2, and two usable judges (``_judges_problem``)."""
         intake = intake_of(ps)
         if intake is None:
             raise ToolError("intake_missing", f"{project} has no intake yet; record it first (rk project intake)")
         if intake.discovery_mode != "d2":
             raise ToolError("not_d2", f"{project} uses guided discovery (d1): run its stages in the Lead chat, or "
                                       "record the intake again with discovery mode d2")
+        problem = self._judges_problem()
+        if problem:
+            raise ToolError("judges_missing", problem)
+
+    def _judges_problem(self) -> str:
+        """Why the configured judges cannot give the two cross-vendor opinions V-NOVELTY, the already-done check and
+        V-SUPPORT in gap mining need (each of a known, non-human vendor, different from each other and from the
+        generating roles' vendors), else ``""``. Without them a run cannot pass topics or question."""
+        settings = self.kernel.settings()
+        generators = {vendor_of(s.provider, s.model) for r in GENERATOR_ROLES if r in settings.drivers
+                      for s in [DriverSpec.parse(settings.drivers[r])]}
+        seen: set[str] = set()
+        unusable = []
+        for role in ("judge", "judge_2"):
+            if role not in settings.drivers:
+                unusable.append(f"{role} is not configured")
+                continue
+            spec = DriverSpec.parse(settings.drivers[role])
+            vendor = vendor_of(spec.provider, spec.model)
+            if vendor is not None and vendor in generators:
+                unusable.append(f"{role} ({spec}) has the vendor {vendor} of a generating role")
+            elif judge_vendor_error(vendor, None, seen) is not None:
+                unusable.append(f"{role} ({spec}) has an unknown, human or repeated vendor ({vendor or 'unknown'})")
+            else:
+                seen.add(vendor)
+        if len(seen) >= 2:
+            return ""
+        return ("a run needs two judges of different known vendors, neither the vendor of the scout, gapminer or "
+                f"ideator: {'; '.join(unusable)}. Set drivers.judge and drivers.judge_2 in config.toml (rk providers)")
 
     def _start_locked(self, ps: ProjectStore, project: str, until: str, actor: str) -> str:
         """Start the run and its thread (lock held)."""
