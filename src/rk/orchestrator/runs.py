@@ -14,14 +14,20 @@ already passed.
 One writer of a project's stages at a time: a guided (D1) stage call (``rk_stage_run``, ``rk_stage_advance``) runs in
 the background through ``d1_start`` (stages take minutes, longer than a chat turn or a tool call may wait): refused
 while a run of the project is active or another D1 call of it runs, and while it runs ``start`` and ``resume`` of the
-project are refused. ``d1_status`` shows the call in flight and the outcome of the last one."""
+project are refused. ``d1_status`` shows the call in flight and the outcome of the last one.
+
+Lock order: the manager's lock (``RunManager._lock``) before a project's lock (``ProjectStore.lock``), never the other
+way round. ``start`` and ``resume`` hold the manager's lock while ``start_run`` takes the project's; a write that must
+not race a run or a guided stage call (the intake) goes through ``RunManager.idle``, which takes them in the same
+order. Code that holds a project's lock never calls into the manager."""
 
 from __future__ import annotations
 
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TypeVar
 
@@ -79,6 +85,18 @@ class _D1Job:
     thread: threading.Thread | None = None
 
 
+@contextmanager
+def no_run_active(ps: ProjectStore, what: str) -> Iterator[None]:
+    """Hold the project's lock while the block changes ``what`` (e.g. ``"the intake"``); refused (``run_active``)
+    while a run of the project is active. Without a ``RunManager``; with one, use ``RunManager.idle``."""
+    with ps.lock:
+        run = active_run(ps)
+        if run is not None:
+            raise ToolError("run_active", f"run {run['id']} is {run['status']}; {what} cannot change while a run is "
+                                          "active (cancel it first: rk run cancel)", {"run_id": run["id"]})
+        yield
+
+
 class RunManager:
     def __init__(self, kernel, registry, orchestrator, *, poll_s: float = 2.0,
                  max_rate_wait_s: float = MAX_RATE_WAIT_S, unknown_rate_wait_s: float = UNKNOWN_RATE_WAIT_S,
@@ -88,7 +106,8 @@ class RunManager:
         self.poll_s, self.max_rate_wait_s, self.unknown_rate_wait_s = poll_s, max_rate_wait_s, unknown_rate_wait_s
         self.source_backoff_s, self.max_source_retries = source_backoff_s, max_source_retries
         self.join_timeout_s = join_timeout_s
-        self._lock = threading.Lock()  # guards _runners, _d1, _closed and every status write outside a step
+        self._lock = threading.Lock()  # guards _runners, _d1, _closed and every status write outside a step; taken
+        # before a project's ``ps.lock`` (the lock order, module docstring)
         self._runners: dict[str, _Runner] = {}
         self._d1: dict[str, _D1Job] = {}  # the guided (D1) stage call in flight, per project
         self._closed = False
@@ -201,10 +220,18 @@ class RunManager:
             running = {"action": job.action, "stage": job.stage, "started": job.started} if job else None
             return {"running": running, "last": last_d1(ps)}
 
-    def d1_active(self, project: str) -> bool:
-        """Whether a guided (D1) stage call of ``project`` is in flight."""
+    @contextmanager
+    def idle(self, project: str, what: str) -> Iterator[ProjectStore]:
+        """Hold ``project`` still while the block changes ``what`` (e.g. ``"the intake"``): refused while a run of it
+        is active (``run_active``) or a guided stage call of it runs (``stage_busy``), and neither can start before
+        the block ends. Takes the manager's lock, then the project's: the lock order of ``start`` and ``resume``."""
+        ps = self._ps(project)
         with self._lock:
-            return project in self._d1
+            if project in self._d1:
+                raise ToolError("stage_busy", f"a guided stage call of {project} is running; change {what} when it "
+                                              "finished (rk_stage_status)")
+            with no_run_active(ps, what):
+                yield ps
 
     def resume_all(self) -> list[str]:
         """At ``rk serve`` start: a thread for every run that is ``running``, ``waiting_human`` or

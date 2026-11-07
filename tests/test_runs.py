@@ -238,6 +238,10 @@ def test_d1_stage_call_runs_in_the_background_and_holds_off_a_run(env):
             with pytest.raises(ToolError) as e:
                 reg.call(name, args, _ctx("lead"))
             assert e.value.type == "stage_busy" and "rk_stage_status" in e.value.message
+        intake = {"project": "demo", **DEFAULT_INTAKE, "discovery_mode": "d1", "audience": "nurses"}
+        with pytest.raises(ToolError) as e:  # the intake the stage reads does not change under it
+            reg.call("rk_project_intake", intake, _ctx("lead"))
+        assert e.value.type == "stage_busy" and "rk_stage_status" in e.value.message
         with pytest.raises(ToolError) as e:  # resume checks the guided call first
             m.resume("demo")
         assert e.value.type == "run_active" and "guided" in e.value.message
@@ -559,6 +563,101 @@ def test_resume_of_a_failed_or_cancelled_run_starts_a_new_run(env, end):
     if end == "cancelled":
         m.cancel("demo")
     _wait(lambda: run_row(ps, new)["status"] in ("done", "cancelled"))
+
+
+class _LockTimeout(Exception):
+    """A gated thread waited too long for a lock: the locks deadlocked."""
+
+
+class _Gate:
+    """Widens the window between a thread's first and second lock. Each gated thread (by name), once it holds its
+    first hooked lock, waits (at most ``pause_s``) until every gated thread holds one; under a lock-order inversion
+    each then waits for the lock the other holds, every time. A gated thread gives up on a lock after ``give_up_s``
+    (``_LockTimeout``), so a deadlock fails the test instead of hanging it or leaking its threads."""
+
+    def __init__(self, names: tuple[str, ...], *, pause_s: float = 1.0, give_up_s: float = 3.0):
+        self.names, self.give_up_s = set(names), give_up_s
+        self.barrier = threading.Barrier(len(names), timeout=pause_s)
+        self.fired: set[str] = set()
+
+    def hook(self, lock) -> _HookedLock:
+        return _HookedLock(lock, self)
+
+
+class _HookedLock:
+    def __init__(self, inner, gate: _Gate):
+        self.inner, self.gate = inner, gate
+
+    def __enter__(self):
+        me = threading.current_thread().name
+        if me not in self.gate.names:
+            self.inner.acquire()
+            return self
+        if not self.inner.acquire(timeout=self.gate.give_up_s):
+            raise _LockTimeout(f"{me} waited {self.gate.give_up_s} s for a lock")
+        if me not in self.gate.fired:
+            self.gate.fired.add(me)
+            try:
+                self.gate.barrier.wait()
+            except threading.BrokenBarrierError:  # the other thread waits on this lock: the lock order holds
+                pass
+        return self
+
+    def __exit__(self, *exc):
+        self.inner.release()
+
+
+def _race(*calls) -> list:
+    """Run each ``(thread name, fn)`` in its own thread and join each within 5 s; the result or exception of each."""
+    out: dict = {}
+
+    def go(name, fn):
+        try:
+            out[name] = fn()
+        except BaseException as e:  # noqa: BLE001 - returned to the test
+            out[name] = e
+
+    threads = [threading.Thread(target=go, args=c, name=c[0], daemon=True) for c in calls]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5.0)
+    assert not [t.name for t in threads if t.is_alive()], "the threads hang"
+    return [out[name] for name, _ in calls]
+
+
+@pytest.mark.parametrize("path", ["start", "resume"])
+def test_intake_and_a_run_start_never_deadlock(env, path):
+    """The intake guard takes the RunManager's lock before the project's lock, like start and resume → new run. In the
+    other order an intake racing a start deadlocked, and with the manager's lock held every run of ``rk serve`` hung.
+    Either the intake comes first (and the run starts after it) or the run does (and the intake is refused)."""
+    from rk.discovery.store import intake_of
+
+    k, ps, _, make = env
+    m, reg = make(_workers(landscape=FakeWorker(runs=[RuntimeError("disk full"), _review] if path == "resume"
+                                                else [_review])))
+    if path == "resume":
+        old = m.start("demo", "question", actor="tester")
+        _wait(lambda: run_row(ps, old)["status"] == "failed")
+        _wait(lambda: not _run_threads())
+    assert k.project("demo")[0] is ps  # the tools and the manager share this ProjectStore and its lock
+    gate = _Gate(("rk-test-intake", "rk-test-run"))
+    m._lock, ps.lock = gate.hook(m._lock), gate.hook(ps.lock)
+    args = {"project": "demo", **intake_of(ps).model_dump(), "audience": "nurses"}
+    begin = (lambda: m.start("demo", "question", actor="tester")) if path == "start" else (lambda: m.resume("demo"))
+    intake, run = _race(("rk-test-intake", lambda: reg.call("rk_project_intake", args, _ctx())),
+                        ("rk-test-run", begin))
+    assert not isinstance(intake, _LockTimeout) and not isinstance(run, _LockTimeout), "lock-order deadlock"
+    assert not isinstance(run, BaseException), run
+    new = run if path == "start" else run["run"]["id"]
+    seq = lambda kind: ps.db.execute("SELECT MAX(seq) FROM events WHERE type=?", (kind,)).fetchone()[0]
+    if isinstance(intake, ToolError):
+        assert intake.type == "run_active" and new in intake.message
+        assert intake_of(ps).audience != "nurses"
+    else:
+        assert not isinstance(intake, BaseException), intake
+        assert intake_of(ps).audience == "nurses" and seq("project.intake") < seq("run.started")
+    _wait(lambda: run_row(ps, new)["status"] == "paused_waiting_human")
 
 
 def test_run_tools_are_cli_only(env):

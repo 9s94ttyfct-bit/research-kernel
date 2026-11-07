@@ -31,7 +31,8 @@ from rk.llm.drivers import DriverSpec, available_all
 from rk.llm.runner import FreeText, run_task
 from rk.llm.vendors import vendor_of
 from rk.notes import NoteIn, NoteRejected, add_note, list_notes, text_find, text_read
-from rk.orchestrator.state import active_run, current_stage, latest_attempt
+from rk.orchestrator.runs import no_run_active
+from rk.orchestrator.state import current_stage, latest_attempt
 from rk.roles.policy import (
     INTAKE_HUMAN_ONLY,
     ROLES,
@@ -166,15 +167,9 @@ def build_registry(k: Kernel, browser: Callable[[], BrowserService | None] | Non
     def _intake(ctx: CallContext, a: IntakeArgs) -> Out:
         ps, _ = _project(k, a.project)
         intake = Intake.model_validate(a.model_dump(exclude={"project"}))
-        with ps.lock:
-            run = active_run(ps)
-            if run is not None:
-                raise ToolError("run_active", f"run {run['id']} is {run['status']}; the intake cannot change while a "
-                                              "run is active (cancel it first: rk run cancel)", {"run_id": run["id"]})
-            m = runs() if runs is not None else None
-            if m is not None and m.d1_active(a.project):
-                raise ToolError("stage_busy", f"a guided stage call of {a.project} is running; change the intake when "
-                                              "it finished (rk_stage_status)")
+        m = runs() if runs is not None else None
+        # the manager's lock before the project's (rk.orchestrator.runs): never ps.lock first, then the manager
+        with m.idle(a.project, "the intake") if m is not None else no_run_active(ps, "the intake"):
             old = intake_of(ps)
             if old is not None and ctx.role != "cli" and latest_attempt(ps, "landscape") > 0:
                 changed = [f for f in INTAKE_HUMAN_ONLY if getattr(old, f) != getattr(intake, f)]
