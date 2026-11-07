@@ -536,7 +536,8 @@ function stageChip(s) {
 // The run's status line, and the controls that fit its state.
 function runControls(g, act) {
   if (!g.intake) return { status: el("p", { class: "hint" }, "Record the intake first (rk project intake): it sets the paper type and how discovery runs."), controls: null };
-  if (g.discovery_mode !== "d2" && !g.discovery_passed)
+  // the Lead drives a D1 project's discovery until the orchestrator takes over (question passed, or production began); a run that is active always gets its status and controls
+  if (g.discovery_mode !== "d2" && !g.orchestrator_drives && !g.run_active)
     return { status: el("p", { class: "hint" }, "This project uses guided discovery (D1): the Lead drives the stages in ", el("a", { href: "#/chat" }, "Chat"), ". Ask it to run the next stage."), controls: null };
   const run = g.run;
   const status = run
@@ -549,11 +550,11 @@ function runControls(g, act) {
     // a failed or cancelled run cannot go on: Resume starts a new run with the same end stage, and the server says so
     if (run && ["failed", "cancelled"].includes(run.status))
       buttons.push(btn(`Resume: start a new run until ${run.until}`, () => act("resume")));
-    // the stages a run could end at now (the server's until_options): topics or question in D2 discovery, any later stage with a worker once question passed and the RQ is frozen
+    // the stages a run could end at now (the server's until_options): topics, question or any later stage with a worker; after question passed only with a frozen RQ
     const kind = g.discovery_mode === "d2" ? "D2 run" : "run";
     for (const until of g.until_options || [])
       buttons.push(btn(`Start ${kind} until ${words(until)}`, () => act("start", until), buttons.length ? "secondary" : undefined));
-    if (!buttons.length && g.discovery_passed)
+    if (!buttons.length && g.orchestrator_drives)
       return { status, controls: el("p", { class: "hint" }, "No run can start now: the next stage is not available yet, or a run past question needs a frozen research question.") };
   } else if (g.requested === "cancelled") {
     status.append(" Cancelling after the current step…");

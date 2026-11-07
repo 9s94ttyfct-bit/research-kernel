@@ -35,7 +35,7 @@ from rk.cli.setup import (
 from rk.config import check_library_proxy, load_settings, save_settings
 from rk.discovery.models import ThreeStep
 from rk.discovery.store import hypotheses, intake_of, rq_row, topic_novelty, topics
-from rk.orchestrator.engine import default_workers
+from rk.orchestrator.engine import default_worker_stages
 from rk.orchestrator.graph import (
     BACK_EDGES,
     DISCOVERY,
@@ -43,7 +43,12 @@ from rk.orchestrator.graph import (
     edge_name,
     stages_for,
 )
-from rk.orchestrator.state import TERMINAL_RUN_STATES, latest_run
+from rk.orchestrator.state import (
+    TERMINAL_RUN_STATES,
+    discovery_passed,
+    latest_run,
+    orchestrator_drives,
+)
 from rk.tools.registry import CallContext, PermissionDenied, ToolError
 from rk.ui.auth import COOKIE, UiAuth
 from rk.ui.drafts import list_drafts, read_draft, render_draft
@@ -388,7 +393,7 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
             runnable, until_options = set(rs["runnable"]), rs["until_options"]
         else:  # no orchestrator here: the stages rk serve's default workers run
             run, stepping, requested, until_options = latest_run(ps), False, None, []
-            runnable = set(default_workers())
+            runnable = default_worker_stages()
         run_active = run is not None and run["status"] not in TERMINAL_RUN_STATES
         intake = intake_of(ps)
         paper_type = intake.paper_type if intake else ps.meta("paper_type")
@@ -424,7 +429,8 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
         return {"project": slug, "paper_type": paper_type, "intake": intake is not None,
                 "discovery_mode": intake.discovery_mode if intake else None,
                 "production_mode": intake.production_mode if intake else None, "current": current,
-                "discovery_passed": current not in DISCOVERY, "graph": graph, "back_edges": back_edges,
+                "discovery_passed": discovery_passed(ps), "orchestrator_drives": orchestrator_drives(ps),
+                "graph": graph, "back_edges": back_edges,
                 "edge_limit": EDGE_LIMIT, "last_gate": {"stage": current, **gate} if gate else None, "run": run,
                 "run_active": run_active, "stepping": stepping, "requested": requested,
                 "runs_available": runs is not None, "until_options": until_options}

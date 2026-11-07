@@ -10,13 +10,15 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import BaseModel
 
 from rk.discovery.store import add_round, gaps, hypotheses, intake_of, rqs, topics
-from rk.orchestrator.graph import DISCOVERY, EDGE_LIMIT
+from rk.orchestrator.graph import EDGE_LIMIT
 from rk.orchestrator.state import (
     active_run,
     attempt_ran,
     current_stage,
     edge_rows,
     latest_attempt,
+    orchestrator_drives,
+    run_drives,
     stage_row,
     stage_rows,
 )
@@ -161,9 +163,8 @@ def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManag
         m = manager()
         d1_only(ps, a.project)
         stage = current_stage(ps)
-        if stage not in DISCOVERY:
-            raise ToolError("stage_unavailable", "every discovery stage passed: from protocol on, the orchestrator "
-                                                 f"runs the stages in a run (rk run {a.project} --until ...)")
+        if orchestrator_drives(ps):
+            raise run_drives(a.project)
 
         def advance() -> dict:
             res = m.orchestrator.advance(a.project, actor=ctx.actor)

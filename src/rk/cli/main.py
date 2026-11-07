@@ -30,9 +30,9 @@ token_app = typer.Typer(help="Lead tokens for external MCP clients", no_args_is_
 checkpoint_app = typer.Typer(help="Checkpoints waiting for you", no_args_is_help=True)
 browser_app = typer.Typer(help="The built-in browser (runs inside rk serve)", no_args_is_help=True)
 run_app = typer.Typer(cls=_RunGroup, no_args_is_help=True,
-                      help="Runs in rk serve: rk run <project> --until topics|question starts an autonomous (D2) "
-                           "discovery run; once question passed, --until protocol|search_screen|read_extract runs "
-                           "the later stages (D1 and D2). status, pause, resume and cancel act on the project's run.")
+                      help="Runs in rk serve: rk run <project> --until <stage> runs the project's stages up to "
+                           "<stage>: topics or question (D2 discovery), or a later stage that has a worker (D1 and D2, "
+                           "rk run status lists them). status, pause, resume and cancel act on the project's run.")
 stage_app = typer.Typer(help="Discovery stages", no_args_is_help=True)
 topic_app = typer.Typer(help="Candidate topics of the discovery stages", no_args_is_help=True)
 app.add_typer(project_app, name="project")
@@ -816,11 +816,12 @@ def _run_line(d: dict) -> None:
 
 @run_app.command("start")
 def run_start(project: str = typer.Argument(..., help="The project (discovery mode d2, or question passed)"),
-              until: str = typer.Option(..., "--until", help="topics, question or a later stage with a worker "
-                                                            "(e.g. read_extract)"),
+              until: str = typer.Option(..., "--until", help="topics, question or a later stage that has a worker "
+                                                            "(rk run status: until_options)"),
               as_json: bool = JSON_OPT) -> None:
     """Start a run of the project's stages in rk serve (also: rk run <project> --until ...). The server checks
-    --until: topics or question in D2 discovery; past question, a stage with a worker once the RQ is frozen."""
+    --until: topics or question in D2 discovery, or a later stage that has a worker (after question passed, with a
+    frozen RQ)."""
     r = _call("rk_run_start", {"project": project, "until": until}, write=True)
     _out(r, as_json, lambda d: typer.echo(f"started {d['run_id']} on {d['project']} (until {d['until']}); follow it "
                                           "with: rk run status"))
@@ -834,6 +835,8 @@ def run_status(project: str | None = typer.Option(None, "--project"), as_json: b
     def render(d):
         _run_line(d)
         _stage_lines(d["stages"])
+        if d.get("until_options"):
+            typer.echo(f"a run can end at: {', '.join(d['until_options'])} (rk run {d['project']} --until <stage>)")
 
     _out(r, as_json, render)
 
@@ -865,7 +868,7 @@ def stage_status(project: str | None = typer.Option(None, "--project"), as_json:
     r = _call("rk_stage_status", {"project": _project(project)})
 
     def render(d):
-        typer.echo(f"{d['project']}: current stage {d['current'] or 'none (discovery passed)'}")
+        typer.echo(f"{d['project']}: current stage {d['current'] or 'none (every stage passed)'}")
         _stage_lines(d["stages"])
         for edge, e in d["edges"].items():
             extra = f" + {e['allowed']} allowed" if e["allowed"] else ""

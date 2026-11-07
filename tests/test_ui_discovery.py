@@ -25,7 +25,6 @@ from rk.discovery.store import (
     add_gap,
     add_rq,
     add_topic,
-    freeze_rq,
     gaps,
     rounds,
     rq_row,
@@ -50,6 +49,8 @@ from .discovery_fakes import (
     FakeWorker,
     ScriptedExecutor,
     add_text_layer,
+    back_to_question_workers,
+    freeze_an_rq,
     make_project,
 )
 from .test_ui_api import ORIGIN, SERVE_TOKEN, kernel, login, ui  # noqa: F401 - fixtures
@@ -295,21 +296,14 @@ def test_stages_route_marks_the_stages_with_a_worker_and_offers_their_runs(wb):
     assert {e["edge"] for e in g["back_edges"]} == {"gaps->landscape", "topics->gaps", "question->topics",
                                                    "protocol->question", "search_screen->protocol",
                                                    "read_extract->search_screen"}
-    assert (g["until_options"], g["discovery_passed"]) == (["topics", "question"], False)
+    assert (g["until_options"], g["discovery_passed"]) == (["topics", "question", *later], False)
     run_id = start(wb, "question")
     until(lambda: run_row(wb.ps, run_id)["status"] == "done")
     g = wb.client.get("/ui/api/stages", params={"project": "demo"}).json()["result"]
     assert (g["current"], g["discovery_passed"], g["until_options"]) == ("protocol", True, [])  # no frozen RQ yet
     r = post(wb.client, "/ui/api/run", {"project": "demo", "until": "read_extract"})
     assert r.status_code == 400 and r.json()["detail"]["type"] == "rq_not_frozen"
-    tid = add_topic(wb.ps, 1, Topic(title=TITLES[0], summary="S.", gap_ids=[], feasibility="F.", data_needed="D.",
-                                    paper_type="critical_review", risks="R."), actor="tester")
-    rq = add_rq(wb.ps, 1, tid, RQBody.model_validate({
-        "three_step": {"x": "aspirin over 80", "y": "stroke", "z": "when to start"},
-        "problem": {"condition": "Guidelines stop at 80.", "consequences": ["A.", "B."]},
-        "finer": {"feasible": "F.", "interesting": "I.", "novel": "N.", "ethical": "E.", "relevant": "R."},
-        "clinical": False}), [HypothesisIn(statement="H.", falsification="X.")], actor="tester")
-    freeze_rq(wb.ps, rq, adopted_by="human", actor="tester")
+    freeze_an_rq(wb.ps)
     g = wb.client.get("/ui/api/stages", params={"project": "demo"}).json()["result"]
     assert g["until_options"] == list(later)
     run_id = start(wb, "read_extract")
@@ -317,6 +311,32 @@ def test_stages_route_marks_the_stages_with_a_worker_and_offers_their_runs(wb):
     g = wb.client.get("/ui/api/stages", params={"project": "demo"}).json()["result"]
     assert [s["status"] for s in g["graph"]] == ["passed"] * 8 + ["plan5"] * 6
     assert (g["current"], g["until_options"]) == ("synthesize", [])
+
+
+def test_stages_route_keeps_the_run_controls_of_a_d1_project_sent_back_to_question(wb):
+    """In a D1 project's production run, protocol->question reopens question: the stage graph still reports the
+    active run (the page shows its status and controls, not the Lead hint), and the orchestrator keeps the project."""
+    from rk.discovery.models import Intake
+    from rk.discovery.store import record_intake
+
+    record_intake(wb.ps, Intake(audience="nurses", paper_type="critical_review", discovery_mode="d1",
+                                production_mode="collab"), actor="tester", actor_kind="human")
+    wb.orch.workers.update(back_to_question_workers())
+    for stage in DISCOVERY:  # guided discovery
+        assert wb.orch.run_stage("demo", stage, actor="tester").status == "done"
+        assert wb.orch.advance("demo", actor="tester").ok
+    freeze_an_rq(wb.ps)
+    run_id = start(wb, "protocol")
+    until(lambda: run_row(wb.ps, run_id)["status"] == "paused_waiting_human")
+    g = wb.client.get("/ui/api/stages", params={"project": "demo"}).json()["result"]
+    assert (g["discovery_mode"], g["current"], g["discovery_passed"], g["orchestrator_drives"]) == (
+        "d1", "question", False, True)
+    assert (g["run"]["id"], g["run_active"]) == (run_id, True)
+    assert post(wb.client, "/ui/api/run/cancel", {"project": "demo"}).status_code == 200
+    until(lambda: run_row(wb.ps, run_id)["status"] == "cancelled")
+    g = wb.client.get("/ui/api/stages", params={"project": "demo"}).json()["result"]
+    assert g["until_options"] == ["question", "protocol", "search_screen", "read_extract"]  # a run goes on
+
 
 
 # ---- run controls -------------------------------------------------------------------------------------------------

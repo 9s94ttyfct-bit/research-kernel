@@ -6,9 +6,10 @@ import json
 
 from pydantic import BaseModel
 
+from rk.checkpoints import create_checkpoint
 from rk.config import DEFAULT_DRIVERS, Settings, save_settings
-from rk.discovery.models import Intake
-from rk.discovery.store import record_intake
+from rk.discovery.models import HypothesisIn, Intake, RQBody, Topic
+from rk.discovery.store import add_rq, add_topic, freeze_rq, record_intake
 from rk.fulltext import FulltextResult, _record_snapshot, latest_snapshot
 from rk.ids import new_id
 from rk.library.models import ItemIn
@@ -69,6 +70,37 @@ class FakeWorker:
 
     def kinds(self) -> list[str]:
         return [c[0] for c in self.calls]
+
+
+PRODUCTION_FIRST = ("protocol", "search_screen", "read_extract")  # the production stages Plan 5a runs
+
+
+def freeze_an_rq(ps) -> str:
+    """Add a topic and an RQ with one hypothesis (attempt 1) and freeze the RQ as the human; returns its id."""
+    tid = add_topic(ps, 1, Topic(title="Aspirin over 80", summary="S.", gap_ids=[], feasibility="F.",
+                                 data_needed="D.", paper_type="critical_review", risks="R."), actor="tester")
+    body = RQBody.model_validate({
+        "three_step": {"x": "aspirin over 80", "y": "stroke", "z": "when to start"},
+        "problem": {"condition": "Guidelines stop at 80.", "consequences": ["A.", "B."]},
+        "finer": {"feasible": "F.", "interesting": "I.", "novel": "N.", "ethical": "E.", "relevant": "R."},
+        "clinical": False})
+    rq = add_rq(ps, 1, tid, body, [HypothesisIn(statement="H.", falsification="X.")], actor="tester")
+    freeze_rq(ps, rq, adopted_by="human", actor="tester")
+    return rq
+
+
+def back_to_question_workers() -> dict[str, FakeWorker]:
+    """Fake workers of every stage after intake up to read_extract: question passes its first attempt, protocol sends
+    the project back to question (protocol->question), and question's second attempt waits on a checkpoint. A run
+    over them pauses with question reopened after production began."""
+    def wait(ctx):
+        return StageOutcome("waiting_human", checkpoint_id=create_checkpoint(ctx.ps, "uncertain_support", "Wait.",
+                                                                             actor="tester"))
+
+    workers = {s: FakeWorker() for s in ("landscape", "gaps", "topics", *PRODUCTION_FIRST)}
+    workers["question"] = FakeWorker(runs=[StageOutcome("done"), wait])
+    workers["protocol"] = FakeWorker(runs=[StageOutcome("back_edge", to="question", reason="RQ too broad")])
+    return workers
 
 
 def add_text_layer(ps, item_id: str, pages: list[str]) -> FulltextResult:

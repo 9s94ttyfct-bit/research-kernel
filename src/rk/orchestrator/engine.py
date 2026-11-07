@@ -8,6 +8,7 @@ stages are those of the project's paper type (``stages_of``); a stage runs only 
 
 from __future__ import annotations
 
+import functools
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -41,6 +42,7 @@ from rk.orchestrator.state import (
     current_stage,
     edge_row,
     latest_attempt,
+    orchestrator_drives,
     record_attempt,
     record_edge_allowed,
     record_edge_taken,
@@ -51,6 +53,7 @@ from rk.orchestrator.state import (
     record_run_session,
     record_run_status,
     record_waiting,
+    run_drives,
     run_row,
     stage_row,
 )
@@ -156,6 +159,12 @@ def default_workers() -> dict[str, Worker]:
             "question": QuestionWorker()}
 
 
+@functools.cache
+def default_worker_stages() -> frozenset[str]:
+    """The stages ``default_workers`` has a worker for (built once): what ``rk serve``'s orchestrator runs."""
+    return frozenset(default_workers())
+
+
 class Orchestrator:
     def __init__(self, kernel, registry, *, workers: dict[str, Worker] | None = None,
                  executor_factory: Callable[[str, str | None, int | None], TaskExecutor] | None = None,
@@ -196,13 +205,11 @@ class Orchestrator:
 
     def check_stage(self, project: str, stage: str) -> Worker:
         """The worker of ``stage`` when it is the current stage (what ``run_stage`` runs), else ``stage_unavailable``;
-        a quick check before a guided stage call goes to the background. Guided calls run discovery stages only: from
-        protocol on, the stages run in a run."""
+        a quick check before a guided stage call goes to the background. Guided calls run discovery stages only, and
+        none once the orchestrator drives the project (``orchestrator_drives``): from protocol on, runs do."""
         ps, _ = self.kernel.project(project)
-        if stage not in DISCOVERY:
-            raise ToolError("stage_unavailable", f"{stage!r} is not a discovery stage: from protocol on, the "
-                                                 f"orchestrator runs the stages in a run (rk run {project} --until "
-                                                 f"{stage}), not a guided stage call")
+        if stage not in DISCOVERY or orchestrator_drives(ps):
+            raise run_drives(project)
         worker = self._worker(ps, stage)
         current = current_stage(ps)
         if stage != current:
@@ -263,9 +270,8 @@ class Orchestrator:
         attempt that was interrupted (no ``stage.ran``) is never gated: its artifacts may be partial."""
         ps, lib = self.kernel.project(project)
         stage = current_stage(ps)
-        if stage not in DISCOVERY:
-            raise ToolError("stage_unavailable", "every discovery stage passed: from protocol on, the orchestrator "
-                                                 f"runs the stages in a run (rk run {project} --until ...)")
+        if orchestrator_drives(ps):
+            raise run_drives(project)
         worker = self._worker(ps, stage)
         row = stage_row(ps, stage)
         if row is None or row["status"] == "reopened":
@@ -360,8 +366,7 @@ class Orchestrator:
                                                  f"{', '.join(stages)}")
         worker = self.workers.get(stage)
         if worker is None:
-            raise ToolError("stage_unavailable", f"stage {stage!r} is not available yet: it has no worker (the later "
-                                                 f"stages arrive in Plan 5b/5c)")
+            raise ToolError("stage_unavailable", f"stage {stage!r} is not available: it has no worker yet")
         return worker
 
     def _ctx(self, project: str, ps: ProjectStore, lib, stage: str, attempt: int, run_id: str | None,

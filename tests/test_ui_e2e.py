@@ -27,7 +27,14 @@ from rk.ui.auth import UiAuth
 from rk.workspace import Kernel
 
 from .browser_sites import tiny_pdf
-from .discovery_fakes import DEFAULT_INTAKE, FakeSources, FakeWorker, ScriptedExecutor
+from .discovery_fakes import (
+    DEFAULT_INTAKE,
+    FakeSources,
+    FakeWorker,
+    ScriptedExecutor,
+    back_to_question_workers,
+    freeze_an_rq,
+)
 from .test_sessions import fake  # noqa: F401 - fixture
 from .test_ui_discovery import (
     HYPOTHESES,
@@ -383,6 +390,30 @@ def test_d1_project_shows_the_graph_and_the_lead_hint(page, workbench):
     page.get_by_text("the Lead drives the stages").wait_for()
     assert page.locator("ol.stages > li").count() == len(stages_for("critical_review"))
     assert page.get_by_role("button", name="Start D2 run until topics").count() == 0
+    assert page.errors == []
+
+
+def test_d1_project_sent_back_to_question_keeps_its_run_controls(page, workbench_env):
+    """protocol->question in a D1 project's run reopens question: the page shows the live run's status and controls,
+    not the Lead hint (the orchestrator keeps a project once production began)."""
+    ps, _ = workbench_env.kernel.project("demo")
+    _intake(ps, discovery_mode="d1")
+    orch = workbench_env.orch
+    orch.workers.update(back_to_question_workers())
+    for stage in DISCOVERY:  # guided discovery
+        assert orch.run_stage("demo", stage, actor="t").status == "done"
+        assert orch.advance("demo", actor="t").ok
+    freeze_an_rq(ps)
+    run_id = workbench_env.runs.start("demo", "protocol", actor="t")
+    until(lambda: latest_run(ps)["status"] == "paused_waiting_human")
+    _goto(page, "progress")
+    page.get_by_role("button", name="Cancel run").wait_for()
+    assert page.get_by_role("button", name="Pause run").count() == 1
+    assert page.get_by_text(f"Run {run_id} (until protocol)").count() == 1
+    assert page.get_by_text("the Lead drives the stages").count() == 0
+    page.get_by_role("button", name="Cancel run").click()
+    page.get_by_role("button", name="Start run until question").wait_for()  # a run goes on; the Lead does not
+    assert page.get_by_text("the Lead drives the stages").count() == 0
     assert page.errors == []
 
 

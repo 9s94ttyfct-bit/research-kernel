@@ -10,7 +10,7 @@ from typing import Any
 
 from rk.discovery.store import intake_of
 from rk.ids import new_id
-from rk.orchestrator.graph import DISCOVERY, stages_of
+from rk.orchestrator.graph import DISCOVERY, PRODUCTION, stages_of
 from rk.store.events import Event, NewEvent
 from rk.store.project import ProjectStore
 from rk.store.projections import projection
@@ -175,9 +175,29 @@ def current_stage(ps: ProjectStore) -> str | None:
 
 
 def discovery_passed(ps: ProjectStore) -> bool:
-    """Whether every discovery stage passed (question included): from protocol on, a run of the orchestrator drives
-    the stages, in D1 and D2 projects alike (spec §8.1)."""
+    """Whether every discovery stage passed (question included)."""
     return current_stage(ps) not in DISCOVERY
+
+
+def production_began(ps: ProjectStore) -> bool:
+    """Whether a production stage (protocol on) ever had an attempt. A latch: it stays true when a back-edge reopens a
+    discovery stage (protocol->question)."""
+    marks = ",".join("?" * len(PRODUCTION))
+    return ps.db.execute(f"SELECT 1 FROM stages WHERE stage IN ({marks}) AND attempt > 0 LIMIT 1",
+                         PRODUCTION).fetchone() is not None
+
+
+def orchestrator_drives(ps: ProjectStore) -> bool:
+    """Whether the project's stages are the orchestrator's from now on (spec §8.1): every discovery stage passed, or
+    production began. Then runs drive the stages in D1 and D2 projects alike, guided stage calls are refused and the
+    Lead only reads, also after a back-edge reopened a discovery stage."""
+    return discovery_passed(ps) or production_began(ps)
+
+
+def run_drives(project: str) -> ToolError:
+    """The refusal of a guided (D1) stage call once ``orchestrator_drives``."""
+    return ToolError("stage_unavailable", f"from protocol on, the orchestrator drives the stages of {project} in a run "
+                                          f"(rk run {project} --until <stage>), not guided stage calls")
 
 
 def latest_attempt(ps: ProjectStore, stage: str) -> int:

@@ -116,11 +116,13 @@ degrades.
   12 h starts a new session. A source that fails for a while (HTTP 429/5xx) makes the run back off and try again;
   one work whose lookup fails is reported and skipped. `uv run rk run resume` on a failed or cancelled run starts a
   new run (and says so), which goes on from the stages that already passed.
-- **After question.** Once question passed and the RQ is frozen, a run drives the later stages of the paper type in D1
-  and D2 projects alike (`uv run rk run <project> --until <stage>`); the Lead only reads from then on. A stage runs
-  only when it has a worker; the others show as "not yet available" and a run cannot end at or pass them
-  (`stage_unavailable`). The back-edges protocol→question, search_screen→protocol and read_extract→search_screen
-  follow the same limit of two uses per project.
+- **After question.** From protocol on, a run drives the later stages of the paper type in D1 and D2 projects alike
+  (`uv run rk run <project> --until <stage>`). A D2 run may go from intake straight past question (it freezes the RQ
+  on the way); a run that starts after question passed needs a frozen RQ (`rq_not_frozen`). Once question passed, or
+  once production began (even if protocol→question reopens question), the Lead only reads and guided stage calls are
+  refused. A stage runs only when it has a worker; the others show as "not yet available" and a run cannot end at or
+  pass them (`stage_unavailable`). The back-edges protocol→question, search_screen→protocol and
+  read_extract→search_screen follow the same limit of two uses per project.
 
 ```bash
 uv run rk project intake --audience "…" --paper-type critical_review --mode d2 --production p2 --topics-n 6

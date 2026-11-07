@@ -43,6 +43,7 @@ from rk.orchestrator.state import (
     discovery_passed,
     last_d1,
     latest_run,
+    orchestrator_drives,
     rate_capped_driver,
     record_d1_finished,
     record_run_session,
@@ -119,9 +120,9 @@ class RunManager:
     def start(self, project: str, until: str, *, actor: str) -> str:
         """Start a run of ``project`` up to the stage ``until`` and its thread: ``topics``, ``question`` or a later
         stage, every stage up to it with a worker. Refused while another run of the project is not terminal or a D1
-        stage call runs, without an intake, in D1 before question passed, and past question without a frozen RQ
-        (``_check_startable``). The checks and the start are one locked step, so an intake recorded meanwhile
-        (``idle``) cannot slip in between them."""
+        stage call runs, without an intake, in D1 before the orchestrator drives the project, and after question passed
+        without a frozen RQ (``_check_startable``). The checks and the start are one locked step, so an intake recorded
+        meanwhile (``idle``) cannot slip in between them."""
         ps = self._ps(project)
         with self._lock:
             self._check_startable(ps, project, until)
@@ -190,12 +191,14 @@ class RunManager:
 
     def until_options(self, ps: ProjectStore) -> list[str]:
         """The stages a run of the project could end at now (what ``start`` accepts, judges aside): none without an
-        intake or in D1 before question passed; past question only with a frozen RQ."""
+        intake or in D1 before the orchestrator drives the project; none after question passed without a frozen RQ.
+        A run that starts before question passed may end past it (it gets its RQ frozen on the way)."""
         intake = intake_of(ps)
-        if intake is None or (intake.discovery_mode != "d2" and not discovery_passed(ps)):
+        if intake is None or (intake.discovery_mode != "d2" and not orchestrator_drives(ps)):
             return []
-        ends = self._ends(ps)
-        return ends if frozen_rq(ps) is not None else [s for s in ends if s in DISCOVERY]
+        if discovery_passed(ps) and frozen_rq(ps) is None:
+            return []
+        return self._ends(ps)
 
     def d1_start(self, project: str, action: str, stage: str | None, call: Callable[[], dict], *,
                  check: Callable[[ProjectStore], None] | None = None) -> dict:
@@ -338,21 +341,23 @@ class RunManager:
         return ends
 
     def _check_startable(self, ps: ProjectStore, project: str, until: str) -> None:
-        """A run needs an intake; in D1 a run starts only after question passed (the Lead drives discovery). It ends
-        at a stage of ``_ends``; past question it needs a frozen RQ. And two usable judges (``_judges_problem``)."""
+        """A run needs an intake; in D1 a run starts only once the orchestrator drives the project
+        (``orchestrator_drives``: question passed, or production began; before, the Lead drives discovery). It ends at
+        a stage of ``_ends``; one that starts after question passed and ends past it needs a frozen RQ (a run that
+        starts before goes through question, whose gate freezes one). And two usable judges (``_judges_problem``)."""
         intake = intake_of(ps)
         if intake is None:
             raise ToolError("intake_missing", f"{project} has no intake yet; record it first (rk project intake)")
-        if intake.discovery_mode != "d2" and not discovery_passed(ps):
+        if intake.discovery_mode != "d2" and not orchestrator_drives(ps):
             raise ToolError("not_d2", f"{project} uses guided discovery (d1): run its stages in the Lead chat until "
                                       "question passed (from protocol on, runs drive the stages), or record the "
                                       "intake again with discovery mode d2")
         if until not in self._ends(ps):
             raise ToolError("stage_unavailable", self._why_not_an_end(ps, until))
         stages = stages_of(ps)
-        if stages.index(until) > stages.index("question") and frozen_rq(ps) is None:
+        if discovery_passed(ps) and stages.index(until) > stages.index("question") and frozen_rq(ps) is None:
             raise ToolError("rq_not_frozen", f"a run past question needs a frozen research question; {project} has "
-                                             "none yet (approve one at rq_approval, or run until question first)")
+                                             "none (approve one at rq_approval)")
         problem = self._judges_problem()
         if problem:
             raise ToolError("judges_missing", problem)
@@ -367,8 +372,7 @@ class RunManager:
             return f"{until!r} already passed; the current stage is {current!r}"
         runnable = set(self.orchestrator.runnable(ps))
         missing = next(s for s in stages[stages.index(current):stages.index(until) + 1] if s not in runnable)
-        return (f"stage {missing!r} is not available yet: it has no worker (the later stages arrive in Plan 5b/5c), so "
-                f"a run cannot reach {until!r}")
+        return f"stage {missing!r} is not available: it has no worker yet, so a run cannot reach {until!r}"
 
     def _judges_problem(self) -> str:
         """Why the configured judges cannot give the two cross-vendor opinions V-NOVELTY, the already-done check and

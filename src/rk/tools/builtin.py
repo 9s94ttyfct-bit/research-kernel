@@ -32,7 +32,7 @@ from rk.llm.runner import FreeText, run_task
 from rk.llm.vendors import vendor_of
 from rk.notes import NoteIn, NoteRejected, add_note, list_notes, text_find, text_read
 from rk.orchestrator.runs import no_run_active
-from rk.orchestrator.state import discovery_passed, latest_attempt
+from rk.orchestrator.state import latest_attempt, orchestrator_drives
 from rk.roles.policy import (
     INTAKE_HUMAN_ONLY,
     ROLES,
@@ -91,9 +91,10 @@ class ProjectArg(BaseModel):
 
 
 def _lead_stage_guard(k: Kernel) -> Callable[[Tool, dict, CallContext], None]:
-    """The registry guard of the Lead's stage-dependent access (spec §8.1, ``lead_closed_after_discovery``): once
-    every discovery stage of the call's project passed, the Lead is refused every tool that writes (and the browser)
-    with ``stage_closed``. A call without a project, or with an unknown one, goes on (the tool reports it)."""
+    """The registry guard of the Lead's stage-dependent access (spec §8.1, ``lead_closed_after_discovery``): once the
+    orchestrator drives the call's project (every discovery stage passed, or production began: a back-edge to question
+    does not reopen it), the Lead is refused every tool that writes (and the browser) with ``stage_closed``. A call
+    without a project, or with an unknown one, goes on (the tool reports it)."""
     def guard(tool: Tool, args: dict, ctx: CallContext) -> None:
         if ctx.role != "lead" or not lead_closed_after_discovery(tool.name, tool.writes):
             return
@@ -104,10 +105,11 @@ def _lead_stage_guard(k: Kernel) -> Callable[[Tool, dict, CallContext], None]:
             ps, _ = k.project(slug)
         except LookupError:
             return
-        if discovery_passed(ps):
-            raise ToolError("stage_closed", f"{tool.name} is closed to the Lead: every discovery stage of {slug} "
-                                            f"passed (question included); from protocol on the orchestrator's roles "
-                                            f"do this work, and the Lead only reads and reports status", status=409)
+        if orchestrator_drives(ps):
+            raise ToolError("stage_closed", f"{tool.name} is closed to the Lead: {slug} passed question (every "
+                                            f"discovery stage), or its production stages began; from protocol on the "
+                                            f"orchestrator's roles do this work, and the Lead only reads and reports "
+                                            f"status", status=409)
     return guard
 
 
