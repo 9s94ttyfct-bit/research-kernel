@@ -13,7 +13,7 @@ from typing import Any, Literal, Protocol
 
 from pydantic import ValidationError
 
-from rk.checkpoints import create_checkpoint, get_checkpoint
+from rk.checkpoints import create_checkpoint, get_checkpoint, supersede_open
 from rk.discovery.boundary import error_text, transient_source_error
 from rk.discovery.executor import (
     BudgetExceeded,
@@ -188,15 +188,19 @@ class Orchestrator:
                   actor: str) -> StageOutcome | None:
         """Count a D1 rerun of ``stage`` as ``X->X`` (a stage reopened by an edge already counted it, and an
         interrupted attempt is no rerun). Returns ``None`` to go on with the attempt, else the outcome to return
-        instead."""
+        instead: while the attempt waits on an open checkpoint (a review, an approval, ``stage_blocked``) it is
+        ``waiting_human`` on it, since a new attempt would leave the researcher answering a checkpoint that is never
+        applied."""
         row = stage_row(ps, stage)
         if row is None or row["status"] == "reopened" or not attempt_ran(ps, stage, row["attempt"]):
             return None
         cid = row["waiting_checkpoint"]
         cp = get_checkpoint(ps, cid) if cid else None
+        if cp is not None and cp["status"] == "open":
+            return StageOutcome("waiting_human", checkpoint_id=cid,
+                                reason=f"checkpoint {cid} ({cp['kind']}) is open; the researcher answers it first, "
+                                       f"then advance the stage")
         if cp is not None and cp["kind"] == "stage_blocked":
-            if cp["status"] == "open":
-                return StageOutcome("waiting_human", checkpoint_id=cid, reason=f"checkpoint {cid} is open")
             msg = self._resolve_blocked(ps, None, stage, row["attempt"], cp, actor=actor)
             if current_stage(ps) != stage:
                 return StageOutcome("back_edge", to=cp["options"]["to"], reason=msg)
@@ -210,12 +214,14 @@ class Orchestrator:
     def _attempt(self, project: str, ps: ProjectStore, lib, stage: str, worker: Worker, *, run_id: str | None,
                  guidance: str | None, actor: str, session: int | None = None) -> tuple[StageContext, StageOutcome]:
         """Write ``stage.attempt`` (attempt + 1), run the worker, record that the run returned (``stage.ran``; an
-        attempt without it was interrupted and is replaced by a new one) and link a checkpoint wait to the attempt."""
+        attempt without it was interrupted and is replaced by a new one) and link a checkpoint wait to the attempt.
+        An open checkpoint of the stage left by an attempt this one replaces is superseded."""
         row = stage_row(ps, stage)
         requested = guidance if guidance is not None else (row["guidance"] if row else None)
         attempt = latest_attempt(ps, stage) + 1
         composed = self._guidance(ps, stage, requested)
         record_attempt(ps, stage, attempt, run_id=run_id, guidance=composed, requested=requested, actor=actor)
+        supersede_open(ps, stage, attempt, actor=actor)
         ctx = self._ctx(project, ps, lib, stage, attempt, run_id, composed, actor, session=session)
         outcome = worker.run(ctx)
         self._check(stage, outcome)

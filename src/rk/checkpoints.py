@@ -55,6 +55,8 @@ def answer_checkpoint(ps: ProjectStore, chk_id: str, answer: dict, *, answered_b
                       actor: str) -> None:
     with ps.lock:
         cp = get_checkpoint(ps, chk_id)
+        if cp["status"] == "superseded":
+            raise ValueError(_superseded_message(ps, chk_id))
         if cp["status"] != "open":
             raise ValueError(f"checkpoint {chk_id} is {cp['status']}, not open")
         if answered_by == "vote" and cp["kind"] in HARD_HUMAN_KINDS:
@@ -69,6 +71,26 @@ def answered_by_actor(ps: ProjectStore, chk_id: str) -> str | None:
     r = ps.db.execute("SELECT actor FROM events WHERE type='checkpoint.answered' AND entity_id=? ORDER BY seq DESC "
                       "LIMIT 1", (chk_id,)).fetchone()
     return r["actor"] if r else None
+
+
+def supersede_open(ps: ProjectStore, stage: str, attempt: int, *, actor: str) -> list[str]:
+    """Mark every open checkpoint of ``stage`` superseded: attempt ``attempt`` replaces the attempts they belong to
+    (an attempt that was interrupted after opening one, or a stage reopened while one was open). A superseded
+    checkpoint leaves the open list, and an answer to it is refused (it would never be applied). Returns their ids."""
+    with ps.lock:
+        ids = [r["id"] for r in ps.db.execute("SELECT id FROM checkpoints WHERE stage=? AND status='open'", (stage,))]
+        for cid in ids:
+            ps.apply(NewEvent(type="checkpoint.superseded", entity_id=cid, actor_kind="kernel", actor=actor,
+                              payload={"stage": stage, "attempt": attempt, "at": _now()}))
+    return ids
+
+
+def _superseded_message(ps: ProjectStore, chk_id: str) -> str:
+    r = ps.db.execute("SELECT payload FROM events WHERE type='checkpoint.superseded' AND entity_id=? ORDER BY seq DESC "
+                      "LIMIT 1", (chk_id,)).fetchone()
+    p = json.loads(r["payload"]) if r else {"stage": "?", "attempt": "?"}
+    return (f"checkpoint {chk_id} was superseded: attempt {p['attempt']} of {p['stage']!r} replaced the attempt it "
+            f"belonged to; answer the open checkpoint of {p['stage']!r} instead")
 
 
 def opened_in_place_of(ps: ProjectStore, kind: str, chk_id: str) -> str | None:
@@ -93,3 +115,9 @@ def _answered(conn: sqlite3.Connection, ev: Event) -> None:
     p = ev.payload
     conn.execute("UPDATE checkpoints SET status='answered', answer=?, answered_by=?, answered_at=? WHERE id=?",
                  (json.dumps(p["answer"]), p["answered_by"], p["answered_at"], ev.entity_id))
+
+
+@projection("checkpoint.superseded")
+def _superseded(conn: sqlite3.Connection, ev: Event) -> None:
+    conn.execute("UPDATE checkpoints SET status='superseded', answered_at=? WHERE id=? AND status='open'",
+                 (ev.payload["at"], ev.entity_id))

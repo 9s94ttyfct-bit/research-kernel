@@ -203,7 +203,7 @@ def build_registry(k: Kernel, browser: Callable[[], BrowserService | None] | Non
     # ---- checkpoints ----
     class CheckpointList(BaseModel):
         project: str
-        status: Literal["open", "answered", "cancelled"] | None = None
+        status: Literal["open", "answered", "cancelled", "superseded"] | None = None
 
     @tool("rk_checkpoint_list", "List checkpoints (questions waiting for the researcher).", CheckpointList, False)
     def _chk_list(ctx: CallContext, a: CheckpointList) -> Out:

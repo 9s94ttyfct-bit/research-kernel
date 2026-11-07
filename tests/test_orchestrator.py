@@ -398,6 +398,61 @@ def test_d1_back_edge_reopens_its_target(project):
     assert edge_count(ps, "topics->gaps") == 1 and edge_count(ps, "gaps->gaps") == 0  # a reopened stage is no rerun
 
 
+def _open_review(ctx):
+    return StageOutcome("waiting_human", checkpoint_id=create_checkpoint(
+        ctx.ps, "topic_review", "Pick", {"attempt": ctx.attempt}, stage="topics", actor=ctx.actor))
+
+
+def _to_topics(o, ps):
+    for stage in ("intake", "landscape", "gaps"):
+        o.run_stage("demo", stage, actor="tester")
+        assert o.advance("demo", actor="tester").ok
+    assert current_stage(ps) == "topics"
+
+
+def test_d1_rerun_does_not_supersede_an_open_review(project):
+    """Running the stage again while its review is open would leave the researcher answering a review that is never
+    applied: it returns the open review instead, with no new attempt and no edge."""
+    k, ps = project
+    topics = FakeWorker(runs=[_open_review, _open_review])
+    o = _orch(k, _workers(topics=topics))
+    _to_topics(o, ps)
+    first = o.run_stage("demo", "topics", actor="tester")
+    again = o.run_stage("demo", "topics", guidance="other topics", actor="tester")
+    assert again.status == "waiting_human" and again.checkpoint_id == first.checkpoint_id
+    assert "is open" in again.reason
+    assert topics.kinds() == ["run"] and edge_count(ps, "topics->topics") == 0
+    assert [c["id"] for c in list_checkpoints(ps, "open")] == [first.checkpoint_id]
+
+
+def test_orphaned_review_of_an_interrupted_attempt_is_superseded(project):
+    """A crash between opening a review and recording that the attempt ran leaves an open review no attempt waits
+    on; the next attempt supersedes it: hidden from the open list, and an answer to it is refused."""
+    k, ps = project
+    orphan: dict = {}
+
+    def crash(ctx):
+        orphan["id"] = _open_review(ctx).checkpoint_id
+        raise RuntimeError("the kernel crashed")
+
+    topics = FakeWorker(runs=[crash, _open_review])
+    o = _orch(k, _workers(topics=topics))
+    _to_topics(o, ps)
+    with pytest.raises(RuntimeError):
+        o.run_stage("demo", "topics", actor="tester")
+    out = o.run_stage("demo", "topics", actor="tester")
+    old = get_checkpoint(ps, orphan["id"])
+    assert old["status"] == "superseded"
+    assert [c["id"] for c in list_checkpoints(ps, "open")] == [out.checkpoint_id]
+    assert [c["id"] for c in list_checkpoints(ps, "superseded")] == [orphan["id"]]
+    with pytest.raises(ValueError) as e:
+        answer_checkpoint(ps, orphan["id"], {"decision": "approve"}, answered_by="human", actor="tester")
+    assert str(e.value) == (f"checkpoint {orphan['id']} was superseded: attempt 2 of 'topics' replaced the attempt it "
+                            f"belonged to; answer the open checkpoint of 'topics' instead")
+    rebuild(ps.db)
+    assert get_checkpoint(ps, orphan["id"])["status"] == "superseded"
+
+
 @pytest.mark.parametrize("project", [{"production_mode": "collab"}], indirect=True)
 def test_d1_third_back_edge_opens_stage_blocked_in_p2(project):
     k, ps = project

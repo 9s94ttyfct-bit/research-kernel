@@ -354,7 +354,8 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
 
     # ---- checkpoints and progress ----------------------------------------------------------------------------
     @r.get("/ui/api/checkpoints")
-    def checkpoints(request: Request, status: Literal["open", "answered", "cancelled"] | None = None) -> JSONResponse:
+    def checkpoints(request: Request,
+                    status: Literal["open", "answered", "cancelled", "superseded"] | None = None) -> JSONResponse:
         ctx = ctx_dep(request)
         args = {"project": request.query_params.get("project", "")}
         if status:
