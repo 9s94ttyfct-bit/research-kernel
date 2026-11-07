@@ -119,13 +119,36 @@ def set_final(ps: ProjectStore, record_id: str, attempt: int, phase: ScreeningPh
 
 # ---- extractions ----
 def add_extraction(ps: ProjectStore, attempt: int, item_id: str, field: str, value: Any, note_id: str | None,
-                   sufficient: bool, *, actor: str, actor_kind: ActorKind = "agent", problem: str | None = None) -> str:
-    """One extracted value (any JSON) of a protocol extraction field, with the note that supports it."""
+                   sufficient: bool, *, actor: str, actor_kind: ActorKind = "agent", problem: str | None = None,
+                   carried_from: int | None = None) -> str:
+    """One extracted value (any JSON) of a protocol extraction field, with the note that supports it. ``sufficient``
+    False is ``sufficient="low"``: the value comes from the abstract alone. ``carried_from``: the interrupted attempt
+    it was made in, when carried over (``rk.production.resume``)."""
     eid = new_id("ext")
     ps.apply(NewEvent(type="extraction.added", entity_id=eid, actor_kind=actor_kind, actor=actor,
                       payload={"attempt": attempt, "item_id": item_id, "field": field, "value": value,
-                               "note_id": note_id, "sufficient": bool(sufficient), "problem": problem}))
+                               "note_id": note_id, "sufficient": bool(sufficient), "problem": problem,
+                               "carried_from": carried_from}))
     return eid
+
+
+def add_extraction_note(ps: ProjectStore, attempt: int, kind: str, *, actor: str, **fields) -> None:
+    """Something extraction notes in the attempt (``extraction_notes``)."""
+    ps.apply(NewEvent(type="extraction.noted", entity_id=None, actor_kind="kernel", actor=actor,
+                      payload={"attempt": attempt, "kind": kind, **fields}))
+
+
+def extraction_notes(ps: ProjectStore, attempt: int, *, kind: str | None = None) -> list[dict]:
+    """What extraction noted in the attempt, in order: ``study`` (one per included study once it is read, carried
+    over or flagged: its retraction check, whether it is flagged, the text it was read on and its sufficiency, the
+    reader's notes and its problems) and ``degraded`` (what the P1 degrade marked missing or took out of the
+    evidence)."""
+    rows = ps.db.execute("SELECT payload FROM events WHERE type='extraction.noted' "
+                         "AND json_extract(payload, '$.attempt')=? ORDER BY seq", (attempt,))
+    notes = [json.loads(r["payload"]) for r in rows]
+    return [n for n in notes if kind is None or n["kind"] == kind]
+
+
 
 
 # ---- votes ----
@@ -300,10 +323,10 @@ def _final(conn: sqlite3.Connection, ev: Event) -> None:
 @projection("extraction.added")
 def _extraction(conn: sqlite3.Connection, ev: Event) -> None:
     p = ev.payload
-    conn.execute("INSERT OR REPLACE INTO extractions(id, attempt, item_id, field, value, note_id, sufficient, problem) "
-                 "VALUES (?,?,?,?,?,?,?,?)", (ev.entity_id, p["attempt"], p["item_id"], p["field"],
-                                              json.dumps(p["value"]), p["note_id"], int(p["sufficient"]),
-                                              p["problem"]))
+    conn.execute("INSERT OR REPLACE INTO extractions(id, attempt, item_id, field, value, note_id, sufficient, problem, "
+                 "carried_from) VALUES (?,?,?,?,?,?,?,?,?)",
+                 (ev.entity_id, p["attempt"], p["item_id"], p["field"], json.dumps(p["value"]), p["note_id"],
+                  int(p["sufficient"]), p["problem"], p.get("carried_from")))
 
 
 @projection("vote.decided")

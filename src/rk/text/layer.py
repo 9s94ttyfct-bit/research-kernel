@@ -21,7 +21,7 @@ class Page(BaseModel):
 
 
 class TextLayer(BaseModel):
-    source_kind: Literal["pdf", "jats", "bioc", "html"]
+    source_kind: Literal["pdf", "jats", "bioc", "html", "abstract"]  # abstract: in memory only (rk.notes.abstract_layer)
     pages: list[Page]
     sha256: str
 

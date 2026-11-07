@@ -243,12 +243,13 @@ def answer(wb, cp: dict, body: dict) -> None:
 def test_stages_route_marks_plan5_stages(wb):
     g = wb.client.get("/ui/api/stages", params={"project": "demo"}).json()["result"]
     assert [s["stage"] for s in g["graph"]] == stages_for("critical_review")
-    assert [s["status"] for s in g["graph"]] == ["pending"] * 7 + ["plan5"] * 7  # protocol and search_screen have workers
+    # protocol, search_screen and read_extract have workers
+    assert [s["status"] for s in g["graph"]] == ["pending"] * 8 + ["plan5"] * 6
     assert (g["paper_type"], g["discovery_mode"], g["run"], g["runs_available"]) == ("critical_review", "d2", None,
                                                                                       True)
     assert {(e["edge"], e["count"], e["limit"]) for e in g["back_edges"]} == {
         ("gaps->landscape", 0, 2), ("topics->gaps", 0, 2), ("question->topics", 0, 2), ("protocol->question", 0, 2),
-        ("search_screen->protocol", 0, 2)}
+        ("search_screen->protocol", 0, 2), ("read_extract->search_screen", 0, 2)}
 
     wb.orch.workers["gaps"] = FakeWorker(runs=[StageOutcome("rerun", reason="too few gaps")])
     wb.orch.workers["topics"] = FakeWorker(runs=[lambda ctx: StageOutcome(
@@ -260,7 +261,7 @@ def test_stages_route_marks_plan5_stages(wb):
     assert [s["status"] for s in g["graph"][:5]] == ["passed", "passed", "passed", "active", "pending"]
     assert (by["topics"]["state"], by["topics"]["attempt"]) == ("waiting", 1)
     assert [(e["edge"], e["count"]) for e in by["gaps"]["back_edges"]] == [("gaps->gaps", 1)]
-    assert by["read_extract"] == {"stage": "read_extract", "status": "plan5"}
+    assert by["synthesize"] == {"stage": "synthesize", "status": "plan5"}
     assert (g["run"]["id"], g["run"]["status"], g["run_active"]) == (run_id, "paused_waiting_human", True)
     assert g["current"] == "topics"
 

@@ -1,4 +1,4 @@
-"""Resuming an interrupted attempt of an enumerated stage (``search_screen``, later ``read_extract``).
+"""Resuming an interrupted attempt of an enumerated stage (``search_screen``, ``read_extract``).
 
 A rate cap, a budget or a crash interrupts an attempt (it has no ``stage.ran``); the engine then runs the stage again
 as a new attempt. An enumerated stage's work grows with its records, so the hourly call caps would interrupt every
@@ -12,6 +12,10 @@ work of the interrupted attempts right before it, item by item, instead of doing
 - keyed by library item, not record (records are attempt-keyed; the search runs again and gives the same items), the
   newest attempt first.
 
+What is carried: in ``search_screen`` each screener's decision and the final of a phase (``carried_screening``); in
+``read_extract`` a study the interrupted attempt finished (its ``study`` note, written after its values) with its
+extraction values (``carried_extraction``); a study it left half-read is read again.
+
 A carried row keeps the attempt it was made in (``carried_from``), so PRISMA and audits can tell it apart."""
 
 from __future__ import annotations
@@ -21,7 +25,13 @@ from dataclasses import dataclass, field
 
 from rk.orchestrator.state import attempt_ran
 from rk.production.models import ScreeningPhase
-from rk.production.store import decisions, finals, records
+from rk.production.store import (
+    decisions,
+    extraction_notes,
+    extractions,
+    finals,
+    records,
+)
 from rk.store.events import NewEvent
 from rk.store.project import ProjectStore
 
@@ -86,4 +96,26 @@ def carried_screening(ps: ProjectStore, stage: str, attempt: int, protocol_hash:
             c = out.setdefault(items[f["record_id"]], Carried())
             if c.final is None:
                 c.final = {**f, "carried_from": f["carried_from"] or a}
+    return out
+
+
+@dataclass
+class CarriedStudy:
+    """A study an interrupted attempt finished: its ``study`` note and its extraction rows (each with
+    ``carried_from``, the attempt it was made in)."""
+    note: dict
+    values: list[dict]
+
+
+def carried_extraction(ps: ProjectStore, stage: str, attempt: int, protocol_hash: str) -> dict[str, CarriedStudy]:
+    """item id -> the newest study ``attempt`` carries over of the reading (``carry_attempts``): only a study the
+    interrupted attempt finished (its ``study`` note), with its extraction values."""
+    out: dict[str, CarriedStudy] = {}
+    for a in carry_attempts(ps, stage, attempt, protocol_hash):
+        for n in extraction_notes(ps, a, kind="study"):
+            if n["item_id"] in out:
+                continue
+            made = n.get("carried_from") or a
+            values = [{**e, "carried_from": e["carried_from"] or made} for e in extractions(ps, a, item_id=n["item_id"])]
+            out[n["item_id"]] = CarriedStudy({**n, "carried_from": made}, values)
     return out

@@ -206,7 +206,7 @@ def test_unrunnable_stage_is_unavailable(project):
     assert e.value.type == "stage_unavailable"
 
     bare = _orch(k, {s: FakeWorker() for s in DISCOVERY if s != "intake"})  # the default production workers only
-    assert bare.runnable(ps) == [*DISCOVERY, "protocol", "search_screen"]
+    assert bare.runnable(ps) == [*DISCOVERY, "protocol", "search_screen", "read_extract"]
     with pytest.raises(ToolError) as e:
         bare.run_stage("demo", "read_extract", actor="tester")
     assert e.value.type == "stage_unavailable"
@@ -218,16 +218,16 @@ def test_start_until_a_stage_without_worker_is_refused(tmp_home, replay_http):
         reg = build_registry(k)
         m = RunManager(k, reg, _orch(k, {s: FakeWorker() for s in DISCOVERY if s != "intake"}, reg), poll_s=0.02)
         try:
-            with pytest.raises(ToolError) as e:  # before question too: read_extract has no worker
-                m.start("demo", "read_extract", actor="tester")
+            with pytest.raises(ToolError) as e:  # before question too: synthesize has no worker
+                m.start("demo", "synthesize", actor="tester")
             assert e.value.type == "stage_unavailable" and "no worker yet" in e.value.message
             run_id = m.start("demo", "question", actor="tester")
             _wait(lambda: run_row(ps, run_id)["status"] == "done")
             freeze_an_rq(ps)
             with pytest.raises(ToolError) as e:
-                m.start("demo", "read_extract", actor="tester")
+                m.start("demo", "synthesize", actor="tester")
             assert e.value.type == "stage_unavailable" and "no worker yet" in e.value.message
-            assert m.status("demo")["until_options"] == ["protocol", "search_screen"]
+            assert m.status("demo")["until_options"] == ["protocol", "search_screen", "read_extract"]
         finally:
             m.close()
     finally:

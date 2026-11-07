@@ -358,8 +358,9 @@ CREATE TABLE IF NOT EXISTS extractions (
     field      TEXT NOT NULL,
     value      TEXT NOT NULL,                  -- JSON
     note_id    TEXT,
-    sufficient INTEGER NOT NULL,
-    problem    TEXT
+    sufficient INTEGER NOT NULL,               -- 0: sufficient="low" (read on the abstract alone)
+    problem    TEXT,
+    carried_from INTEGER                       -- the interrupted attempt it was made in, when carried over
 );
 CREATE INDEX IF NOT EXISTS extractions_attempt ON extractions(attempt, item_id);
 

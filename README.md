@@ -132,6 +132,14 @@ degrades.
   `screening_disagreements` checkpoints of up to 25 records (P2, `{"decisions": {record_id: "include"|"exclude"}}`)
   or to the two-vendor vote (P1, which excludes when the judges disagree). An attempt interrupted by an hourly cap is
   resumed: the next attempt reuses the decisions already made under the same frozen protocol.
+- **Reading and extraction (read_extract).** For every study included at full text the retraction status is
+  checked (V-RETRACT; a retracted or withdrawn study is flagged, not extracted, and listed for the limitations), then
+  the reader extracts each protocol field with a quote the kernel verifies (V-QUOTE, against the full text, or the
+  abstract for a study with no full text: those values carry `sufficient=low`). A value whose quote is not verbatim
+  is kept as a problem, never as evidence; a field the study does not report is `not_reported` with a quote of the
+  section searched. The gate names each study and field without a verified value; at the edge limit P2 asks
+  (`stage_blocked`) and P1 marks those values missing as a limitation. An attempt interrupted by an hourly cap goes
+  on from the studies already read.
 
 ```bash
 uv run rk project intake --audience "…" --paper-type critical_review --mode d2 --production p2 --topics-n 6

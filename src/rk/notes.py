@@ -7,14 +7,14 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from rk.canon import canonical_json
+from rk.canon import canonical_json, sha256_hex
 from rk.fulltext import latest_snapshot
 from rk.ids import new_id
 from rk.library.service import Library, fts_append
 from rk.store.events import Event, NewEvent
 from rk.store.project import ProjectStore
 from rk.store.projections import projection
-from rk.text.layer import build_norm_keys, normalize_query
+from rk.text.layer import Page, TextLayer, build_norm_keys, normalize_query
 from rk.verify.hedge import hedge_level
 from rk.verify.paraphrase import check_paraphrase
 from rk.verify.quote import verify_quote, verify_quote_at
@@ -38,6 +38,9 @@ class NoteIn(BaseModel):
     role_in_source: RoleInSource | None = None
     keywords: list[str] = Field(default_factory=list)
     source_span: str | None = None
+    # what a quote or paraphrase is verified against: the item's text layer, or its abstract (an item read on its
+    # abstract alone, e.g. a study with no full text); an abstract locator is on page 1 of the abstract
+    against: Literal["text", "abstract"] = "text"
 
 
 class NoteResult(BaseModel):
@@ -64,10 +67,15 @@ def add_note(ps: ProjectStore, lib: Library, note: NoteIn, *, actor: str,
     locator = note.locator
     snapshot_sha = None
     if note.kind in ("quote", "paraphrase"):
-        snap = latest_snapshot(ps, note.source_id)
-        if snap is None:
-            raise NoteRejected("no_snapshot", hint="fetch full text first (rk fetch)")
-        snapshot_sha, layer = snap
+        if note.against == "abstract":
+            layer = abstract_layer(lib.get(note.source_id).abstract)
+            if layer is None:
+                raise NoteRejected("no_abstract", hint="the item has no abstract to verify against")
+        else:
+            snap = latest_snapshot(ps, note.source_id)
+            if snap is None:
+                raise NoteRejected("no_snapshot", hint="fetch full text first (rk fetch)")
+            snapshot_sha, layer = snap
         target = note.text if note.kind == "quote" else note.source_span
         if note.kind == "paraphrase" and not (note.source_span or "").strip():
             raise ValueError("paraphrase notes need source_span (the original passage)")
@@ -83,6 +91,8 @@ def add_note(ps: ProjectStore, lib: Library, note: NoteIn, *, actor: str,
                                best_snippet=q.best_snippet, best_score=q.best_score, page=q.page)
         locator = Locator(page=q.page, start=q.start, end=q.end)
         verified["quote"] = {"ok": True, "page": q.page, "located": located}
+        if note.against == "abstract":
+            verified["quote"]["against"] = "abstract"
         if note.kind == "paraphrase":
             if verify_quote(note.text, layer).ok:
                 raise NoteRejected("too_close", reason_detail="paraphrase text occurs verbatim in the source")
@@ -105,6 +115,13 @@ def add_note(ps: ProjectStore, lib: Library, note: NoteIn, *, actor: str,
     ps.apply(NewEvent(type="note.added", entity_id=note.source_id, payload={"note": data}, actor_kind=actor_kind,
                       actor=actor))
     return NoteResult(note_id=nid, locator=locator, verified=verified)
+
+
+def abstract_layer(abstract: str | None) -> TextLayer | None:
+    """An abstract as a one-page text layer (in memory only, never a snapshot), or ``None`` when there is none."""
+    if not (abstract or "").strip():
+        return None
+    return TextLayer(source_kind="abstract", pages=[Page(n=1, text=abstract)], sha256=sha256_hex(abstract))
 
 
 def list_notes(ps: ProjectStore, source_id: str | None = None) -> list[dict]:
