@@ -13,10 +13,12 @@ from rk.orchestrator.runs import RunManager
 from rk.orchestrator.state import record_ran
 from rk.production import screening, store
 from rk.production.models import Protocol
+from rk.production.resume import carry_attempts
 from rk.production.screening import (
     BATCH,
     SearchScreenWorker,
     excluded_by_disagreement,
+    include_differs,
     sample_size,
     screening_notes,
     switches_to_dual,
@@ -42,17 +44,18 @@ def env(tmp_home, replay_http, request):
 
 class Screeners(ScriptedExecutor):
     """Screeners decide by the record's title, which ends ``[a/b]``: screener_a's and screener_b's decision (yes, no,
-    unclear; ``-`` leaves the record out of the output). ``extra[role]`` is added to that role's first output (e.g. a
-    decision on a record not in the batch). Judges vote by title: ``votes[title] = (judge, judge_2)``."""
+    unclear; ``-`` leaves the record out of the output), unless ``overrides[title]`` gives another ``"a/b"``.
+    ``extra[role]`` is added to that role's first output (e.g. a decision on a record not in the batch). Judges vote by
+    title: ``votes[title] = (judge, judge_2)``."""
 
     def __init__(self, *, votes: dict[str, tuple[str, str]] | None = None, extra: dict[str, list[dict]] | None = None,
-                 **kw):
+                 overrides: dict[str, str] | None = None, **kw):
         super().__init__({}, **kw)
-        self.votes, self.extra = votes or {}, extra or {}
+        self.votes, self.extra, self.overrides = votes or {}, extra or {}, overrides or {}
 
-    @staticmethod
-    def says(title: str, role: str) -> str:
-        a, b = title[title.rindex("[") + 1:-1].split("/")
+    def says(self, title: str, role: str) -> str:
+        pair = self.overrides.get(title) or title[title.rindex("[") + 1:-1]
+        a, b = pair.split("/")
         return a if role == "screener_a" else b
 
     def run(self, role, instructions, inputs, output_schema, **kw):
@@ -258,9 +261,13 @@ def test_scoping_sample_switches_to_dual_above_10_percent(env, b):
         (cp,) = list_checkpoints(ps, "open")
         assert len(cp["options"]["record_ids"]) == 20 and f == {}
 
-    # the sample is seeded by the protocol hash: another attempt over the same hits samples the same works
-    item = {r["id"]: r["item_id"] for r in store.records(ps, 1) + store.records(ps, 2)}
-    SearchScreenWorker().run(_ctx(env, Screeners(), src, attempt=2))
+    # the sample is seeded by the protocol hash: another attempt over the same hits samples the same works (attempt 1
+    # ran to completion, so attempt 2 carries nothing over and draws its sample afresh)
+    record_ran(ps, "search_screen", 1, out.status, out.reason, actor="tester")
+    item = {r["id"]: r["item_id"] for r in store.records(ps, 1)}
+    fresh = Screeners()
+    SearchScreenWorker().run(_ctx(env, fresh, src, attempt=2))
+    assert _sizes(fresh, "screener_b")[0] == 2  # screened again, not carried
     (note2,) = screening_notes(ps, 2, kind="scoping_sample")
     item |= {r["id"]: r["item_id"] for r in store.records(ps, 2)}
     assert [item[r] for r in note2["sample"]] == [item[r] for r in note["sample"]]
@@ -356,19 +363,51 @@ def test_record_cap_backs_to_protocol(env):
     assert ex.calls == []
 
 
-def test_incomplete_searches_reach_the_outcome(env, monkeypatch):
-    _, ps, _ = env
-    _freeze(ps)
+WHY = "s2 returned only the first 1000 results for query 'aspirin': later results were not searched"
+
+
+def _incomplete(monkeypatch) -> None:
     real = screening.run_strategy
-    why = "s2 returned only the first 1000 results for query 'aspirin': later results were not searched"
 
     def incomplete(ctx, protocol):
         res = real(ctx, protocol)
-        return SearchResult(res.record_ids, [why], res.stopped_at_cap)
+        return SearchResult(res.record_ids, [WHY], res.stopped_at_cap)
 
     monkeypatch.setattr(screening, "run_strategy", incomplete)
+
+
+def test_incomplete_searches_are_a_limitation_of_a_critical_review(env, monkeypatch):
+    _, ps, _ = env
+    _freeze(ps)
+    _incomplete(monkeypatch)
     out = SearchScreenWorker().run(_ctx(env, Screeners(), FakeSources({"aspirin": _works("yes/-")})))
-    assert out.status == "done" and why in out.reason and "incomplete search" in out.reason
+    assert out.status == "done" and WHY in out.reason and "incomplete search" in out.reason
+    (note,) = screening_notes(ps, 1, kind="incomplete_searches")
+    assert (note["searches"], note["phase"]) == ([WHY], None)
+
+
+@pytest.mark.parametrize("env", [SR_P2], indirect=True)
+def test_incomplete_search_blocks_systematic_screening(env, monkeypatch):
+    _, ps, _ = env
+    _freeze(ps)
+    src = FakeSources({"aspirin": [_work("Aspirin split [yes/no]", 1)]})
+    w = SearchScreenWorker()
+    out = w.run(_ctx(env, Screeners(), src))  # complete search: the disagreement goes to you
+    (cp,) = list_checkpoints(ps, "open")
+    with monkeypatch.context() as m:
+        _incomplete(m)
+        ex = Screeners()
+        blocked = w.run(_ctx(env, ex, src, attempt=2))
+    assert (blocked.status, blocked.to) == ("back_edge", "protocol")
+    assert WHY in blocked.reason and "Narrow it or drop the source" in blocked.reason
+    assert ex.calls == [] and screening_notes(ps, 2, kind="incomplete_searches") == []
+
+    # the same rule when an answer is applied
+    assert out.status == "waiting_human"
+    cp = _answer(ps, cp["id"], {"decisions": {r: "include" for r in cp["options"]["record_ids"]}})
+    monkeypatch.setattr(screening, "incomplete_searches", lambda ps, attempt: [WHY])
+    res = w.on_answer(_ctx(env, Screeners(), src), cp)
+    assert (res.status, res.to) == ("back_edge", "protocol") and WHY in res.reason
 
 
 # ---- resuming an interrupted attempt ----
@@ -459,3 +498,81 @@ def test_carry_over_needs_the_same_protocol(env):
     assert SearchScreenWorker().run(_ctx(env, fresh, src, attempt=2)).status == "done"
     assert (_sizes(fresh, "screener_a"), _sizes(fresh, "screener_b")) == ([25, 5], [25, 5])
     assert not any(d["carried_from"] for d in store.decisions(ps, 2))
+
+
+def test_scoping_switch_counts_include_differences():
+    assert [include_differs(a, b) for a, b in (("yes", "unclear"), ("unclear", "unclear"), ("no", "no"),
+                                              ("yes", "yes"), (None, "yes"))] == [False] * 5
+    assert [include_differs(a, b) for a, b in (("yes", "no"), ("no", "unclear"), (None, "no"))] == [True] * 3
+
+
+@pytest.mark.parametrize("env", [SCOPING_P2], indirect=True)
+def test_scoping_sample_of_unclear_pairs_does_not_switch(env):
+    _, ps, _ = env
+    _freeze(ps)
+    ex = Screeners()
+    SearchScreenWorker().run(_ctx(env, ex, FakeSources({"aspirin": _works("unclear/unclear", n=20)})))
+    (note,) = screening_notes(ps, 1, kind="scoping_sample")
+    assert (len(note["sample"]), note["disagreements"], note["switched"]) == (2, 0, False)
+    assert "unclear" in note["measure"]
+    assert _sizes(ex, "screener_b") == [2]  # single screening for the rest
+    (cp,) = list_checkpoints(ps, "open")  # the dual sample's unclear pairs are still disagreements to settle
+    assert cp["options"]["record_ids"] == note["sample"]
+
+
+@pytest.mark.parametrize("env", [SR_P1], indirect=True)
+def test_carried_vote_needs_every_screener_decision_carried(env):
+    _, ps, _ = env
+    _freeze(ps)
+    works = [_work("Aspirin X [yes/-]", 1), _work("Aspirin Y [yes/no]", 2)]
+    src = FakeSources({"aspirin": works})
+    first = CappedAt("judge", 2, votes={"Aspirin X [yes/-]": ("include", "include")})
+    with pytest.raises(RateCapped):  # X (screener_b silent: a disagreement) is voted on, Y's vote is capped
+        SearchScreenWorker().run(_ctx(env, first, src))
+    assert _sizes(first, "screener_b") == [2, 1]
+
+    # screener_b is asked about X again and now decides: X's earlier vote is not reused
+    resumed = Screeners(overrides={"Aspirin X [yes/-]": "yes/no"},
+                        votes={"Aspirin X [yes/-]": ("exclude", "exclude"), "Aspirin Y [yes/no]": ("include", "include")})
+    assert SearchScreenWorker().run(_ctx(env, resumed, src, attempt=2)).status == "done"
+    assert (_sizes(resumed, "screener_a"), _sizes(resumed, "screener_b")) == ([], [1])
+    assert sorted(c["inputs"]["subject"]["record"]["title"] for c in resumed.of("judge")) == [
+        "Aspirin X [yes/-]", "Aspirin Y [yes/no]"]
+    t = _titles(env, 2)
+    got = {t[f["record_id"]]: (f["include"], f["decided_by"], f["carried_from"]) for f in store.finals(ps, 2, phase=TA)}
+    assert got == {"Aspirin X [yes/-]": ("no", "vote", None), "Aspirin Y [yes/no]": ("yes", "vote", None)}
+
+
+@pytest.mark.parametrize("env", [SR_P2], indirect=True)
+def test_unmarked_interrupted_attempt_is_passed_over(env):
+    _, ps, _ = env
+    _freeze(ps)
+    src = FakeSources({"aspirin": _works("yes/yes", n=30)})
+    with pytest.raises(RateCapped):
+        SearchScreenWorker().run(_ctx(env, CappedAt("screener_b", 2), src))
+    # attempt 2 was interrupted before it marked its protocol (it did nothing); attempt 3 carries attempt 1 over
+    h = store.frozen_protocol(ps)["frozen_hash"]
+    assert carry_attempts(ps, "search_screen", 3, h) == [1]
+    resumed = Screeners()
+    assert SearchScreenWorker().run(_ctx(env, resumed, src, attempt=3)).status == "done"
+    assert (_sizes(resumed, "screener_a"), _sizes(resumed, "screener_b")) == ([], [5])
+    assert {d["carried_from"] for d in store.decisions(ps, 3)} == {1, None}
+
+
+@pytest.mark.parametrize("env", [SCOPING_P2], indirect=True)
+def test_scoping_carry_over_keeps_the_sample_and_the_switch(env):
+    _, ps, _ = env
+    _freeze(ps)
+    src = FakeSources({"aspirin": _works("yes/no", n=30)})
+    capped = CappedAt("screener_b", 2)  # the sample (3) disagrees, so screener_b screens the rest: capped there
+    with pytest.raises(RateCapped):
+        SearchScreenWorker().run(_ctx(env, capped, src))
+    assert (_sizes(capped, "screener_a"), _sizes(capped, "screener_b")) == ([3, 25, 2], [3])
+
+    resumed = Screeners()
+    assert SearchScreenWorker().run(_ctx(env, resumed, src, attempt=2)).status == "waiting_human"
+    assert (_sizes(resumed, "screener_a"), _sizes(resumed, "screener_b")) == ([], [25, 2])
+    (note,) = screening_notes(ps, 2, kind="scoping_sample")
+    assert (len(note["sample"]), note["disagreements"], note["switched"]) == (3, 3, True)
+    carried_b = {d["record_id"] for d in store.decisions(ps, 2) if d["screener"] == "screener_b" and d["carried_from"]}
+    assert carried_b == set(note["sample"])

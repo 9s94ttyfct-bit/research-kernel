@@ -7,16 +7,20 @@ with its disagreements. The full-text phase and PRISMA follow the title/abstract
    different known vendors (``screeners_problem``); without them the stage fails before it searches, and
    ``RunManager.start`` refuses a run that would reach the stage.
 2. ``run_strategy`` (``rk.production.search``). Above the protocol's record cap (``check_record_cap``) the stage goes
-   back to ``protocol`` with that reason, in P1 and P2. Searches the strategy could not finish
-   (``SearchResult.incomplete``; the search log keeps them for the PRISMA notes) are named in the stage's reason.
+   back to ``protocol`` with that reason, in P1 and P2. A search the strategy could not finish
+   (``SearchResult.incomplete``, kept in the search log, each naming its source and query) sends a systematic or
+   scoping review back to ``protocol`` too ("narrow it or drop the source"; the edge limits apply), here and when an
+   answer is applied (``blocks_on_incomplete_search``). A critical review or research proposal goes on: the
+   incomplete searches are noted as a limitation (``incomplete_searches``) and named in the stage's reason.
 3. A record in a language outside the protocol's ``languages`` (``language_exclusions``) is excluded without
    screening: final ``no``, decided by ``rule``, reason ``"language"``.
 4. The screening mode of the paper type (``screening_mode``):
    - systematic review: dual;
    - scoping review: single (``screener_a``) plus a dual sample of 10% of the records (``sample_size``, rounded up),
      drawn over the records in search order by a generator seeded with the frozen protocol's hash. When more than
-     10% of the sample are disagreements (``switches_to_dual``), every remaining record is screened by both
-     screeners. The sample, its disagreements and the switch are noted (``scoping_sample``);
+     10% of the sample differ on included-or-not (``include_differs``: unclear and a missing decision count as
+     include, so both unclear or the same direction is no difference; ``switches_to_dual``), every remaining record
+     is screened by both screeners. The sample, its differences and the switch are noted (``scoping_sample``);
    - critical review and research proposal: single; the screener's reason is the selection reason.
 5. Records go to a screener in batches of ``BATCH`` (title, abstract, year, venue, language). Every decision is a
    ``screening.decided``. A decision on a record that is not in the batch, or a second one on a record, is ignored and
@@ -39,9 +43,10 @@ with its disagreements. The full-text phase and PRISMA follow the title/abstract
      disagreed; P1 conservative" when the vote took the conservative option): ``excluded_by_disagreement`` lists the
      exclusions for PRISMA and the limitations.
 8. An attempt interrupted by a rate cap, a budget or a crash is resumed by the next attempt
-   (``rk.production.resume``): the screener decisions and the vote or human finals of the interrupted attempts right
-   before it, under the same frozen protocol, are carried over by library item (``carried_from``) instead of asked
-   again; a rerun of an attempt that ran to completion screens afresh."""
+   (``rk.production.resume``): the screener decisions of the interrupted attempts right before it, under the same
+   frozen protocol, are carried over by library item (``carried_from``) instead of asked again, and so is the vote or
+   human final of a disagreement when every screener decision on that record was carried (a screener asked again
+   may decide differently); a rerun of an attempt that ran to completion screens afresh."""
 
 from __future__ import annotations
 
@@ -58,6 +63,7 @@ from rk.checkpoints import (
     get_checkpoint,
     opened_in_place_of,
 )
+from rk.discovery.models import Intake
 from rk.discovery.store import intake_of
 from rk.llm.drivers import DriverSpec
 from rk.llm.vendors import vendor_of
@@ -93,11 +99,12 @@ CHOICES = ("include", "exclude")
 CONSERVATIVE = "exclude"
 SCREENERS = ("screener_a", "screener_b")
 SAMPLE_PERCENT = 10  # the scoping review's dual sample, rounded up
-SWITCH_PERCENT = 10  # more disagreements than this share of the sample: dual screening for the rest
+SWITCH_PERCENT = 10  # more differences on included-or-not than this share of the sample: dual for the rest
 ABSTRACT_SHOWN = 800  # characters of an abstract a disagreement checkpoint shows
 
 ScreeningMode = Literal["dual", "sampled", "single"]
 MODES: dict[str, ScreeningMode] = {"systematic_review": "dual", "scoping_review": "sampled"}
+PRISMA_TYPES = frozenset({"systematic_review", "scoping_review"})  # an incomplete search blocks the stage
 
 SCREEN_TASK = (
     "Screen every given record against the eligibility criteria, using only its title, abstract and metadata. Give "
@@ -128,21 +135,28 @@ def screening_mode(paper_type: str) -> ScreeningMode:
     return MODES.get(paper_type, "single")
 
 
+def blocks_on_incomplete_search(paper_type: str) -> bool:
+    """Whether an incomplete search keeps ``search_screen`` from completing (the PRISMA paper types: systematic and
+    scoping reviews); the others go on and record it as a limitation."""
+    return paper_type in PRISMA_TYPES
+
+
 def screeners_problem(settings, paper_type: str) -> str:
     """Why the configured screeners cannot dual-screen for ``paper_type`` (both of known vendors, and different),
     else ``""``; single screening has no such rule."""
     if screening_mode(paper_type) == "single":
         return ""
     seen: list[str] = []
+    vendors: list[str | None] = []
     for role in SCREENERS:
         if role not in settings.drivers:
             seen.append(f"{role} is not configured")
+            vendors.append(None)
             continue
         spec = DriverSpec.parse(settings.drivers[role])
-        seen.append(f"{role} ({spec}) is {vendor_of(spec.provider, spec.model) or 'of an unknown vendor'}")
-    vendors = [vendor_of(s.provider, s.model) for r in SCREENERS if r in settings.drivers
-               for s in [DriverSpec.parse(settings.drivers[r])]]
-    if len(vendors) == 2 and None not in vendors and vendors[0] != vendors[1]:
+        vendors.append(vendor_of(spec.provider, spec.model))
+        seen.append(f"{role} ({spec}) is {vendors[-1] or 'of an unknown vendor'}")
+    if None not in vendors and len(set(vendors)) == len(SCREENERS):
         return ""
     return (f"dual screening ({paper_type}) needs screener_a and screener_b of two different known vendors, but "
             f"{' and '.join(seen)}. Set drivers.screener_a or drivers.screener_b in config.toml (rk providers)")
@@ -153,8 +167,15 @@ def sample_size(n: int) -> int:
     return -(-n * SAMPLE_PERCENT // 100)
 
 
+def include_differs(a: str | None, b: str | None) -> bool:
+    """Whether two decisions differ on included-or-not, the scoping sample's measure: ``unclear`` counts as include
+    (as in single screening, where it goes to the full text), and so does a missing decision (single screening's
+    rule). Both unclear, or the same direction, is no difference."""
+    return (a == "no") != (b == "no")
+
+
 def switches_to_dual(disagreements: int, sampled: int) -> bool:
-    """Whether the sample's disagreements are more than ``SWITCH_PERCENT`` of it."""
+    """Whether the sample's differences on included-or-not are more than ``SWITCH_PERCENT`` of it."""
     return sampled > 0 and disagreements * 100 > SWITCH_PERCENT * sampled
 
 
@@ -170,7 +191,7 @@ def dual_rule(a: str | None, b: str | None) -> Include | None:
 
 
 # ---- notes ----
-def _note(ctx: StageContext, phase: str, kind: str, **fields) -> None:
+def _note(ctx: StageContext, phase: str | None, kind: str, **fields) -> None:
     ctx.ps.apply(NewEvent(type="screening.noted", entity_id=None, actor_kind="kernel", actor=ctx.actor,
                           payload={"attempt": ctx.attempt, "phase": phase, "kind": kind, **fields}))
 
@@ -179,8 +200,10 @@ def screening_notes(ps: ProjectStore, attempt: int, *, kind: str | None = None,
                     phase: str | None = None) -> list[dict]:
     """What screening noted in the attempt, in order (for the PRISMA notes and the limitations): ``stray_decision``
     (a decision on a record not in the batch, or a second one, ignored), ``failed_batch`` (a screener task gave no
-    output), ``missing_decision`` (a record a screener left undecided, also when asked again) and ``scoping_sample``
-    (the scoping review's dual sample and whether it switched to dual screening)."""
+    output), ``missing_decision`` (a record a screener left undecided, also when asked again), ``scoping_sample``
+    (the scoping review's dual sample, its differences on included-or-not and whether it switched to dual screening)
+    and ``incomplete_searches`` (no phase: the searches a critical review or research proposal could not finish,
+    a limitation)."""
     rows = ps.db.execute("SELECT payload FROM events WHERE type='screening.noted' "
                          "AND json_extract(payload, '$.attempt')=? ORDER BY seq", (attempt,))
     notes = [json.loads(r["payload"]) for r in rows]
@@ -298,19 +321,21 @@ def _finalize(ctx: StageContext, phase: str, rids: list[str], dual: set[str], a:
     return disagreements
 
 
+def _no_decision(screener: str) -> dict:
+    return {"screener": screener, "include": None, "criterion": None, "reason": "no decision"}
+
+
 def _views(ps: ProjectStore, attempt: int, phase: str) -> dict[str, list[dict]]:
     """record id -> what each screener decided on it (``include`` None: no decision)."""
     by: dict[str, dict[str, dict]] = {}
     for d in decisions(ps, attempt, phase=phase):
         by.setdefault(d["record_id"], {})[d["screener"]] = {
             "screener": d["screener"], "include": d["include"], "criterion": d["criterion"], "reason": d["reason"]}
-    return {rid: [got.get(s, {"screener": s, "include": None, "criterion": None, "reason": "no decision"})
-                  for s in SCREENERS] for rid, got in by.items()}
+    return {rid: [got.get(s) or _no_decision(s) for s in SCREENERS] for rid, got in by.items()}
 
 
 def _view_of(views: dict[str, list[dict]], rid: str) -> list[dict]:
-    return views.get(rid) or [{"screener": s, "include": None, "criterion": None, "reason": "no decision"}
-                              for s in SCREENERS]
+    return views.get(rid) or [_no_decision(s) for s in SCREENERS]
 
 
 # ---- disagreements ----
@@ -320,8 +345,8 @@ def _checkpoints(ps: ProjectStore, stage: str, attempt: int, phase: str) -> list
     return [get_checkpoint(ps, r["id"]) for r in rows.fetchall()]
 
 
-def _prompt(ctx: StageContext, phase: str, record_ids: list[str], batch: int, batches: int, why: str) -> str:
-    protocol = Protocol.model_validate(frozen_protocol(ctx.ps)["body"])
+def _prompt(ctx: StageContext, protocol: Protocol, phase: str, record_ids: list[str], batch: int, batches: int,
+            why: str) -> str:
     views = _views(ctx.ps, ctx.attempt, phase)
     lines = [why, ""] if why else []
     head = (f"Screening disagreements ({PHASE_WORDS[phase]} screening), checkpoint {batch} of {batches}: the two "
@@ -341,13 +366,13 @@ def _prompt(ctx: StageContext, phase: str, record_ids: list[str], batch: int, ba
     return "\n".join(lines)
 
 
-def _open(ctx: StageContext, phase: str, record_ids: list[str], *, batch: int, batches: int,
+def _open(ctx: StageContext, protocol: Protocol, phase: str, record_ids: list[str], *, batch: int, batches: int,
           replaces: str | None = None, why: str = "") -> str:
     """A ``screening_disagreements`` checkpoint on ``record_ids``; opened in answer to ``replaces``, it is opened
     once."""
     if replaces is not None and (existing := opened_in_place_of(ctx.ps, KIND, replaces)) is not None:
         return existing
-    return create_checkpoint(ctx.ps, KIND, _prompt(ctx, phase, record_ids, batch, batches, why),
+    return create_checkpoint(ctx.ps, KIND, _prompt(ctx, protocol, phase, record_ids, batch, batches, why),
                              {"attempt": ctx.attempt, "phase": phase, "record_ids": record_ids,
                               "choices": list(CHOICES), "batch": batch, "batches": batches, "replaces": replaces},
                              stage=ctx.stage, actor=ctx.actor)
@@ -395,8 +420,12 @@ def _vote_on(ctx: StageContext, phase: str, rid: str, context: dict, views: dict
     set_final(ctx.ps, rid, ctx.attempt, phase, inc, "vote", reason, actor=ctx.actor)
 
 
+def _incomplete_block(items: list[str]) -> str:
+    return f"the search is incomplete: {'; '.join(items)}. Narrow it or drop the source"
+
+
 def _incomplete(items: list[str]) -> str:
-    return f"; incomplete searches (noted for PRISMA): {'; '.join(items)}" if items else ""
+    return f"; incomplete searches (noted as a limitation): {'; '.join(items)}" if items else ""
 
 
 def _summary(ps: ProjectStore, attempt: int, phase: str, incomplete: list[str]) -> str:
@@ -436,12 +465,15 @@ class SearchScreenWorker:
         cap = check_record_cap(ps, ctx.attempt, protocol)
         if cap:
             return StageOutcome("back_edge", to="protocol", reason=cap)
-        return self._title_abstract(ctx, protocol, row["frozen_hash"], result.record_ids, result.incomplete)
+        if result.incomplete:
+            if blocks_on_incomplete_search(intake.paper_type):
+                return StageOutcome("back_edge", to="protocol", reason=_incomplete_block(result.incomplete))
+            _note(ctx, None, "incomplete_searches", searches=result.incomplete)  # a limitation
+        return self._title_abstract(ctx, intake, protocol, row["frozen_hash"], result.record_ids, result.incomplete)
 
-    def _title_abstract(self, ctx: StageContext, protocol: Protocol, protocol_hash: str, record_ids: list[str],
-                        incomplete: list[str]) -> StageOutcome:
+    def _title_abstract(self, ctx: StageContext, intake: Intake, protocol: Protocol, protocol_hash: str,
+                        record_ids: list[str], incomplete: list[str]) -> StageOutcome:
         ps, phase = ctx.ps, TITLE_ABSTRACT
-        intake = intake_of(ps)
         language = set(language_exclusions(ps, ctx.attempt, protocol))
         for rid in record_ids:
             if rid in language:
@@ -470,7 +502,7 @@ class SearchScreenWorker:
             n = sample_size(len(eligible))
             sample = [eligible[i] for i in sorted(random.Random(protocol_hash).sample(range(len(eligible)), n))]
             a, b = screen("screener_a", sample), screen("screener_b", sample)
-            disagree = sum(1 for r in sample if dual_rule(_include(a, r), _include(b, r)) is None)
+            disagree = sum(1 for r in sample if include_differs(_include(a, r), _include(b, r)))
             switched = switches_to_dual(disagree, n)
             taken = set(sample)
             rest = [r for r in eligible if r not in taken]
@@ -479,18 +511,21 @@ class SearchScreenWorker:
                 b |= screen("screener_b", rest)
             dual = taken | (set(rest) if switched else set())
             _note(ctx, phase, "scoping_sample", protocol_hash=protocol_hash, sample=sample, disagreements=disagree,
+                  measure="differences on included-or-not (unclear and a missing decision count as include)",
                   switched=switched)
         disagreements = []
         for rid in _finalize(ctx, phase, eligible, dual, a, b):
-            done = carried[rid].final if rid in carried else None
-            if done is not None and done["decided_by"] in ("vote", "human"):  # a disagreement settled before
+            c = carried.get(rid)
+            done = c.final if c is not None and all(s in c.decisions for s in SCREENERS) else None
+            if done is not None and done["decided_by"] in ("vote", "human"):  # settled before, on the same decisions
                 set_final(ps, rid, ctx.attempt, phase, done["include"], done["decided_by"], done["reason"],
                           actor=ctx.actor, carried_from=done["carried_from"])
             else:
                 disagreements.append(rid)
         if disagreements and intake.production_mode == "collab":
             chunks = [disagreements[i:i + BATCH] for i in range(0, len(disagreements), BATCH)]
-            cids = [_open(ctx, phase, ids, batch=i + 1, batches=len(chunks)) for i, ids in enumerate(chunks)]
+            cids = [_open(ctx, protocol, phase, ids, batch=i + 1, batches=len(chunks))
+                    for i, ids in enumerate(chunks)]
             return StageOutcome("waiting_human", checkpoint_id=cids[0],
                                 reason=f"{len(disagreements)} screening disagreements await you in {len(cids)} "
                                        f"checkpoint{'s' if len(cids) > 1 else ''}" + _incomplete(incomplete))
@@ -511,13 +546,17 @@ class SearchScreenWorker:
             return StageOutcome("failed", reason=f"search_screen cannot apply checkpoint {checkpoint['id']} "
                                                  f"({checkpoint['kind']})")
         ps = ctx.ps
+        incomplete = incomplete_searches(ps, ctx.attempt)
+        if incomplete and blocks_on_incomplete_search(intake_of(ps).paper_type):
+            return StageOutcome("back_edge", to="protocol", reason=_incomplete_block(incomplete))
+        protocol = Protocol.model_validate(frozen_protocol(ps)["body"])
         for cp in _checkpoints(ps, ctx.stage, ctx.attempt, phase):
             if cp["status"] != "answered" or opened_in_place_of(ps, KIND, cp["id"]) is not None:
                 continue
             ids = cp["options"]["record_ids"]
             why = _invalid(cp["answer"], ids)
             if why:
-                _open(ctx, phase, ids, batch=cp["options"]["batch"], batches=cp["options"]["batches"],
+                _open(ctx, protocol, phase, ids, batch=cp["options"]["batch"], batches=cp["options"]["batches"],
                       replaces=cp["id"], why=f"Your answer to checkpoint {cp['id']} could not be applied: {why}.")
             else:
                 _apply(ctx, phase, cp)
@@ -531,7 +570,7 @@ class SearchScreenWorker:
             return StageOutcome("waiting_human", checkpoint_id=still[0]["id"],
                                 reason=f"{len(still)} screening disagreement checkpoint"
                                        f"{'s' if len(still) > 1 else ''} still open")
-        return self._after_phase(ctx, phase, incomplete_searches(ps, ctx.attempt))
+        return self._after_phase(ctx, phase, incomplete)
 
     def gate(self, ps: ProjectStore, attempt: int) -> GateResult:
         """Every screened record has its title/abstract final decision. (Task 6 adds the full-text phase, V-PRISMA
