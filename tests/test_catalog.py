@@ -206,6 +206,8 @@ def test_cold_catalog_runs_omp_once_for_concurrent_loads(monkeypatch):
     ("ollama:gpt-oss:120b-cloud", "openai"),
     ("ollama:gpt-oss:20b", "openai"),
     ("ollama:gpt-j", None),
+    ("ollama:gpt4all", None),  # Nomic's, not OpenAI's: OpenAI ids are gpt-N or gpt-oss
+    ("omp_gateway:ollama-cloud/gpt4all:13b", None),
     ("ollama:gpt-neox:20b", None),
     ("ollama:o1-mini-distill", None),
     ("ollama:someuser/claude-3-distill", None),  # namespaced uploads are unknown

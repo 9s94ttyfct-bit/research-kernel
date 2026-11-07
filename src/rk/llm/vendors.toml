@@ -25,7 +25,6 @@ rules = [
 families = [
   { match = "claude*",   vendor = "anthropic" },
   { match = "gpt-[0-9]*", vendor = "openai" },
-  { match = "gpt[0-9]*", vendor = "openai" },
   { match = "gpt-oss*",  vendor = "openai" },
   { match = "codex*",    vendor = "openai" },
   { match = "deepseek*", vendor = "deepseek" },
