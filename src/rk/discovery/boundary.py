@@ -5,7 +5,8 @@ cited work, a gap-check search): a source, IO or parse error there (``SOURCE_ERR
 short reason, which the caller records (as a miner problem or a check's failure reason), and the stage goes on with
 the next item instead of failing the run. A failed lookup never counts as "nothing found". Every other error (a
 ``TypeError``, ``KeyError`` or ``AttributeError`` in kernel code) is a bug and propagates, as do the run-control
-exceptions (``BudgetExceeded``, ``RateCapped``).
+exceptions (``BudgetExceeded``, ``RateCapped``) and an exhausted source API budget (``BudgetExhausted``): it pauses
+the run (spec §11.3) instead of skipping the item.
 
 ``transient_source_error`` tells which errors outside such a boundary (e.g. a landscape search) are worth stepping the
 run again after a backoff instead of failing it: an HTTP 429, a 5xx, a transport error or an unreadable 200 body."""
@@ -20,16 +21,16 @@ import httpx
 import pypdfium2
 from lxml import etree
 
-from rk.net.http import BudgetExhausted, HttpError
+from rk.net.http import HttpError
 from rk.sources.s2 import NotConfigured
 
 log = logging.getLogger(__name__)
 T = TypeVar("T")
 # what one item's source work raises when the source, the disk or the bytes fail: HTTP errors (``BadBody`` too),
-# transport errors, OSError, ValueError (JSON, Unicode and pydantic validation errors), XML and PDF parse errors, an
-# unconfigured source and an exhausted API budget
+# transport errors, OSError, ValueError (JSON, Unicode and pydantic validation errors), XML and PDF parse errors and
+# an unconfigured source
 SOURCE_ERRORS = (HttpError, httpx.HTTPError, OSError, ValueError, etree.LxmlError, pypdfium2.PdfiumError,
-                 NotConfigured, BudgetExhausted)
+                 NotConfigured)
 
 
 def error_text(e: BaseException) -> str:

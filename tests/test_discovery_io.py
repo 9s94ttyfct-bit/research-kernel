@@ -321,7 +321,7 @@ def _source_errors() -> list[BaseException]:
     import pypdfium2
     from lxml import etree
 
-    from rk.net.http import BadBody, BudgetExhausted, HttpError
+    from rk.net.http import BadBody, HttpError
     from rk.sources.s2 import NotConfigured
 
     try:
@@ -339,7 +339,7 @@ def _source_errors() -> list[BaseException]:
     return [HttpError(503, "https://api.openalex.org/works"), BadBody("https://api.openalex.org/works", "not JSON"),
             httpx.ConnectError("refused"), httpx.ReadTimeout("slow"), OSError("disk"), ValueError("bad year"),
             UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"), not_json, invalid, xml_error,
-            pypdfium2.PdfiumError("broken PDF"), NotConfigured("s2_key"), BudgetExhausted("openalex", 0.0)]
+            pypdfium2.PdfiumError("broken PDF"), NotConfigured("s2_key")]
 
 
 @pytest.mark.parametrize("error", _source_errors(), ids=lambda e: type(e).__name__)
@@ -361,12 +361,20 @@ def test_per_item_records_a_source_error_and_the_loop_goes_on(error):
     assert value is None and reason.startswith(f"lookup of itm_2 failed ({type(error).__name__}: ")
 
 
-@pytest.mark.parametrize("error", [TypeError("unsupported operand"), AttributeError("no attribute 'ids'"),
-                                   KeyError("itm_9"), RuntimeError("bug"), AssertionError("invariant")],
-                         ids=lambda e: type(e).__name__)
-def test_per_item_lets_a_programming_error_crash(error):
+def _propagating() -> list[BaseException]:
+    """Errors no per-item boundary records: bugs in kernel code, and an exhausted source budget (the run pauses on it,
+    spec §11.3)."""
+    from rk.net.http import BudgetExhausted
+
+    return [TypeError("unsupported operand"), AttributeError("no attribute 'ids'"), KeyError("itm_9"),
+            RuntimeError("bug"), AssertionError("invariant"), BudgetExhausted("openalex", 0.0)]
+
+
+@pytest.mark.parametrize("error", _propagating(), ids=lambda e: type(e).__name__)
+def test_per_item_lets_other_errors_through(error):
     """A bug in kernel code is no item's failure: it propagates instead of turning every item into a failed check
-    (a gate failure and reruns)."""
+    (a gate failure and reruns). Neither is an exhausted source budget: it suspends the run instead of skipping
+    items."""
     from rk.discovery.boundary import per_item
 
     def broken():

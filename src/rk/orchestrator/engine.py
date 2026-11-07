@@ -25,6 +25,7 @@ from rk.discovery.models import Intake
 from rk.discovery.sources import DiscoverySources, KernelSources
 from rk.discovery.store import guidance as round_guidance
 from rk.discovery.store import intake_of
+from rk.net.http import BudgetExhausted
 from rk.orchestrator.graph import BACK_EDGES, DISCOVERY, EDGE_LIMIT, edge_name
 from rk.orchestrator.state import (
     TERMINAL_RUN_STATES,
@@ -281,7 +282,9 @@ class Orchestrator:
         settle the outcome. Returns the run status, or ``waiting_rate`` when a driver is at its hourly cap, or
         ``waiting_source`` when a source failed in a way that may go away (HTTP 429, 5xx, a transport error, an
         unreadable body; the run's reason says which). In both the run stays ``running``; the next step runs the
-        interrupted attempt again as a new attempt with the same guidance, or applies the answer again."""
+        interrupted attempt again as a new attempt with the same guidance, or applies the answer again. A stage budget
+        (``BudgetExceeded``) or a source's API budget (``BudgetExhausted``, spec §11.3) running out pauses the run
+        (``paused_budget``, the budget named in the reason); resuming it runs the interrupted attempt again."""
         ps, lib = self.kernel.project(project)
         run = run_row(ps, run_id)
         if run is None:
@@ -317,7 +320,7 @@ class Orchestrator:
                 ctx, outcome = self._attempt(project, ps, lib, stage, worker, run_id=run_id, guidance=None,
                                              actor=actor, session=run["session"])
             return self._settle(ps, run, worker, ctx, outcome)
-        except BudgetExceeded as e:
+        except (BudgetExceeded, BudgetExhausted) as e:
             return self._set_run(ps, run, "paused_budget", str(e), actor=actor)
         except RateCapped:
             return "waiting_rate"

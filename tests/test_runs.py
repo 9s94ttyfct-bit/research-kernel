@@ -540,6 +540,24 @@ def test_a_non_transient_source_error_fails_at_once(env):
     assert run_row(ps, run_id)["reason"] == "HttpError: HTTP 403 for https://api.openalex.org/works"
 
 
+def test_an_exhausted_source_budget_pauses_the_run_and_resume_continues(env):
+    """Spec §11.3: budget exhaustion suspends the work and shows the reason, never skips it: the run is
+    ``paused_budget`` with the exhausted source budget named, and resuming it later runs the stage again."""
+    from rk.net.http import BudgetExhausted
+
+    _, ps, _, make = env
+    landscape = FakeWorker(runs=[BudgetExhausted("openalex", 1_900_000_000.0), StageOutcome("done")])
+    m, _ = make(_workers(landscape=landscape))
+    run_id = m.start("demo", "topics", actor="tester")
+    _wait(lambda: run_row(ps, run_id)["status"] == "paused_budget")
+    reason = run_row(ps, run_id)["reason"]
+    assert "API budget exhausted for openalex" in reason and "resets at 1900000000" in reason
+    _wait(lambda: not _run_threads())
+    m.resume("demo")
+    _wait(lambda: run_row(ps, run_id)["status"] == "done")
+    assert landscape.kinds().count("run") == 2
+
+
 @pytest.mark.parametrize("end", ["failed", "cancelled"])
 def test_resume_of_a_failed_or_cancelled_run_starts_a_new_run(env, end):
     _, ps, _, make = env
