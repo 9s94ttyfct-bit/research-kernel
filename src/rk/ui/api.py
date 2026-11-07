@@ -35,6 +35,7 @@ from rk.cli.setup import (
 from rk.config import check_library_proxy, load_settings, save_settings
 from rk.discovery.models import ThreeStep
 from rk.discovery.store import hypotheses, intake_of, rq_row, topic_novelty, topics
+from rk.orchestrator.engine import default_workers
 from rk.orchestrator.graph import (
     BACK_EDGES,
     DISCOVERY,
@@ -127,7 +128,7 @@ class SavePage(BaseModel):
 
 class RunStartBody(BaseModel):
     project: str
-    until: Literal["topics", "question"]
+    until: str  # topics, question or a later stage with a worker (rk_run_start checks it)
 
 
 class ProjectBody(BaseModel):
@@ -384,8 +385,10 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
         if runs is not None:
             rs = call("rk_run_status", {"project": slug}, ctx)
             run, stepping, requested = rs["run"], rs["stepping"], rs["requested"]
-        else:
-            run, stepping, requested = latest_run(ps), False, None
+            runnable, until_options = set(rs["runnable"]), rs["until_options"]
+        else:  # no orchestrator here: the stages rk serve's default workers run
+            run, stepping, requested, until_options = latest_run(ps), False, None, []
+            runnable = set(default_workers())
         run_active = run is not None and run["status"] not in TERMINAL_RUN_STATES
         intake = intake_of(ps)
         paper_type = intake.paper_type if intake else ps.meta("paper_type")
@@ -397,7 +400,7 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
         graph = []
         for name in names:
             row = rows.get(name)
-            if row is None:  # a later stage: Plan 5 runs it
+            if row is None or name not in runnable:  # no worker yet: a later plan runs it
                 graph.append({"stage": name, "status": "plan5"})
                 continue
             if row["status"] == "passed":
@@ -411,7 +414,9 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
             graph.append({"stage": name, "status": status, "state": row["status"], "attempt": row["attempt"],
                           "waiting_checkpoint": row["waiting_checkpoint"], "last_gate": row["last_gate"],
                           "back_edges": used})
-        allowed = [edge_name(*e) for e in sorted(BACK_EDGES, key=lambda e: DISCOVERY.index(e[0]))]
+        available = [s["stage"] for s in graph if s["status"] != "plan5"]
+        allowed = [edge_name(*e) for e in sorted((e for e in BACK_EDGES if e[0] in available and e[1] in available),
+                                                 key=lambda e: names.index(e[0]))]
         back_edges = [{"edge": e, "from": e.split("->", 1)[0], "to": e.split("->", 1)[1],
                        "count": edges.get(e, {}).get("count", 0), "allowed": edges.get(e, {}).get("allowed", 0),
                        "limit": EDGE_LIMIT} for e in [*allowed, *(e for e in edges if e not in allowed)]]
@@ -419,14 +424,16 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
         return {"project": slug, "paper_type": paper_type, "intake": intake is not None,
                 "discovery_mode": intake.discovery_mode if intake else None,
                 "production_mode": intake.production_mode if intake else None, "current": current,
-                "graph": graph, "back_edges": back_edges, "edge_limit": EDGE_LIMIT,
-                "last_gate": {"stage": current, **gate} if gate else None, "run": run, "run_active": run_active,
-                "stepping": stepping, "requested": requested, "runs_available": runs is not None}
+                "discovery_passed": current not in DISCOVERY, "graph": graph, "back_edges": back_edges,
+                "edge_limit": EDGE_LIMIT, "last_gate": {"stage": current, **gate} if gate else None, "run": run,
+                "run_active": run_active, "stepping": stepping, "requested": requested,
+                "runs_available": runs is not None, "until_options": until_options}
 
     @r.get("/ui/api/stages")
     def stages(request: Request) -> JSONResponse:
-        """The project's stage sequence: each discovery stage passed, active or pending, the later ones ``plan5``;
-        the back-edges, the current stage's last gate and the run."""
+        """The project's stage sequence: each stage with a worker passed, active or pending, the others ``plan5``
+        (not yet available); the back-edges, the current stage's last gate, the run and the stages a run could end
+        at now (``until_options``)."""
         return ok(stage_graph(request.query_params.get("project", ""), ctx_dep(request)))
 
     @r.post("/ui/api/run")

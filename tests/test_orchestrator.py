@@ -85,7 +85,7 @@ def test_graph_sequences():
     assert stages_for("critical_review")[:5] == list(DISCOVERY)
     assert "design" in stages_for("research_proposal") and "design" not in stages_for("systematic_review")
     assert stages_for("research_proposal").index("design") == stages_for("research_proposal").index("argue") + 1
-    assert OPEN_STAGES == {"landscape", "gaps", "topics"}
+    assert OPEN_STAGES == {"landscape", "gaps", "topics", "protocol"}
     with pytest.raises(ValueError):
         stages_for("essay")
 
@@ -102,7 +102,7 @@ def test_d2_runs_stages_in_order_until(project):
     assert current_stage(ps) == "topics"
     row = run_row(ps, run_id)
     assert row["status"] == "done" and row["ended"] is not None
-    assert [r["status"] for r in stage_rows(ps)] == ["passed", "passed", "passed", "pending", "pending"]
+    assert [r["status"] for r in stage_rows(ps)] == ["passed"] * 3 + ["pending"] * 11  # every critical_review stage
 
 
 def test_gate_failure_reruns_with_failures_as_guidance(project):
@@ -683,8 +683,8 @@ def test_intake_missing_fails_the_run(tmp_home, replay_http):
 
 def test_start_run_refuses_unknown_until_and_a_second_run(project):
     _k, ps = project
-    with pytest.raises(ToolError) as e:
-        start_run(ps, until="protocol", actor="tester", clock=Clock())
+    with pytest.raises(ToolError) as e:  # design is a research_proposal stage, not one of this critical_review
+        start_run(ps, until="design", actor="tester", clock=Clock())
     assert e.value.type == "stage_unavailable"
     run_id = start_run(ps, until="topics", actor="tester", clock=Clock())
     with pytest.raises(ToolError) as e:

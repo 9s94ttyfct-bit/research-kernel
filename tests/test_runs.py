@@ -132,7 +132,7 @@ def test_run_resumes_after_restart_without_rerunning_passed_stages(tmp_home, rep
             _wait(lambda: run_row(ps2, run_id)["status"] == "done")
         finally:
             m2.close()
-        assert [r["status"] for r in stage_rows(ps2)] == ["passed"] * 5
+        assert [r["status"] for r in stage_rows(ps2)][:6] == ["passed"] * 5 + ["pending"]
         assert {s: len(w[s].calls) for s in ("landscape", "gaps")} == calls
         assert ("on_answer", 1, cp["id"], {"decision": "approve"}) in w["topics"].calls
         assert w["question"].kinds() == ["run", "gate"]
@@ -834,7 +834,7 @@ def test_discovery_read_tools_show_the_latest_attempt(env):
     with pytest.raises(PermissionDenied):
         reg.call("rk_gap_list", {"project": "demo"}, _ctx("screener_a"))
     st = reg.call("rk_stage_status", {"project": "demo"}, _ctx("screener_a"))
-    assert st["current"] is None and [s["status"] for s in st["stages"]] == ["passed"] * 5
+    assert st["current"] == "protocol" and [s["status"] for s in st["stages"]][:6] == ["passed"] * 5 + ["pending"]
     with pytest.raises(PermissionDenied):
         reg.call("rk_exploration_round", {"project": "demo", "stage": "gaps", "feedback": "More."}, _ctx("scout"))
     with pytest.raises(ToolError) as e:  # every discovery stage passed: closed to the Lead (Task 10) ...

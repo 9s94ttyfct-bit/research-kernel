@@ -30,8 +30,9 @@ token_app = typer.Typer(help="Lead tokens for external MCP clients", no_args_is_
 checkpoint_app = typer.Typer(help="Checkpoints waiting for you", no_args_is_help=True)
 browser_app = typer.Typer(help="The built-in browser (runs inside rk serve)", no_args_is_help=True)
 run_app = typer.Typer(cls=_RunGroup, no_args_is_help=True,
-                      help="Autonomous (D2) discovery runs in rk serve: rk run <project> --until topics|question "
-                           "starts one; status, pause, resume and cancel act on the project's run.")
+                      help="Runs in rk serve: rk run <project> --until topics|question starts an autonomous (D2) "
+                           "discovery run; once question passed, --until protocol|search_screen|read_extract runs "
+                           "the later stages (D1 and D2). status, pause, resume and cancel act on the project's run.")
 stage_app = typer.Typer(help="Discovery stages", no_args_is_help=True)
 topic_app = typer.Typer(help="Candidate topics of the discovery stages", no_args_is_help=True)
 app.add_typer(project_app, name="project")
@@ -814,12 +815,12 @@ def _run_line(d: dict) -> None:
 
 
 @run_app.command("start")
-def run_start(project: str = typer.Argument(..., help="The project (its intake must use discovery mode d2)"),
-              until: str = typer.Option(..., "--until", help="topics or question"), as_json: bool = JSON_OPT) -> None:
-    """Start an autonomous (D2) run of the discovery stages in rk serve (also: rk run <project> --until ...)."""
-    if until not in ("topics", "question"):
-        typer.secho("--until must be topics or question", fg="red", err=True)
-        raise typer.Exit(2)
+def run_start(project: str = typer.Argument(..., help="The project (discovery mode d2, or question passed)"),
+              until: str = typer.Option(..., "--until", help="topics, question or a later stage with a worker "
+                                                            "(e.g. read_extract)"),
+              as_json: bool = JSON_OPT) -> None:
+    """Start a run of the project's stages in rk serve (also: rk run <project> --until ...). The server checks
+    --until: topics or question in D2 discovery; past question, a stage with a worker once the RQ is frozen."""
     r = _call("rk_run_start", {"project": project, "until": until}, write=True)
     _out(r, as_json, lambda d: typer.echo(f"started {d['run_id']} on {d['project']} (until {d['until']}); follow it "
                                           "with: rk run status"))

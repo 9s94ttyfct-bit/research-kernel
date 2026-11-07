@@ -218,6 +218,13 @@ def rq_row(ps: ProjectStore, rq_id: str) -> dict | None:
     return rows[0] if rows else None
 
 
+def frozen_rq(ps: ProjectStore) -> dict | None:
+    """The frozen research question (the latest frozen, should there be several), else ``None``."""
+    rows = _rows(ps, "SELECT * FROM rqs WHERE status='frozen' ORDER BY rowid DESC LIMIT 1", (),
+                 ("body", "already_done"))
+    return rows[0] if rows else None
+
+
 def hypotheses(ps: ProjectStore, rq_id: str) -> list[dict]:
     return _rows(ps, "SELECT * FROM hypotheses WHERE rq_id=? ORDER BY rowid", (rq_id,))
 

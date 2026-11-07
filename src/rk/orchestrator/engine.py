@@ -1,8 +1,10 @@
-"""The stage engine (spec §7): one attempt of a discovery stage at a time, its gate, reruns and back-edges with their
-per-project limit (§7.2), checkpoint waits, the per-session budgets and wall clock, and the hourly rate caps.
+"""The stage engine (spec §7): one attempt of a stage at a time, its gate, reruns and back-edges with their
+per-project limit (§7.2), checkpoint waits, the per-session budgets and wall clock, and the hourly rate caps. The
+stages are those of the project's paper type (``stages_of``); a stage runs only when it has a worker (``runnable``).
 
-``run_stage`` / ``advance`` are guided discovery (D1: you decide when to run a stage again); ``step`` is one unit of
-an autonomous run (D2). P1 (``production_mode == "auto"``) degrades at an edge limit, P2 (``collab``) asks."""
+``run_stage`` / ``advance`` are guided discovery (D1: you decide when to run a stage again; discovery stages only);
+``step`` is one unit of a run (D2 discovery, and from protocol on every project). P1 (``production_mode ==
+"auto"``) degrades at an edge limit, P2 (``collab``) asks."""
 
 from __future__ import annotations
 
@@ -26,7 +28,13 @@ from rk.discovery.sources import DiscoverySources, KernelSources
 from rk.discovery.store import guidance as round_guidance
 from rk.discovery.store import intake_of
 from rk.net.http import BudgetExhausted
-from rk.orchestrator.graph import BACK_EDGES, DISCOVERY, EDGE_LIMIT, edge_name
+from rk.orchestrator.graph import (
+    BACK_EDGES,
+    DISCOVERY,
+    EDGE_LIMIT,
+    edge_name,
+    stages_of,
+)
 from rk.orchestrator.state import (
     TERMINAL_RUN_STATES,
     attempt_ran,
@@ -138,7 +146,7 @@ class IntakeWorker:
 
 
 def default_workers() -> dict[str, Worker]:
-    """The worker of every discovery stage that has one."""
+    """The worker of every stage that has one."""
     from rk.discovery.gaps import GapsWorker  # the workers import this module
     from rk.discovery.landscape import LandscapeWorker
     from rk.discovery.question import QuestionWorker
@@ -181,14 +189,25 @@ class Orchestrator:
             return self._d1_edge(ps, worker, ctx, outcome.to, [outcome.reason] if outcome.reason else []) or outcome
         return outcome
 
+    def runnable(self, ps: ProjectStore) -> list[str]:
+        """The project's stages that have a worker, in order: those a run can drive. The others are not available
+        yet."""
+        return [s for s in stages_of(ps) if s in self.workers]
+
     def check_stage(self, project: str, stage: str) -> Worker:
         """The worker of ``stage`` when it is the current stage (what ``run_stage`` runs), else ``stage_unavailable``;
-        a quick check before a guided stage call goes to the background."""
+        a quick check before a guided stage call goes to the background. Guided calls run discovery stages only: from
+        protocol on, the stages run in a run."""
         ps, _ = self.kernel.project(project)
-        worker = self._worker(stage)
+        if stage not in DISCOVERY:
+            raise ToolError("stage_unavailable", f"{stage!r} is not a discovery stage: from protocol on, the "
+                                                 f"orchestrator runs the stages in a run (rk run {project} --until "
+                                                 f"{stage}), not a guided stage call")
+        worker = self._worker(ps, stage)
         current = current_stage(ps)
         if stage != current:
-            why = "it already passed" if current is None or DISCOVERY.index(stage) < DISCOVERY.index(current) \
+            stages = stages_of(ps)
+            why = "it already passed" if current is None or stages.index(stage) < stages.index(current) \
                 else f"{current!r} has not passed"
             raise ToolError("stage_unavailable", f"cannot run {stage!r}: {why}", {"current": current})
         return worker
@@ -244,9 +263,10 @@ class Orchestrator:
         attempt that was interrupted (no ``stage.ran``) is never gated: its artifacts may be partial."""
         ps, lib = self.kernel.project(project)
         stage = current_stage(ps)
-        if stage is None:
-            raise ToolError("stage_unavailable", "every discovery stage passed")
-        worker = self._worker(stage)
+        if stage not in DISCOVERY:
+            raise ToolError("stage_unavailable", "every discovery stage passed: from protocol on, the orchestrator "
+                                                 f"runs the stages in a run (rk run {project} --until ...)")
+        worker = self._worker(ps, stage)
         row = stage_row(ps, stage)
         if row is None or row["status"] == "reopened":
             return GateResult(False, [f"{stage!r} has no attempt to gate; run the stage first"])
@@ -292,9 +312,10 @@ class Orchestrator:
         if run["status"] in TERMINAL_RUN_STATES or run["status"] in ("paused", "paused_budget"):
             return run["status"]
         stage = current_stage(ps)
-        if stage is None or DISCOVERY.index(stage) > DISCOVERY.index(run["until"]):
+        stages = stages_of(ps)
+        if stage is None or stages.index(stage) > stages.index(run["until"]):
             return self._set_run(ps, run, "done", actor=actor)
-        worker = self._worker(stage)
+        worker = self._worker(ps, stage)
         row = stage_row(ps, stage)
         cp = get_checkpoint(ps, row["waiting_checkpoint"]) if row and row["waiting_checkpoint"] else None
         if cp is not None and cp["status"] == "open":
@@ -332,13 +353,15 @@ class Orchestrator:
             return "waiting_source"
 
     # ---- internals ----
-    def _worker(self, stage: str) -> Worker:
-        if stage not in DISCOVERY:
-            raise ToolError("stage_unavailable", f"{stage!r} is not a discovery stage; the orchestrator runs only "
-                                                 f"{', '.join(DISCOVERY)}")
+    def _worker(self, ps: ProjectStore, stage: str) -> Worker:
+        stages = stages_of(ps)
+        if stage not in stages:
+            raise ToolError("stage_unavailable", f"{stage!r} is not a stage of this project; its stages are "
+                                                 f"{', '.join(stages)}")
         worker = self.workers.get(stage)
         if worker is None:
-            raise ToolError("stage_unavailable", f"stage {stage!r} has no worker")
+            raise ToolError("stage_unavailable", f"stage {stage!r} is not available yet: it has no worker (the later "
+                                                 f"stages arrive in Plan 5b/5c)")
         return worker
 
     def _ctx(self, project: str, ps: ProjectStore, lib, stage: str, attempt: int, run_id: str | None,
@@ -394,7 +417,8 @@ class Orchestrator:
         return self._set_run(ps, run, "failed", outcome.reason or f"{stage!r} failed", actor=actor)
 
     def _after_pass(self, ps: ProjectStore, run: dict, stage: str, *, actor: str) -> str:
-        status = "done" if DISCOVERY.index(stage) >= DISCOVERY.index(run["until"]) else "running"
+        stages = stages_of(ps)
+        status = "done" if stages.index(stage) >= stages.index(run["until"]) else "running"
         return self._set_run(ps, run, status, actor=actor)
 
     def _edge(self, ps: ProjectStore, run: dict, worker: Worker, ctx: StageContext, to: str,
@@ -468,7 +492,8 @@ class Orchestrator:
         ran."""
         edge = edge_name(stage, to)
         record_edge_taken(ps, edge, edge_row(ps, edge)["count"] + 1, actor=actor)
-        for s in DISCOVERY[DISCOVERY.index(to):]:
+        stages = stages_of(ps)
+        for s in stages[stages.index(to):]:
             if s == to or latest_attempt(ps, s) > 0:
                 record_reopened(ps, s, by_edge=edge, guidance="\n".join(failures) if s == to and failures else None,
                                 actor=actor)

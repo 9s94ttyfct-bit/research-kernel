@@ -25,6 +25,7 @@ from rk.discovery.store import (
     add_gap,
     add_rq,
     add_topic,
+    freeze_rq,
     gaps,
     rounds,
     rq_row,
@@ -285,6 +286,39 @@ def test_stages_route_without_the_orchestrator(ui, kernel):
     assert r.status_code == 503
 
 
+def test_stages_route_marks_the_stages_with_a_worker_and_offers_their_runs(wb):
+    later = ("protocol", "search_screen", "read_extract")
+    for s in later:
+        wb.orch.workers[s] = FakeWorker()
+    g = wb.client.get("/ui/api/stages", params={"project": "demo"}).json()["result"]
+    assert [s["status"] for s in g["graph"]] == ["pending"] * 8 + ["plan5"] * 6
+    assert {e["edge"] for e in g["back_edges"]} == {"gaps->landscape", "topics->gaps", "question->topics",
+                                                   "protocol->question", "search_screen->protocol",
+                                                   "read_extract->search_screen"}
+    assert (g["until_options"], g["discovery_passed"]) == (["topics", "question"], False)
+    run_id = start(wb, "question")
+    until(lambda: run_row(wb.ps, run_id)["status"] == "done")
+    g = wb.client.get("/ui/api/stages", params={"project": "demo"}).json()["result"]
+    assert (g["current"], g["discovery_passed"], g["until_options"]) == ("protocol", True, [])  # no frozen RQ yet
+    r = post(wb.client, "/ui/api/run", {"project": "demo", "until": "read_extract"})
+    assert r.status_code == 400 and r.json()["detail"]["type"] == "rq_not_frozen"
+    tid = add_topic(wb.ps, 1, Topic(title=TITLES[0], summary="S.", gap_ids=[], feasibility="F.", data_needed="D.",
+                                    paper_type="critical_review", risks="R."), actor="tester")
+    rq = add_rq(wb.ps, 1, tid, RQBody.model_validate({
+        "three_step": {"x": "aspirin over 80", "y": "stroke", "z": "when to start"},
+        "problem": {"condition": "Guidelines stop at 80.", "consequences": ["A.", "B."]},
+        "finer": {"feasible": "F.", "interesting": "I.", "novel": "N.", "ethical": "E.", "relevant": "R."},
+        "clinical": False}), [HypothesisIn(statement="H.", falsification="X.")], actor="tester")
+    freeze_rq(wb.ps, rq, adopted_by="human", actor="tester")
+    g = wb.client.get("/ui/api/stages", params={"project": "demo"}).json()["result"]
+    assert g["until_options"] == list(later)
+    run_id = start(wb, "read_extract")
+    until(lambda: run_row(wb.ps, run_id)["status"] == "done")
+    g = wb.client.get("/ui/api/stages", params={"project": "demo"}).json()["result"]
+    assert [s["status"] for s in g["graph"]] == ["passed"] * 8 + ["plan5"] * 6
+    assert (g["current"], g["until_options"]) == ("synthesize", [])
+
+
 # ---- run controls -------------------------------------------------------------------------------------------------
 def test_run_routes_start_pause_resume_cancel(wb):
     wb.orch.workers["topics"] = FakeWorker(runs=[lambda ctx: StageOutcome(
@@ -300,7 +334,8 @@ def test_run_routes_start_pause_resume_cancel(wb):
     assert post(wb.client, "/ui/api/run/cancel", {"project": "demo"}).status_code == 200
     until(lambda: run_row(wb.ps, run_id)["status"] == "cancelled")
     assert post(wb.client, "/ui/api/run/stop", {"project": "demo"}).status_code in (404, 422)
-    assert post(wb.client, "/ui/api/run", {"project": "demo", "until": "gaps"}).status_code == 422
+    r = post(wb.client, "/ui/api/run", {"project": "demo", "until": "gaps"})  # the run manager checks until
+    assert r.status_code == 400 and r.json()["detail"]["type"] == "stage_unavailable"
     assert post(wb.client, "/ui/api/run/pause", {"project": "demo"}).json()["detail"]["type"] == "no_run"
     r = post(wb.client, "/ui/api/run/resume", {"project": "demo"}).json()["result"]  # a cancelled run: a new run
     new = r["run"]["id"]

@@ -10,7 +10,7 @@ from typing import Any
 
 from rk.discovery.store import intake_of
 from rk.ids import new_id
-from rk.orchestrator.graph import DISCOVERY
+from rk.orchestrator.graph import DISCOVERY, stages_of
 from rk.store.events import Event, NewEvent
 from rk.store.project import ProjectStore
 from rk.store.projections import projection
@@ -114,13 +114,21 @@ def last_d1(ps: ProjectStore) -> dict[str, Any] | None:
 
 # ---- runs ----
 def start_run(ps: ProjectStore, *, until: str, actor: str, clock: Callable[[], float]) -> str:
-    """Start a D2 run of the discovery stages up to ``until``. One run per project at a time."""
-    if until not in DISCOVERY:
-        raise ToolError("stage_unavailable", f"{until!r} is not a discovery stage; runs end at one of {DISCOVERY}")
+    """Start a run of the project's stages from the current one up to ``until`` (a stage of its paper type, not one
+    that already passed). One run per project at a time. Whether every stage up to ``until`` has a worker, and the
+    discovery mode, are the caller's checks (``RunManager.start``)."""
+    stages = stages_of(ps)
+    if until not in stages:
+        raise ToolError("stage_unavailable", f"{until!r} is not a stage of this project; its stages are "
+                                             f"{', '.join(stages)}")
     with ps.lock:
         active = active_run(ps)
         if active is not None:
             raise ToolError("run_active", f"run {active['id']} is {active['status']}", {"run_id": active["id"]})
+        current = current_stage(ps)
+        if current is None or stages.index(until) < stages.index(current):
+            raise ToolError("stage_unavailable", f"{until!r} already passed; the current stage is {current!r}",
+                            {"current": current})
         intake = intake_of(ps)
         run_id = new_id("run")
         _emit(ps, "run.started", run_id, {"until": until, "discovery_mode": intake.discovery_mode if intake else None,
@@ -153,17 +161,23 @@ def stage_row(ps: ProjectStore, stage: str) -> dict[str, Any] | None:
 
 
 def stage_rows(ps: ProjectStore) -> list[dict[str, Any]]:
-    """One row per discovery stage, in order; a stage that never ran is ``pending`` with attempt 0."""
+    """One row per stage of the project, in order; a stage that never ran is ``pending`` with attempt 0."""
     rows = {r["stage"]: _stage_dict(r) for r in ps.db.execute("SELECT * FROM stages")}
     return [rows.get(s) or {"stage": s, "status": "pending", "attempt": 0, "passed_attempt": None, "last_gate": None,
                             "waiting_checkpoint": None, "guidance": None, "updated": None}
-            for s in DISCOVERY]
+            for s in stages_of(ps)]
 
 
 def current_stage(ps: ProjectStore) -> str | None:
-    """The first discovery stage that has not passed; ``None`` once ``question`` passed."""
+    """The first stage of the project that has not passed; ``None`` once every stage passed."""
     passed = {r["stage"] for r in ps.db.execute("SELECT stage FROM stages WHERE status='passed'")}
-    return next((s for s in DISCOVERY if s not in passed), None)
+    return next((s for s in stages_of(ps) if s not in passed), None)
+
+
+def discovery_passed(ps: ProjectStore) -> bool:
+    """Whether every discovery stage passed (question included): from protocol on, a run of the orchestrator drives
+    the stages, in D1 and D2 projects alike (spec §8.1)."""
+    return current_stage(ps) not in DISCOVERY
 
 
 def latest_attempt(ps: ProjectStore, stage: str) -> int:

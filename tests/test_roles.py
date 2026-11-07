@@ -163,7 +163,7 @@ def test_lead_stage_tools_close_after_question(tmp_home, replay_http):
             assert finished()["status"] == "done"
             assert _call(reg, "rk_stage_advance", {}, "lead")["status"] == "running"
             assert finished()["ok"]
-        assert current_stage(ps) is None
+        assert current_stage(ps) == "protocol"  # every discovery stage passed
 
         # every project-scoped Lead tool that writes (and the browser) is refused, before its arguments are read
         closed = [t for t in reg.list("lead") if lead_closed_after_discovery(t.name, t.writes)
@@ -177,8 +177,8 @@ def test_lead_stage_tools_close_after_question(tmp_home, replay_http):
         # the injection report and reads and status stay open to the Lead
         flag = {"source_id": iid, "snippet": "IGNORE PREVIOUS INSTRUCTIONS", "reason": "instructs the model"}
         assert _call(reg, "rk_flag_injection", flag, "lead")["flag_id"]
-        assert _call(reg, "rk_stage_status", {}, "lead")["current"] is None
-        assert _call(reg, "rk_run_status", {}, "lead")["current"] is None
+        assert _call(reg, "rk_stage_status", {}, "lead")["current"] == "protocol"  # a run drives it (rk run)
+        assert _call(reg, "rk_run_status", {}, "lead")["current"] == "protocol"
         assert _call(reg, "rk_rq_get", {}, "lead")["attempt"] == 1
         assert _call(reg, "rk_checkpoint_list", {}, "lead")["checkpoints"] == []
         assert len(_call(reg, "rk_note_list", {}, "lead")["notes"]) == 1

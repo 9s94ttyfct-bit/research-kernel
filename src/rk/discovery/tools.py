@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import BaseModel
 
 from rk.discovery.store import add_round, gaps, hypotheses, intake_of, rqs, topics
-from rk.orchestrator.graph import EDGE_LIMIT
+from rk.orchestrator.graph import DISCOVERY, EDGE_LIMIT
 from rk.orchestrator.state import (
     active_run,
     attempt_ran,
@@ -26,7 +26,8 @@ from rk.tools.registry import CallContext, ToolError
 if TYPE_CHECKING:
     from rk.orchestrator.runs import RunManager
 
-DiscoveryStage = Literal["intake", "landscape", "gaps", "topics", "question"]  # rk.orchestrator.graph.DISCOVERY
+# Guided (D1) stage calls and exploration rounds take the discovery stages only (rk.orchestrator.graph.DISCOVERY).
+DiscoveryStage = Literal["intake", "landscape", "gaps", "topics", "question"]
 
 
 class ProjectArg(BaseModel):
@@ -35,7 +36,7 @@ class ProjectArg(BaseModel):
 
 class RunStart(BaseModel):
     project: str
-    until: Literal["topics", "question"]
+    until: str  # topics, question or a later stage of the project (RunManager.start checks it)
 
 
 class StageRun(BaseModel):
@@ -91,9 +92,10 @@ def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManag
             raise ToolError("not_d1", f"{slug} uses autonomous discovery (d2): its stages run in a D2 run (uv run rk "
                                       f"run {slug} --until topics|question), not through guided stage calls")
 
-    # ---- D2 runs (the human only) ----
-    @tool("rk_run_start", "Start an autonomous (D2) run of the discovery stages up to topics or question; it runs "
-          "in rk serve.", RunStart, True)
+    # ---- runs (the human only) ----
+    @tool("rk_run_start", "Start a run of the project's stages up to until: topics or question (an autonomous D2 "
+          "discovery run), or a later stage with a worker once question passed and the RQ is frozen (D1 and D2 "
+          "projects); it runs in rk serve.", RunStart, True)
     def _run_start(ctx: CallContext, a: RunStart) -> dict:
         run_id = manager().start(a.project, a.until, actor=ctx.actor)
         return {"project": a.project, "run_id": run_id, "until": a.until}
@@ -113,12 +115,13 @@ def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManag
     def _run_cancel(ctx: CallContext, a: ProjectArg) -> dict:
         return manager().cancel(a.project, actor=ctx.actor)
 
-    @tool("rk_run_status", "The project's latest run and the status of every discovery stage.", ProjectArg, False)
+    @tool("rk_run_status", "The project's latest run, the status of every stage, the stages with a worker "
+          "(runnable) and the stages a run could end at now (until_options).", ProjectArg, False)
     def _run_status(ctx: CallContext, a: ProjectArg) -> dict:
         return manager().status(a.project)
 
     # ---- stages ----
-    @tool("rk_stage_status", "The discovery stages: status, attempts, last gate, waits; the current stage, the "
+    @tool("rk_stage_status", "The project's stages: status, attempts, last gate, waits; the current stage, the "
           "back-edges used, and the guided (D1) stage call: d1.running while one runs in the background, d1.last "
           "with the outcome and reason (or error) of the last one.", ProjectArg, False)
     def _stage_status(ctx: CallContext, a: ProjectArg) -> dict:
@@ -158,8 +161,9 @@ def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManag
         m = manager()
         d1_only(ps, a.project)
         stage = current_stage(ps)
-        if stage is None:
-            raise ToolError("stage_unavailable", "every discovery stage passed")
+        if stage not in DISCOVERY:
+            raise ToolError("stage_unavailable", "every discovery stage passed: from protocol on, the orchestrator "
+                                                 f"runs the stages in a run (rk run {a.project} --until ...)")
 
         def advance() -> dict:
             res = m.orchestrator.advance(a.project, actor=ctx.actor)

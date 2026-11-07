@@ -32,7 +32,7 @@ from rk.llm.runner import FreeText, run_task
 from rk.llm.vendors import vendor_of
 from rk.notes import NoteIn, NoteRejected, add_note, list_notes, text_find, text_read
 from rk.orchestrator.runs import no_run_active
-from rk.orchestrator.state import current_stage, latest_attempt
+from rk.orchestrator.state import discovery_passed, latest_attempt
 from rk.roles.policy import (
     INTAKE_HUMAN_ONLY,
     ROLES,
@@ -104,7 +104,7 @@ def _lead_stage_guard(k: Kernel) -> Callable[[Tool, dict, CallContext], None]:
             ps, _ = k.project(slug)
         except LookupError:
             return
-        if current_stage(ps) is None:
+        if discovery_passed(ps):
             raise ToolError("stage_closed", f"{tool.name} is closed to the Lead: every discovery stage of {slug} "
                                             f"passed (question included); from protocol on the orchestrator's roles "
                                             f"do this work, and the Lead only reads and reports status", status=409)

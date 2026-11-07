@@ -110,11 +110,17 @@ degrades.
   follows it with `rk_stage_status` (`d1.running`, then `d1.last` with the outcome and its reason) and never starts
   another while one runs. Stage calls are for D1 projects only, and no D2 run can start while one runs.
 - **D2 (autonomous).** `uv run rk run` runs the stages in `rk serve` without the Lead and stops only at checkpoints. A
-  run session has a 12 h wall clock and 40 role tasks per open stage (landscape, gaps, topics); hourly CLI caps pause it
+  run session has a 12 h wall clock and 40 role tasks per open stage (landscape, gaps, topics, protocol; search_screen
+  and read_extract have no task budget, their work grows with the records); hourly CLI caps pause it
   until the next slot. Time spent waiting for your answer does not count: an answer that comes after the session's
   12 h starts a new session. A source that fails for a while (HTTP 429/5xx) makes the run back off and try again;
   one work whose lookup fails is reported and skipped. `uv run rk run resume` on a failed or cancelled run starts a
   new run (and says so), which goes on from the stages that already passed.
+- **After question.** Once question passed and the RQ is frozen, a run drives the later stages of the paper type in D1
+  and D2 projects alike (`uv run rk run <project> --until <stage>`); the Lead only reads from then on. A stage runs
+  only when it has a worker; the others show as "not yet available" and a run cannot end at or pass them
+  (`stage_unavailable`). The back-edges protocol→question, search_screen→protocol and read_extract→search_screen
+  follow the same limit of two uses per project.
 
 ```bash
 uv run rk project intake --audience "…" --paper-type critical_review --mode d2 --production p2 --topics-n 6
