@@ -85,7 +85,7 @@ def test_graph_sequences():
     assert stages_for("critical_review")[:5] == list(DISCOVERY)
     assert "design" in stages_for("research_proposal") and "design" not in stages_for("systematic_review")
     assert stages_for("research_proposal").index("design") == stages_for("research_proposal").index("argue") + 1
-    assert OPEN_STAGES == {"landscape", "gaps", "topics", "protocol"}
+    assert OPEN_STAGES == {"landscape", "gaps", "topics", "protocol", "argue"}
     with pytest.raises(ValueError):
         stages_for("essay")
 

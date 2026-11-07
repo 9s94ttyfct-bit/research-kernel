@@ -238,11 +238,15 @@ CREATE TABLE IF NOT EXISTS rqs (
     created      TEXT NOT NULL
 );
 
+-- (rival_of .. prereg_hash: Plan 5b; open_project_db adds them to an older hypotheses table)
 CREATE TABLE IF NOT EXISTS hypotheses (
     id            TEXT PRIMARY KEY,
     rq_id         TEXT NOT NULL,
     statement     TEXT NOT NULL,
-    falsification TEXT NOT NULL
+    falsification TEXT NOT NULL,
+    rival_of      TEXT,                                -- the hypothesis this one rivals
+    status        TEXT NOT NULL DEFAULT 'proposed',    -- proposed | tested_by_design | dropped
+    prereg_hash   TEXT                                 -- the frozen design that tests it
 );
 CREATE INDEX IF NOT EXISTS hypotheses_rq ON hypotheses(rq_id);
 
@@ -375,6 +379,35 @@ CREATE TABLE IF NOT EXISTS votes (
     ts           TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS votes_subject ON votes(subject_type, subject_id);
+
+-- Plan 5b: kernel-made code outputs (stt_ statistics, fig_ figures), each with its file under <project>/artifacts/,
+-- and the method designs of research proposals.
+CREATE TABLE IF NOT EXISTS artifacts (
+    id              TEXT PRIMARY KEY,
+    kind            TEXT NOT NULL,             -- stt | fig
+    stage           TEXT NOT NULL,
+    attempt         INTEGER NOT NULL,
+    code_path       TEXT NOT NULL,
+    code_version    TEXT NOT NULL,
+    input_hashes    TEXT NOT NULL,             -- JSON [sha256]
+    "values"        TEXT NOT NULL,             -- JSON
+    path            TEXT NOT NULL,             -- relative to the project: artifacts/<id>.<ext>
+    sha256          TEXT NOT NULL,             -- of the file
+    created_by_task TEXT,
+    created         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS artifacts_stage ON artifacts(stage, attempt);
+
+CREATE TABLE IF NOT EXISTS designs (
+    id          TEXT PRIMARY KEY,
+    stage       TEXT NOT NULL,
+    attempt     INTEGER NOT NULL,
+    body        TEXT NOT NULL,                 -- JSON DesignIn
+    frozen_hash TEXT,
+    frozen_at   TEXT,
+    status      TEXT NOT NULL,                 -- draft | frozen
+    created     TEXT NOT NULL
+);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(
     item_id UNINDEXED, title, abstract, creators, notes, fulltext

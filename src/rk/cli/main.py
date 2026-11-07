@@ -31,9 +31,9 @@ checkpoint_app = typer.Typer(help="Checkpoints waiting for you", no_args_is_help
 browser_app = typer.Typer(help="The built-in browser (runs inside rk serve)", no_args_is_help=True)
 run_app = typer.Typer(cls=_RunGroup, no_args_is_help=True,
                       help="Runs in rk serve: rk run <project> --until <stage> runs the project's stages up to "
-                           "<stage>: topics or question (D2 discovery), or a production stage (protocol, search_screen "
-                           "or read_extract) once question passed (D1 and D2; rk run status lists the stages a run "
-                           "can end at now). status, pause, resume and cancel act on the project's run.")
+                           "<stage>: topics or question (D2 discovery), or a later stage with a worker once question "
+                           "passed (D1 and D2; rk run status lists the stages with a worker and those a run can end "
+                           "at now). status, pause, resume and cancel act on the project's run.")
 stage_app = typer.Typer(help="The project's stages", no_args_is_help=True)
 topic_app = typer.Typer(help="Candidate topics of the discovery stages", no_args_is_help=True)
 protocol_app = typer.Typer(help="The review protocol of the protocol stage", no_args_is_help=True)
@@ -883,12 +883,12 @@ def _run_line(d: dict) -> None:
 
 @run_app.command("start")
 def run_start(project: str = typer.Argument(..., help="The project (discovery mode d2, or question passed)"),
-              until: str = typer.Option(..., "--until", help="topics, question, protocol, search_screen or "
-                                                            "read_extract (rk run status: until_options)"),
+              until: str = typer.Option(..., "--until", help="topics, question or a later stage with a worker "
+                                                            "(rk run status: until_options)"),
               as_json: bool = JSON_OPT) -> None:
     """Start a run of the project's stages in rk serve (also: rk run <project> --until ...). The server checks
-    --until: topics or question in D2 discovery, or a production stage (protocol, search_screen or read_extract)
-    after question passed, with a frozen RQ."""
+    --until: topics or question in D2 discovery, or a later stage with a worker (rk run status: runnable) after
+    question passed, with a frozen RQ."""
     r = _call("rk_run_start", {"project": project, "until": until}, write=True)
     _out(r, as_json, lambda d: typer.echo(f"started {d['run_id']} on {d['project']} (until {d['until']}); follow it "
                                           "with: rk run status"))

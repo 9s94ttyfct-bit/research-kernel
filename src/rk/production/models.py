@@ -1,5 +1,5 @@
-"""Production artifacts: the review protocol (search strategy, eligibility, extraction schema, synthesis plan) and
-the screening and extraction vocabularies."""
+"""Production artifacts: the review protocol (search strategy, eligibility, extraction schema, synthesis plan), the
+screening and extraction vocabularies, and a research proposal's method design."""
 
 from __future__ import annotations
 
@@ -68,3 +68,43 @@ class Protocol(BaseModel):
     synthesis_plan: SynthesisPlan | None = None
     prisma_p: dict[str, str] | None = None
     record_cap: int = Field(RECORD_CAP, ge=1)
+
+
+class Measurement(BaseModel):
+    id: str = Field(min_length=1)
+    what: str = Field(min_length=1)
+    instrument: str = Field(min_length=1)
+    unit: str | None = None
+
+
+class DesignItem(BaseModel):
+    """One experiment, computation or observation of the design, and the hypotheses its measurements test."""
+    id: str = Field(min_length=1)
+    kind: Literal["experiment", "computation", "observation"]
+    sample: str
+    controls: list[str]
+    measurements: list[Measurement]
+    analysis: str
+    data_source: str
+    hypothesis_ids: list[str]
+
+    @model_validator(mode="after")
+    def _unique_measurements(self) -> DesignItem:
+        ids = [m.id for m in self.measurements]
+        if dup := sorted({i for i in ids if ids.count(i) > 1}):
+            raise ValueError(f"duplicate measurement ids in design item {self.id}: {dup}")
+        return self
+
+
+class DesignIn(BaseModel):
+    """A research proposal's method design (§7.3); frozen, it pre-registers the hypotheses it tests."""
+    items: list[DesignItem] = Field(min_length=1)
+    expected_results: str
+    alternative_explanations: list[str]
+
+    @model_validator(mode="after")
+    def _unique_items(self) -> DesignIn:
+        ids = [i.id for i in self.items]
+        if dup := sorted({i for i in ids if ids.count(i) > 1}):
+            raise ValueError(f"duplicate design item ids: {dup}")
+        return self

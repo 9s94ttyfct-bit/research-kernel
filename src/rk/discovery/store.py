@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Literal, NamedTuple
+from typing import Literal, NamedTuple, get_args
 
 from rk.canon import canonical_json, sha256_hex
 from rk.discovery.models import (
@@ -127,6 +127,36 @@ def set_already_done(ps: ProjectStore, rq_id: str, result: dict, *, actor: str,
     require_row(ps, "rqs", rq_id)
     ps.apply(NewEvent(type="rq.already_done", entity_id=rq_id, actor_kind=actor_kind, actor=actor,
                       payload={"result": result}))
+
+
+HypothesisStatus = Literal["proposed", "tested_by_design", "dropped"]
+
+
+def add_hypothesis(ps: ProjectStore, rq_id: str, statement: str, falsification: str, *, rival_of: str | None = None,
+                   actor: str, actor_kind: ActorKind = "agent") -> str:
+    """A hypothesis of the RQ added after it (e.g. a rival the argue stage found), ``proposed``; ``rival_of`` the
+    hypothesis it rivals. A frozen RQ keeps its stored text hash, that of the hypotheses it was frozen with."""
+    require_row(ps, "rqs", rq_id)
+    if rival_of is not None:
+        require_row(ps, "hypotheses", rival_of)
+    hid = new_id("hyp")
+    ps.apply(NewEvent(type="hypothesis.added", entity_id=hid, actor_kind=actor_kind, actor=actor,
+                      payload={"rq_id": rq_id, "statement": statement, "falsification": falsification,
+                               "rival_of": rival_of}))
+    return hid
+
+
+def set_hypothesis_status(ps: ProjectStore, hyp_id: str, status: HypothesisStatus, *, prereg_hash: str | None = None,
+                          actor: str, actor_kind: ActorKind = "kernel") -> None:
+    """``tested_by_design`` names the frozen design that tests it (``prereg_hash``); ``dropped`` and ``proposed`` have
+    none."""
+    if status not in get_args(HypothesisStatus):
+        raise ValueError(f"unknown hypothesis status {status!r}; expected one of {get_args(HypothesisStatus)}")
+    if (status == "tested_by_design") != (prereg_hash is not None):
+        raise ValueError("tested_by_design needs the prereg_hash of the frozen design (and only it has one)")
+    require_row(ps, "hypotheses", hyp_id)
+    ps.apply(NewEvent(type="hypothesis.status_set", entity_id=hyp_id, actor_kind=actor_kind, actor=actor,
+                      payload={"status": status, "prereg_hash": prereg_hash}))
 
 
 def rq_text_hash(body: dict, hypotheses: list[dict]) -> str:
@@ -318,6 +348,19 @@ def _rq_already_done(conn: sqlite3.Connection, ev: Event) -> None:
 def _rq_frozen(conn: sqlite3.Connection, ev: Event) -> None:
     conn.execute("UPDATE rqs SET status='frozen', text_hash=?, adopted_by=? WHERE id=?",
                  (ev.payload["text_hash"], ev.payload["adopted_by"], ev.entity_id))
+
+
+@projection("hypothesis.added")
+def _hypothesis(conn: sqlite3.Connection, ev: Event) -> None:
+    p = ev.payload
+    conn.execute("INSERT OR REPLACE INTO hypotheses(id, rq_id, statement, falsification, rival_of) VALUES (?,?,?,?,?)",
+                 (ev.entity_id, p["rq_id"], p["statement"], p["falsification"], p["rival_of"]))
+
+
+@projection("hypothesis.status_set")
+def _hypothesis_status(conn: sqlite3.Connection, ev: Event) -> None:
+    conn.execute("UPDATE hypotheses SET status=?, prereg_hash=? WHERE id=?",
+                 (ev.payload["status"], ev.payload["prereg_hash"], ev.entity_id))
 
 
 @projection("exploration.round")

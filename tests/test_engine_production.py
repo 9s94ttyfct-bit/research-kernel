@@ -302,6 +302,38 @@ def test_lead_stays_read_only_once_production_began(project):
     assert e.value.type == "stage_unavailable"
 
 
+# ---- Plan 5b: the stage graph after read_extract and the run texts --------------------------------------------------
+def test_new_back_edges_and_argue_is_open():
+    assert {("synthesize", "read_extract"), ("argue", "synthesize"), ("argue", "question"), ("design", "argue"),
+            ("design", "question")} <= BACK_EDGES
+    # argue has a task budget; synthesize and design (bounded by the studies and the design) have none
+    assert "argue" in OPEN_STAGES and not OPEN_STAGES & {"synthesize", "design"}
+
+
+@pytest.mark.parametrize("project", [{"paper_type": "research_proposal"}, {"paper_type": "critical_review"}],
+                         indirect=True)
+def test_run_texts_list_runnable_stages(project):
+    k, ps = project
+    holder: dict = {}
+    reg = build_registry(k, runs=lambda: holder.get("m"))
+    o = _orch(k, {**_workers(), **{s: FakeWorker() for s in ("synthesize", "argue", "design")}}, reg)
+    m = holder["m"] = RunManager(k, reg, o, poll_s=0.02)
+    try:
+        proposal = ps.meta("paper_type") == "research_proposal"
+        later = [*FIRST, "synthesize", "argue", *(["design"] if proposal else [])]
+        assert o.stages_after_question(ps) == later
+        with pytest.raises(ToolError) as e:  # a D2 project: guided calls are refused, naming where a run can end
+            reg.call("rk_stage_run", {"project": "demo", "stage": "intake"}, _ctx())
+        assert e.value.type == "not_d1" and f"then {', '.join(later)};" in e.value.message
+        assert ("design" in e.value.message) == proposal
+        # the default workers: the texts follow what runs, no hard-coded stage list
+        assert _orch(k, _workers()).stages_after_question(ps) == list(FIRST)
+        for name in ("rk_run_start", "rk_run_status"):
+            assert "read_extract" not in reg.get(name).summary
+    finally:
+        m.close()
+
+
 # ---- the task budget of the enumerated stages ----------------------------------------------------------------------
 class Found(BaseModel):
     found: bool

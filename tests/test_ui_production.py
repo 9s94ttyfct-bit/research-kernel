@@ -184,10 +184,14 @@ def test_read_tools_policy(api):
     assert set(ROLES) - {"judge", "judge_2", "judge_3", "triage"} >= {r for n in READ_TOOLS for r in TOOL_ROLES[n]} - {"cli"}
 
 
-def test_run_descriptions_name_the_production_stages(api):
-    summary = api.reg.get("rk_run_start").summary
-    assert all(s in summary for s in ("topics", "question", "protocol", "search_screen", "read_extract"))
-    assert "read_extract" in api.reg.get("rk_run_status").summary
+def test_run_descriptions_point_at_the_runnable_stages(api):
+    """The run tools' descriptions are static: they name no production stage list (what runs depends on the paper
+    type and the workers) and point at rk_run_status's runnable and until_options."""
+    start, status = (api.reg.get(n).summary for n in ("rk_run_start", "rk_run_status"))
+    assert all(s in start for s in ("topics", "question", "runnable", "until_options"))
+    assert all(s in status for s in ("runnable", "until_options"))
+    assert not any(s in start + status for s in ("protocol", "search_screen", "read_extract", "synthesize", "argue",
+                                                 "design"))
 
 
 def test_read_tools_before_anything_ran(api):

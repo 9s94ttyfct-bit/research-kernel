@@ -1,6 +1,7 @@
 """Event-sourced production artifacts: protocols and their deviations, records, screening decisions and final
-decisions, extractions and votes. Every write is one event; the tables below are projections of them. The queries of
-attempt-keyed artifacts (records, screening, extractions) read one attempt, as the discovery store does."""
+decisions, extractions, votes and method designs. Every write is one event; the tables below are projections of them.
+The queries of attempt-keyed artifacts (records, screening, extractions) read one attempt, as the discovery store
+does."""
 
 from __future__ import annotations
 
@@ -10,7 +11,7 @@ from typing import Any, get_args
 
 from rk.canon import canonical_json, sha256_hex
 from rk.ids import new_id
-from rk.production.models import DecidedBy, Include, Protocol, ScreeningPhase
+from rk.production.models import DecidedBy, DesignIn, Include, Protocol, ScreeningPhase
 from rk.store.events import ActorKind, Event, NewEvent
 from rk.store.project import ProjectStore
 from rk.store.projections import projection
@@ -63,6 +64,34 @@ def add_deviation(ps: ProjectStore, from_v: int, to_v: int, reason: str, stage: 
                                payload={"from_version": from_v, "to_version": to_v, "reason": reason,
                                         "stage": stage}))
     return ev.evt_id
+
+
+# ---- method designs (research proposals) ----
+def set_design(ps: ProjectStore, d: DesignIn, *, stage: str, attempt: int, actor: str,
+               actor_kind: ActorKind = "agent") -> str:
+    """A draft design; every hypothesis it tests must exist."""
+    wanted = {h for item in d.items for h in item.hypothesis_ids}
+    known = {r["id"] for r in ps.db.execute(f"SELECT id FROM hypotheses WHERE id IN ({','.join('?' * len(wanted))})",
+                                            tuple(wanted))} if wanted else set()
+    if missing := sorted(wanted - known):
+        raise ValueError(f"the design tests unknown hypotheses: {missing}")
+    did = new_id("dsg")
+    ps.apply(NewEvent(type="design.set", entity_id=did, actor_kind=actor_kind, actor=actor,
+                      payload={"stage": stage, "attempt": attempt, "body": d.model_dump(mode="json")}))
+    return did
+
+
+def freeze_design(ps: ProjectStore, design_id: str, *, actor: str, actor_kind: ActorKind = "kernel") -> str:
+    """Freeze the design; returns its hash, sha256 of the canonical JSON of its body. A design freezes once."""
+    with ps.lock:
+        r = require_row(ps, "designs", design_id)
+        if r["status"] == "frozen":
+            raise ValueError("design already frozen")
+        h = sha256_hex(canonical_json(json.loads(r["body"])))
+        ps.apply(NewEvent(type="design.frozen", entity_id=design_id, actor_kind=actor_kind, actor=actor,
+                          payload={"frozen_hash": h}))
+    return h
+
 
 
 # ---- records ----
@@ -197,6 +226,17 @@ def frozen_protocol(ps: ProjectStore) -> dict | None:
 def deviations(ps: ProjectStore) -> list[dict]:
     """Every deviation, project-level: a deviation links protocol versions, which span attempts and stages."""
     return query_rows(ps, "SELECT * FROM protocol_deviations ORDER BY rowid", ())
+
+
+def design(ps: ProjectStore, design_id: str) -> dict | None:
+    rows = query_rows(ps, "SELECT * FROM designs WHERE id=?", (design_id,), ("body",))
+    return rows[0] if rows else None
+
+
+def latest_design(ps: ProjectStore) -> dict | None:
+    """The latest design set, whatever its attempt, else ``None``."""
+    rows = query_rows(ps, "SELECT * FROM designs ORDER BY rowid DESC LIMIT 1", (), ("body",))
+    return rows[0] if rows else None
 
 
 def records(ps: ProjectStore, attempt: int) -> list[dict]:
@@ -338,3 +378,17 @@ def _vote(conn: sqlite3.Connection, ev: Event) -> None:
                  "opinions, ts) VALUES (?,?,?,?,?,?,?,?)",
                  (ev.entity_id, p["subject_type"], p["subject_id"], p["question"], p["decision"],
                   int(p["conservative_used"]), json.dumps(p["opinions"]), ev.ts))
+
+
+@projection("design.set")
+def _design(conn: sqlite3.Connection, ev: Event) -> None:
+    p = ev.payload
+    conn.execute("INSERT OR REPLACE INTO designs(id, stage, attempt, body, frozen_hash, frozen_at, status, created) "
+                 "VALUES (?,?,?,?,NULL,NULL,'draft',?)", (ev.entity_id, p["stage"], p["attempt"],
+                                                          canonical_json(p["body"]), ev.ts))
+
+
+@projection("design.frozen")
+def _design_frozen(conn: sqlite3.Connection, ev: Event) -> None:
+    conn.execute("UPDATE designs SET status='frozen', frozen_hash=?, frozen_at=? WHERE id=?",
+                 (ev.payload["frozen_hash"], ev.ts, ev.entity_id))

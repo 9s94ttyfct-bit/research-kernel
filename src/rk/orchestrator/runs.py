@@ -60,7 +60,7 @@ from rk.verify.judge import judges_problem
 log = logging.getLogger(__name__)
 
 ACTOR = "orchestrator"
-RUN_UNTIL = ("topics", "question")  # the discovery stages a run may end at; protocol, search_screen, read_extract too
+RUN_UNTIL = ("topics", "question")  # the discovery stages a run may end at; the later stages with a worker too
 STOPPED = frozenset({"paused", "paused_budget"}) | TERMINAL_RUN_STATES  # the thread ends on these
 STEPPED = frozenset({"running", "waiting_human", "paused_waiting_human"})  # a thread steps these
 WAITING = frozenset({"waiting_human", "paused_waiting_human"})  # the thread polls the checkpoints
@@ -180,8 +180,8 @@ class RunManager:
 
     def status(self, project: str) -> dict:
         """The latest run (or ``None``), the current stage, one row per stage of the project, the stages that have a
-        worker (``runnable``: the discovery stages, ``protocol``, ``search_screen`` and ``read_extract``) and those a
-        run could end at now (``until_options``)."""
+        worker (``runnable``: those a run can drive, ``Orchestrator.runnable``) and those a run could end at now
+        (``until_options``)."""
         ps = self._ps(project)
         with self._lock:
             r = self._runners.get(project)

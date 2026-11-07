@@ -75,19 +75,19 @@ def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManag
                                            "available here", status=503)
         return m
 
-    def d1_only(ps: ProjectStore, slug: str) -> None:
+    def d1_only(m: RunManager, ps: ProjectStore, slug: str) -> None:
         """Guided stage calls are for D1 projects: a D2 project's stages run in a D2 run."""
         intake = intake_of(ps)
         if intake is not None and intake.discovery_mode == "d2":
+            later = ", ".join(m.orchestrator.stages_after_question(ps)) or "no later stage yet"
             raise ToolError("not_d1", f"{slug} uses autonomous discovery (d2): its stages run in a run (uv run rk run "
-                                      f"{slug} --until <stage>: topics or question, then protocol, search_screen or "
-                                      "read_extract; rk run status lists where a run can end now), not through guided "
-                                      "stage calls")
+                                      f"{slug} --until <stage>: topics or question, then {later}; rk run status lists "
+                                      "where a run can end now), not through guided stage calls")
 
     # ---- runs (the human only) ----
     @tool("rk_run_start", "Start a run of the project's stages up to until, in rk serve: topics or question (an "
-          "autonomous D2 discovery run), or a production stage (protocol, search_screen or read_extract) once question "
-          "passed and the RQ is frozen (D1 and D2 projects); rk_run_status lists the stages a run can end at now "
+          "autonomous D2 discovery run), or a later stage with a worker once question passed and the RQ is frozen (D1 "
+          "and D2 projects); rk_run_status lists the stages with a worker (runnable) and those a run can end at now "
           "(until_options).", RunStart, True)
     def _run_start(ctx: CallContext, a: RunStart) -> dict:
         run_id = manager().start(a.project, a.until, actor=ctx.actor)
@@ -109,8 +109,8 @@ def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManag
         return manager().cancel(a.project, actor=ctx.actor)
 
     @tool("rk_run_status", "The project's latest run, the status of every stage, the stages with a worker "
-          "(runnable: the discovery stages, protocol, search_screen and read_extract) and the stages a run could end "
-          "at now (until_options).", ProjectArg, False)
+          "(runnable: those a run can drive) and the stages a run could end at now (until_options).", ProjectArg,
+          False)
     def _run_status(ctx: CallContext, a: ProjectArg) -> dict:
         return manager().status(a.project)
 
@@ -136,7 +136,7 @@ def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManag
     def _stage_run(ctx: CallContext, a: StageRun) -> dict:
         ps = project(a.project)
         m = manager()
-        d1_only(ps, a.project)
+        d1_only(m, ps, a.project)
         m.orchestrator.check_stage(a.project, a.stage)
         attempt = latest_attempt(ps, a.stage) + 1
 
@@ -145,7 +145,7 @@ def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManag
             return {"stage": a.stage, **asdict(outcome), "current": current_stage(ps)}
 
         return started(a, "run", a.stage, attempt, m.d1_start(a.project, "run", a.stage, run,
-                                                              check=lambda ps: d1_only(ps, a.project)))
+                                                              check=lambda ps: d1_only(m, ps, a.project)))
 
     @tool("rk_stage_advance", "Guided discovery (D1): apply the answer the current stage waits on, then gate it; a "
           "pass moves on to the next stage. Returns at once (status running); poll rk_stage_status for the gate "
@@ -153,7 +153,7 @@ def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManag
     def _stage_advance(ctx: CallContext, a: ProjectArg) -> dict:
         ps = project(a.project)
         m = manager()
-        d1_only(ps, a.project)
+        d1_only(m, ps, a.project)
         stage = current_stage(ps)
         if orchestrator_drives(ps):
             raise run_drives(a.project)
@@ -163,7 +163,7 @@ def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManag
             return {"stage": stage, **asdict(res), "current": current_stage(ps)}
 
         return started(a, "advance", stage, latest_attempt(ps, stage),
-                       m.d1_start(a.project, "advance", stage, advance, check=lambda ps: d1_only(ps, a.project)))
+                       m.d1_start(a.project, "advance", stage, advance, check=lambda ps: d1_only(m, ps, a.project)))
 
     @tool("rk_exploration_round", "Record feedback on a stage's output; it guides the next runs of the stages. "
           "Refused to agents while a D2 run is active (only the researcher guides a run).", RoundArgs, True)

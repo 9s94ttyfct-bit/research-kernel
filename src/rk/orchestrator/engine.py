@@ -207,6 +207,11 @@ class Orchestrator:
         yet."""
         return [s for s in stages_of(ps) if s in self.workers]
 
+    def stages_after_question(self, ps: ProjectStore) -> list[str]:
+        """The project's stages after question that have a worker, in order: the production stages a run can reach
+        (what the run texts list)."""
+        return [s for s in self.runnable(ps) if s not in DISCOVERY]
+
     def check_stage(self, project: str, stage: str) -> Worker:
         """The worker of ``stage`` when it is the current stage (what ``run_stage`` runs), else ``stage_unavailable``;
         a quick check before a guided stage call goes to the background. Guided calls run discovery stages only, and

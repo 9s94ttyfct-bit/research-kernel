@@ -16,6 +16,7 @@ _ADDED_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
     "screening": (("carried_from", "INTEGER"),),
     "screening_final": (("carried_from", "INTEGER"),),
     "extractions": (("carried_from", "INTEGER"),),
+    "hypotheses": (("rival_of", "TEXT"), ("status", "TEXT NOT NULL DEFAULT 'proposed'"), ("prereg_hash", "TEXT")),
 }
 _BACKFILL: dict[str, str] = {
     "search_log": "UPDATE search_log SET after_year=(SELECT json_extract(e.payload, '$.after_year') FROM events e "

@@ -1,13 +1,13 @@
 """Claims, evidence, argument edges and objections (spec §6.3). Event-sourced like everything else.
 
-A claim's ``status`` only changes through ``set_claim_status``, which V-SUPPORT calls; no tool can mark a claim
-supported."""
+A claim's ``status`` only changes through ``set_claim_status``, which V-SUPPORT calls, and ``withdraw_claim``; no tool
+can mark a claim supported."""
 
 from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -17,13 +17,17 @@ from rk.store.project import ProjectStore
 from rk.store.projections import projection
 from rk.verify.hedge import hedge_level
 
-ClaimKind = Literal["fact", "definition", "cause", "evaluation", "policy"]
+ClaimKind = Literal["fact", "definition", "cause", "evaluation", "policy", "stat_result", "feasibility"]
 ClaimStatus = Literal["draft", "supported", "uncertain", "unsupported", "contradicted", "withdrawn"]
-# Which part of the kernel wrote a claim: the argument (the default), or gap mining, whose claims are evidence checks
-# of a candidate gap (a quoted finding checked against another source) and stay out of the argument's listings.
-ClaimOrigin = Literal["argument", "gaps"]
+# Which part of the kernel wrote a claim: the argument (the default); gap mining, whose claims are evidence checks of a
+# candidate gap (a quoted finding checked against another source) and stay out of the argument's listings; or the
+# synthesis, whose findings the argue stage builds on.
+ClaimOrigin = Literal["argument", "gaps", "synthesis"]
 EdgeType = Literal["reason_of", "evidence_of", "warrant_of", "objection_to", "response_to"]
 ObjectionCategory = Literal["problem", "soundness", "alternative", "other_cause", "counterexample", "definition"]
+# How an objection was answered: by a response claim, by conceding it (the claim was narrowed or withdrawn), or by
+# rejecting it as invalid (the note says why).
+ObjectionResponse = Literal["responded", "conceded", "rejected_invalid"]
 CRITERIA = ("accurate", "precise", "sufficient", "representative", "authoritative", "clear", "relevant")
 
 # Which entity prefixes an edge may connect (from, to).
@@ -46,6 +50,8 @@ class ClaimIn(BaseModel):
     kind: ClaimKind = "fact"
     scope_limits: list[str] = []
     contested: bool = False
+    artifact_ids: list[str] = []  # the stt_/fig_ artifacts the claim reports (a stat_result's numbers)
+    narrowed_from: str | None = None  # the claim this one rewrites narrower and weaker (P1, §5.3)
 
 
 class EvidenceIn(BaseModel):
@@ -62,11 +68,42 @@ class EvidenceIn(BaseModel):
         return self
 
 
+class Warrant(BaseModel):
+    """Why the reason or evidence supports the claim: in this circumstance, this consequence follows, by this kind
+    of rule."""
+    circumstance: str = Field(min_length=1)
+    consequence: str = Field(min_length=1)
+    type: Literal["causal", "conditional", "generalization", "analogy", "authority", "definition"]
+
+
+class WarrantTest(BaseModel):
+    ok: bool
+    reason: str
+
+
+class WarrantTests(BaseModel):
+    """The Skeptic's verdict on a warrant: is it true, limited as it should be, do the circumstance and the consequence
+    fit the case, and is it accepted in the field."""
+    true: WarrantTest
+    limited: WarrantTest
+    circumstance_fits: WarrantTest
+    consequence_fits: WarrantTest
+    accepted: WarrantTest
+
+
 class EdgeIn(BaseModel):
     from_id: str
     to_id: str
     type: EdgeType
-    warrant: dict | None = None
+    warrant: Warrant | None = None  # a warrant_of edge's warrant; the other edges have none
+
+    @model_validator(mode="after")
+    def _warrant_on_warrant_edges(self) -> EdgeIn:
+        if self.type == "warrant_of" and self.warrant is None:
+            raise ValueError("a warrant_of edge needs its warrant {circumstance, consequence, type}")
+        if self.type != "warrant_of" and self.warrant is not None:
+            raise ValueError("only a warrant_of edge has a warrant")
+        return self
 
 
 class ObjectionIn(BaseModel):
@@ -107,13 +144,39 @@ class ArgumentService:
             "SELECT data FROM objections WHERE target_id=? ORDER BY id", (claim_id,))]
         return c
 
-    def list_claims(self, status: str | None = None, origin: ClaimOrigin = "argument") -> list[dict]:
-        """Claims of one origin (claims written before origins existed are argument claims), optionally by status."""
-        q = "SELECT data FROM claims WHERE COALESCE(json_extract(data, '$.origin'), 'argument')=?"
-        params: tuple = (origin,)
+    def list_claims(self, status: str | None = None,
+                    origin: ClaimOrigin | tuple[ClaimOrigin, ...] = "argument") -> list[dict]:
+        """Claims of one origin or several (claims written before origins existed are argument claims), optionally by
+        status."""
+        origins = (origin,) if isinstance(origin, str) else tuple(origin)
+        q = (f"SELECT data FROM claims WHERE COALESCE(json_extract(data, '$.origin'), 'argument') "
+             f"IN ({','.join('?' * len(origins))})")
+        params: tuple = origins
         if status:
-            q, params = q + " AND status=?", (origin, status)
+            q, params = q + " AND status=?", (*origins, status)
         return [json.loads(r["data"]) for r in self.ps.db.execute(q + " ORDER BY id", params)]
+
+    def list_edges(self, from_id: str | None = None, to_id: str | None = None,
+                   type: EdgeType | None = None) -> list[dict]:
+        """Edges, optionally only those from ``from_id``, to ``to_id`` and of ``type``."""
+        q, params = "SELECT data FROM edges WHERE 1=1", ()
+        for cond, value in (("from_id=?", from_id), ("to_id=?", to_id), ("json_extract(data, '$.type')=?", type)):
+            if value is not None:
+                q, params = f"{q} AND {cond}", (*params, value)
+        return [json.loads(r["data"]) for r in self.ps.db.execute(q + " ORDER BY id", params)]
+
+    def list_objections(self, target_id: str | None = None, status: str | None = None) -> list[dict]:
+        """Objections, optionally only those to ``target_id`` and with ``status`` (``open`` or an answer)."""
+        q, params = "SELECT data FROM objections WHERE 1=1", ()
+        for cond, value in (("target_id=?", target_id), ("json_extract(data, '$.status')=?", status)):
+            if value is not None:
+                q, params = f"{q} AND {cond}", (*params, value)
+        return [json.loads(r["data"]) for r in self.ps.db.execute(q + " ORDER BY id", params)]
+
+    def list_evidence(self, claim_id: str) -> list[dict]:
+        """The evidence linked to the claim."""
+        return [json.loads(r["data"]) for r in self.ps.db.execute(
+            "SELECT data FROM evidence WHERE claim_id=? ORDER BY id", (claim_id,))]
 
     def generator_vendor(self, task_id: str | None, role: str) -> str | None:
         """Vendor of the model that wrote a claim: the task's driver vendor, ``human`` for the CLI, else unknown."""
@@ -130,11 +193,28 @@ class ArgumentService:
 
     def add_claim(self, c: ClaimIn, *, generator_vendor: str | None, actor: str, actor_kind: str = "agent",
                   origin: ClaimOrigin = "argument") -> str:
+        """A draft claim. The claim it narrows (``narrowed_from``) and the artifacts it reports must exist."""
+        if c.narrowed_from is not None and self._row("claims", c.narrowed_from) is None:
+            raise KeyError(c.narrowed_from)
+        for a in c.artifact_ids:
+            if self.ps.db.execute("SELECT 1 FROM artifacts WHERE id=?", (a,)).fetchone() is None:
+                raise KeyError(a)
         cid = new_id("clm")
         data = {**c.model_dump(), "id": cid, "hedge_level": hedge_level(c.text), "status": "draft",
                 "generator_vendor": generator_vendor, "origin": origin}
         self._ev("claim.added", cid, {"claim": data}, actor, actor_kind)
         return cid
+
+    def withdraw_claim(self, claim_id: str, *, reason: str, actor: str, actor_kind: str = "kernel") -> None:
+        """Delete the claim from the argument (P1's rule for an uncertain claim, §5.3): its status becomes
+        ``withdrawn`` and the reason is kept for the limitations. A claim is withdrawn once."""
+        with self.ps.lock:
+            c = self._row("claims", claim_id)
+            if c is None:
+                raise KeyError(claim_id)
+            if c["status"] == "withdrawn":
+                raise ValueError(f"claim {claim_id} is already withdrawn")
+            self._ev("claim.withdrawn", claim_id, {"reason": reason}, actor, actor_kind)
 
     def link_evidence(self, e: EvidenceIn, *, actor: str, actor_kind: str = "agent") -> str:
         if self._row("claims", e.claim_id) is None:
@@ -166,6 +246,35 @@ class ArgumentService:
         self._ev("objection.added", oid, {"objection": data}, actor, actor_kind)
         return oid
 
+    def respond_objection(self, obj_id: str, *, response_claim_id: str | None, status: ObjectionResponse, note: str,
+                          actor: str, actor_kind: str = "agent") -> None:
+        """Answer an open objection: ``responded`` with the response claim, ``conceded`` or ``rejected_invalid``
+        (the note says why). An objection is answered once."""
+        if status not in get_args(ObjectionResponse):
+            raise ValueError(f"unknown objection response {status!r}; expected one of {get_args(ObjectionResponse)}")
+        if status == "responded" and response_claim_id is None:
+            raise ValueError("a responded objection needs the response claim (response_claim_id)")
+        with self.ps.lock:
+            o = self._row("objections", obj_id)
+            if o is None:
+                raise KeyError(obj_id)
+            if response_claim_id is not None and self._row("claims", response_claim_id) is None:
+                raise KeyError(response_claim_id)
+            if o["status"] != "open":
+                raise ValueError(f"objection {obj_id} is not open (it is {o['status']})")
+            self._ev("objection.responded", obj_id, {"status": status, "response_claim_id": response_claim_id,
+                                                     "note": note}, actor, actor_kind)
+
+    def record_warrant_tests(self, edge_id: str, tests: WarrantTests, *, actor: str,
+                             actor_kind: str = "agent") -> None:
+        """Store the Skeptic's tests of a warrant_of edge's warrant (a later verdict replaces an earlier one)."""
+        e = self._row("edges", edge_id)
+        if e is None:
+            raise KeyError(edge_id)
+        if e["type"] != "warrant_of":
+            raise ValueError(f"{edge_id} is not a warrant_of edge (it is {e['type']})")
+        self._ev("warrant.tested", edge_id, {"tests": tests.model_dump(mode="json")}, actor, actor_kind)
+
     def set_claim_status(self, claim_id: str, status: ClaimStatus, *, verification_id: str | None,
                          actor: str = "kernel") -> None:
         if self._row("claims", claim_id) is None:
@@ -181,13 +290,25 @@ def _claim_added(conn: sqlite3.Connection, ev: Event) -> None:
     conn.execute("INSERT OR REPLACE INTO claims(id, status, data) VALUES (?,?,?)", (c["id"], c["status"], json.dumps(c)))
 
 
+def _update(conn: sqlite3.Connection, table: str, entity_id: str, **fields) -> dict:
+    """Merge ``fields`` into the row's JSON ``data`` and store it; returns the merged data."""
+    r = conn.execute(f"SELECT data FROM {table} WHERE id=?", (entity_id,)).fetchone()
+    d = {**json.loads(r[0]), **fields}
+    conn.execute(f"UPDATE {table} SET data=? WHERE id=?", (json.dumps(d), entity_id))
+    return d
+
+
 @projection("claim.status_set")
 def _claim_status(conn: sqlite3.Connection, ev: Event) -> None:
-    r = conn.execute("SELECT data FROM claims WHERE id=?", (ev.entity_id,)).fetchone()
-    c = json.loads(r[0])
-    c["status"] = ev.payload["status"]
-    c["verification_id"] = ev.payload["verification_id"]
-    conn.execute("UPDATE claims SET status=?, data=? WHERE id=?", (c["status"], json.dumps(c), ev.entity_id))
+    c = _update(conn, "claims", ev.entity_id, status=ev.payload["status"],
+                verification_id=ev.payload["verification_id"])
+    conn.execute("UPDATE claims SET status=? WHERE id=?", (c["status"], ev.entity_id))
+
+
+@projection("claim.withdrawn")
+def _claim_withdrawn(conn: sqlite3.Connection, ev: Event) -> None:
+    _update(conn, "claims", ev.entity_id, status="withdrawn", withdrawn_reason=ev.payload["reason"])
+    conn.execute("UPDATE claims SET status='withdrawn' WHERE id=?", (ev.entity_id,))
 
 
 @projection("evidence.linked")
@@ -209,3 +330,15 @@ def _objection(conn: sqlite3.Connection, ev: Event) -> None:
     o = ev.payload["objection"]
     conn.execute("INSERT OR REPLACE INTO objections(id, target_id, data) VALUES (?,?,?)",
                  (o["id"], o["target_id"], json.dumps(o)))
+
+
+@projection("objection.responded")
+def _objection_responded(conn: sqlite3.Connection, ev: Event) -> None:
+    p = ev.payload
+    _update(conn, "objections", ev.entity_id, status=p["status"], response_claim_id=p["response_claim_id"],
+            note=p["note"])
+
+
+@projection("warrant.tested")
+def _warrant_tested(conn: sqlite3.Connection, ev: Event) -> None:
+    _update(conn, "edges", ev.entity_id, warrant_tests=ev.payload["tests"])
