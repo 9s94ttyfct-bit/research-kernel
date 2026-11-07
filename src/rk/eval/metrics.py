@@ -11,17 +11,25 @@ def confusion(gold: list[str], pred: list[str], gold_labels: list[str], pred_lab
     return m
 
 
+VERDICT_LABELS = ("supported", "unsupported", "contradicted")
+
+
 def support_metrics(gold: list[str], pred: list[str]) -> dict:
-    """Precision of "supported" predictions, precision of the negative ("unsupported"/"contradicted") predictions as
-    the share whose gold label is not "supported", coverage (share not "uncertain"), counts."""
+    """Precision of "supported" predictions; precision of the negative ("unsupported"/"contradicted") predictions as
+    the share whose gold label is not "supported"; the precision of each verdict label (gold equals the label);
+    coverage (share not "uncertain"); counts. A precision with no predictions is None."""
     n = len(gold)
-    said = [g for g, p in zip(gold, pred, strict=True) if p == "supported"]
-    negative = [g for g, p in zip(gold, pred, strict=True) if p in ("unsupported", "contradicted")]
-    precision = (sum(g == "supported" for g in said) / len(said)) if said else None
-    precision_negative = (sum(g != "supported" for g in negative) / len(negative)) if negative else None
-    coverage = (sum(p != "uncertain" for p in pred) / n) if n else 0.0
-    return {"n": n, "predicted_supported": len(said), "precision_supported": precision,
-            "predicted_negative": len(negative), "precision_negative": precision_negative, "coverage": coverage}
+    pairs = list(zip(gold, pred, strict=True))
+
+    def share(sel: list[bool]) -> float | None:
+        return sum(sel) / len(sel) if sel else None
+
+    said = [g for g, p in pairs if p == "supported"]
+    negative = [g for g, p in pairs if p in ("unsupported", "contradicted")]
+    return {"n": n, "predicted_supported": len(said), "precision_supported": share([g == "supported" for g in said]),
+            "predicted_negative": len(negative), "precision_negative": share([g != "supported" for g in negative]),
+            "coverage": (sum(p != "uncertain" for p in pred) / n) if n else 0.0,
+            "precision_by_label": {lab: share([g == lab for g, p in pairs if p == lab]) for lab in VERDICT_LABELS}}
 
 
 def md_matrix(m: dict[str, dict[str, int]]) -> str:

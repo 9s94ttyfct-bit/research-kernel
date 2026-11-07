@@ -1,13 +1,16 @@
 """Scratch kernels for evaluations: a throw-away RK_HOME-like directory with one project, so evaluation runs never
-write to a project that ``rk serve`` owns. Agentic CLIs reach the Kernel through ``rk serve``, so evaluation tasks
-run on chat-API drivers (in-process tool loop)."""
+write to a project that ``rk serve`` owns. The hourly call caps are the real ``$RK_HOME`` ones, so evaluation calls
+count against the same subscription budget as ``rk serve``'s. Agentic CLIs reach the Kernel through ``rk serve``, so
+evaluation tasks that use tools run on chat-API drivers (in-process tool loop)."""
 
 from __future__ import annotations
 
 import tempfile
 from pathlib import Path
 
+from rk.config import rk_home
 from rk.llm.drivers import DriverSpec, build_provider
+from rk.llm.ratelimit import CallCaps
 
 
 def scratch_kernel(slug: str, title: str, *, http=None):
@@ -15,6 +18,8 @@ def scratch_kernel(slug: str, title: str, *, http=None):
     from rk.workspace import Kernel
 
     k = Kernel(Path(tempfile.mkdtemp(prefix="rk-eval-")), http=http)
+    k.caps.close()
+    k.caps = CallCaps(rk_home() / "kernel.sqlite")  # the call log rk serve counts against
     reg = build_registry(k)
     k.create_project(slug, title, actor="eval")
     return k, reg

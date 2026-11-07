@@ -13,8 +13,13 @@ from rk.fulltext import attach_pdf
 from rk.library.models import Creator, ItemIn
 from rk.llm.cli_claude import ClaudeCliProvider
 from rk.llm.cli_codex import CodexCliProvider, strict_schema
+from rk.llm.drivers import DriverSpec
+from rk.llm.runner import run_task
 from rk.llm.types import RunContext, TaskSpec
 from rk.notes import list_notes
+from rk.tools.builtin import build_registry
+from rk.verify.judge import ask_judge
+from rk.workspace import Kernel
 
 from .conftest import DOCS
 
@@ -145,6 +150,32 @@ def test_cli_timeout_kills_process(fake, monkeypatch):
     monkeypatch.setenv("FAKE_MODE", "sleep")
     r = _provider(CodexCliProvider, exe, "codex", monkeypatch).run(_spec(timeout_s=1), CTX)
     assert not r.ok and r.error == "timeout" and r.duration_s < 10
+
+
+@pytest.mark.parametrize(("cls", "kind", "spec"), [(ClaudeCliProvider, "claude", DriverSpec("claude_cli", "h")),
+                                                   (CodexCliProvider, "codex", DriverSpec("codex_cli", "l"))])
+def test_judge_task_on_a_cli_gets_no_tools_and_no_token(fake, monkeypatch, tmp_home, cls, kind, spec):
+    """The eval's (and production's) judge call: a no-tool task, so the CLI gets no MCP server and no task token."""
+    exe, records = fake
+    k = Kernel(tmp_home)
+    reg = build_registry(k)
+    k.create_project("jt", "Judge", actor="t")
+    monkeypatch.setattr(k.tokens, "issue_task", lambda *a, **kw: pytest.fail("a judge task got a task token"))
+
+    def run(**task):
+        return run_task(k, reg, project="jt", **task)
+
+    try:
+        op = ask_judge(run, "judge_3", spec, claim_text="Copper helps.", evidence_text="Copper helps a lot.",
+                       provider=_provider(cls, exe, kind, monkeypatch))
+    finally:
+        k.close()
+    assert op.error  # the fake's answer is not a JudgeVerdict; only the argv matters here
+    a = records()[0]["argv"]
+    assert "RK_TASK_TOKEN" not in json.dumps(a) and not any("mcp_servers.rk" in x for x in a)
+    if kind == "claude":
+        assert json.loads(a[a.index("--mcp-config") + 1]) == {"mcpServers": {}} and "--allowedTools" not in a
+        assert a[a.index("--tools") + 1] == ""
 
 
 # ---------------- live: the real CLIs ----------------

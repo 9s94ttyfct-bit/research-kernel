@@ -62,7 +62,7 @@ def check_opinion(v: JudgeVerdict, evidence: str) -> tuple[str, bool]:
     return v.label, spans_ok
 
 
-def _judges(settings, drivers: list[DriverSpec] | None) -> list[tuple[str, DriverSpec]]:
+def role_judges(settings, drivers: list[DriverSpec] | None) -> list[tuple[str, DriverSpec]]:
     """The judges with their roles: the configured ``JUDGE_ROLES``, each as its own role, or, for an explicit
     ``drivers`` list, the i-th driver as ``JUDGE_ROLES[i]``."""
     if drivers is None:
@@ -74,7 +74,7 @@ def _judges(settings, drivers: list[DriverSpec] | None) -> list[tuple[str, Drive
 
 def judge_drivers(settings, drivers: list[DriverSpec] | None) -> list[DriverSpec]:
     """``drivers``, else the configured ``JUDGE_ROLES`` in role order."""
-    return [spec for _, spec in _judges(settings, drivers)]
+    return [spec for _, spec in role_judges(settings, drivers)]
 
 
 def judge_vendor_error(vendor: str | None, generator_vendor: str | None, seen: set[str]) -> str | None:
@@ -88,15 +88,15 @@ def judge_vendor_error(vendor: str | None, generator_vendor: str | None, seen: s
     return None
 
 
-def admitted_judges(ctx: StageContext, generator_vendor: str | None,
-                    judges: list[DriverSpec] | None) -> tuple[list[tuple[str, DriverSpec, str]], dict[str, str]]:
-    """The judges (``judges``, else the configured ``JUDGE_ROLES``) that may judge work of ``generator_vendor``, as
+def admit(judges: list[tuple[str, DriverSpec]], generator_vendor: str | None
+          ) -> tuple[list[tuple[str, DriverSpec, str]], dict[str, str]]:
+    """The ``(role, driver)`` judges, in this order, that may judge work of ``generator_vendor``, as
     ``(role, driver, vendor)``, and the skipped ones as role -> why (``judge_vendor_error``: a known, non-human vendor
     that is not the generator's and not another admitted judge's)."""
     admitted: list[tuple[str, DriverSpec, str]] = []
     skipped: dict[str, str] = {}
     seen: set[str] = set()
-    for role, spec in _judges(ctx.kernel.settings(), judges):
+    for role, spec in judges:
         vendor = vendor_of(spec.provider, spec.model)
         error = judge_vendor_error(vendor, generator_vendor, seen)
         if error is not None:
@@ -105,6 +105,25 @@ def admitted_judges(ctx: StageContext, generator_vendor: str | None,
         seen.add(vendor)
         admitted.append((role, spec, vendor))
     return admitted, skipped
+
+
+def admitted_judges(ctx: StageContext, generator_vendor: str | None,
+                    judges: list[DriverSpec] | None) -> tuple[list[tuple[str, DriverSpec, str]], dict[str, str]]:
+    """``admit`` over ``judges``, else the configured ``JUDGE_ROLES``."""
+    return admit(role_judges(ctx.kernel.settings(), judges), generator_vendor)
+
+
+def ask_judge(run: JudgeRunner, role: str, spec: DriverSpec, *, claim_text: str, evidence_text: str,
+              provider=None) -> JudgeOpinion:
+    """One judge's opinion as ``role`` (admission is the caller's): a no-tool task through ``run`` (``run_task``'s
+    keyword interface). A failed task gives an ``uncertain`` opinion carrying the task's error."""
+    base = {"driver": str(spec), "vendor": vendor_of(spec.provider, spec.model)}
+    r = run(role=role, instructions=INSTRUCTIONS, inputs={"claim": claim_text, "evidence": evidence_text},
+            output_schema=JudgeVerdict, driver=spec, provider=provider, tools=[], max_turns=4, timeout_s=300)
+    if not r.ok:
+        return JudgeOpinion(**base, label="uncertain", task_id=r.task_id, error=r.error or "failed")
+    label, spans_ok = check_opinion(r.output, evidence_text)
+    return JudgeOpinion(**base, label=label, raw_label=r.output.label, spans_ok=spans_ok, task_id=r.task_id)
 
 
 def run_judges(kernel, registry, *, project: str, claim_text: str, evidence_text: str,
@@ -117,23 +136,10 @@ def run_judges(kernel, registry, *, project: str, claim_text: str, evidence_text
     if run is None:
         def run(**task):
             return run_task(kernel, registry, project=project, **task)
-    opinions: list[JudgeOpinion] = []
-    seen_vendors: set[str] = set()
-    for role, spec in _judges(kernel.settings(), drivers):
-        vendor = vendor_of(spec.provider, spec.model)
-        base = {"driver": str(spec), "vendor": vendor}
-        error = judge_vendor_error(vendor, generator_vendor, seen_vendors)
-        if error is not None:
-            opinions.append(JudgeOpinion(**base, label="uncertain", error=error))
-            continue
-        seen_vendors.add(vendor)
-        r = run(role=role, instructions=INSTRUCTIONS,
-                inputs={"claim": claim_text, "evidence": evidence_text}, output_schema=JudgeVerdict, driver=spec,
-                provider=(providers or {}).get(str(spec)), tools=[], max_turns=4, timeout_s=300)
-        if not r.ok:
-            opinions.append(JudgeOpinion(**base, label="uncertain", task_id=r.task_id, error=r.error or "failed"))
-            continue
-        label, spans_ok = check_opinion(r.output, evidence_text)
-        opinions.append(JudgeOpinion(**base, label=label, raw_label=r.output.label, spans_ok=spans_ok,
-                                     task_id=r.task_id))
-    return opinions
+    judges = role_judges(kernel.settings(), drivers)
+    _, skipped = admit(judges, generator_vendor)
+    return [JudgeOpinion(driver=str(spec), vendor=vendor_of(spec.provider, spec.model), label="uncertain",
+                         error=skipped[role]) if role in skipped else
+            ask_judge(run, role, spec, claim_text=claim_text, evidence_text=evidence_text,
+                      provider=(providers or {}).get(str(spec)))
+            for role, spec in judges]

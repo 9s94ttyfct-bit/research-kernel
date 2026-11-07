@@ -54,8 +54,10 @@ Hidden text is removed before anything enters a text layer:
 
 ## Evaluation
 
-The LitQA2 evaluation needs `--extra eval`. `rk eval support` runs the configured judges (or `--judges`) on SciFact
-dev and caches every successful opinion under `$RK_HOME/eval`, so a rerun pays only for missing or failed calls.
+The LitQA2 evaluation needs `--extra eval`. `rk eval support` asks each configured judge (or `--judges`) once per
+SciFact dev pair and reports the verdicts production would give for claims written by `anthropic` (the headline),
+`openai` and `human`. Successful opinions are cached under `$RK_HOME/eval` by prompt fingerprint, so a rerun pays only
+for missing or failed calls; judge calls count against the same hourly call caps as `rk serve`.
 
 ```bash
 rk eval support --limit 100         # V-SUPPORT judges on SciFact dev: verdict × gold matrix, coverage, precision

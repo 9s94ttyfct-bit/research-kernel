@@ -630,12 +630,19 @@ def eval_support(limit: int = typer.Option(100, "--limit", help="Seeded SciFact 
                  judges: str | None = JUDGES_OPT, min_judges: int | None = typer.Option(None, "--min-judges"),
                  workers: int = typer.Option(4, "--workers", help="Parallel judge calls"),
                  out: Path = EVAL_OUT_OPT) -> None:
-    """Run the V-SUPPORT judges on held-out SciFact dev: verdict × gold matrix, coverage, precision, and per-judge
-    agreement and failures. Successful judge opinions are cached, so a rerun pays only for missing calls."""
-    from rk.eval.support_eval import run_support_eval
+    """Run the V-SUPPORT judges on held-out SciFact dev and report, per generator scenario (anthropic, openai, human),
+    the verdict × gold matrix, coverage and precision, plus per-judge agreement and failures. Successful judge
+    opinions are cached, so a rerun pays only for missing calls."""
+    from rk.discovery.executor import RateCapped
+    from rk.eval.support_eval import rerun_after, run_support_eval
 
     k = min_judges if min_judges is not None else load_settings().support_min_judges
-    r = run_support_eval(judges=_judges(judges), min_judges=k, limit=limit or None, workers=workers, report_dir=out)
+    try:
+        r = run_support_eval(judges=_judges(judges) if judges else None, min_judges=k, limit=limit or None,
+                             workers=workers, report_dir=out)
+    except RateCapped as e:
+        typer.secho(f"rate-capped: {e}. The opinions so far are cached; rerun after {rerun_after(e)}.", fg="red")
+        raise typer.Exit(1) from None
     typer.echo(Path(r["report"]).read_text())
 
 

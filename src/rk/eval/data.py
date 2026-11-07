@@ -71,19 +71,17 @@ def _tar_member(tar_path: Path, name: str) -> bytes:
         return tar.extractfile(member).read()  # read into memory; nothing is written from the archive
 
 
-def load_scifact(split: Literal["train", "dev"], *, tarball: Path | None = None,
-                 http: httpx.Client | None = None) -> list[SupportPair]:
-    """One pair per (claim, cited abstract). SUPPORT → supported, CONTRADICT → contradicted, a cited abstract without
-    rationale → unsupported (SciFact's NOT ENOUGH INFO). The test split has no labels."""
-    if split not in ("train", "dev"):
-        raise ValueError("SciFact test split is unlabeled; use train (calibration) or dev (evaluation)")
+def load_scifact(*, tarball: Path | None = None, http: httpx.Client | None = None) -> list[SupportPair]:
+    """SciFact dev: one pair per (claim, cited abstract). SUPPORT → supported, CONTRADICT → contradicted, a cited
+    abstract without rationale → unsupported (SciFact's NOT ENOUGH INFO). rk evaluates on dev only: nothing is
+    calibrated, and the test split has no labels."""
     tar = tarball or fetch(SCIFACT_URL, "scifact/data.tar.gz", http=http)
     corpus = {}
     for line in _tar_member(tar, "data/corpus.jsonl").decode().splitlines():
         d = json.loads(line)
         corpus[d["doc_id"]] = d["title"] + "\n" + " ".join(d["abstract"])
     pairs = []
-    for line in _tar_member(tar, f"data/claims_{split}.jsonl").decode().splitlines():
+    for line in _tar_member(tar, "data/claims_dev.jsonl").decode().splitlines():
         c = json.loads(line)
         for doc_id in c.get("cited_doc_ids", []):
             ev = c.get("evidence", {}).get(str(doc_id))

@@ -37,14 +37,9 @@ def _tarball(tmp_path):
 
 
 def test_scifact_label_mapping(tmp_path):
-    pairs = load_scifact("dev", tarball=_tarball(tmp_path))
+    pairs = load_scifact(tarball=_tarball(tmp_path))  # the dev split: the only one with labels that rk evaluates on
     assert [(p.id, p.label) for p in pairs] == [("1:11", "supported"), ("2:22", "contradicted"), ("3:11", "unsupported")]
     assert pairs[0].evidence == "Copper study\nCopper reduces CO2. Rates were high."
-
-
-def test_scifact_test_split_refused(tmp_path):
-    with pytest.raises(ValueError, match="unlabeled"):
-        load_scifact("test", tarball=_tarball(tmp_path))
 
 
 def test_deepfact_fields(tmp_path):
@@ -92,9 +87,7 @@ def test_fetch_caches_and_records_sha(tmp_path):
 
 @pytest.mark.live
 def test_real_downloads_parse():
-    dev = load_scifact("dev")
-    train = load_scifact("train")
-    assert len(dev) > 300 and len(train) > 800 and {p.label for p in dev} == {"supported", "contradicted",
-                                                                                  "unsupported"}
+    dev = load_scifact()
+    assert len(dev) > 300 and {p.label for p in dev} == {"supported", "contradicted", "unsupported"}
     assert len(load_deepfact()) == 621
     assert len(load_litqa2()) == 199
