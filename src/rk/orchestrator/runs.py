@@ -116,12 +116,13 @@ class RunManager:
     def start(self, project: str, until: str, *, actor: str) -> str:
         """Start a D2 run of ``project`` up to the stage ``until`` (``topics`` or ``question``) and its thread.
         Refused while another run of the project is not terminal or a D1 stage call runs, without an intake, and in
-        D1."""
+        D1. The checks and the start are one locked step, so an intake recorded meanwhile (``idle``) cannot slip in
+        between them."""
         if until not in RUN_UNTIL:
             raise ToolError("stage_unavailable", f"a run ends at topics or question, not {until!r}")
         ps = self._ps(project)
-        self._check_startable(ps, project)
         with self._lock:
+            self._check_startable(ps, project)
             return self._start_locked(ps, project, until, actor)
 
     def pause(self, project: str, *, actor: str = ACTOR) -> dict:
@@ -183,13 +184,18 @@ class RunManager:
         return {"project": project, "run": latest_run(ps), "current": current_stage(ps), "stages": stage_rows(ps),
                 "stepping": stepping, "requested": requested}
 
-    def d1_start(self, project: str, action: str, stage: str | None, call: Callable[[], dict]) -> dict:
+    def d1_start(self, project: str, action: str, stage: str | None, call: Callable[[], dict], *,
+                 check: Callable[[ProjectStore], None] | None = None) -> dict:
         """Start a guided (D1) stage call of ``project`` in the background and return at once (``status:
         running``); ``call`` returns the outcome shown by ``d1_status`` once it finished. Refused while a run of the
-        project is active (or its thread is still stopping) or another D1 call of it runs (``stage_busy``)."""
+        project is active (or its thread is still stopping) or another D1 call of it runs (``stage_busy``), and when
+        ``check(ps)`` raises: the caller's precondition (e.g. the project is in D1), checked again under the lock so
+        an intake recorded since the caller checked it (``idle``) is seen."""
         ps = self._ps(project)
         with self._lock:
             self._check_open()
+            if check is not None:
+                check(ps)
             busy = self._d1.get(project)
             if busy is not None:
                 raise ToolError("stage_busy", f"a guided stage call of {project} ({busy.action} "
@@ -223,8 +229,11 @@ class RunManager:
     @contextmanager
     def idle(self, project: str, what: str) -> Iterator[ProjectStore]:
         """Hold ``project`` still while the block changes ``what`` (e.g. ``"the intake"``): refused while a run of it
-        is active (``run_active``) or a guided stage call of it runs (``stage_busy``), and neither can start before
-        the block ends. Takes the manager's lock, then the project's: the lock order of ``start`` and ``resume``."""
+        is active (``run_active``) or a guided stage call of it runs (``stage_busy``). Until the block ends no run or
+        guided stage call of the project can start, and the next one that does sees the block's write: ``start``,
+        ``resume`` and ``d1_start`` check their preconditions and start under the same manager lock. (Writes that do
+        not take the manager's lock are not held off.) Takes the manager's lock, then the project's: the lock order of
+        ``start`` and ``resume``."""
         ps = self._ps(project)
         with self._lock:
             if project in self._d1:

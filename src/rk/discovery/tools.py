@@ -147,7 +147,8 @@ def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManag
             outcome = m.orchestrator.run_stage(a.project, a.stage, guidance=a.guidance, actor=ctx.actor)
             return {"stage": a.stage, **asdict(outcome), "current": current_stage(ps)}
 
-        return started(a, "run", a.stage, attempt, m.d1_start(a.project, "run", a.stage, run))
+        return started(a, "run", a.stage, attempt, m.d1_start(a.project, "run", a.stage, run,
+                                                              check=lambda ps: d1_only(ps, a.project)))
 
     @tool("rk_stage_advance", "Guided discovery (D1): apply the answer the current stage waits on, then gate it; a "
           "pass moves on to the next stage. Returns at once (status running); poll rk_stage_status for the gate "
@@ -164,8 +165,8 @@ def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManag
             res = m.orchestrator.advance(a.project, actor=ctx.actor)
             return {"stage": stage, **asdict(res), "current": current_stage(ps)}
 
-        return started(a, "advance", stage, latest_attempt(ps, stage), m.d1_start(a.project, "advance", stage,
-                                                                                   advance))
+        return started(a, "advance", stage, latest_attempt(ps, stage),
+                       m.d1_start(a.project, "advance", stage, advance, check=lambda ps: d1_only(ps, a.project)))
 
     @tool("rk_exploration_round", "Record feedback on a stage's output; it guides the next runs of the stages. "
           "Refused to agents while a D2 run is active (only the researcher guides a run).", RoundArgs, True)

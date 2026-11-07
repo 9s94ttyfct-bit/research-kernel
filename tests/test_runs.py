@@ -575,7 +575,7 @@ class _Gate:
     each then waits for the lock the other holds, every time. A gated thread gives up on a lock after ``give_up_s``
     (``_LockTimeout``), so a deadlock fails the test instead of hanging it or leaking its threads."""
 
-    def __init__(self, names: tuple[str, ...], *, pause_s: float = 1.0, give_up_s: float = 3.0):
+    def __init__(self, names: tuple[str, ...], *, pause_s: float = 1.0, give_up_s: float = 10.0):
         self.names, self.give_up_s = set(names), give_up_s
         self.barrier = threading.Barrier(len(names), timeout=pause_s)
         self.fired: set[str] = set()
@@ -608,7 +608,8 @@ class _HookedLock:
 
 
 def _race(*calls) -> list:
-    """Run each ``(thread name, fn)`` in its own thread and join each within 5 s; the result or exception of each."""
+    """Run each ``(thread name, fn)`` in its own thread and join each within 15 s (more than a gated thread waits for
+    a lock); the result or exception of each."""
     out: dict = {}
 
     def go(name, fn):
@@ -621,7 +622,7 @@ def _race(*calls) -> list:
     for t in threads:
         t.start()
     for t in threads:
-        t.join(5.0)
+        t.join(15.0)
     assert not [t.name for t in threads if t.is_alive()], "the threads hang"
     return [out[name] for name, _ in calls]
 
@@ -658,6 +659,89 @@ def test_intake_and_a_run_start_never_deadlock(env, path):
         assert not isinstance(intake, BaseException), intake
         assert intake_of(ps).audience == "nurses" and seq("project.intake") < seq("run.started")
     _wait(lambda: run_row(ps, new)["status"] == "paused_waiting_human")
+
+
+def _hold_after_first_read(monkeypatch, module: str, thread: str, until: threading.Event) -> threading.Event:
+    """Patch ``module.intake_of``: the first read of the intake in the thread named ``thread`` then waits (at most
+    2 s) for ``until``, widening the window between a precondition check and the start it guards. Returns an event
+    set once that read happened."""
+    import importlib
+
+    mod = importlib.import_module(module)
+    real, read = mod.intake_of, threading.Event()
+
+    def intake_of(ps):
+        got = real(ps)
+        if threading.current_thread().name == thread and not read.is_set():
+            read.set()
+            until.wait(2.0)
+        return got
+
+    monkeypatch.setattr(mod, "intake_of", intake_of)
+    return read
+
+
+def _intake_once_read(reg, read: threading.Event, done: threading.Event, mode: str):
+    """Record the intake with discovery mode ``mode`` once the other thread checked its precondition."""
+
+    def call():
+        assert read.wait(TIMEOUT)
+        try:
+            return reg.call("rk_project_intake", {"project": "demo", **DEFAULT_INTAKE, "discovery_mode": mode},
+                            _ctx())
+        finally:
+            done.set()
+
+    return call
+
+
+def test_an_intake_switching_to_d1_never_lands_inside_a_run_start(env, monkeypatch):
+    """start checks the discovery mode and starts the run in one locked step: an intake switching to d1 after the
+    check either comes first (``not_d2``) or is refused (``run_active``); no run starts in d1."""
+    import json
+
+    from rk.discovery.store import intake_of
+
+    _, ps, _, make = env
+    m, reg = make(_workers(landscape=FakeWorker(runs=[_review])))
+    done = threading.Event()
+    read = _hold_after_first_read(monkeypatch, "rk.orchestrator.runs", "rk-test-run", done)
+    run, intake = _race(("rk-test-run", lambda: m.start("demo", "question", actor="tester")),
+                        ("rk-test-intake", _intake_once_read(reg, read, done, "d1")))
+    modes = [json.loads(r[0])["discovery_mode"] for r in
+             ps.db.execute("SELECT payload FROM events WHERE type='run.started'")]
+    assert "d1" not in modes
+    if isinstance(run, ToolError):
+        assert run.type in ("not_d2", "run_active") and modes == [] and intake_of(ps).discovery_mode == "d1"
+    else:
+        assert not isinstance(run, BaseException), run
+        assert isinstance(intake, ToolError) and intake.type == "run_active" and modes == ["d2"]
+        assert intake_of(ps).discovery_mode == "d2"
+        _wait(lambda: run_row(ps, run)["status"] == "paused_waiting_human")
+
+
+def test_a_switch_to_d2_never_lands_inside_a_guided_stage_start(env, monkeypatch):
+    """d1_start checks the D1 precondition again under its lock: an intake switching to d2 after the tool's check
+    either comes first (``not_d1``, no stage call starts) or is refused (``stage_busy``)."""
+    from rk.discovery.store import intake_of
+
+    _, ps, _, make = env
+    _d1(ps)
+    m, reg = make(_workers())
+    done = threading.Event()
+    read = _hold_after_first_read(monkeypatch, "rk.discovery.tools", "rk-test-run", done)
+    stage, intake = _race(("rk-test-run", lambda: reg.call("rk_stage_run", {"project": "demo", "stage": "intake"},
+                                                           _ctx("lead"))),
+                          ("rk-test-intake", _intake_once_read(reg, read, done, "d2")))
+    status = _d1_idle(m)
+    if isinstance(stage, ToolError):
+        assert stage.type == "not_d1" and status["last"] is None
+        assert not isinstance(intake, BaseException), intake
+        assert intake_of(ps).discovery_mode == "d2"
+    else:
+        assert not isinstance(stage, BaseException), stage
+        assert isinstance(intake, ToolError) and intake.type == "stage_busy"
+        assert intake_of(ps).discovery_mode == "d1"
 
 
 def test_run_tools_are_cli_only(env):
