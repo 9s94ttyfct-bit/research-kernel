@@ -44,7 +44,7 @@ State lives in `$RK_HOME`, which defaults to `~/ResearchKernel`:
 | V-QUOTE | A quote note must occur verbatim in the source's text layer after normalisation: ligatures, quote and dash styles, line-end hyphenation and whitespace. It is stored with a page and character locator. |
 | V-PARA | A paraphrase must not copy its source span. Limits: longest shared run ≤ 8 tokens, 4-gram containment ≤ 0.35, token-set ratio ≤ 85. This is a lexical flag only. |
 | V-HEDGE | A claim may not be worded more strongly than its sources. |
-| V-SUPPORT | Layer 1 is the probability p from a local MiniCheck model, computed exactly as in the official package. The default is Bespoke-MiniCheck-7B in Ollama (`ollama pull bespoke-minicheck:7b-q8_0`; CC BY-NC 4.0, non-commercial use only). MiniCheck-Flan-T5-Large (MIT) is the alternative (`support_model`). Layer 2 is a set of LLM judges from vendors other than the claim's author; each must quote the evidence verbatim. **supported** needs ≥ `support_min_judges` (default 2) agreeing judges and p ≥ τ_hi, or p ≥ τ_hi_judged when at least two such judges agree. **unsupported**/**contradicted** mirror this with τ_lo / τ_lo_judged and need one shared label. All four thresholds come from `rk eval support` for the configured model; thresholds calibrated for a different model are refused. Everything else is **uncertain**, which in collaborative mode opens an `uncertain_support` checkpoint. |
+| V-SUPPORT | Three LLM judges (roles `judge`, `judge_2`, `judge_3`; by default GPT-6 Luna, DeepSeek v4.1 flash and Claude Haiku 5.5). A judge's vendor must differ from the claim author's and from every other admitted judge's, and each judge must quote the evidence verbatim. **supported**, **unsupported** or **contradicted** needs at least `support_min_judges` (default 2) valid judges that all give that label, and V-NUM gates **supported**. Everything else is **uncertain**, which in collaborative mode opens an `uncertain_support` checkpoint. |
 | V-NUM | Every number in a claim must occur, with the same value and unit, in its evidence. Formats are normalised: thousands separators, Unicode minus, `×10ⁿ`, `%`/percent and ranges. |
 
 Hidden text is removed before anything enters a text layer:
@@ -54,14 +54,11 @@ Hidden text is removed before anything enters a text layer:
 
 ## Evaluation
 
-V-SUPPORT layer 1 defaults to Bespoke-MiniCheck-7B in a local Ollama: `ollama pull bespoke-minicheck:7b-q8_0`
-(8.2 GB; it needs nltk from the `support` extra for sentence splitting). That tag is Ollama's 8-bit quantized build of
-`bespokelabs/Bespoke-MiniCheck-7B`. It has not been checked against the full-precision model, so its thresholds come
-from its own calibration. The Flan-T5 alternative also needs torch and transformers (`uv sync --extra support`) and
-downloads once to `$RK_HOME/models`. Evaluation needs `--extra eval`.
+The LitQA2 evaluation needs `--extra eval`. `rk eval support` runs the configured judges (or `--judges`) on SciFact
+dev and caches every successful opinion under `$RK_HOME/eval`, so a rerun pays only for missing or failed calls.
 
 ```bash
-rk eval support --write-config      # calibrate τ on SciFact train; confusion matrices on held-out SciFact dev
+rk eval support --limit 100         # V-SUPPORT judges on SciFact dev: verdict × gold matrix, coverage, precision
 rk eval litqa2 --limit 20           # LitQA2 multiple choice with the Kernel's own search/full-text tools
 rk eval deepfact --limit 10         # DeepFact-Bench claims: gather evidence, then V-SUPPORT (evaluation only)
 rk eval reportbench --reports DIR   # citation precision/recall against ReportBench references
@@ -71,8 +68,8 @@ rk support check --text passage.txt --sources src_… --driver codex_cli --gold 
 - Results land in `docs/eval/`. The Markdown reports hold aggregate numbers. The JSON files also hold per-item dataset
   ids, gold and predicted labels, and scores, but never dataset text. Dataset sources and licences are listed in
   `src/rk/eval/LICENSES.md`.
-- Evaluations run on a scratch kernel with chat-API drivers. `rk support check` runs inside `rk serve`, so it can
-  use any driver.
+- Evaluations run on a scratch kernel with chat-API drivers; the judges may also use the agentic CLIs, since they call
+  no tools. `rk support check` runs inside `rk serve`, so it can use any driver.
 
 ## Built-in browser and Workbench
 

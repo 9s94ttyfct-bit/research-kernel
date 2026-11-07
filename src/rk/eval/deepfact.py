@@ -72,7 +72,7 @@ def run_deepfact(*, driver: DriverSpec, judges: list[DriverSpec], min_judges: in
                  judge_providers: dict | None = None, http=None) -> dict:
     settings = load_settings()
     provider = provider or eval_provider(driver, settings)
-    judge_providers = judge_providers or {str(j): eval_provider(j, settings) for j in judges}
+    judge_providers = judge_providers or {str(j): eval_provider(j, settings, tools=False) for j in judges}
     pool = claims if claims is not None else load_deepfact()
     sample = random.Random(seed).sample(pool, min(limit, len(pool)))
     k, reg = scratch_kernel("eval-deepfact", "DeepFact-Bench evaluation", http=http)

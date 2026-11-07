@@ -1,13 +1,12 @@
-"""``rk eval support``: calibrate V-SUPPORT on SciFact train, report on held-out SciFact dev.
+"""``rk eval support``: V-SUPPORT's judges on held-out SciFact dev pairs (spec §9.1 as amended 2026-11-07).
 
-1. Layer 1 (MiniCheck) on every train and dev pair → layer-1-only thresholds τ_hi/τ_lo (train).
-2. With judges: their opinions on a seeded train sample → joint thresholds τ_hi_judged/τ_lo_judged (spec §9.1 as
-   amended 2026-11-06: used when ≥2 cross-vendor judges agree).
-3. On a seeded dev sample (held out): the old rule (layer-1-only thresholds) and the amended rule, from the same judge
-   opinions, plus judges alone as a diagnostic. V-NUM gates "supported" everywhere, as in ``verify_support``.
+Every judge gives an opinion on every pair of a seeded dev sample (claims authored by "human", so all judges are
+eligible). The verdict is ``combine`` (at least ``min_judges`` valid judges, all with the same label), and V-NUM gates
+"supported", as in ``verify_support``. The report gives the verdict × gold matrix, coverage, the precision of
+"supported" and of the negative verdicts, and per-judge failure and agreement counts. Nothing is calibrated.
 
-Judge opinions and layer-1 scores are cached under ``$RK_HOME/eval`` so reruns cost no model calls. Runs on a scratch
-Kernel, so it never touches a project database that ``rk serve`` owns."""
+Successful judge opinions are cached under ``$RK_HOME/eval``, so a rerun (or a resumed, interrupted run) pays only for
+missing or failed calls. Runs on a scratch Kernel, so it never touches a project database that ``rk serve`` owns."""
 
 from __future__ import annotations
 
@@ -17,19 +16,13 @@ import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from itertools import combinations
 from pathlib import Path
 
 from rk import __version__
-from rk.config import load_settings, save_settings
+from rk.config import load_settings
 from rk.eval.data import SupportPair, eval_dir, load_scifact
-from rk.eval.metrics import (
-    calibrate_joint,
-    calibrate_thresholds,
-    confusion,
-    layer1_predict,
-    md_matrix,
-    support_metrics,
-)
+from rk.eval.metrics import confusion, md_matrix, support_metrics
 from rk.eval.scratch import eval_provider, scratch_kernel
 from rk.llm.drivers import DriverSpec
 from rk.verify.judge import JudgeOpinion, run_judges
@@ -39,25 +32,6 @@ from rk.verify.support import combine
 GOLD = ["supported", "contradicted", "unsupported"]
 PRED = ["supported", "contradicted", "unsupported", "uncertain"]
 TARGET_PRECISION, TARGET_COVERAGE = 0.95, 0.70
-
-
-def layer1_scores(pairs: list[SupportPair], split: str, layer1, *, cache: Path | None = None) -> dict[str, float]:
-    """MiniCheck p per pair id, cached on disk (scoring all of SciFact takes minutes)."""
-    cache = cache or eval_dir() / f"scores-{layer1.model_id.replace('/', '_')}-{split}.jsonl"
-    done: dict[str, float] = {}
-    if cache.exists():
-        for line in cache.read_text().splitlines():
-            r = json.loads(line)
-            done[r["id"]] = r["p"]
-    todo = [p for p in pairs if p.id not in done]
-    for i in range(0, len(todo), 32):
-        batch = todo[i:i + 32]
-        scores = layer1.score_batch([(p.evidence, p.claim) for p in batch])
-        with cache.open("a") as f:
-            for p, s in zip(batch, scores, strict=True):
-                done[p.id] = s.p
-                f.write(json.dumps({"id": p.id, "p": s.p}) + "\n")
-    return {p.id: done[p.id] for p in pairs}
 
 
 def judge_opinions(pairs: list[SupportPair], judges: list[DriverSpec], *, cache: Path,
@@ -98,93 +72,63 @@ def judge_opinions(pairs: list[SupportPair], judges: list[DriverSpec], *, cache:
     return {p.id: [done.get((p.id, str(j))) or failed[(p.id, str(j))] for j in judges] for p in pairs}
 
 
-def _verdicts(pairs: list[SupportPair], p: dict[str, float], ops: dict[str, list[JudgeOpinion]], *,
-              min_judges: int, tau_hi: float, tau_lo: float, tau_hi_judged: float | None = None,
-              tau_lo_judged: float | None = None) -> list[str]:
-    out = []
-    for pair in pairs:
-        v = combine(p[pair.id], ops[pair.id], tau_hi=tau_hi, tau_lo=tau_lo, min_judges=min_judges,
-                    tau_hi_judged=tau_hi_judged, tau_lo_judged=tau_lo_judged)
-        if v == "supported" and not check_numbers(pair.claim, [pair.evidence]).ok:
-            v = "uncertain"
-        out.append(v)
-    return out
+def verdict(pair: SupportPair, opinions: list[JudgeOpinion], *, min_judges: int) -> str:
+    v = combine(opinions, min_judges=min_judges)
+    return "uncertain" if v == "supported" and not check_numbers(pair.claim, [pair.evidence]).ok else v
 
 
-def _block(pairs: list[SupportPair], pred: list[str], **extra) -> dict:
-    gold = [p.label for p in pairs]
-    return {**extra, **support_metrics(gold, pred), "confusion": confusion(gold, pred, GOLD, PRED)}
+def judge_agreement(pairs: list[SupportPair], judges: list[DriverSpec], ops: dict[str, list[JudgeOpinion]]
+                    ) -> tuple[list[dict], list[dict]]:
+    """Per judge: valid opinions, failed calls, and valid labels equal to gold. Per pair of judges: pairs where both
+    gave a valid opinion, and how many of those carry the same label."""
+    per_judge = []
+    for i, j in enumerate(judges):
+        valid = [(p, ops[p.id][i]) for p in pairs if ops[p.id][i].error is None]
+        per_judge.append({"driver": str(j), "valid": len(valid), "failed": len(pairs) - len(valid),
+                          "agrees_with_gold": sum(o.label == p.label for p, o in valid)})
+    pairwise = []
+    for (a, ja), (b, jb) in combinations(enumerate(judges), 2):
+        both = [(ops[p.id][a], ops[p.id][b]) for p in pairs if ops[p.id][a].error is None and ops[p.id][b].error is None]
+        pairwise.append({"a": str(ja), "b": str(jb), "both_valid": len(both),
+                         "same_label": sum(x.label == y.label for x, y in both)})
+    return per_judge, pairwise
 
 
-def run_support_eval(*, judges: list[DriverSpec], min_judges: int, limit: int = 100, calib_limit: int = 200,
-                     seed: int = 13, layer1_only: bool = False, write_config: bool = False,
-                     report_dir: Path = Path("docs/eval"), loader: Callable = load_scifact, layer1=None,
-                     providers: dict | None = None, cache_dir: Path | None = None, workers: int = 4) -> dict:
+def run_support_eval(*, judges: list[DriverSpec], min_judges: int, limit: int | None = 100, workers: int = 4,
+                     report_dir: Path = Path("docs/eval"), loader: Callable = load_scifact,
+                     judge_providers: dict | None = None, seed: int = 13) -> dict:
+    """``limit``: size of the seeded dev sample (``None``: every dev pair). ``judge_providers`` (driver string →
+    Provider) replaces the configured drivers (tests)."""
     settings = load_settings()
-    if layer1 is None:  # the layer-1 model was removed (2026-11-07); the judges-only evaluation replaces this module
-        raise ValueError("rk eval support needs a layer-1 scorer, which V-SUPPORT no longer has")
-    cache_dir = cache_dir or eval_dir()
-    model_tag = layer1.model_id.replace("/", "_")
-    train, dev = loader("train"), loader("dev")
-    p_train = layer1_scores(train, "train", layer1, cache=cache_dir / f"scores-{model_tag}-train.jsonl")
-    p_dev = layer1_scores(dev, "dev", layer1, cache=cache_dir / f"scores-{model_tag}-dev.jsonl")
-    tau = calibrate_thresholds([p_train[p.id] for p in train], [p.label for p in train],
-                               target_precision=TARGET_PRECISION)
-    l1_pred = [layer1_predict(p_dev[p.id], tau["tau_hi"], tau["tau_lo"]) for p in dev]
-    result: dict = {
-        "date": datetime.now(UTC).date().isoformat(), "rk_version": __version__, "model": layer1.model_id,
-        "calibration": {"split": "train", **tau},
-        "layer1": _block(dev, l1_pred, split="dev"),
-    }
-    joint = None
-    if not layer1_only:
-        def factory() -> dict:
-            return providers if providers is not None else {str(j): eval_provider(j, settings) for j in judges}
 
-        calib_sample = random.Random(seed).sample(train, min(calib_limit, len(train)))
-        dev_sample = random.Random(seed).sample(dev, min(limit, len(dev)))
-        ops_train = judge_opinions(calib_sample, judges, cache=cache_dir / "judges-train.jsonl",
-                                   providers_factory=factory, workers=workers)
-        ops_dev = judge_opinions(dev_sample, judges, cache=cache_dir / "judges-dev.jsonl", providers_factory=factory,
-                                 workers=workers)
-        rows = [(p_train[p.id], [o.label for o in ops_train[p.id] if o.error is None], p.label) for p in calib_sample]
-        joint = calibrate_joint(rows, target_precision=TARGET_PRECISION)
-        judged = {"tau_hi_judged": joint["tau_hi_judged"], "tau_lo_judged": joint["tau_lo_judged"]}
-        common = {"min_judges": min_judges, "tau_hi": tau["tau_hi"], "tau_lo": tau["tau_lo"]}
-        failures = sum(o.error is not None for ops in (*ops_train.values(), *ops_dev.values()) for o in ops)
-        result["joint_calibration"] = {"split": "train", "sample": len(calib_sample), "seed": seed, **joint,
-                                       "train_amended": _block(calib_sample, _verdicts(
-                                           calib_sample, p_train, ops_train, **common, **judged))}
-        result["dev_sample"] = {
-            "split": "dev", "sample": len(dev_sample), "seed": seed, "judges": [str(j) for j in judges],
-            "min_judges": min_judges, "failed_judge_calls": failures,
-            "old_rule": _block(dev_sample, _verdicts(dev_sample, p_dev, ops_dev, **common)),
-            "amended_rule": _block(dev_sample, _verdicts(dev_sample, p_dev, ops_dev, **common, **judged)),
-            # diagnostic only, not a product rule: judges alone (layer 1 ignored)
-            "judges_only": _block(dev_sample, _verdicts(dev_sample, p_dev, ops_dev, min_judges=min_judges,
-                                                        tau_hi=0.0, tau_lo=1.0)),
-        }
+    def factory() -> dict:
+        if judge_providers is not None:
+            return judge_providers
+        return {str(j): eval_provider(j, settings, tools=False) for j in judges}
+
+    dev = loader("dev")
+    sample = dev if limit is None else random.Random(seed).sample(dev, min(limit, len(dev)))
+    ops = judge_opinions(sample, judges, cache=eval_dir() / "judges-dev.jsonl", providers_factory=factory,
+                         workers=workers)
+    pred = [verdict(p, ops[p.id], min_judges=min_judges) for p in sample]
+    gold = [p.label for p in sample]
+    per_judge, pairwise = judge_agreement(sample, judges, ops)
+    result: dict = {
+        "date": datetime.now(UTC).date().isoformat(), "rk_version": __version__,
+        "dev": {"split": "dev", "pairs": len(dev), "sample": len(sample), "seed": None if limit is None else seed,
+                "judges": [str(j) for j in judges], "min_judges": min_judges,
+                "failed_judge_calls": sum(j["failed"] for j in per_judge),
+                **support_metrics(gold, pred), "confusion": confusion(gold, pred, GOLD, PRED)},
+        "judges": per_judge, "pairwise_agreement": pairwise,
+        "items": [{"id": p.id, "gold": p.label, "verdict": v,
+                   "labels": [o.label if o.error is None else f"failed: {o.error}" for o in ops[p.id]]}
+                  for p, v in zip(sample, pred, strict=True)],
+    }
     report_dir.mkdir(parents=True, exist_ok=True)
-    stem = report_dir / f"support-{result['date']}"
+    stem = report_dir / f"support-{result['date']}-judges"
     stem.with_suffix(".json").write_text(json.dumps(result, indent=1))
     stem.with_suffix(".md").write_text(render_report(result))
     result["report"] = str(stem.with_suffix(".md"))
-    if write_config:
-        s = load_settings()
-        s.support_tau_hi, s.support_tau_lo = tau["tau_hi"], tau["tau_lo"]
-        record = {**tau, "dataset": "SciFact", "split": "train", "model": layer1.model_id, "rk_version": __version__,
-                  "date": result["date"], "dev_precision_supported": result["layer1"]["precision_supported"],
-                  "dev_coverage": result["layer1"]["coverage"]}
-        if joint is not None:
-            s.support_tau_hi_judged, s.support_tau_lo_judged = joint["tau_hi_judged"], joint["tau_lo_judged"]
-            amended = result["dev_sample"]["amended_rule"]
-            record["joint"] = {k: joint[k] for k in ("tau_hi_judged", "tau_lo_judged", "n", "n_agree_supported",
-                                                       "n_agree_negative")}
-            record["joint"].update(judges=[str(j) for j in judges], min_judges=min_judges,
-                                   dev_precision_supported=amended["precision_supported"],
-                                   dev_coverage=amended["coverage"], dev_sample=result["dev_sample"]["sample"])
-        s.support_calibration = record
-        save_settings(s)
     return result
 
 
@@ -201,33 +145,22 @@ def _target(m: dict) -> str:
 
 
 def render_report(r: dict) -> str:
-    c = r["calibration"]
-    out = [f"# V-SUPPORT evaluation — {r['date']}", "",
-           (f"rk {r['rk_version']}; layer 1 `{r['model']}`. Data: SciFact (claims CC BY 4.0, abstracts ODC-By); "
-            "thresholds calibrated on train, metrics on held-out dev."), "",
-           "## Layer-1-only calibration (SciFact train, all pairs)", "",
-           (f"- τ_hi = {c['tau_hi']:.4f} (target precision {c['target_precision']} "
-            f"{'reached' if c['hi_reached'] else 'NOT reachable → nothing is ever supported by layer 1 alone'})"),
-           f"- τ_lo = {c['tau_lo']:.4f} ({'reached' if c['lo_reached'] else 'not reached'}); n = {c['n']}", "",
-           "## Layer 1 only (SciFact dev, all pairs)", "", _target(r["layer1"]), "", md_matrix(r["layer1"]["confusion"])]
-    if "joint_calibration" in r:
-        j, d = r["joint_calibration"], r["dev_sample"]
-        out += ["", f"## Joint calibration (SciFact train, seeded sample of {j['sample']}, seed {j['seed']})", "",
-                f"Judges: {', '.join(f'`{x}`' for x in d['judges'])}; min_judges = {d['min_judges']}.", "",
-                (f"- Pairs where ≥2 judges agree on \"supported\": {j['n_agree_supported']} "
-                f"(gold-supported share {_fmt(j['agree_supported_precision'])})"),
-                (f"- Pairs where ≥2 judges agree on unsupported/contradicted: {j['n_agree_negative']} "
-                f"(not-gold-supported share {_fmt(j['agree_negative_precision'])})"),
-                (f"- τ_hi_judged = {_fmt(j['tau_hi_judged'], 4)}; τ_lo_judged = {_fmt(j['tau_lo_judged'], 4)} "
-                "(a value of n/a would mean the target was not reachable; the layer-1-only threshold then applies)"), "",
-                "In-sample (train) result of the amended rule — optimistic by construction:", "",
-                _target(j["train_amended"]), "",
-                f"## Held-out comparison (SciFact dev, seeded sample of {d['sample']}, seed {d['seed']})", "",
-                f"Failed judge calls: {d['failed_judge_calls']} (counted as no opinion).", "",
-                "### Old rule (layer-1-only thresholds + judges)", "", _target(d["old_rule"]), "",
-                md_matrix(d["old_rule"]["confusion"]), "",
-                "### Amended rule (§9.1, 2026-11-06)", "", _target(d["amended_rule"]), "",
-                md_matrix(d["amended_rule"]["confusion"]), "",
-                "### Diagnostic: judges alone (layer 1 ignored; not a product rule)", "", _target(d["judges_only"]),
-                "", md_matrix(d["judges_only"]["confusion"])]
+    d = r["dev"]
+    sample = (f"all {d['pairs']} pairs" if d["seed"] is None
+              else f"a seeded sample of {d['sample']} of {d['pairs']} pairs (seed {d['seed']})")
+    out = [f"# V-SUPPORT evaluation, judges only — {r['date']}", "",
+           (f"rk {r['rk_version']}. Data: SciFact dev (claims CC BY 4.0, abstracts ODC-By), {sample}. Judges: "
+            f"{', '.join(f'`{x}`' for x in d['judges'])}. A verdict needs at least {d['min_judges']} valid judges "
+            "that all give the same label; V-NUM gates \"supported\". Nothing is calibrated."), "",
+           "## Verdicts", "", _target(d), "",
+           (f"- Negative verdicts (unsupported/contradicted): {d['predicted_negative']}, of which a share of "
+            f"{_fmt(d['precision_negative'])} is not gold-supported."),
+           f"- Failed judge calls: {d['failed_judge_calls']} (counted as no opinion).", "",
+           md_matrix(d["confusion"]), "",
+           "## Judges", "",
+           "| judge | valid opinions | failed calls | label equals gold |", "|---|---|---|---|"]
+    out += [f"| `{j['driver']}` | {j['valid']} | {j['failed']} | {j['agrees_with_gold']} |" for j in r["judges"]]
+    out += ["", "Pairwise agreement (pairs where both judges gave a valid opinion):", "",
+            "| judges | both valid | same label |", "|---|---|---|"]
+    out += [f"| `{a['a']}` · `{a['b']}` | {a['both_valid']} | {a['same_label']} |" for a in r["pairwise_agreement"]]
     return "\n".join(out) + "\n"

@@ -101,6 +101,9 @@ def test_litqa2_run_with_scripted_answers(tmp_home, tmp_path, replay_http):
     assert "PaperQA2 + Ollama baseline | not run" in (tmp_path / f"litqa2-{r['date']}.md").read_text()
 
 
-def test_eval_rejects_agentic_cli_drivers():
+def test_eval_rejects_agentic_cli_drivers_for_tool_tasks_only():
     with pytest.raises(ValueError, match="chat-API driver"):
         eval_provider(DriverSpec("codex_cli"), Settings())
+    # judges call no tools, so the default judges (codex_cli, claude_cli) run in a scratch kernel
+    for spec in (DriverSpec("codex_cli", "gpt-6-luna"), DriverSpec("claude_cli", "claude-haiku-5-5")):
+        assert eval_provider(spec, Settings(), tools=False).kind == "agentic_cli"

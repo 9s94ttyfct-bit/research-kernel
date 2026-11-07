@@ -626,20 +626,16 @@ def _judges(text: str | None) -> list:
 
 
 @eval_app.command("support")
-def eval_support(limit: int = typer.Option(100, "--limit", help="Held-out dev sample judged by the judges"),
-                 calib_limit: int = typer.Option(200, "--calib-limit", help="Train sample for joint calibration"),
+def eval_support(limit: int = typer.Option(100, "--limit", help="Seeded SciFact dev sample (0: every dev pair)"),
                  judges: str | None = JUDGES_OPT, min_judges: int | None = typer.Option(None, "--min-judges"),
                  workers: int = typer.Option(4, "--workers", help="Parallel judge calls"),
-                 layer1_only: bool = typer.Option(False, "--layer1-only"),
-                 write_config: bool = typer.Option(False, "--write-config", help="Store calibrated τ in config.toml"),
                  out: Path = EVAL_OUT_OPT) -> None:
-    """Calibrate V-SUPPORT on SciFact train (layer 1 alone, then jointly with the judges); compare the old and
-    amended §9.1 rules on held-out SciFact dev."""
+    """Run the V-SUPPORT judges on held-out SciFact dev: verdict × gold matrix, coverage, precision, and per-judge
+    agreement and failures. Successful judge opinions are cached, so a rerun pays only for missing calls."""
     from rk.eval.support_eval import run_support_eval
 
     k = min_judges if min_judges is not None else load_settings().support_min_judges
-    r = run_support_eval(judges=_judges(judges), min_judges=k, limit=limit, calib_limit=calib_limit, workers=workers,
-                         layer1_only=layer1_only, write_config=write_config, report_dir=out)
+    r = run_support_eval(judges=_judges(judges), min_judges=k, limit=limit or None, workers=workers, report_dir=out)
     typer.echo(Path(r["report"]).read_text())
 
 
