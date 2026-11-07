@@ -19,9 +19,8 @@ from rk.argument import ArgumentService, ClaimIn, EvidenceIn
 from rk.config import load_settings
 from rk.eval.data import DeepFactClaim, load_deepfact
 from rk.eval.metrics import confusion, md_matrix
-from rk.eval.scratch import eval_provider, scratch_kernel
+from rk.eval.scratch import eval_provider, eval_task, scratch_kernel
 from rk.llm.drivers import DriverSpec
-from rk.llm.runner import run_task
 from rk.notes import list_notes
 from rk.verify.support import verify_support
 
@@ -46,22 +45,23 @@ READER = ("For each source id given, fetch its full text with rk_source_fetch_fu
 
 def check_claim(k, reg, c: DeepFactClaim, *, slug: str, driver: DriverSpec, provider, judges: list[DriverSpec],
                 judge_providers, min_judges: int) -> dict:
-    """Runs in its own project so no claim sees another claim's sources or notes."""
+    """Runs in its own project so no claim sees another claim's sources or notes. A rate-capped task (judges
+    included) raises ``RateCapped`` instead of being scored as inconclusive."""
     ps = k.create_project(slug, f"DeepFact {c.id}", actor="eval")
-    scout = run_task(k, reg, project=slug, role="scout", instructions=SCOUT, inputs={"claim": c.sentence},
-                     output_schema=FoundSources, driver=driver, provider=provider, max_turns=16, timeout_s=600)
+    scout = eval_task(k, reg, project=slug, role="scout", instructions=SCOUT, inputs={"claim": c.sentence},
+                      output_schema=FoundSources, driver=driver, provider=provider, max_turns=16, timeout_s=600)
     sources = scout.output.source_ids if scout.ok else []
     before = {n["id"] for n in list_notes(ps)}
-    reader = run_task(k, reg, project=slug, role="reader", instructions=READER,
-                      inputs={"claim": c.sentence, "source_ids": sources}, output_schema=Quoted, driver=driver,
-                      provider=provider, max_turns=24, timeout_s=900) if sources else None
+    reader = eval_task(k, reg, project=slug, role="reader", instructions=READER,
+                       inputs={"claim": c.sentence, "source_ids": sources}, output_schema=Quoted, driver=driver,
+                       provider=provider, max_turns=24, timeout_s=900) if sources else None
     notes = [n["id"] for n in list_notes(ps) if n["id"] not in before and n["kind"] == "quote"]
     svc = ArgumentService(ps)
     cid = svc.add_claim(ClaimIn(text=c.sentence), generator_vendor="human", actor="eval")
     if notes:
         svc.link_evidence(EvidenceIn(claim_id=cid, note_ids=notes), actor="eval")
     r = verify_support(k, reg, ps, cid, actor="eval", judge_drivers=judges, judge_providers=judge_providers,
-                       min_judges=min_judges)
+                       min_judges=min_judges, run=lambda **task: eval_task(k, reg, project=slug, **task))
     return {"id": c.id, "domain": c.domain, "gold": c.gold, "pred": MAP.get(r.verdict, "inconclusive"),
             "verdict": r.verdict, "sources": len(sources), "notes": len(notes),
             "scout_ok": scout.ok, "reader_ok": bool(reader and reader.ok)}

@@ -22,7 +22,7 @@ import random
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from itertools import combinations
 from pathlib import Path
 
@@ -31,9 +31,8 @@ from rk.config import load_settings
 from rk.discovery.executor import RateCapped
 from rk.eval.data import SupportPair, eval_dir, load_scifact
 from rk.eval.metrics import VERDICT_LABELS, confusion, md_matrix, support_metrics
-from rk.eval.scratch import eval_provider, scratch_kernel
+from rk.eval.scratch import eval_provider, eval_task, scratch_kernel
 from rk.llm.drivers import DriverSpec
-from rk.llm.runner import run_task
 from rk.roles.prompts import build_system_prompt
 from rk.verify import judge
 from rk.verify.judge import JudgeOpinion, JudgeVerdict, admit, ask_judge, role_judges
@@ -79,19 +78,22 @@ def judge_opinions(pairs: list[SupportPair], judges: list[tuple[str, DriverSpec]
         write_lock = threading.Lock()
 
         def run(**task):
-            return run_task(k, reg, project="eval-support", **task)
+            return eval_task(k, reg, project="eval-support", **task)
 
         def one(item: tuple[SupportPair, str, DriverSpec]) -> None:
             pair, role, spec = item
             if not hasattr(local, "providers"):
                 local.providers = providers_factory()  # one provider (and gateway process) per worker thread
-            op = ask_judge(run, role, spec, claim_text=pair.claim, evidence_text=pair.evidence,
-                           provider=local.providers.get(str(spec)))
             key = keys[(pair.id, role)]
+            try:
+                op = ask_judge(run, role, spec, claim_text=pair.claim, evidence_text=pair.evidence,
+                               provider=local.providers.get(str(spec)))
+            except RateCapped as e:  # the other judges' calls still finish (and are cached) before the stop
+                with write_lock:
+                    capped[e.driver] = e.wait_s
+                return
             with write_lock:
-                if op.error == "rate_capped":
-                    capped[spec.provider] = k.caps.wait_s(spec.provider)
-                elif op.error is None:
+                if op.error is None:
                     done[key] = op
                     with cache.open("a") as f:
                         f.write(json.dumps({"key": key, "id": pair.id, "driver": str(spec), "role": role,
@@ -189,11 +191,6 @@ def run_support_eval(*, judges: list[DriverSpec] | None, min_judges: int, limit:
     stem.with_suffix(".md").write_text(render_report(result))
     result["report"] = str(stem.with_suffix(".md"))
     return result
-
-
-def rerun_after(e: RateCapped) -> str:
-    """When the capped driver frees a call, as local wall-clock time."""
-    return (datetime.now() + timedelta(seconds=e.wait_s)).strftime("%H:%M")
 
 
 def _fmt(x: float | None, nd: int = 3) -> str:

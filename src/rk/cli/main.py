@@ -625,6 +625,21 @@ def _judges(text: str | None) -> list:
     return [DriverSpec.parse(t) for t in text.split(",")] if text else judge_drivers(load_settings(), None)
 
 
+def _eval_report(run) -> None:
+    """Run an evaluation (``run()`` returns its result) and print its report. A driver at its hourly call cap stops
+    the evaluation; say so and when to rerun, and exit 1."""
+    from rk.discovery.executor import RateCapped
+    from rk.eval.scratch import rate_capped_message
+
+    try:
+        r = run()
+    except RateCapped as e:
+        typer.secho(rate_capped_message(e), fg="red")
+        raise typer.Exit(1) from None
+    typer.echo(Path(r["report"]).read_text())
+
+
+
 @eval_app.command("support")
 def eval_support(limit: int = typer.Option(100, "--limit", help="Seeded SciFact dev sample (0: every dev pair)"),
                  judges: str | None = JUDGES_OPT, min_judges: int | None = typer.Option(None, "--min-judges"),
@@ -633,17 +648,11 @@ def eval_support(limit: int = typer.Option(100, "--limit", help="Seeded SciFact 
     """Run the V-SUPPORT judges on held-out SciFact dev and report, per generator scenario (anthropic, openai, human),
     the verdict × gold matrix, coverage and precision, plus per-judge agreement and failures. Successful judge
     opinions are cached, so a rerun pays only for missing calls."""
-    from rk.discovery.executor import RateCapped
-    from rk.eval.support_eval import rerun_after, run_support_eval
+    from rk.eval.support_eval import run_support_eval
 
     k = min_judges if min_judges is not None else load_settings().support_min_judges
-    try:
-        r = run_support_eval(judges=_judges(judges) if judges else None, min_judges=k, limit=limit or None,
-                             workers=workers, report_dir=out)
-    except RateCapped as e:
-        typer.secho(f"rate-capped: {e}. The opinions so far are cached; rerun after {rerun_after(e)}.", fg="red")
-        raise typer.Exit(1) from None
-    typer.echo(Path(r["report"]).read_text())
+    _eval_report(lambda: run_support_eval(judges=_judges(judges) if judges else None, min_judges=k,
+                                          limit=limit or None, workers=workers, report_dir=out))
 
 
 REPORTS_OPT = typer.Option(..., "--reports", help="Directory of {arxiv_id}.json reports")
@@ -684,9 +693,8 @@ def eval_deepfact(limit: int = typer.Option(30, "--limit"), driver: str = EVAL_D
     from rk.llm.drivers import DriverSpec
 
     k = min_judges if min_judges is not None else load_settings().support_min_judges
-    r = run_deepfact(driver=DriverSpec.parse(driver), judges=_judges(judges), min_judges=k, limit=limit,
-                     report_dir=out)
-    typer.echo(Path(r["report"]).read_text())
+    _eval_report(lambda: run_deepfact(driver=DriverSpec.parse(driver), judges=_judges(judges), min_judges=k,
+                                      limit=limit, report_dir=out))
 
 
 @eval_app.command("litqa2")
@@ -696,8 +704,7 @@ def eval_litqa2(limit: int = typer.Option(20, "--limit"), driver: str = EVAL_DRI
     from rk.eval.litqa2 import run_litqa2
     from rk.llm.drivers import DriverSpec
 
-    r = run_litqa2(driver=DriverSpec.parse(driver), limit=limit, report_dir=out)
-    typer.echo(Path(r["report"]).read_text())
+    _eval_report(lambda: run_litqa2(driver=DriverSpec.parse(driver), limit=limit, report_dir=out))
 
 
 # ---------------- support check (runs inside rk serve; agentic CLIs reach their tools via rk mcp) ----------------

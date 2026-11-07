@@ -15,9 +15,8 @@ from pydantic import BaseModel
 
 from rk.config import load_settings
 from rk.eval.data import LitQAItem, load_litqa2
-from rk.eval.scratch import eval_provider, scratch_kernel
+from rk.eval.scratch import eval_provider, eval_task, scratch_kernel
 from rk.llm.drivers import DriverSpec
-from rk.llm.runner import run_task
 
 INSUFFICIENT = "Insufficient information to answer the question"
 INSTRUCTIONS = (
@@ -60,9 +59,9 @@ def run_litqa2(*, driver: DriverSpec, limit: int = 20, seed: int = 13, report_di
             opts, ideal, insufficient = options_for(item, seed)
             slug = f"lq-{n:03d}"  # one project per question: no question sees another's sources or notes
             k.create_project(slug, f"LitQA2 {item.id}", actor="eval")
-            r = run_task(k, reg, project=slug, role="lead", instructions=INSTRUCTIONS,
-                         inputs={"question": item.question, "options": {str(i): o for i, o in enumerate(opts)}},
-                         output_schema=Answer, driver=driver, provider=provider, max_turns=30, timeout_s=900)
+            r = eval_task(k, reg, project=slug, role="lead", instructions=INSTRUCTIONS,
+                          inputs={"question": item.question, "options": {str(i): o for i, o in enumerate(opts)}},
+                          output_schema=Answer, driver=driver, provider=provider, max_turns=30, timeout_s=900)
             choice = r.output.choice_index if r.ok and 0 <= r.output.choice_index < len(opts) else insufficient
             rows.append({"id": item.id, "ok": r.ok, "answered": choice != insufficient, "correct": choice == ideal,
                          "tool_calls": r.tool_calls, "error": r.error})

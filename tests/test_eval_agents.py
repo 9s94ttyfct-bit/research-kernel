@@ -1,10 +1,13 @@
 import pytest
+from typer.testing import CliRunner
 
-from rk.config import Settings
+from rk.cli.main import app
+from rk.config import Settings, save_settings
+from rk.discovery.executor import RateCapped
 from rk.eval.data import DeepFactClaim, LitQAItem
 from rk.eval.deepfact import FoundSources, Quoted, run_deepfact
 from rk.eval.litqa2 import INSUFFICIENT, Answer, options_for, run_litqa2, score
-from rk.eval.scratch import eval_provider
+from rk.eval.scratch import eval_provider, rate_capped_message
 from rk.fulltext import attach_pdf
 from rk.library.models import Creator, ItemIn
 from rk.llm.drivers import DriverSpec
@@ -107,3 +110,63 @@ def test_eval_rejects_agentic_cli_drivers_for_tool_tasks_only():
     # judges call no tools, so the default judges (codex_cli, claude_cli) run in a scratch kernel
     for spec in (DriverSpec("codex_cli", "gpt-6-luna"), DriverSpec("claude_cli", "claude-haiku-5-5")):
         assert eval_provider(spec, Settings(), tools=False).kind == "agentic_cli"
+
+
+class Counting:
+    """A provider that must never be reached: it counts its calls."""
+
+    kind, model, vendor = "chat_api", "c", "openai"
+
+    def __init__(self):
+        self.calls = 0
+
+    def available(self):
+        return Availability(ok=True)
+
+    def run(self, spec, ctx):
+        self.calls += 1
+        return TaskResult(spec.task_id, False, None, "", "c", "c", 0.0, "unexpected call")
+
+
+def test_litqa2_rate_capped_task_stops_the_eval(tmp_home, tmp_path, replay_http):
+    save_settings(Settings(calls_per_hour={"omp_gateway": 0}))
+    items = [LitQAItem(id="q0", question="Question 0?", ideal="right", distractors=["wrong"], sources=[])]
+    p = Counting()
+    with pytest.raises(RateCapped, match="omp_gateway"):  # not scored as "insufficient"
+        run_litqa2(driver=LUNA, limit=1, items=items, provider=p, report_dir=tmp_path / "eval", http=replay_http)
+    assert p.calls == 0 and not (tmp_path / "eval").exists()
+
+
+def test_deepfact_rate_capped_judge_stops_the_eval(tmp_home, tmp_path, replay_http):
+    deepseek = DriverSpec("ollama", "deepseek-v4.1-flash:cloud")
+    save_settings(Settings(calls_per_hour={"ollama": 0}))  # the scout and reader (omp_gateway) are uncapped
+    claims = [DeepFactClaim(id="r:1", sentence="Copper catalysts are studied for CO2 reduction.", report_id="r",
+                            domain="chemistry", gold="supported")]
+    judge = Counting()
+    with pytest.raises(RateCapped, match="ollama"):  # not scored as "inconclusive"
+        run_deepfact(driver=LUNA, judges=[deepseek], min_judges=1, limit=1, claims=claims, provider=Scripted(),
+                     judge_providers={str(deepseek): judge}, report_dir=tmp_path / "eval", http=replay_http)
+    assert judge.calls == 0 and not (tmp_path / "eval").exists()
+
+
+def test_rate_capped_message(tmp_home):
+    save_settings(Settings(calls_per_hour={"ollama": 0, "codex_cli": 20}))
+    assert rate_capped_message(RateCapped("ollama", 0.0)) == \
+        "rate-capped: driver 'ollama' is disabled (calls_per_hour = 0)."
+    msg = rate_capped_message(RateCapped("codex_cli", 600.0))
+    assert msg.startswith("rate-capped: driver 'codex_cli' is at its hourly call cap") and "rerun after " in msg
+
+
+@pytest.mark.parametrize(("command", "target"), [("litqa2", "rk.eval.litqa2.run_litqa2"),
+                                                 ("deepfact", "rk.eval.deepfact.run_deepfact"),
+                                                 ("support", "rk.eval.support_eval.run_support_eval")])
+def test_eval_cli_prints_the_rate_cap_message(tmp_home, monkeypatch, command, target):
+    save_settings(Settings(calls_per_hour={"ollama": 0}))
+
+    def capped(**kw):
+        raise RateCapped("ollama", 0.0)
+
+    monkeypatch.setattr(target, capped)
+    r = CliRunner().invoke(app, ["eval", command, "--judges", "ollama:deepseek-v4.1-flash:cloud"]
+                           if command != "litqa2" else ["eval", command])
+    assert r.exit_code == 1 and "rate-capped: driver 'ollama' is disabled (calls_per_hour = 0)." in r.output
