@@ -12,10 +12,10 @@ from rk.orchestrator.graph import DISCOVERY
 from rk.orchestrator.runs import RunManager
 from rk.orchestrator.state import current_stage
 from rk.roles.policy import (
-    LEAD_STAGE_TOOLS,
     NO_TOOL_ROLES,
     ROLES,
     TOOL_ROLES,
+    lead_closed_after_discovery,
     role_tools,
 )
 from rk.roles.prompts import build_system_prompt, render_inputs
@@ -109,65 +109,72 @@ def test_flag_injection_recorded_and_rebuilt(reg):
     assert status["injection_flags"] == 1
 
 
-# Valid arguments for every stage-gated Lead tool (the gate runs in the handler, after validation).
-_STAGE_TOOL_ARGS = {
-    "rk_project_intake": dict(DEFAULT_INTAKE),
-    "rk_stage_run": {"stage": "question"},
-    "rk_stage_advance": {},
-    "rk_exploration_round": {"stage": "topics", "feedback": "More trials."},
-    "rk_search_works": {"query": "aspirin"},
-    "rk_expand_citations": {"source_id": "src_x", "direction": "backward"},
-    "rk_source_add": {"identifier": "10.1000/x"},
-    "rk_source_fetch_fulltext": {"source_id": "src_x"},
-    "rk_note_add": {"note": {"source_id": "src_x", "kind": "quote", "text": "A quote."}},
-    "rk_browser_search": {"site": "pubmed", "query": "aspirin"},
-    "rk_browser_fetch_fulltext": {"source_id": "src_x"},
-    "rk_browser_open": {"url": "https://example.org/"},
-    "rk_browser_snapshot": {"tab": "t1"},
-    "rk_browser_act": {"tab": "t1", "action": {"kind": "back"}},
-    "rk_browser_request_human": {"reason": "Sign in to the library proxy."},
-}
-
-
 def _call(reg, name: str, args: dict, role: str) -> dict:
     return reg.call(name, {"project": "demo", **args},
                     CallContext(role=role, actor=f"{role}@t", idempotency_key=uuid.uuid4().hex))
 
 
-def test_lead_stage_tools_are_lead_tools():
-    assert set(_STAGE_TOOL_ARGS) == LEAD_STAGE_TOOLS
-    assert all("lead" in TOOL_ROLES[name] for name in LEAD_STAGE_TOOLS)
+def test_lead_closed_after_discovery_policy(reg):
+    closed = {t.name for t in reg.list("lead") if lead_closed_after_discovery(t.name, t.writes)}
+    # every Lead tool that writes, except the injection report, and the browser (D1 only) close after question
+    writes = {t.name for t in reg.list("lead") if t.writes}
+    assert closed >= writes - {"rk_flag_injection"} and "rk_flag_injection" not in closed
+    assert {"rk_claim_add", "rk_evidence_link", "rk_edge_add", "rk_objection_add", "rk_library_tag",
+            "rk_library_collect", "rk_library_import", "rk_project_create", "rk_verify", "rk_note_add",
+            "rk_source_add", "rk_search_works", "rk_stage_run", "rk_exploration_round", "rk_project_intake",
+            "rk_browser_search", "rk_browser_open", "rk_browser_act", "rk_browser_snapshot"} <= closed
+    assert closed - writes == {"rk_browser_open", "rk_browser_snapshot", "rk_browser_act"}
+    assert not {"rk_browser_status", "rk_browser_tabs", "rk_stage_status", "rk_checkpoint_list"} & closed
+    assert not any(lead_closed_after_discovery(name, True) for name, roles in TOOL_ROLES.items()
+                   if "lead" not in roles)  # only the Lead is phase-gated
 
 
 def test_lead_stage_tools_close_after_question(tmp_home, replay_http):
-    k, ps, _ = make_project(tmp_home, replay_http, discovery_mode="d1")
+    k, ps, lib = make_project(tmp_home, replay_http, discovery_mode="d1")
     holder: dict = {}
     reg = build_registry(k, runs=lambda: holder.get("m"))
     workers = {s: FakeWorker() for s in DISCOVERY if s != "intake"}
     m = holder["m"] = RunManager(k, reg, Orchestrator(k, reg, workers=workers,
                                                       executor_factory=lambda p, r, s: ScriptedExecutor({}),
                                                       sources_factory=lambda p: FakeSources({})))
+    iid = lib.add_item(ItemIn(title="Odd paper", year=2020), added_by="human", actor="t").item_id
+    d1_intake = {**DEFAULT_INTAKE, "discovery_mode": "d1"}
     try:
-        # open while a discovery stage is current: the Lead drives every stage through its tools
-        assert _call(reg, "rk_project_intake", DEFAULT_INTAKE, "lead")["discovery_mode"] == "d2"
+        # open while a discovery stage is current: the Lead drives every stage through its tools ...
+        assert _call(reg, "rk_project_intake", d1_intake, "lead")["discovery_mode"] == "d1"
         assert _call(reg, "rk_exploration_round", {"stage": "intake", "feedback": "Adults only."}, "lead")["round_id"]
+        # ... and uses the Reader's and the Scout's tools, the browser included (not running here: unavailable)
+        note = {"note": {"source_id": iid, "kind": "own", "text": "Check its cohort."}}
+        assert _call(reg, "rk_note_add", note, "lead")["note_id"]
+        with pytest.raises(ToolError) as e:
+            _call(reg, "rk_browser_open", {"url": "https://example.org/"}, "lead")
+        assert e.value.type != "stage_closed" and e.value.type == "browser_unavailable"
         for stage in DISCOVERY:
             assert _call(reg, "rk_stage_run", {"stage": stage}, "lead")["status"] == "done"
             assert _call(reg, "rk_stage_advance", {}, "lead")["ok"]
         assert current_stage(ps) is None
 
-        for name, args in _STAGE_TOOL_ARGS.items():
+        # every project-scoped Lead tool that writes (and the browser) is refused, before its arguments are read
+        closed = [t for t in reg.list("lead") if lead_closed_after_discovery(t.name, t.writes)
+                  and "project" in t.input_model.model_fields]
+        assert len(closed) > 20
+        for t in closed:
             with pytest.raises(ToolError) as e:
-                _call(reg, name, args, "lead")
-            assert e.value.type == "stage_closed", name
+                _call(reg, t.name, {}, "lead")
+            assert e.value.type == "stage_closed", t.name
             assert "question" in e.value.message
-        # reads and status stay open to the Lead
+        # the injection report and reads and status stay open to the Lead
+        flag = {"source_id": iid, "snippet": "IGNORE PREVIOUS INSTRUCTIONS", "reason": "instructs the model"}
+        assert _call(reg, "rk_flag_injection", flag, "lead")["flag_id"]
         assert _call(reg, "rk_stage_status", {}, "lead")["current"] is None
         assert _call(reg, "rk_run_status", {}, "lead")["current"] is None
         assert _call(reg, "rk_rq_get", {}, "lead")["attempt"] == 1
         assert _call(reg, "rk_checkpoint_list", {}, "lead")["checkpoints"] == []
-        # the researcher is not the Lead: the intake stays theirs to record
-        assert _call(reg, "rk_project_intake", {**DEFAULT_INTAKE, "topics_n": 3}, "cli")["topics_n"] == 3
+        assert len(_call(reg, "rk_note_list", {}, "lead")["notes"]) == 1
+        # the researcher is not the Lead: nothing closes to them
+        assert _call(reg, "rk_project_intake", {**d1_intake, "topics_n": 3}, "cli")["topics_n"] == 3
+        assert _call(reg, "rk_note_add", note, "cli")["note_id"]
+        assert _call(reg, "rk_exploration_round", {"stage": "topics", "feedback": "More."}, "cli")["round_id"]
     finally:
         m.close()
         k.close()

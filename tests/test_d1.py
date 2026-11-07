@@ -193,6 +193,37 @@ def test_guidance_reaches_the_next_stage_run(lead):
         assert (FEEDBACK in json.dumps(c["inputs"])) == (c["attempt"] == 2), c["schema"]
 
 
+def _fake_stages(k, reg, landscape: FakeWorker | None = None):
+    workers = {"landscape": landscape or FakeWorker(), "gaps": FakeWorker(), "topics": FakeWorker(),
+               "question": FakeWorker()}
+    return Orchestrator(k, reg, workers=workers, executor_factory=lambda p, r, s: ScriptedExecutor({}),
+                        sources_factory=lambda p: FakeSources({}))
+
+
+def test_one_reply_runs_and_advances_two_stages(lead):
+    landscape = FakeWorker()
+    ld = lead(lambda k, reg: _fake_stages(k, reg, landscape), intake={"discovery_mode": "d1"})
+    out = ld.say("Go through intake and landscape.", ("rk_stage_run", {"stage": "intake"}), ("rk_stage_advance", {}),
+                 ("rk_stage_run", {"stage": "landscape"}), ("rk_stage_advance", {}))
+    assert [(_ok(r)["stage"], _ok(r)["current"]) for r in out] == [
+        ("intake", "intake"), ("intake", "landscape"), ("landscape", "landscape"), ("landscape", "gaps")]
+    assert _ok(out[1])["ok"] and _ok(out[3])["ok"]
+    assert landscape.kinds() == ["run", "gate"]  # the second advance gated landscape: it was not the first replayed
+    assert current_stage(ld.k.project("demo")[0]) == "gaps"
+
+
+def test_one_reply_reruns_the_same_stage(lead):
+    landscape = FakeWorker(gates=[GateResult(False, ["thin"])])
+    ld = lead(lambda k, reg: _fake_stages(k, reg, landscape), intake={"discovery_mode": "d1"})
+    ld.say("Start.", ("rk_stage_run", {"stage": "intake"}), ("rk_stage_advance", {}))
+    out = ld.say("Landscape, and again if its gate fails.", ("rk_stage_run", {"stage": "landscape"}),
+                 ("rk_stage_advance", {}), ("rk_stage_run", {"stage": "landscape"}), ("rk_stage_advance", {}))
+    assert _ok(out[1])["failures"] == ["thin"] and _ok(out[3])["ok"]
+    assert landscape.calls == [("run", 1, ""), ("gate", 1), ("run", 2, "thin"), ("gate", 2)]
+    ps = ld.k.project("demo")[0]
+    assert edge_count(ps, "landscape->landscape") == 1 and current_stage(ps) == "gaps"
+
+
 def test_p1_dead_end_is_said_plainly(lead):
     landscape = FakeWorker(gates=[GateResult(False, ["thin"])] * 10,
                            degrades=[StageOutcome("failed", reason="no cluster with 5 verified sources")] * 2)
@@ -215,6 +246,7 @@ def test_p1_dead_end_is_said_plainly(lead):
         assert res["status"] == "failed" and res["current"] == "landscape"
         assert res["reason"].startswith("dead end: landscape->landscape reached its limit of 2 uses")
         assert "no cluster with 5 verified sources" in res["reason"]
-        assert "running 'landscape' again gives the same result" in res["reason"]
+        assert "running 'landscape' again only degrades it again (no new attempt)" in res["reason"]
+        assert "unlikely to get it through" in res["reason"]
         assert "collab" in res["reason"]
     assert landscape.kinds().count("run") == 3 and landscape.kinds().count("degrade") == 2

@@ -37,15 +37,17 @@ def idempotency_key(task_id: str, name: str, args: dict) -> str:
 
 
 def execute_tool(registry, name: str, arguments: dict, *, allowed: list[str], role: str, actor: str,
-                 task_id: str, project: str | None) -> dict:
-    """Run one model-requested tool call. Every failure is returned to the model as data, never raised."""
+                 task_id: str, project: str | None, call_scope: str | None = None) -> dict:
+    """Run one model-requested tool call. Every failure is returned to the model as data, never raised. The
+    idempotency key covers ``task_id`` (plus ``call_scope``, when given), the tool and its arguments."""
     if name not in allowed:
         return {"error": "permission_denied", "message": f"tool {name} not permitted for role {role}"}
     args = dict(arguments)
     if project is not None:
         args["project"] = project
+    scope = task_id if call_scope is None else f"{task_id}:{call_scope}"
     ctx = CallContext(role=role, actor=actor, task_id=task_id, project=project, allowed_tools=frozenset(allowed),
-                      idempotency_key=idempotency_key(task_id, name, args))
+                      idempotency_key=idempotency_key(scope, name, args))
     try:
         return {"result": registry.call(name, args, ctx)}
     except ToolError as e:
@@ -104,7 +106,9 @@ def run_tool_loop(backend: ChatBackend, spec: TaskSpec, registry, *, actor: str,
 
 class ChatApiSession:
     """Multi-turn chat over a ChatBackend: the history lives here; each ``send`` runs tool rounds until the model
-    answers in text. Tool calls go through the same scoped ``execute_tool`` as single tasks."""
+    answers in text. Tool calls go through the same scoped ``execute_tool`` as single tasks, but each call is its own
+    write: a chat repeats a call on purpose (run a stage, advance, run it again), so every call gets its own
+    idempotency key."""
 
     MAX_ROUNDS = 12
 
@@ -114,6 +118,7 @@ class ChatApiSession:
         self.tools = tool_defs(registry, spec.tools) if spec.tools else []
         self.messages: list[Msg] = [Msg(role="system", content=spec.system)]
         self._turn = 0
+        self._calls = 0
 
     def send(self, user_message: str) -> Iterator[ChatEvent]:
         self._turn += 1
@@ -134,9 +139,11 @@ class ChatApiSession:
                 yield ChatEvent("text", {"text": turn.text})
             for c in turn.tool_calls:
                 yield ChatEvent("tool_call", {"id": c.id, "name": c.name, "arguments": c.arguments})
+                self._calls += 1
                 result = execute_tool(self.registry, c.name, c.arguments, allowed=self.spec.tools,
                                       role=self.spec.role, actor=self.actor,
-                                      task_id=f"{self.session_id}:{self._turn}", project=self.spec.project)
+                                      task_id=f"{self.session_id}:{self._turn}", project=self.spec.project,
+                                      call_scope=str(self._calls))
                 yield ChatEvent("tool_result", {"id": c.id, "content": result})
                 self.messages.append(Msg(role="tool", content=render_tool_result(result), tool_call_id=c.id,
                                          name=c.name))

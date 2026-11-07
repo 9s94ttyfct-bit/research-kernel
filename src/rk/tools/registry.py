@@ -47,7 +47,10 @@ class Tool:
 
 
 class ToolRegistry:
-    def __init__(self, idempotency_db: Path):
+    def __init__(self, idempotency_db: Path, *, guard: Callable[[Tool, dict, CallContext], None] | None = None):
+        """``guard(tool, args, ctx)`` runs before a permitted call's arguments are validated and may refuse it by
+        raising (``build_registry``: the Lead's stage-dependent access, spec §8.1)."""
+        self.guard = guard
         idempotency_db.parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(idempotency_db, check_same_thread=False, isolation_level=None)
         self._db.execute("PRAGMA journal_mode=WAL")
@@ -85,6 +88,8 @@ class ToolRegistry:
                 raise PermissionDenied(f"{name} is not project-scoped; not available to a project-bound caller")
             if args.setdefault("project", ctx.project) != ctx.project:
                 raise PermissionDenied(f"this caller is bound to project {ctx.project!r}")
+        if self.guard is not None:
+            self.guard(tool, args, ctx)
         inp = tool.input_model.model_validate(args)
         if not tool.writes:
             return tool.output_model.model_validate(tool.handler(ctx, inp)).model_dump(mode="json")

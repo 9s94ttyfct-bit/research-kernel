@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import uuid
 
 import anyio
 from mcp import types
@@ -41,11 +42,13 @@ def build_server(client: RkClient, project: str, label: str, role: str | None = 
 
     async def on_call_tool(ctx, params: types.CallToolRequestParams) -> types.CallToolResult:
         args = {**(params.arguments or {}), "project": project}
-        # Same tool + same arguments within one grant → same key: a CLI that repeats a write gets the first result.
+        # Same tool + same arguments within one grant → same key: a role task's CLI that repeats a write gets the
+        # first result. The call id makes each call of a Lead grant its own write (the server decides by the grant).
         key = f"mcp:{label}:{hashlib.sha256((params.name + canonical_json(args)).encode()).hexdigest()[:24]}"
+        call_id = uuid.uuid4().hex
         try:
             result = await anyio.to_thread.run_sync(
-                lambda: client.call(params.name, args, write=True, idempotency_key=key))
+                lambda: client.call(params.name, args, write=True, idempotency_key=key, call_id=call_id))
         except RkError as e:
             return types.CallToolResult(content=_text({"error": e.type, "message": e.message, "details": e.details}),
                                         is_error=True)

@@ -40,12 +40,15 @@ class RkClient:
             return False
 
     def call(self, name: str, args: dict | None = None, *, write: bool = False, idempotency_key: str | None = None,
-             attempts: int = 3, timeout: float | None = None) -> dict:
-        """Transport failures (connection reset, timeout) are retried with the same idempotency key, so a write
-        that reached the server before the connection dropped is not applied twice. ``timeout`` overrides the client
+             call_id: str | None = None, attempts: int = 3, timeout: float | None = None) -> dict:
+        """Transport failures (connection reset, timeout) are retried with the same idempotency key (and
+        ``call_id``), so a write that reached the server before the connection dropped is not applied twice.
+        ``call_id`` names this one call (the server adds it to a Lead grant's key). ``timeout`` overrides the client
         default for long calls (role tasks)."""
         key = idempotency_key or (uuid.uuid4().hex if write else None)
         payload = {"args": args or {}, "idempotency_key": key}
+        if call_id is not None:
+            payload["call_id"] = call_id
         extra = {"timeout": timeout} if timeout is not None else {}
         for attempt in range(attempts):
             try:

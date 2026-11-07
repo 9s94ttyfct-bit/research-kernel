@@ -58,16 +58,18 @@ TOOL_ROLES: dict[str, frozenset[str]] = {
     "rk_stage_status": _r(*_ALL_TOOL_ROLES),
 }
 
-# The Lead's write tools of the discovery stages (spec §8.1): the D1 tools and the Scout/Reader tools it shares,
-# browser included. They are open to the Lead while a discovery stage is current; once `question` passed their
-# handlers refuse the Lead with `stage_closed` (from protocol on the orchestrator's roles do that work and the Lead
-# only reads and reports status). Reads and status tools (rk_browser_tabs, rk_browser_status included) stay open.
-LEAD_STAGE_TOOLS = frozenset({
-    "rk_project_intake", "rk_stage_run", "rk_stage_advance", "rk_exploration_round",
-    "rk_search_works", "rk_expand_citations", "rk_source_add", "rk_source_fetch_fulltext", "rk_note_add",
-    "rk_browser_search", "rk_browser_fetch_fulltext", "rk_browser_open", "rk_browser_snapshot", "rk_browser_act",
-    "rk_browser_request_human",
-})
+# Spec §8.1: the Lead's write access opens by stage. While a discovery stage is current (D1) it may use every tool its
+# policy grants; once `question` passed it only reads and queries status, so every tool that writes, and the built-in
+# browser (§9.3: the Lead browses in D1 only), is refused to it with `stage_closed`. A new write tool is closed by
+# default; these stay open: the injection report (a safety duty) and the browser's status tools.
+LEAD_OPEN_AFTER_DISCOVERY = frozenset({"rk_flag_injection", "rk_browser_status", "rk_browser_tabs"})
+
+
+def lead_closed_after_discovery(name: str, writes: bool) -> bool:
+    """Whether the tool is refused to the Lead once every discovery stage of the project passed."""
+    if "lead" not in tool_roles(name) or name in LEAD_OPEN_AFTER_DISCOVERY:
+        return False
+    return writes or name.startswith("rk_browser_")
 
 
 def tool_roles(name: str) -> frozenset[str]:

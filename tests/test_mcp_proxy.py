@@ -7,6 +7,7 @@ import pytest
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
+from rk.discovery.store import rounds
 from rk.fulltext import attach_pdf
 from rk.library.models import Creator, ItemIn
 from rk.notes import list_notes
@@ -78,6 +79,25 @@ def test_mcp_repeated_write_is_idempotent(proj):
     a, b = _session(home, tok, fn)
     assert _payload(a)["note_id"] == _payload(b)["note_id"]
     assert len(list_notes(ps)) == 1
+
+
+@pytest.mark.parametrize("grant", ["chat", "lead_token"])
+def test_mcp_lead_grant_repeated_write_runs_each_time(proj, grant):
+    k, ps, _, home = proj
+    # a claude_cli Lead chat holds a task-kind grant with role lead; an external MCP client holds a lead token. The
+    # proxy is started with --role reader: the server decides by the grant, not by that label.
+    tok = (k.tokens.issue_task("chat_m6", "lead", "mcpp", ["rk_exploration_round"], ttl_s=60) if grant == "chat"
+           else k.tokens.issue_lead("mcp-lead"))
+    feedback = {"stage": "landscape", "feedback": "Adults only."}
+
+    async def fn(s):
+        return [await s.call_tool("rk_exploration_round", feedback),
+                await s.call_tool("rk_exploration_round", feedback)]
+
+    a, b = _session(home, tok, fn)
+    assert not a.is_error and not b.is_error
+    assert _payload(a)["round_id"] != _payload(b)["round_id"]
+    assert [r["feedback"] for r in rounds(ps)] == ["Adults only.", "Adults only."]
 
 
 def test_mcp_forbidden_and_rejected_calls_are_errors(proj):

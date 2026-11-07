@@ -32,7 +32,7 @@ from rk.llm.runner import FreeText, run_task
 from rk.llm.vendors import vendor_of
 from rk.notes import NoteIn, NoteRejected, add_note, list_notes, text_find, text_read
 from rk.orchestrator.state import current_stage
-from rk.roles.policy import LEAD_STAGE_TOOLS, ROLES, tool_roles
+from rk.roles.policy import ROLES, lead_closed_after_discovery, tool_roles
 from rk.sources import openalex
 from rk.sources.identifiers import Identifier, parse_identifier
 from rk.sources.resolver import resolve, search
@@ -84,37 +84,38 @@ class ProjectArg(BaseModel):
     project: str
 
 
-def _lead_stage_gate(k: Kernel, name: str, handler: Callable) -> Callable:
-    """``handler`` of a stage-gated Lead tool (``LEAD_STAGE_TOOLS``): the Lead is refused with ``stage_closed`` once
-    every discovery stage passed. A call without a project, or with an unknown one, goes on to the handler."""
-    def gated(ctx: CallContext, a: BaseModel):
-        slug = getattr(a, "project", None)
-        if ctx.role == "lead" and slug:
-            try:
-                ps, _ = k.project(slug)
-            except LookupError:
-                ps = None
-            if ps is not None and current_stage(ps) is None:
-                raise ToolError("stage_closed", f"{name} is closed to the Lead: every discovery stage of {slug} "
-                                                f"passed (question included); from protocol on the orchestrator's "
-                                                f"roles do this work, and the Lead reads and reports status",
-                                status=409)
-        return handler(ctx, a)
-    return gated
+def _lead_stage_guard(k: Kernel) -> Callable[[Tool, dict, CallContext], None]:
+    """The registry guard of the Lead's stage-dependent access (spec §8.1, ``lead_closed_after_discovery``): once
+    every discovery stage of the call's project passed, the Lead is refused every tool that writes (and the browser)
+    with ``stage_closed``. A call without a project, or with an unknown one, goes on (the tool reports it)."""
+    def guard(tool: Tool, args: dict, ctx: CallContext) -> None:
+        if ctx.role != "lead" or not lead_closed_after_discovery(tool.name, tool.writes):
+            return
+        slug = args.get("project")
+        if not isinstance(slug, str) or not slug:
+            return
+        try:
+            ps, _ = k.project(slug)
+        except LookupError:
+            return
+        if current_stage(ps) is None:
+            raise ToolError("stage_closed", f"{tool.name} is closed to the Lead: every discovery stage of {slug} "
+                                            f"passed (question included); from protocol on the orchestrator's roles "
+                                            f"do this work, and the Lead only reads and reports status", status=409)
+    return guard
 
 
 def build_registry(k: Kernel, browser: Callable[[], BrowserService | None] | None = None,
                    runs: Callable[[], RunManager | None] | None = None) -> ToolRegistry:
     """``browser()`` returns the running built-in browser service (``rk serve``), or None; ``runs()`` returns
     ``rk serve``'s RunManager (D2 runs, and its orchestrator for the D1 stages), or None."""
-    reg = ToolRegistry(k.home / "kernel.sqlite")
+    reg = ToolRegistry(k.home / "kernel.sqlite", guard=_lead_stage_guard(k))
     browser = browser or (lambda: None)
 
     def tool(name: str, summary: str, inp: type[BaseModel], writes: bool):
         def deco(fn):
-            handler = _lead_stage_gate(k, name, fn) if name in LEAD_STAGE_TOOLS else fn
             reg.register(Tool(name=name, summary=summary, input_model=inp, output_model=Out, roles=tool_roles(name),
-                              writes=writes, handler=handler))
+                              writes=writes, handler=fn))
             return fn
         return deco
 

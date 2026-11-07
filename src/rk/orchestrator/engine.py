@@ -428,9 +428,9 @@ class Orchestrator:
         if res.kind == "failed":
             return StageOutcome("failed", reason=(
                 f"dead end: {edge} reached its limit of {EDGE_LIMIT} uses and degrading {ctx.stage!r} (P1) did not "
-                f"get it through: {res.reason}; running {ctx.stage!r} again gives the same result. Only the "
-                f"researcher can change this: with production mode collab (P2, recorded in the intake) the stage asks "
-                f"them at an edge limit instead of degrading."))
+                f"get it through: {res.reason}; running {ctx.stage!r} again only degrades it again (no new attempt) "
+                f"and is unlikely to get it through. Only the researcher can change this: with production mode collab "
+                f"(P2, recorded in the intake) the stage asks them at an edge limit instead of degrading."))
         return None
 
     def _take_edge(self, ps: ProjectStore, stage: str, to: str, failures: list[str], *, actor: str) -> None:

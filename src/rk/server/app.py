@@ -26,6 +26,10 @@ STATIC = Path(__file__).resolve().parent.parent / "ui" / "static"
 class ToolCall(BaseModel):
     args: dict = {}
     idempotency_key: str | None = None
+    # One id per call of an MCP client, the same on the client's transport retries of that call. A Lead grant's
+    # calls are each their own write (it runs a stage, advances, runs it again on purpose): its key gets the call id.
+    # A role task's grant ignores it, so a CLI that repeats a write within the task gets the first result.
+    call_id: str | None = None
 
 
 class ChatOpen(BaseModel):
@@ -53,7 +57,7 @@ def create_app(registry: ToolRegistry, token: str, *, actor: str = "cli:user",
     app = FastAPI(title="rk serve", version=__version__)
     browser = browser or (lambda: None)
 
-    def _ctx(authorization: str | None, idempotency_key: str | None = None) -> CallContext:
+    def _ctx(authorization: str | None, idempotency_key: str | None = None, call_id: str | None = None) -> CallContext:
         if not authorization or not authorization.startswith("Bearer "):
             raise HTTPException(status_code=401, detail="missing or invalid bearer token")
         if hmac.compare_digest(authorization, f"Bearer {token}"):
@@ -61,6 +65,8 @@ def create_app(registry: ToolRegistry, token: str, *, actor: str = "cli:user",
         grant = tokens.lookup(authorization.removeprefix("Bearer ")) if tokens is not None else None
         if grant is None:
             raise HTTPException(status_code=401, detail="missing, invalid, revoked or expired bearer token")
+        if grant.role == "lead" and call_id:
+            idempotency_key = f"{idempotency_key or 'call'}:{call_id}"
         return CallContext(role=grant.role, actor=grant.actor, idempotency_key=idempotency_key, task_id=grant.task_id,
                            project=grant.project, allowed_tools=grant.tools)
 
@@ -79,7 +85,7 @@ def create_app(registry: ToolRegistry, token: str, *, actor: str = "cli:user",
     @app.post("/api/tools/{name}")
     async def call_tool(name: str, body: ToolCall, request: Request,
                         authorization: str | None = Header(default=None)) -> JSONResponse:
-        ctx = _ctx(authorization, body.idempotency_key)
+        ctx = _ctx(authorization, body.idempotency_key, body.call_id)
         try:
             result = await run_in_threadpool(registry.call, name, body.args, ctx)
         except ToolError as e:
