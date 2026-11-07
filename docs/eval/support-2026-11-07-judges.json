@@ -1,0 +1,1032 @@
+{
+ "date": "2026-11-07",
+ "rk_version": "0.1.0",
+ "dev": {
+  "split": "dev",
+  "pairs": 340,
+  "sample": 60,
+  "seed": 13,
+  "judges": [
+   "omp_gateway:anthropic/claude-haiku-5-5",
+   "omp_gateway:openai-codex/gpt-6-luna",
+   "omp_gateway:ollama-cloud/deepseek-v4.1-flash"
+  ],
+  "min_judges": 2,
+  "failed_judge_calls": 0
+ },
+ "scenarios": [
+  {
+   "generator": "anthropic",
+   "admitted": [
+    "omp_gateway:openai-codex/gpt-6-luna",
+    "omp_gateway:ollama-cloud/deepseek-v4.1-flash"
+   ],
+   "not_admitted": {
+    "omp_gateway:anthropic/claude-haiku-5-5": "same_or_unknown_vendor"
+   },
+   "n": 60,
+   "predicted_supported": 6,
+   "precision_supported": 1.0,
+   "predicted_negative": 26,
+   "precision_negative": 0.9615384615384616,
+   "coverage": 0.5333333333333333,
+   "precision_by_label": {
+    "supported": 1.0,
+    "unsupported": 0.9411764705882353,
+    "contradicted": 0.7777777777777778
+   },
+   "confusion": {
+    "supported": {
+     "supported": 6,
+     "contradicted": 0,
+     "unsupported": 1,
+     "uncertain": 20
+    },
+    "contradicted": {
+     "supported": 0,
+     "contradicted": 7,
+     "unsupported": 0,
+     "uncertain": 2
+    },
+    "unsupported": {
+     "supported": 0,
+     "contradicted": 2,
+     "unsupported": 16,
+     "uncertain": 6
+    }
+   }
+  },
+  {
+   "generator": "openai",
+   "admitted": [
+    "omp_gateway:anthropic/claude-haiku-5-5",
+    "omp_gateway:ollama-cloud/deepseek-v4.1-flash"
+   ],
+   "not_admitted": {
+    "omp_gateway:openai-codex/gpt-6-luna": "same_or_unknown_vendor"
+   },
+   "n": 60,
+   "predicted_supported": 6,
+   "precision_supported": 1.0,
+   "predicted_negative": 23,
+   "precision_negative": 0.9565217391304348,
+   "coverage": 0.48333333333333334,
+   "precision_by_label": {
+    "supported": 1.0,
+    "unsupported": 0.9411764705882353,
+    "contradicted": 0.8333333333333334
+   },
+   "confusion": {
+    "supported": {
+     "supported": 6,
+     "contradicted": 0,
+     "unsupported": 1,
+     "uncertain": 20
+    },
+    "contradicted": {
+     "supported": 0,
+     "contradicted": 5,
+     "unsupported": 0,
+     "uncertain": 4
+    },
+    "unsupported": {
+     "supported": 0,
+     "contradicted": 1,
+     "unsupported": 16,
+     "uncertain": 7
+    }
+   }
+  },
+  {
+   "generator": "human",
+   "admitted": [
+    "omp_gateway:anthropic/claude-haiku-5-5",
+    "omp_gateway:openai-codex/gpt-6-luna",
+    "omp_gateway:ollama-cloud/deepseek-v4.1-flash"
+   ],
+   "not_admitted": {},
+   "n": 60,
+   "predicted_supported": 6,
+   "precision_supported": 1.0,
+   "predicted_negative": 23,
+   "precision_negative": 0.9565217391304348,
+   "coverage": 0.48333333333333334,
+   "precision_by_label": {
+    "supported": 1.0,
+    "unsupported": 0.9411764705882353,
+    "contradicted": 0.8333333333333334
+   },
+   "confusion": {
+    "supported": {
+     "supported": 6,
+     "contradicted": 0,
+     "unsupported": 1,
+     "uncertain": 20
+    },
+    "contradicted": {
+     "supported": 0,
+     "contradicted": 5,
+     "unsupported": 0,
+     "uncertain": 4
+    },
+    "unsupported": {
+     "supported": 0,
+     "contradicted": 1,
+     "unsupported": 16,
+     "uncertain": 7
+    }
+   }
+  }
+ ],
+ "judges": [
+  {
+   "role": "judge",
+   "driver": "omp_gateway:anthropic/claude-haiku-5-5",
+   "prompt_fingerprint": "139ee07af7e344405509f833bd5a904c605652ed9507b4c893a85914a1864b65",
+   "valid": 60,
+   "failed": 0,
+   "agrees_with_gold": 31
+  },
+  {
+   "role": "judge_2",
+   "driver": "omp_gateway:openai-codex/gpt-6-luna",
+   "prompt_fingerprint": "424dba78d4e658ca75972594a79bfe65e869cfc74c0c4dfb8c238681192529f6",
+   "valid": 60,
+   "failed": 0,
+   "agrees_with_gold": 32
+  },
+  {
+   "role": "judge_3",
+   "driver": "omp_gateway:ollama-cloud/deepseek-v4.1-flash",
+   "prompt_fingerprint": "0d37bf2f44bc13c58e3f7e5dd9988e224b3e1cc9106ef8f66f8792137a6422b2",
+   "valid": 60,
+   "failed": 0,
+   "agrees_with_gold": 35
+  }
+ ],
+ "pairwise_agreement": [
+  {
+   "a": "omp_gateway:anthropic/claude-haiku-5-5",
+   "b": "omp_gateway:openai-codex/gpt-6-luna",
+   "both_valid": 60,
+   "same_verdict_label": 29,
+   "same_other": 20
+  },
+  {
+   "a": "omp_gateway:anthropic/claude-haiku-5-5",
+   "b": "omp_gateway:ollama-cloud/deepseek-v4.1-flash",
+   "both_valid": 60,
+   "same_verdict_label": 29,
+   "same_other": 14
+  },
+  {
+   "a": "omp_gateway:openai-codex/gpt-6-luna",
+   "b": "omp_gateway:ollama-cloud/deepseek-v4.1-flash",
+   "both_valid": 60,
+   "same_verdict_label": 32,
+   "same_other": 16
+  }
+ ],
+ "items": [
+  {
+   "id": "540:11886686",
+   "gold": "supported",
+   "labels": [
+    "partial",
+    "partial",
+    "partial"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "597:36355784",
+   "gold": "supported",
+   "labels": [
+    "supported",
+    "supported",
+    "supported"
+   ],
+   "verdicts": {
+    "anthropic": "supported",
+    "openai": "supported",
+    "human": "supported"
+   }
+  },
+  {
+   "id": "385:9955779",
+   "gold": "supported",
+   "labels": [
+    "supported",
+    "supported",
+    "supported"
+   ],
+   "verdicts": {
+    "anthropic": "supported",
+    "openai": "supported",
+    "human": "supported"
+   }
+  },
+  {
+   "id": "1379:27123743",
+   "gold": "supported",
+   "labels": [
+    "partial",
+    "partial",
+    "partial"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "508:13980338",
+   "gold": "unsupported",
+   "labels": [
+    "unsupported",
+    "unsupported",
+    "unsupported"
+   ],
+   "verdicts": {
+    "anthropic": "unsupported",
+    "openai": "unsupported",
+    "human": "unsupported"
+   }
+  },
+  {
+   "id": "275:14241418",
+   "gold": "supported",
+   "labels": [
+    "unsupported",
+    "unsupported",
+    "unsupported"
+   ],
+   "verdicts": {
+    "anthropic": "unsupported",
+    "openai": "unsupported",
+    "human": "unsupported"
+   }
+  },
+  {
+   "id": "501:17930286",
+   "gold": "supported",
+   "labels": [
+    "partial",
+    "partial",
+    "partial"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "1362:8290953",
+   "gold": "unsupported",
+   "labels": [
+    "unsupported",
+    "unsupported",
+    "unsupported"
+   ],
+   "verdicts": {
+    "anthropic": "unsupported",
+    "openai": "unsupported",
+    "human": "unsupported"
+   }
+  },
+  {
+   "id": "239:14079881",
+   "gold": "supported",
+   "labels": [
+    "uncertain",
+    "unsupported",
+    "partial"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "137:26016929",
+   "gold": "supported",
+   "labels": [
+    "partial",
+    "partial",
+    "partial"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "1146:13906581",
+   "gold": "supported",
+   "labels": [
+    "partial",
+    "partial",
+    "partial"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "443:10165258",
+   "gold": "supported",
+   "labels": [
+    "supported",
+    "supported",
+    "supported"
+   ],
+   "verdicts": {
+    "anthropic": "supported",
+    "openai": "supported",
+    "human": "supported"
+   }
+  },
+  {
+   "id": "598:25742130",
+   "gold": "contradicted",
+   "labels": [
+    "contradicted",
+    "contradicted",
+    "contradicted"
+   ],
+   "verdicts": {
+    "anthropic": "contradicted",
+    "openai": "contradicted",
+    "human": "contradicted"
+   }
+  },
+  {
+   "id": "70:5956380",
+   "gold": "supported",
+   "labels": [
+    "partial",
+    "partial",
+    "partial"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "882:14803797",
+   "gold": "contradicted",
+   "labels": [
+    "supported",
+    "contradicted",
+    "contradicted"
+   ],
+   "verdicts": {
+    "anthropic": "contradicted",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "237:4942718",
+   "gold": "unsupported",
+   "labels": [
+    "unsupported",
+    "unsupported",
+    "unsupported"
+   ],
+   "verdicts": {
+    "anthropic": "unsupported",
+    "openai": "unsupported",
+    "human": "unsupported"
+   }
+  },
+  {
+   "id": "1281:4387784",
+   "gold": "unsupported",
+   "labels": [
+    "unsupported",
+    "unsupported",
+    "unsupported"
+   ],
+   "verdicts": {
+    "anthropic": "unsupported",
+    "openai": "unsupported",
+    "human": "unsupported"
+   }
+  },
+  {
+   "id": "48:13734012",
+   "gold": "contradicted",
+   "labels": [
+    "partial",
+    "partial",
+    "unsupported"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "575:10300888",
+   "gold": "unsupported",
+   "labels": [
+    "unsupported",
+    "unsupported",
+    "unsupported"
+   ],
+   "verdicts": {
+    "anthropic": "unsupported",
+    "openai": "unsupported",
+    "human": "unsupported"
+   }
+  },
+  {
+   "id": "163:18872233",
+   "gold": "supported",
+   "labels": [
+    "partial",
+    "supported",
+    "partial"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "544:24221369",
+   "gold": "unsupported",
+   "labels": [
+    "unsupported",
+    "unsupported",
+    "unsupported"
+   ],
+   "verdicts": {
+    "anthropic": "unsupported",
+    "openai": "unsupported",
+    "human": "unsupported"
+   }
+  },
+  {
+   "id": "936:5483793",
+   "gold": "supported",
+   "labels": [
+    "supported",
+    "partial",
+    "partial"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "904:7370282",
+   "gold": "supported",
+   "labels": [
+    "supported",
+    "supported",
+    "supported"
+   ],
+   "verdicts": {
+    "anthropic": "supported",
+    "openai": "supported",
+    "human": "supported"
+   }
+  },
+  {
+   "id": "268:970012",
+   "gold": "unsupported",
+   "labels": [
+    "unsupported",
+    "unsupported",
+    "unsupported"
+   ],
+   "verdicts": {
+    "anthropic": "unsupported",
+    "openai": "unsupported",
+    "human": "unsupported"
+   }
+  },
+  {
+   "id": "539:13282296",
+   "gold": "supported",
+   "labels": [
+    "partial",
+    "supported",
+    "partial"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "743:32159283",
+   "gold": "contradicted",
+   "labels": [
+    "contradicted",
+    "contradicted",
+    "contradicted"
+   ],
+   "verdicts": {
+    "anthropic": "contradicted",
+    "openai": "contradicted",
+    "human": "contradicted"
+   }
+  },
+  {
+   "id": "513:13230773",
+   "gold": "contradicted",
+   "labels": [
+    "contradicted",
+    "contradicted",
+    "contradicted"
+   ],
+   "verdicts": {
+    "anthropic": "contradicted",
+    "openai": "contradicted",
+    "human": "contradicted"
+   }
+  },
+  {
+   "id": "1024:5373138",
+   "gold": "supported",
+   "labels": [
+    "partial",
+    "partial",
+    "partial"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "1194:11419230",
+   "gold": "unsupported",
+   "labels": [
+    "partial",
+    "partial",
+    "partial"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "1207:18909530",
+   "gold": "unsupported",
+   "labels": [
+    "partial",
+    "partial",
+    "partial"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "880:8426046",
+   "gold": "supported",
+   "labels": [
+    "partial",
+    "partial",
+    "supported"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "768:6421792",
+   "gold": "unsupported",
+   "labels": [
+    "unsupported",
+    "unsupported",
+    "unsupported"
+   ],
+   "verdicts": {
+    "anthropic": "unsupported",
+    "openai": "unsupported",
+    "human": "unsupported"
+   }
+  },
+  {
+   "id": "1352:12885341",
+   "gold": "supported",
+   "labels": [
+    "supported",
+    "supported",
+    "supported"
+   ],
+   "verdicts": {
+    "anthropic": "supported",
+    "openai": "supported",
+    "human": "supported"
+   }
+  },
+  {
+   "id": "644:13619127",
+   "gold": "unsupported",
+   "labels": [
+    "unsupported",
+    "unsupported",
+    "unsupported"
+   ],
+   "verdicts": {
+    "anthropic": "unsupported",
+    "openai": "unsupported",
+    "human": "unsupported"
+   }
+  },
+  {
+   "id": "1379:17450673",
+   "gold": "supported",
+   "labels": [
+    "partial",
+    "supported",
+    "uncertain"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "230:3067015",
+   "gold": "supported",
+   "labels": [
+    "supported",
+    "partial",
+    "partial"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "727:7521113",
+   "gold": "unsupported",
+   "labels": [
+    "unsupported",
+    "unsupported",
+    "unsupported"
+   ],
+   "verdicts": {
+    "anthropic": "unsupported",
+    "openai": "unsupported",
+    "human": "unsupported"
+   }
+  },
+  {
+   "id": "1273:11041152",
+   "gold": "supported",
+   "labels": [
+    "supported",
+    "supported",
+    "supported"
+   ],
+   "verdicts": {
+    "anthropic": "supported",
+    "openai": "supported",
+    "human": "supported"
+   }
+  },
+  {
+   "id": "1339:15482274",
+   "gold": "contradicted",
+   "labels": [
+    "contradicted",
+    "contradicted",
+    "contradicted"
+   ],
+   "verdicts": {
+    "anthropic": "contradicted",
+    "openai": "contradicted",
+    "human": "contradicted"
+   }
+  },
+  {
+   "id": "922:17077004",
+   "gold": "contradicted",
+   "labels": [
+    "contradicted",
+    "contradicted",
+    "contradicted"
+   ],
+   "verdicts": {
+    "anthropic": "contradicted",
+    "openai": "contradicted",
+    "human": "contradicted"
+   }
+  },
+  {
+   "id": "1197:25649714",
+   "gold": "unsupported",
+   "labels": [
+    "unsupported",
+    "unsupported",
+    "unsupported"
+   ],
+   "verdicts": {
+    "anthropic": "unsupported",
+    "openai": "unsupported",
+    "human": "unsupported"
+   }
+  },
+  {
+   "id": "1282:23649163",
+   "gold": "unsupported",
+   "labels": [
+    "partial",
+    "partial",
+    "unsupported"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "261:1122279",
+   "gold": "supported",
+   "labels": [
+    "partial",
+    "partial",
+    "partial"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "911:11254556",
+   "gold": "supported",
+   "labels": [
+    "partial",
+    "partial",
+    "supported"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "914:3203590",
+   "gold": "unsupported",
+   "labels": [
+    "unsupported",
+    "unsupported",
+    "unsupported"
+   ],
+   "verdicts": {
+    "anthropic": "unsupported",
+    "openai": "unsupported",
+    "human": "unsupported"
+   }
+  },
+  {
+   "id": "1163:15305881",
+   "gold": "supported",
+   "labels": [
+    "supported",
+    "partial",
+    "partial"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "350:16927286",
+   "gold": "unsupported",
+   "labels": [
+    "partial",
+    "partial",
+    "partial"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "421:11172205",
+   "gold": "unsupported",
+   "labels": [
+    "unsupported",
+    "unsupported",
+    "unsupported"
+   ],
+   "verdicts": {
+    "anthropic": "unsupported",
+    "openai": "unsupported",
+    "human": "unsupported"
+   }
+  },
+  {
+   "id": "354:8774475",
+   "gold": "unsupported",
+   "labels": [
+    "supported",
+    "contradicted",
+    "contradicted"
+   ],
+   "verdicts": {
+    "anthropic": "contradicted",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "1132:33499189",
+   "gold": "supported",
+   "labels": [
+    "partial",
+    "partial",
+    "unsupported"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "535:39368721",
+   "gold": "unsupported",
+   "labels": [
+    "unsupported",
+    "unsupported",
+    "unsupported"
+   ],
+   "verdicts": {
+    "anthropic": "unsupported",
+    "openai": "unsupported",
+    "human": "unsupported"
+   }
+  },
+  {
+   "id": "783:40632104",
+   "gold": "unsupported",
+   "labels": [
+    "contradicted",
+    "contradicted",
+    "contradicted"
+   ],
+   "verdicts": {
+    "anthropic": "contradicted",
+    "openai": "contradicted",
+    "human": "contradicted"
+   }
+  },
+  {
+   "id": "967:8997410",
+   "gold": "supported",
+   "labels": [
+    "supported",
+    "partial",
+    "partial"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "1280:4387784",
+   "gold": "unsupported",
+   "labels": [
+    "unsupported",
+    "unsupported",
+    "unsupported"
+   ],
+   "verdicts": {
+    "anthropic": "unsupported",
+    "openai": "unsupported",
+    "human": "unsupported"
+   }
+  },
+  {
+   "id": "578:8764879",
+   "gold": "contradicted",
+   "labels": [
+    "supported",
+    "contradicted",
+    "contradicted"
+   ],
+   "verdicts": {
+    "anthropic": "contradicted",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "830:1897324",
+   "gold": "unsupported",
+   "labels": [
+    "unsupported",
+    "unsupported",
+    "unsupported"
+   ],
+   "verdicts": {
+    "anthropic": "unsupported",
+    "openai": "unsupported",
+    "human": "unsupported"
+   }
+  },
+  {
+   "id": "1241:4427392",
+   "gold": "supported",
+   "labels": [
+    "partial",
+    "partial",
+    "supported"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "1029:13940200",
+   "gold": "contradicted",
+   "labels": [
+    "partial",
+    "partial",
+    "contradicted"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "514:16256507",
+   "gold": "unsupported",
+   "labels": [
+    "partial",
+    "partial",
+    "partial"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  },
+  {
+   "id": "1213:14407673",
+   "gold": "unsupported",
+   "labels": [
+    "partial",
+    "partial",
+    "unsupported"
+   ],
+   "verdicts": {
+    "anthropic": "uncertain",
+    "openai": "uncertain",
+    "human": "uncertain"
+   }
+  }
+ ]
+}

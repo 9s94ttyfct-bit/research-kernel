@@ -223,7 +223,7 @@ protocol → search_screen → read_extract → synthesize → argue → draft �
 │  orchestrator/  阶段状态机、回边、预算、任务派发、检查点挂起与恢复                 │
 │  agent/         进程内工具调用循环（API 类提供者用）；角色提示词与输出 schema      │
 │  llm/           提供者：claude_cli · codex_cli · anthropic_api · openai_api ·    │
-│                 gemini_api · openrouter · ollama · omp_gateway（可选）· human    │
+│                 gemini_api · openrouter · ollama · omp_gateway · human           │
 │  browser/       浏览器会话、人类节奏的调度器、各站点适配器、下载管理、验证码转人工  │
 │  library/       文献库：条目、附件、分组、标签、笔记、全文检索、BibTeX/RIS/CSL   │
 │  ui/            Workbench（FastAPI + 静态前端；WebSocket 推送）                  │
@@ -391,15 +391,15 @@ $RK_HOME/                         默认 ~/ResearchKernel
 | Skeptic | 红队：提异议、找反证 | codex_cli | 读取；search_*；objection_add |
 | SimReader | 按 `audience` 扮演目标读者质询 | codex_cli | 只读，输出质询列表 |
 | Writer | 起草和修改各节 | claude_cli | 读取；draft_write |
-| Judge | 第二意见，用于支持度判定和检查点投票 | codex_cli（厂商 openai）+ ollama cloud `deepseek-v4.1-flash`（厂商 deepseek） | 无工具，输入内联 |
+| Judge | 独立意见，用于支持度判定和检查点投票 | 三个角色（2026-11-07 你决定）：`judge` = codex_cli `gpt-6-luna`（厂商 openai）、`judge_2` = ollama cloud `deepseek-v4.1-flash`（厂商 deepseek）、`judge_3` = claude_cli `claude-haiku-5-5`（厂商 anthropic）；与 claim 作者同厂商的评审自动跳过 | 无工具，输入内联 |
 | Triage | 批量相关性粗筛、关键词抽取 | ollama cloud（deepseek-v4.1-flash） | 无工具，输入内联 |
 
-**驱动可以替换：** 每个角色的驱动在 `config.toml` 里配置。配了 API key 时，可以把任意角色换成 `anthropic_api` 或 `openai_api`；装了 omp 并打开适配器时，也可以换成 `omp_gateway`。唯一的约束不变：同一个 claim 的生成方和审查方必须属于不同厂商。
+**驱动可以替换：** 每个角色的驱动在 `config.toml` 里配置，也可以用 `rk driver set <角色> <驱动>` 或 Workbench 的“设置 → 模型”（Settings → Models）选择；`rk models` 列出每个驱动能跑的模型、厂商和当前是否可用。配了 API key 时，可以把任意角色换成 `anthropic_api` 或 `openai_api`。**omp_gateway 是普通驱动**（2026-11-07 你决定）：装了 omp 并已登录就能用，不需要开关；`omp models --json` 列出的每个聊天模型都可以写成 `omp_gateway:<provider>/<model>`。厂商未知的模型可以做生成方，但永远不能做审查方，设置页会注明。产品不依赖 omp，不装也能运行；默认驱动都不用本地模型。唯一的约束不变：同一个 claim 的生成方和审查方必须属于不同厂商。
 
 **"厂商"按模型的研发方认定，不按托管方** `[决定]`。映射表写在 `llm/vendors.toml` 里，可以修改：
 - `claude_cli`、`anthropic_api`、`omp_gateway:anthropic/*` → anthropic
-- `codex_cli`、`openai_api`、`omp_gateway:openai-codex/*` → openai
-- Ollama 按模型名前缀：`gemma*` → google，`deepseek*` → deepseek，`qwen*` → alibaba，`gpt-oss*` → openai，`llama*` → meta
+- `codex_cli`、`openai_api`、`omp_gateway:openai-codex/*`、`omp_gateway:openai/*` → openai
+- 其余按模型族，匹配模型 id（`llm/vendors.toml` 的 `families`），用于 `ollama:<id>` 和 omp_gateway 的 `anthropic`、`openai`、`openai-codex`、`ollama-cloud`、`ollama` 主机：`claude*` → anthropic，`gpt-<数字>*`、`gpt-oss*`、`codex*` → openai，`deepseek*` → deepseek，`gemini*`、`gemma*` → google，`qwen*` → alibaba，`llama*` → meta，`mistral*` → mistral，`kimi*` → moonshot，`glm*` → zhipu，`minimax*` → minimax；其他主机上的模型须带该厂商的组织名（如 `omp_gateway:openrouter/deepseek-ai/…`），否则算未知；用户上传的命名空间模型（`ollama:someuser/…`）也算未知
 - 未在映射表中的模型视为未知厂商，**不能**作为审查方。
 
 默认配置下，生成方是 anthropic，审查方是 openai + deepseek。codex 不可用时，审查方只剩 deepseek，此时仍满足"不同厂商"，但第二意见只有一票，按"一票不足以通过"的保守规则处理。
@@ -409,7 +409,7 @@ $RK_HOME/                         默认 ~/ResearchKernel
 ```python
 class Provider(Protocol):
     name: str          # v1："claude_cli" | "codex_cli" | "anthropic_api" | "openai_api" | "ollama"
-                       #     | "omp_gateway"（可选）| "human"
+                       #     | "omp_gateway" | "human"
     vendor: str        # 按 llm/vendors.toml 解析出的模型研发方
     kind: Literal["agentic_cli", "chat_api", "human"]
     def available(self) -> Availability: ...        # 已登录或有 key、版本信息、失败原因
@@ -617,7 +617,7 @@ class TaskResult:
 | V-QUOTE | 引语逐字一致 | 在规范文本层上，先用规范化键匹配：NFKC、连字展开、统一各种破折号和引号、合并空白，行末连字符既试"保留"也试"删除"两种变体；再用 `rapidfuzz.partial_ratio_alignment` 定位 | 规范化键完全一致才算 pass，并返回页码和字符区间；否则 fail，同时返回最接近的片段 |
 | V-PARA | 转述不过近（书中的"手指测试"） | **只做词面相似度检查**：与对应原文片段比，最长连续共有词 ≤8；4-gram 包含率 ≤0.35；`token_set_ratio` ≤85。它能发现近乎照抄，但发现不了意思走样；转述是否忠实原意由 V-SUPPORT（转述作 claim，原文片段作证据）判定，抽样交人复核 | pass / too_close |
 | V-HEDGE | 措辞强度单调 | 词表分 4 级：0 推测（may, might, possibly）、1 倾向（suggest, indicate, likely）、2 断言（show, find, demonstrate）、3 绝对（prove, establish, always, all, never）；claim 的等级 ≤ 其证据笔记中的最高等级；全称量词需要证据覆盖 | pass / overstated |
-| V-SUPPORT | 证据是否支持 claim | 第一层：**Bespoke-MiniCheck-7B**（2026-11-06 你决定采用；许可证 CC BY-NC 4.0，仅限非商业使用，本项目不商业化），经本地 Ollama（`bespoke-minicheck:7b-q8_0`）运行，严格按官方打分方式（ChatML 提示、取 Yes 的概率，claim 分句后各句取最佳分块、整体取最弱句），得到概率 p；MiniCheck-Flan-T5-L（MIT）保留为可选替代；第二层：另一厂商（codex 或 ollama）给出结构化判定 {supported, partial, unsupported, contradicted} 并引用依据片段 | **supported**：p≥τ_hi 且第二层判 supported；**unsupported/contradicted**：p≤τ_lo 且第二层意见一致；其余一律 **uncertain**，触发 `uncertain_support` 检查点或降级。τ_hi=0.85、τ_lo=0.15 为初值。**2026-11-06 修订（你批准）**：当至少两个与 claim 作者不同厂商、彼此也不同厂商的评审意见一致（判 supported 时须逐字引用证据），第一层改用联合校准的较低阈值 τ_hi_judged / τ_lo_judged（在 SciFact train 抽样上同时用第一层和评审校准，目标精确率 ≥0.95）；未校准时不放宽。联合阈值永远不会比单层阈值更严。阈值只对校准时所用的第一层模型有效，换模型后须重新校准 |
+| V-SUPPORT | 证据是否支持 claim | **只用云端评审，没有第一层模型**（2026-11-07 你决定：去掉第一层 MiniCheck，判定只来自三家云端评审；默认不用任何本地模型）。三个评审角色 `judge`、`judge_2`、`judge_3`，默认是 `codex_cli:gpt-6-luna`（openai）、`ollama:deepseek-v4.1-flash:cloud`（deepseek，由 Ollama Cloud 托管）、`claude_cli:claude-haiku-5-5`（anthropic），可以换成任意厂商已知的驱动（例如 `omp_gateway:…`）。每个评审各自给出结构化判定 {supported, partial, unsupported, contradicted}；判 supported、partial、contradicted 时须逐字引用证据，引文在证据里找不到的意见记为 uncertain。评审的厂商必须已知、不是 human、不同于 claim 作者的厂商，也不同于另一个已采纳评审的厂商；不符合的评审被跳过（`same_or_unknown_vendor`），不计票 | 有效评审（已采纳且调用成功）至少 `support_min_judges` 个（默认 2），且**全部**给出同一个标签时，取这个标签：**supported**（V-NUM 也须通过）、**unsupported** 或 **contradicted**；其余一律 **uncertain**（包括任一评审意见不同、判 partial、只有一个有效评审），触发 `uncertain_support` 检查点或降级。没有阈值，也不校准；`rk eval support` 在 SciFact dev 上按生成方场景（以 anthropic 为主，另有 openai、human）报告覆盖率和各判定的精确率，见 `docs/eval/support-2026-11-07-judges.md`（60 对：anthropic 场景覆盖率 0.533，supported 6/6）。2026-11-06 的两层规则和联合阈值作废 |
 | V-NUM | 数字出自证据 | 抽出 claim 和句子中的数字、百分比、单位，统一规范。数字必须出现在关联笔记的原文片段中，或者等于句子标记所引用的 `run`/`fig`/`stat` 产物中的值 | pass / ungrounded_number |
 | V-COVER | 句子来源标记覆盖 | 分句后，每句必须带**至少一个**来源标记（标记语法 `[[kind:id]]`），一句里可以同时出现多个：<br>① `[[clm:clm_…]]` 来自文献的 claim；<br>② `[[run:evt_…]]` 或 `[[run:prt_…]]` 描述系统自身做过的研究操作（检索、筛选、提取），指向事件日志中的具体事件或已冻结的 protocol；<br>③ `[[fig:fig_…]]` / `[[stat:stt_…]]` 计算结果，指向由代码生成的产物（含数据哈希）；<br>④ `[[plan:dsg_…]]` 或 `[[plan:hyp_…]]` research_proposal 中计划要做的工作；<br>⑤ `[[inf]]` 作者推断；<br>⑥ `[[ck]]` 常识（不超过 5%，且不能含数字）。<br>②—④ 的目标必须存在且哈希一致。句中的每个数字都必须至少能被句内某一个标记的目标覆盖（见 V-NUM）。导出时：`clm` 转为对其证据来源的 citeproc 引用；`run`、`fig`、`stat`、`plan` 转为指向正文中方法部分、图或表的交叉引用；`[[inf]]` 转为推断性措辞 | pass / fail |
 | V-BALANCE | 争议点有反方 | claim 被标为 `contested`，或存在有来源支撑的异议时，所在小节必须写出反方观点并引用回应 | pass / one_sided |
@@ -663,7 +663,7 @@ class TaskResult:
 |---|---|---|
 | 单元金标 | 用 30 段 OA 原文（覆盖化学、生物、医学、CS）**程序化生成**：正例是原文的逐字子串，反例是扰动版本（改词、改数字、跨行拼接、加强措辞），所以标签由构造方式决定，不依赖任何模型 | V-QUOTE / V-PARA / V-HEDGE 准确率 100% |
 | 引用陷阱集 | 伪造 DOI；真 DOI 配错标题；已撤稿文献（Wakefield 1998 `10.1016/S0140-6736(97)11096-0`；Surgisphere 2020 `10.1016/S0140-6736(20)31180-6`）；EoC；更正 | 检出率 100%；撤稿文献用作证据的次数 0 |
-| 支持度校准 | **只用外部人工标注数据**，避免让系统给自己打分：DeepFactBench（MIT，专家审计标签）和 SciFact（生物医学 claim–摘要对，人工标注；数据许可证 `[待核实]`，仅用于本地评测）；另外可以加你标注的 STEM 样本（见 §13） | supported 判定的精确率 ≥0.95，覆盖率（未弃权的比例）≥0.70；报告混淆矩阵 |
+| 支持度评测 | **只用外部人工标注数据**，避免让系统给自己打分：DeepFactBench（MIT，专家审计标签）和 SciFact（生物医学 claim–摘要对，人工标注；数据许可证 `[待核实]`，仅用于本地评测）；另外可以加你标注的 STEM 样本（见 §13） | supported 判定的精确率 ≥0.95，覆盖率（未弃权的比例）≥0.70；报告混淆矩阵 |
 | 文献问答 | LitQA2（199 题，不需要评委） | 与 PaperQA2+Ollama 基线比较；"信息不足"的回答精确率 |
 | 引用质量 | ReportBench（引用精确率和召回率是确定性匹配） | 高于开源 deep research 基线 |
 | 端到端 | **系统综述复现集**：挑 6 篇 PMC OA 的系统综述（每个领域至少 1 篇），ground truth 是它们纳入的研究和主要结论 | 纳入研究的召回 ≥0.85；主要结论方向一致；全部硬门通过 |
@@ -695,7 +695,7 @@ DeepResearch Bench、DeepFact 的官方分数和 ReportBench 的事实性部分�
 | 计划 | 范围 | 可演示的结果 | 粗估工期 `[推断]`，按 agent 实现计 |
 |---|---|---|---|
 | **Plan 1 基础层与文献库** | 仓库骨架、配置、存储（事件日志、哈希链、投影表、重建）、文献库核心（条目、附件、分组、标签、FTS5、BibTeX/RIS/CSL 导入导出）、数据源适配（OpenAlex、Crossref、Europe PMC/PubMed、arXiv、S2、bioRxiv）、HTTP 缓存与预算、全文管线（BioC、arXiv HTML、OA PDF、PDF 规范层）、V-REF / V-RETRACT / V-QUOTE / V-PARA / V-HEDGE、`note_add` 即时验证、工具注册表、CLI（含 `rk setup` 的命令行版本）、单元金标与引用陷阱集 | 用 CLI 建项目、检索、入库、取全文、写笔记：每条引用都有验证结果，每条引语都有页码定位；能导出 BibTeX 并导入 Zotero | 4–6 天 |
-| **Plan 2 模型提供层与验证** | 提供者层（claude_cli、codex_cli、anthropic_api、openai_api、ollama、omp_gateway 可选、human），包括单次任务和多轮会话（Claude 用 `--resume` + stream-json，Codex 用 `exec resume`，chat_api 用进程内循环）；厂商映射表；进程内工具调用循环；内部 MCP 代理与外部 MCP 接入；角色提示词框架；claim / evidence / edge / objection 实体；V-SUPPORT 两层判定；V-NUM；评测框架（LitQA2、DeepFactBench 和 SciFact 校准、ReportBench 引用部分） | 给一段文本加一组来源，输出逐 claim 的支持判定和混淆矩阵；同一个任务可以分别由 claude_cli、codex_cli、ollama 执行 | 5–7 天 |
+| **Plan 2 模型提供层与验证** | 提供者层（claude_cli、codex_cli、anthropic_api、openai_api、ollama、omp_gateway、human），包括单次任务和多轮会话（Claude 用 `--resume` + stream-json，Codex 用 `exec resume`，chat_api 用进程内循环）；厂商映射表；进程内工具调用循环；内部 MCP 代理与外部 MCP 接入；角色提示词框架；claim / evidence / edge / objection 实体；V-SUPPORT 判定（2026-11-07 修订：由原来的两层判定改为三家云端评审一致才定案，见 §9.1）；V-NUM；评测框架（LitQA2、DeepFactBench 和 SciFact 评测、ReportBench 引用部分） | 给一段文本加一组来源，输出逐 claim 的支持判定和混淆矩阵；同一个任务可以分别由 claude_cli、codex_cli、ollama 执行 | 5–7 天 |
 | **Plan 3 内置浏览器与 Workbench** | Playwright 持久化浏览器、人类节奏调度器、验证码与登录转人工、站点适配器（Google Scholar、PubMed、Europe PMC、你学校的发现系统、DOI→出版商 PDF）、通用导航兜底、可选 translation-server；Workbench（聊天、文献库、检查点、进度、草稿预览、设置与 key 向导） | 在内置浏览器里登录你学校的图书馆；Lead 在聊天中按你的要求检索 Scholar 和图书馆，经图书馆下载付费墙 PDF，入库并核验引语 | 6–8 天 |
 | **Plan 4 发现** | 编排器状态机（阶段、回边、预算、检查点挂起）；landscape；五类 gap 挖掘；topic 生成与审核；RQ 门；"已有人做过"检查；V-NOVELTY；D1、D2 两种模式 | D2：输入"钙钛矿太阳能电池稳定性"，产出 6 个带证据的 topic → 你在 Workbench 中审核 → 冻结的 RQ | 5–7 天 |
 | **Plan 5 产出** | protocol 与预注册；检索与筛选（PRISMA）；提取；综合（统计模块经验证后才启用）；argue；design（计划书）；draft 与 revise；audit 与披露；导出（pandoc + citeproc + tectonic，英文论文）；P1、P2 两种模式；系统综述复现集 | 端到端产出 systematic_review、critical_review 或 research_proposal，附验证报告和可复现包 | 8–10 天 |
@@ -709,9 +709,9 @@ DeepResearch Bench、DeepFact 的官方分数和 ReportBench 的事实性部分�
 **已确认（2026-11-05 你的答复）：**
 - 仓库私有（GitHub 私有仓库，账号 `9s94ttyfct-bit`）；**只在本仓库设置局部 git 身份** `9s94ttyfct-bit <273716724+9s94ttyfct-bit@users.noreply.github.com>`，不使用全局 `git config` 中的身份。
 - 系统引导你申请 key（§8.8）。
-- 不依赖 omp：omp 只作为可选适配器。**开发测试中需要 LLM 的部分，使用 omp_gateway 适配器调用 `openai-codex/gpt-6-luna`**（仅限测试，产品运行时不需要 omp）。
+- 不依赖 omp：omp_gateway 是普通驱动之一（2026-11-07），不装 omp 也能运行。**开发测试中需要 LLM 的部分，使用 omp_gateway 调用 `openai-codex/gpt-6-luna`**（仅限测试，产品运行时不需要 omp）。
 - 内置浏览器（§8.5），可以登录图书馆，也可以像人一样检索。
-- 支持度校准只用外部人工标注数据（DeepFactBench、SciFact）。
+- 支持度评测只用外部人工标注数据（DeepFactBench、SciFact）。
 - 论文只用英文，交互中英文都可以。
 - 每个项目一个类 Zotero 文献库（§8.6）。
 

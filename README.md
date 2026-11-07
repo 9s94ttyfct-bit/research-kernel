@@ -44,7 +44,7 @@ State lives in `$RK_HOME`, which defaults to `~/ResearchKernel`:
 | V-QUOTE | A quote note must occur verbatim in the source's text layer after normalisation: ligatures, quote and dash styles, line-end hyphenation and whitespace. It is stored with a page and character locator. |
 | V-PARA | A paraphrase must not copy its source span. Limits: longest shared run ≤ 8 tokens, 4-gram containment ≤ 0.35, token-set ratio ≤ 85. This is a lexical flag only. |
 | V-HEDGE | A claim may not be worded more strongly than its sources. |
-| V-SUPPORT | Three LLM judges (roles `judge`, `judge_2`, `judge_3`; by default GPT-6 Luna, DeepSeek v4.1 flash and Claude Haiku 5.5). A judge's vendor must differ from the claim author's and from every other admitted judge's, and each judge must quote the evidence verbatim. **supported**, **unsupported** or **contradicted** needs at least `support_min_judges` (default 2) valid judges that all give that label, and V-NUM gates **supported**. Everything else is **uncertain**, which in collaborative mode opens an `uncertain_support` checkpoint. |
+| V-SUPPORT | Cloud judges only, no local model (user decision 2026-11-07). Three judge roles, `judge`, `judge_2` and `judge_3`, by default GPT-6 Luna (`codex_cli:gpt-6-luna`), DeepSeek v4.1 flash (`ollama:deepseek-v4.1-flash:cloud`, hosted by Ollama Cloud) and Claude Haiku 5.5 (`claude_cli:claude-haiku-5-5`). A judge's vendor must be known, not human, and differ from the claim author's and from every other admitted judge's; a judge that fails this is skipped (`same_or_unknown_vendor`). Each judge must quote the evidence verbatim. **supported**, **unsupported** or **contradicted** needs at least `support_min_judges` (default 2) valid judges that all give that label, and V-NUM gates **supported**. Everything else is **uncertain**: one dissent, a "partial" or a single valid judge. In collaborative mode that opens an `uncertain_support` checkpoint. Latest run: `docs/eval/support-2026-11-07-judges.md`. |
 | V-NUM | Every number in a claim must occur, with the same value and unit, in its evidence. Formats are normalised: thousands separators, Unicode minus, `×10ⁿ`, `%`/percent and ranges. |
 
 Hidden text is removed before anything enters a text layer:
@@ -170,12 +170,13 @@ The checkpoints you answer (only a human can, in the Workbench Checkpoints page 
 - **V-NOVELTY is a reference only.** Each topic shows its closest works so you can judge overlap yourself; it never
   stops a topic. The kernel refuses a novelty claim ("novel", "first study to", "never been studied", …) in every text
   the Ideator writes for a topic or an RQ, and in the judges' differences: such an output is rerun.
-- **The already-done check gates the RQ** (unlike V-NOVELTY): two judges of other vendors than the RQ's author each
-  judge the closest works, quoting their title or abstract. A work both judge as answering the RQ sends the project back
-  to topics; a split asks you (P2) or counts as answered (P1). Only an RQ not found answered within the searched scope
-  can be approved.
-- **Models are configurable per role** (`drivers` in `config.toml`): the Scout, GapMiner and Ideator generate;
-  `judge` and `judge_2` (V-SUPPORT, V-NOVELTY, the already-done check) and `triage` check, from other vendors.
+- **The already-done check gates the RQ** (unlike V-NOVELTY): each judge whose vendor differs from the RQ author's
+  judges the closest works, quoting their title or abstract. A work that two valid judges judge as answering the RQ
+  sends the project back to topics; a split asks you (P2) or counts as answered (P1). Only an RQ not found answered
+  within the searched scope can be approved.
+- **Models are configurable per role** (`drivers` in `config.toml`, `rk driver set` or Settings → Models): the Scout,
+  GapMiner and Ideator generate; `judge`, `judge_2` and `judge_3` (V-SUPPORT, V-NOVELTY, the already-done check) and
+  `triage` check, from other vendors.
 - A recorded run: `docs/demo/plan4-discovery.md`.
 
 ## Drivers and roles
@@ -197,7 +198,16 @@ Role tasks run on a configurable driver per role (`drivers` in `config.toml`; se
   `rk_flag_injection`.
 - Every attempt (input, output, model, duration) is an event in the project log. A task gets at most 3 attempts.
   Subscription CLIs are capped per hour (`calls_per_hour`, default claude 30, codex 20).
-- Generator and reviewer must come from different model developers (`src/rk/llm/vendors.toml`).
+- Generator and reviewer must come from different model developers (`src/rk/llm/vendors.toml`). A model whose vendor
+  is unknown (for example an `omp_gateway` model no vendor rule matches) can generate but never review; `rk models`
+  and Settings → Models say so.
+
+**Choosing models.** `rk models` lists every model each driver can run, with its vendor and whether it is usable now;
+`rk driver set <role> <driver>` saves one (the vendor rules are checked first), and Settings → Models in the
+Workbench does the same. `omp_gateway` is a normal driver: when `omp` is installed and logged in, every chat model
+`omp models --json` lists is usable as `omp_gateway:<provider>/<model>`, with no flag to turn on. `omp` is not
+required. The default drivers need no local model: the subscription CLIs and Ollama Cloud models (`…:cloud`) run in
+the cloud.
 
 ```bash
 rk providers                                   # driver per role, vendor, availability, rule problems/warnings
