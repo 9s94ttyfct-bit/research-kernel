@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from rk.checkpoints import create_checkpoint
 from rk.config import DEFAULT_DRIVERS, Settings, save_settings
 from rk.discovery.models import HypothesisIn, Intake, RQBody, Topic
+from rk.discovery.sources import COUNTED_SOURCES
 from rk.discovery.store import add_rq, add_topic, freeze_rq, record_intake
 from rk.fulltext import FulltextResult, _record_snapshot, latest_snapshot
 from rk.ids import new_id
@@ -179,18 +180,21 @@ class FakeSources:
     by item title and need ``lib`` (the project library): ``statuses`` (``verify`` result, also written to the item's
     ``ref_status``; default ``default_status``), ``retractions``, ``citing`` (``cited_by``, filtered to
     ``year > after_year``) and ``fulltexts`` (pages recorded as the text layer by ``fulltext``). ``year_counts`` is keyed
-    by query. ``resolvable`` maps an identifier to the work ``add`` adds to the library (unknown: ``None``). Every call
-    is recorded in ``calls``."""
+    by query; ``record_counts`` (``count``) by ``(query, source)``, default 0, and ``count`` refuses a source outside
+    ``COUNTED_SOURCES`` as ``KernelSources`` does. ``resolvable`` maps an identifier to the work ``add`` adds to the
+    library (unknown: ``None``). Every call is recorded in ``calls``."""
 
     def __init__(self, items: dict[str, list[ItemIn]], *, lib=None, s2: bool = False,
                  statuses: dict[str, str] | None = None, default_status: str = "pass",
                  year_counts: dict[str, dict[int, int]] | None = None,
                  retractions: dict[str, RetractionInfo] | None = None, citing: dict[str, list[ItemIn]] | None = None,
-                 fulltexts: dict[str, list[str]] | None = None, resolvable: dict[str, ItemIn] | None = None):
+                 fulltexts: dict[str, list[str]] | None = None, resolvable: dict[str, ItemIn] | None = None,
+                 record_counts: dict[tuple[str, str], int] | None = None):
         self.items, self.lib, self.s2 = items, lib, s2
         self.statuses, self.default_status = statuses or {}, default_status
         self.counts, self.retractions = year_counts or {}, retractions or {}
         self.citing, self.fulltexts, self.resolvable = citing or {}, fulltexts or {}, resolvable or {}
+        self.record_counts = record_counts or {}
         self.calls: list[tuple] = []
 
     def _title(self, item_id: str) -> str:
@@ -214,6 +218,12 @@ class FakeSources:
     def year_counts(self, query: str) -> dict[int, int]:
         self.calls.append(("year_counts", query))
         return dict(self.counts.get(query, {}))
+
+    def count(self, query: str, source: str) -> int:
+        if source not in COUNTED_SOURCES:
+            raise ValueError(f"no record count for source {source!r}")
+        self.calls.append(("count", query, source))
+        return self.record_counts.get((query, source), 0)
 
     def verify(self, item_id: str) -> str:
         self.calls.append(("verify", item_id))

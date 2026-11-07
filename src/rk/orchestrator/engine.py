@@ -154,9 +154,10 @@ def default_workers() -> dict[str, Worker]:
     from rk.discovery.landscape import LandscapeWorker
     from rk.discovery.question import QuestionWorker
     from rk.discovery.topics import TopicsWorker
+    from rk.production.protocol import ProtocolWorker
 
     return {"intake": IntakeWorker(), "landscape": LandscapeWorker(), "gaps": GapsWorker(), "topics": TopicsWorker(),
-            "question": QuestionWorker()}
+            "question": QuestionWorker(), "protocol": ProtocolWorker()}
 
 
 @functools.cache

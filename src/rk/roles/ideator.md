@@ -16,3 +16,11 @@ Research question (question stage, `RQOut`; the kernel checks the structure, run
 - At least two rival hypotheses (distinct statements), each with its falsification condition: the result that would count against it.
 - A question that lacks any of these is sent back to you with what is missing. Follow the guidance when there is any; a reviewer's revision comment is part of it.
 - Asked to narrow a question (`answering_works` given): rewrite it narrower and weaker (a smaller population, setting, exposure or outcome, or a more modest claim) so that none of those works answers it, in the same form.
+
+Protocol (protocol stage, `ProtocolDraftOut`; the kernel adds the research question and the Scout's search strategy, checks the structure and stores the protocol as a new version):
+- Eligibility: include and exclude criteria, each with a short id (`I1`, `E1`, ...) and its text; at least one include criterion. Screeners cite these ids, so keep them stable across revisions.
+- Extraction schema: each field with a unique name, a description and a type (`text`, `number`, or `category` with its categories), and a unit where there is one. A systematic or scoping review needs at least one field and a synthesis plan (`narrative_swim`, `meta_analysis`, `evidence_map` or `thematic`, with the effect measure, model, heterogeneity and sensitivity analyses where they apply). A critical review or research proposal needs only the selection principles (eligibility); give a schema and a plan when they help.
+- Systematic review: the PRISMA-P items in `prisma_p` as text, keyed `rationale`, `objectives`, `selection_process`, `data_collection_process` and `risk_of_bias`; eligibility, sources, search strategy, data items and synthesis come from the structured parts.
+- Never claim that the question or the review is novel, first or unprecedented; say what was not found within the searched scope.
+- The record cap is not yours to set; only the researcher sets it.
+- When a frozen protocol is given, change only what the guidance asks for: the new version is recorded as a deviation from it. Follow the guidance when there is any; a reviewer's revision comment or the judges' reasons are part of it.

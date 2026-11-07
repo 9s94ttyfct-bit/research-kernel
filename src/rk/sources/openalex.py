@@ -141,6 +141,13 @@ def year_counts(http: HttpClient, query: str, *, api_key: str | None) -> dict[in
     return dict(sorted(counts.items()))
 
 
+def count(http: HttpClient, query: str, *, api_key: str | None) -> int:
+    """How many works match ``query`` (``meta.count`` of a one-result page)."""
+    data, _ = http.get_json(f"{BASE}/works", _params(api_key, search=query, per_page=1, select="id"),
+                            budget_key=BUDGET)
+    return int(((data or {}).get("meta") or {}).get("count") or 0)
+
+
 def referenced(http: HttpClient, work: OpenAlexWork, *, api_key: str | None, limit: int = 50) -> list[ItemIn]:
     ids = work.referenced_works[:limit]
     out: list[ItemIn] = []

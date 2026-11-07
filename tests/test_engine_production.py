@@ -205,10 +205,10 @@ def test_unrunnable_stage_is_unavailable(project):
         start_run(ps, until="design", actor="tester", clock=lambda: T0)
     assert e.value.type == "stage_unavailable"
 
-    bare = _orch(k, {s: FakeWorker() for s in DISCOVERY if s != "intake"})  # no production worker yet
-    assert bare.runnable(ps) == list(DISCOVERY)
+    bare = _orch(k, {s: FakeWorker() for s in DISCOVERY if s != "intake"})  # protocol is the only production worker
+    assert bare.runnable(ps) == [*DISCOVERY, "protocol"]
     with pytest.raises(ToolError) as e:
-        bare.run_stage("demo", "protocol", actor="tester")
+        bare.run_stage("demo", "search_screen", actor="tester")
     assert e.value.type == "stage_unavailable"
 
 
@@ -218,16 +218,16 @@ def test_start_until_a_stage_without_worker_is_refused(tmp_home, replay_http):
         reg = build_registry(k)
         m = RunManager(k, reg, _orch(k, {s: FakeWorker() for s in DISCOVERY if s != "intake"}, reg), poll_s=0.02)
         try:
-            with pytest.raises(ToolError) as e:  # before question too: protocol has no worker
-                m.start("demo", "protocol", actor="tester")
+            with pytest.raises(ToolError) as e:  # before question too: search_screen has no worker
+                m.start("demo", "search_screen", actor="tester")
             assert e.value.type == "stage_unavailable" and "no worker yet" in e.value.message
             run_id = m.start("demo", "question", actor="tester")
             _wait(lambda: run_row(ps, run_id)["status"] == "done")
             freeze_an_rq(ps)
             with pytest.raises(ToolError) as e:
-                m.start("demo", "protocol", actor="tester")
+                m.start("demo", "search_screen", actor="tester")
             assert e.value.type == "stage_unavailable" and "no worker yet" in e.value.message
-            assert m.status("demo")["until_options"] == []
+            assert m.status("demo")["until_options"] == ["protocol"]
         finally:
             m.close()
     finally:

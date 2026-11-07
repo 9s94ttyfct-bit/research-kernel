@@ -11,7 +11,7 @@ from rk.fulltext import fulltext_with_fallback, latest_snapshot
 from rk.library.add import add_source
 from rk.library.models import ItemIn
 from rk.library.service import Library
-from rk.sources import openalex, resolver
+from rk.sources import europepmc, openalex, resolver
 from rk.sources.identifiers import Identifier, parse_identifier
 from rk.store.project import ProjectStore
 from rk.tools.registry import CallContext, ToolError
@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 HITS_COLLECTION = "Search hits"
 CITED_BY_LIMIT = 25  # citing works per cited_by lookup (one OpenAlex page)
+COUNTED_SOURCES = ("openalex", "europepmc")  # the sources ``count`` can size a query on
 
 
 class DiscoverySources(Protocol):
@@ -31,6 +32,11 @@ class DiscoverySources(Protocol):
     def sources(self) -> list[str]: ...
 
     def year_counts(self, query: str) -> dict[int, int]: ...
+
+    def count(self, query: str, source: str) -> int:
+        """How many works ``query`` matches on ``source`` (one of ``COUNTED_SOURCES``; another raises
+        ``ValueError``)."""
+        ...
 
     def verify(self, item_id: str) -> str: ...
 
@@ -68,6 +74,15 @@ class KernelSources:
     def year_counts(self, query: str) -> dict[int, int]:
         ctx = self.kernel.ctx()
         return openalex.year_counts(ctx.http, query, api_key=ctx.settings.openalex_key)
+
+    def count(self, query: str, source: str) -> int:
+        """OpenAlex ``meta.count`` or Europe PMC ``hitCount`` of the query."""
+        ctx = self.kernel.ctx()
+        if source == "openalex":
+            return openalex.count(ctx.http, query, api_key=ctx.settings.openalex_key)
+        if source == "europepmc":
+            return europepmc.count(ctx.http, query)
+        raise ValueError(f"no record count for source {source!r}; counted: {', '.join(COUNTED_SOURCES)}")
 
     def verify(self, item_id: str) -> str:
         """V-REF and V-RETRACT for the item (recorded, and written to the item); returns its ``ref_status``."""
