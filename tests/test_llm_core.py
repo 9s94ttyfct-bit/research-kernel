@@ -96,7 +96,7 @@ def test_secrets_not_in_settings_repr():
 
 def test_default_drivers_cover_roles_and_settings_roundtrip(tmp_home):
     s = Settings()
-    assert s.drivers["judge"] == "codex_cli:gpt-6-luna" and s.drivers["reader"] == "claude_cli" and not s.omp_gateway
+    assert s.drivers["judge"] == "codex_cli:gpt-6-luna" and s.drivers["reader"] == "claude_cli"
     s.drivers["reader"] = "omp_gateway:openai-codex/gpt-6-luna"
     save_settings(s)
     assert load_settings().drivers["reader"] == "omp_gateway:openai-codex/gpt-6-luna"

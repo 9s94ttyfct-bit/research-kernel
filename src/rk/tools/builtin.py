@@ -27,6 +27,7 @@ from rk.fulltext import FulltextResult, attach_pdf, fulltext_with_fallback
 from rk.library.add import add_source
 from rk.library.formats import FORMATS
 from rk.library.models import ItemIn
+from rk.llm.catalog import driver_warnings, validate_drivers
 from rk.llm.drivers import DriverSpec, available_all
 from rk.llm.runner import FreeText, run_task
 from rk.llm.vendors import vendor_of
@@ -614,13 +615,17 @@ def build_registry(k: Kernel, browser: Callable[[], BrowserService | None] | Non
                    output=r.output.model_dump(mode="json") if r.output else None, tool_calls=r.tool_calls,
                    duration_s=r.duration_s)
 
-    @tool("rk_providers", "Driver per role, its vendor and availability.", Empty, False)
+    @tool("rk_providers", "Driver per role, its vendor and availability; what the drivers break or weaken.", Empty,
+          False)
     def _providers(ctx: CallContext, a: Empty) -> Out:
+        s = k.settings()
         rows = []
-        for role, (spec, avail) in available_all(k.settings()).items():
+        for role, (spec, avail) in available_all(s).items():
             rows.append({"role": role, "driver": str(spec), "vendor": vendor_of(spec.provider, spec.model),
                          **avail.model_dump()})
-        return Out(providers=rows)
+        problems = validate_drivers(s.drivers)
+        return Out(providers=rows, problems=problems,
+                   warnings=[] if problems else driver_warnings(s.drivers, s.support_min_judges))
 
     class SupportCheckArgs(BaseModel):
         project: str

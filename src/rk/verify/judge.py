@@ -107,6 +107,30 @@ def admit(judges: list[tuple[str, DriverSpec]], generator_vendor: str | None
     return admitted, skipped
 
 
+def judges_problem(drivers: dict[str, str], generator_roles: tuple[str, ...] = ()) -> str:
+    """Why the ``JUDGE_ROLES`` of ``drivers`` (every role configured) cannot give two cross-vendor opinions, else
+    ``""``: two of them must be of known, non-human vendors, different from each other and from the vendor of every
+    ``generator_roles`` driver."""
+    generators = {vendor_of(s.provider, s.model) for s in (DriverSpec.parse(drivers[r]) for r in generator_roles)}
+    seen: set[str] = set()
+    unusable = []
+    for role in JUDGE_ROLES:
+        spec = DriverSpec.parse(drivers[role])
+        vendor = vendor_of(spec.provider, spec.model)
+        if vendor is not None and vendor in generators:
+            unusable.append(f"{role} ({spec}) has the vendor {vendor} of a generating role")
+        elif judge_vendor_error(vendor, None, seen) is not None:
+            unusable.append(f"{role} ({spec}) has an unknown, human or repeated vendor ({vendor or 'unknown'})")
+        else:
+            seen.add(vendor)
+    if len(seen) >= 2:
+        return ""
+    *rest, last = generator_roles or ("",)
+    neither = f", neither the vendor of the {', '.join(rest) + ' or ' if rest else ''}{last}" if generator_roles else ""
+    return (f"two judges of different known vendors{neither}: {'; '.join(unusable)}. Set "
+            f"drivers.{', drivers.'.join(JUDGE_ROLES)} in config.toml (rk providers)")
+
+
 def admitted_judges(ctx: StageContext, generator_vendor: str | None,
                     judges: list[DriverSpec] | None) -> tuple[list[tuple[str, DriverSpec, str]], dict[str, str]]:
     """``admit`` over ``judges``, else the configured ``JUDGE_ROLES``."""

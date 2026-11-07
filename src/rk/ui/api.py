@@ -35,6 +35,7 @@ from rk.cli.setup import (
 from rk.config import check_library_proxy, load_settings, save_settings
 from rk.discovery.models import ThreeStep
 from rk.discovery.store import hypotheses, intake_of, rq_row, topic_novelty, topics
+from rk.llm.catalog import driver_warnings, list_models, validate_drivers
 from rk.orchestrator.engine import default_worker_stages
 from rk.orchestrator.graph import (
     BACK_EDGES,
@@ -53,6 +54,7 @@ from rk.production.models import PHASE_WORDS
 from rk.production.screening import KIND as DISAGREEMENTS
 from rk.production.screening import disagreement_view
 from rk.production.store import frozen_protocol
+from rk.roles.policy import ROLES
 from rk.tools.registry import CallContext, PermissionDenied, ToolError
 from rk.ui.auth import COOKIE, UiAuth
 from rk.ui.drafts import list_drafts, read_draft, render_draft
@@ -90,6 +92,7 @@ class SettingsPatch(BaseModel):
     translation_server_url: str | None = None
     browser_allow_hosts: list[str] | None = None
     fulltext_browser_fallback: bool | None = None
+    drivers: dict[str, str] | None = None  # role -> driver; merged into the stored drivers (validate_drivers)
 
     _proxy = field_validator("library_proxy")(lambda cls, v: check_library_proxy(v))
 
@@ -557,11 +560,22 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
     def settings_get(request: Request) -> JSONResponse:
         ctx_dep(request)
         s = load_settings()
+        problems = validate_drivers(s.drivers)
         return ok({**{f: getattr(s, f) for f in PUBLIC_FIELDS},
-                   **{f"{f}_set": bool(getattr(s, f)) for f in SECRET_FIELDS}})
+                   **{f"{f}_set": bool(getattr(s, f)) for f in SECRET_FIELDS},
+                   "driver_problems": problems,
+                   "driver_warnings": [] if problems else driver_warnings(s.drivers, s.support_min_judges)})
+
+    @r.get("/ui/api/models")
+    def models(request: Request) -> JSONResponse:
+        """The model each role may run on (``list_models``; ``omp models --json`` is cut off after 10 s and cached)."""
+        ctx_dep(request)
+        return ok({"roles": list(ROLES), "models": [m.as_dict() for m in list_models(load_settings())]})
 
     @r.post("/ui/api/settings")
     async def settings_post(request: Request) -> JSONResponse:
+        """Save the changed settings. Drivers are merged into the stored ones and refused, with the
+        ``validate_drivers`` problems, when they break the vendor rules; nothing is saved then."""
         ctx_dep(request)
         try:
             patch = SettingsPatch.model_validate(await request.json())
@@ -569,8 +583,20 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
             raise HTTPException(status_code=422, detail=e.errors(include_url=False, include_context=False,
                                                                  include_input=False)) from e
         changes = patch.model_dump(exclude_unset=True)
-        save_settings(load_settings().model_copy(update=changes))
-        return ok({"saved": sorted(changes)})
+        s = load_settings()
+        warnings: list[str] = []
+        if changes.get("drivers") is not None:
+            drivers = {**s.drivers, **{r: d.strip() for r, d in changes["drivers"].items()}}
+            problems = validate_drivers(drivers)
+            if problems:
+                raise HTTPException(status_code=422, detail={"message": "the models were not saved: "
+                                                             + "; ".join(problems), "problems": problems})
+            changes["drivers"] = drivers
+            warnings = driver_warnings(drivers, s.support_min_judges)
+        else:
+            changes.pop("drivers", None)
+        save_settings(s.model_copy(update=changes))
+        return ok({"saved": sorted(changes), "warnings": warnings})
 
     @r.post("/ui/api/setup/check/{step}")
     async def setup_check(step: str, request: Request) -> JSONResponse:

@@ -142,7 +142,7 @@ def test_same_reader_task_on_three_drivers(live_server, driver):
     binary = {"claude_cli": "claude", "codex_cli": "codex"}.get(driver, "omp")
     if shutil.which(binary) is None:
         pytest.skip(f"{binary} not installed")
-    save_settings(Settings(email="rk-fixtures@users.noreply.github.com", omp_gateway=True))
+    save_settings(Settings(email="rk-fixtures@users.noreply.github.com"))
     slug = f"rd-{uuid.uuid4().hex[:6]}"
     live_server.call("rk_project_create", {"slug": slug, "title": "Drivers"}, write=True)
     k = live_server.kernel

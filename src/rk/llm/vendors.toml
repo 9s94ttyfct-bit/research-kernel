@@ -16,3 +16,23 @@ rules = [
   { match = "ollama:llama*",              vendor = "meta" },
   { match = "human:*",                    vendor = "human" },
 ]
+
+# Model families, tried after `rules` for the drivers that host many developers' models: `match` is an fnmatch
+# pattern against the model id after its last "/" (omp_gateway:ollama-cloud/kimi-k3 -> "kimi-k3";
+# ollama:glm-5:cloud -> "glm-5:cloud").
+family_providers = ["omp_gateway", "ollama"]
+families = [
+  { match = "claude*",   vendor = "anthropic" },
+  { match = "gpt*",      vendor = "openai" },
+  { match = "o[0-9]*",   vendor = "openai" },
+  { match = "codex*",    vendor = "openai" },
+  { match = "deepseek*", vendor = "deepseek" },
+  { match = "gemini*",   vendor = "google" },
+  { match = "gemma*",    vendor = "google" },
+  { match = "qwen*",     vendor = "alibaba" },
+  { match = "llama*",    vendor = "meta" },
+  { match = "mistral*",  vendor = "mistral" },
+  { match = "kimi*",     vendor = "moonshot" },
+  { match = "glm*",      vendor = "zhipu" },
+  { match = "minimax*",  vendor = "minimax" },
+]

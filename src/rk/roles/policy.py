@@ -5,6 +5,8 @@ from __future__ import annotations
 
 # The V-SUPPORT, V-NOVELTY, already-done and P1-vote judges, in role order; they share one prompt (judge.md).
 JUDGE_ROLES: tuple[str, ...] = ("judge", "judge_2", "judge_3")
+# The discovery roles whose output the judges check (a run needs two judges of other vendors).
+GENERATOR_ROLES: tuple[str, ...] = ("scout", "gapminer", "ideator")
 ROLES: tuple[str, ...] = ("lead", "scout", "screener_a", "screener_b", "reader", "gapminer", "ideator", "arguer",
                           "skeptic", "simreader", "writer", *JUDGE_ROLES, "triage")
 

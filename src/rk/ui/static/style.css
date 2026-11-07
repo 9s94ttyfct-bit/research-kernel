@@ -89,6 +89,20 @@ label.field { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.8
 label.field input, label.field select { min-width: 14rem; }
 .hint { font-size: 0.85rem; color: var(--ink-soft); }
 
+/* settings: one model per role */
+.models { max-width: 72rem; margin-bottom: 1.5rem; }
+.model-roles { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.45rem 0.9rem; align-items: center; margin-bottom: 0.8rem; }
+.model-row { display: contents; }
+.model-row label { font-size: 0.9rem; font-family: ui-monospace, "SF Mono", Menlo, monospace; color: var(--ink-soft); }
+.model-row select, .model-row input { width: 100%; min-width: 0; }
+.model-row input { grid-column: 2; }
+.model-row input[hidden] { display: none; }
+.model-roles > button { grid-column: 2; justify-self: start; }
+.models ul.problems, .models ul.warnings { list-style: none; margin: 0 0 0.6rem; padding: 0; }
+.models ul.problems li, .models ul.warnings li { padding: 0.45rem 0.7rem; margin-bottom: 0.35rem; border-left: 4px solid; background: var(--panel); border-radius: 0 var(--radius-control) var(--radius-control) 0; overflow-wrap: anywhere; }
+.models ul.problems li { border-color: var(--refuted); color: var(--refuted); }
+.models ul.warnings li { border-color: var(--attention); }
+
 /* library: list + reading pane */
 .split { display: grid; grid-template-columns: minmax(18rem, 2fr) 3fr; gap: 1.25rem; align-items: start; }
 .items { list-style: none; margin: 0; padding: 0; background: var(--panel); border: 1px solid var(--rule); border-radius: var(--radius-panel); }

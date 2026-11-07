@@ -25,7 +25,7 @@ PROVIDER_HINTS = {
     "ollama": "start Ollama (`ollama serve`); for cloud models run `ollama signin`",
     "anthropic_api": "add an Anthropic API key (Settings or ANTHROPIC_API_KEY)",
     "openai_api": "add an OpenAI API key (Settings or OPENAI_API_KEY)",
-    "omp_gateway": "optional: install omp and log in, then set omp_gateway = true",
+    "omp_gateway": "install omp and log in (`omp` on PATH); `rk models` lists the models it offers",
 }
 
 

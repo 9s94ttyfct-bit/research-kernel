@@ -36,7 +36,6 @@ class Settings(BaseModel):
     openai_base_url: str = "https://api.openai.com/v1"
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_api_key: str | None = Field(None, repr=False)
-    omp_gateway: bool = False  # optional adapter; the product never needs omp
     drivers: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_DRIVERS))
     calls_per_hour: dict[str, int] = Field(default_factory=lambda: {"claude_cli": 30, "codex_cli": 20})
     cli_paths: dict[str, str] = Field(default_factory=dict)

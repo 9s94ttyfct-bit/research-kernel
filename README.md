@@ -188,7 +188,7 @@ Role tasks run on a configurable driver per role (`drivers` in `config.toml`; se
 | `codex_cli` | `codex exec`, read-only sandbox, shell/apps/browser features off, `--ignore-user-config` | `rk mcp`, tools pre-approved for that server only |
 | `anthropic_api:<model>`, `openai_api:<model>` | HTTP API with your key (`config.toml` or `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) | the in-process tool loop |
 | `ollama:<model>` | local `ollama serve` (cloud models via `:cloud`; output validated client-side) | the in-process tool loop |
-| `omp_gateway:<provider/model>` | optional, off by default (`omp_gateway = true`); `omp auth-gateway stdio` | the in-process tool loop |
+| `omp_gateway:<provider/model>` | available whenever `omp` is installed and logged in; `omp auth-gateway stdio` (`rk models` lists its models) | the in-process tool loop |
 | `human` | turns the task into a checkpoint for you | — |
 
 - Every task is bound to one project and to its role's tools (`src/rk/roles/policy.py`). Agents can never answer
@@ -200,7 +200,9 @@ Role tasks run on a configurable driver per role (`drivers` in `config.toml`; se
 - Generator and reviewer must come from different model developers (`src/rk/llm/vendors.toml`).
 
 ```bash
-rk providers                                   # driver per role, vendor, availability
+rk providers                                   # driver per role, vendor, availability, rule problems/warnings
+rk models                                      # the models each driver can run, with their vendors
+rk driver set judge omp_gateway:openai-codex/gpt-6-luna   # choose a role's model (vendor rules checked)
 rk task run --role reader --driver codex_cli --instructions "…"   # one recorded role task
 rk chat --driver claude_cli --role lead        # multi-turn chat with the role's tools
 rk checkpoint list / rk checkpoint answer <id> --json '{…}'       # questions only you can answer

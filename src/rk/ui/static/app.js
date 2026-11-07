@@ -51,7 +51,7 @@ async function api(path, { method = "GET", body, query } = {}) {
   if (!res.ok || data.ok === false) {
     const d = data.detail;
     const msg = typeof d === "string" ? d : d?.message || JSON.stringify(d || data.error || res.statusText);
-    throw new Error(msg);
+    throw Object.assign(new Error(msg), { detail: d });
   }
   return data.result;
 }
@@ -932,6 +932,71 @@ pages.drafts = async (root, params) => {
   fill(root, el("h1", {}, "Drafts"), picker, el("div", { class: "draft-layout" }, body, note));
 };
 
+// The Models section of Settings: one model per role. The catalog loads after the page (omp may be slow), and the
+// server refuses drivers that break the vendor rules; its problems and warnings are shown here, as text.
+const JUDGES = ["judge", "judge_2", "judge_3"];
+function modelsSection(s) {
+  const status = el("p", { class: "hint", "aria-live": "polite" }, "Loading the models each driver can run…");
+  const problems = el("ul", { class: "problems", role: "alert" });
+  const warnings = el("ul", { class: "warnings" });
+  const notes = (list, items) => fill(list, (items || []).map((t) => el("li", {}, t)));
+  notes(problems, s.driver_problems);
+  notes(warnings, s.driver_warnings);
+  const form = el("form", { class: "model-roles" });
+  const box = el("section", { class: "models", "aria-labelledby": "models-heading" },
+    el("h2", { id: "models-heading" }, "Models"),
+    el("p", { class: "hint" }, "The model each role runs on. A judge must be of a known vendor, two judges must be of different vendors, and a writer's claims are checked only by judges of other vendors. omp gateway models are available when omp is installed."),
+    status, form, problems, warnings);
+  api("/ui/api/models").then(({ roles, models }) => {
+    const byProvider = new Map();
+    for (const m of models) {
+      if (!byProvider.has(m.provider)) byProvider.set(m.provider, []);
+      byProvider.get(m.provider).push(m);
+    }
+    const known = new Set(models.map((m) => m.driver));
+    const omp = models.find((m) => m.driver === "omp_gateway" && !m.available);
+    fill(status, omp ? `omp gateway models are not listed: ${omp.reason}` : "");
+    status.hidden = !omp;
+    const rows = roles.map((role) => {
+      const current = s.drivers[role] || "";
+      const judge = JUDGES.includes(role);
+      const optionText = (m) => [m.label === m.driver ? m.driver : `${m.label} · ${m.driver}`,
+        m.vendor || (judge ? "unknown vendor: cannot judge" : "unknown vendor"),
+        m.available ? null : `unavailable: ${m.reason}`].filter(Boolean).join(" — ");
+      const select = el("select", { name: `driver:${role}`, id: `driver-${role}` },
+        [...byProvider].map(([provider, list]) => el("optgroup", { label: provider },
+          list.map((m) => el("option", { value: m.driver, selected: m.driver === current }, optionText(m))))),
+        el("option", { value: "other", selected: !known.has(current) }, "Other…"));
+      const other = el("input", { type: "text", name: `other:${role}`, value: known.has(current) ? "" : current,
+        placeholder: "provider:model, e.g. omp_gateway:ollama-cloud/kimi-k3", "aria-label": `Other driver for ${role}`, autocomplete: "off" });
+      other.hidden = select.value !== "other";
+      select.addEventListener("change", () => { other.hidden = select.value !== "other"; if (!other.hidden) other.focus(); });
+      return el("div", { class: "model-row" }, el("label", { for: `driver-${role}` }, role), select, other);
+    });
+    fill(form, rows, el("button", { type: "submit" }, "Save models"));
+  }).catch((err) => fill(status, `The model list is unavailable: ${err.message}`));
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const drivers = {};
+    for (const select of form.querySelectorAll("select")) {
+      const role = select.name.slice("driver:".length);
+      const value = select.value === "other" ? form.querySelector(`input[name="other:${role}"]`).value.trim() : select.value;
+      if (value) drivers[role] = value;
+    }
+    try {
+      const r = await api("/ui/api/settings", { method: "POST", body: { drivers } });
+      Object.assign(s.drivers, drivers);
+      notes(problems, []);
+      notes(warnings, r.warnings);
+      toast(r.warnings.length ? "Saved models, with warnings" : "Saved models");
+    } catch (err) {
+      notes(problems, err.detail?.problems || [err.message]);
+      toast("The models were not saved", "error");
+    }
+  });
+  return box;
+}
+
 pages.settings = async (root) => {
   const s = await api("/ui/api/settings");
   const text = (name, label, hint, type = "text") => el("label", { class: "field" }, label,
@@ -998,7 +1063,7 @@ pages.settings = async (root) => {
       try { await api("/ui/api/browser/open-portal", { method: "POST", body: {} }); toast("Sign in to your library in the browser window"); }
       catch (err) { toast(err.message, "error"); } } }, "Open the library start page to sign in"),
     doi, el("button", { type: "button", class: "secondary", disabled: !browser.running, onclick: () => doi.value.trim() && run("library", { doi: doi.value.trim() }) }, "Test library access"));
-  fill(root, el("h1", {}, "Settings"), form,
+  fill(root, el("h1", {}, "Settings"), form, modelsSection(s),
     el("h2", {}, "Check your setup"), checks,
     el("p", { class: "hint" }, "Library sign-in happens in the built-in browser window; the Kernel never sees your password."), library, out,
     el("h2", {}, "Built-in browser"),

@@ -94,7 +94,7 @@ def test_duplicate_vendor_skipped_and_unknown_vendor_excluded(env):
 @pytest.mark.skipif(shutil.which("omp") is None, reason="omp not installed")
 def test_luna_judge_real_pair(env):
     k, reg = env
-    save_settings(Settings(email="rk-fixtures@users.noreply.github.com", omp_gateway=True))
+    save_settings(Settings(email="rk-fixtures@users.noreply.github.com"))
     (yes,) = run_judges(k, reg, project="jd", claim_text="The patient took drug X.", evidence_text=EVIDENCE,
                         generator_vendor="human", drivers=[LUNA])
     (no,) = run_judges(k, reg, project="jd", claim_text="The patient never received drug X.",

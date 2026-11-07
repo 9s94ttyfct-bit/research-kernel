@@ -9,16 +9,23 @@ from importlib.resources import files
 
 
 @cache
-def _rules() -> tuple[tuple[str, str], ...]:
-    data = tomllib.loads(files("rk.llm").joinpath("vendors.toml").read_text(encoding="utf-8"))
-    return tuple((r["match"], r["vendor"]) for r in data["rules"])
+def _table() -> dict:
+    return tomllib.loads(files("rk.llm").joinpath("vendors.toml").read_text(encoding="utf-8"))
 
 
 def vendor_of(provider: str, model: str | None) -> str | None:
+    """The explicit ``rules`` against ``provider:model`` first; then, for the hosts of many developers' models
+    (``family_providers``), the ``families`` against the model id after its last ``/``."""
+    table = _table()
     key = f"{provider}:{model or ''}"
-    for pattern, vendor in _rules():
-        if fnmatch.fnmatchcase(key, pattern):
-            return vendor
+    for r in table["rules"]:
+        if fnmatch.fnmatchcase(key, r["match"]):
+            return r["vendor"]
+    if model and provider in table["family_providers"]:
+        model_id = model.rsplit("/", 1)[-1]
+        for r in table["families"]:
+            if fnmatch.fnmatchcase(model_id, r["match"]):
+                return r["vendor"]
     return None
 
 

@@ -559,7 +559,8 @@ def browser_status(project: str | None = typer.Option(None, "--project"), as_jso
 # ---------------- drivers and role tasks ----------------
 @app.command()
 def providers(as_json: bool = JSON_OPT) -> None:
-    """Show the driver configured for each role, its vendor, and whether it is usable now."""
+    """Show the driver configured for each role, its vendor, and whether it is usable now; then what the drivers break
+    (problems) or weaken (warnings)."""
     r = _call("rk_providers", {})
 
     def render(d):
@@ -568,8 +569,56 @@ def providers(as_json: bool = JSON_OPT) -> None:
             note = f"  ({p['reason']})" if p.get("reason") else ""
             typer.echo(f"{p['role']:<11} {p['driver']:<38} vendor={p['vendor'] or '?':<9} {state}"
                        f"{' ' + p['version'] if p.get('version') else ''}{note}")
+        _driver_notes(d["problems"], d["warnings"])
 
     _out(r, as_json, render)
+
+
+def _driver_notes(problems: list[str], warnings: list[str]) -> None:
+    for p in problems:
+        typer.secho(f"problem: {p}", fg="red")
+    for w in warnings:
+        typer.secho(f"warning: {w}", fg="yellow")
+
+
+@app.command()
+def models(as_json: bool = JSON_OPT) -> None:
+    """List the models each driver can run (the subscription CLIs, Ollama, and every chat model `omp models` lists as
+    omp_gateway:<provider>/<model>), with the vendor and whether each is usable now. Set one with `rk driver set`."""
+    from rk.llm.catalog import list_models
+
+    choices = list_models(load_settings())
+
+    def render(rows):
+        for m in rows:
+            state = "ok" if m["available"] else f"UNAVAILABLE ({m['reason']})"
+            typer.echo(f"{m['driver']:<52} vendor={m['vendor'] or '?':<9} {state}")
+
+    _out([m.as_dict() for m in choices], as_json, render)
+
+
+driver_app = typer.Typer(help="Per-role drivers (the model each role runs on)", no_args_is_help=True)
+app.add_typer(driver_app, name="driver")
+
+
+@driver_app.command("set")
+def driver_set(role: str = typer.Argument(..., help="A role, e.g. judge or writer"),
+               driver: str = typer.Argument(..., help="provider[:model], e.g. omp_gateway:openai-codex/gpt-6-luna")
+               ) -> None:
+    """Set the driver of one role in config.toml, refusing a choice that breaks the vendor rules (the judges' and the
+    screeners'). Warnings (a writer whose vendor leaves too few judges) are printed, and the choice is saved."""
+    from rk.llm.catalog import driver_warnings, validate_drivers
+
+    s = load_settings()
+    drivers = {**s.drivers, role: driver.strip()}
+    problems = validate_drivers(drivers)
+    if problems:
+        _driver_notes(problems, [])
+        typer.secho("nothing saved", fg="red")
+        raise typer.Exit(1)
+    save_settings(s.model_copy(update={"drivers": drivers}))
+    typer.echo(f"{role} = {driver.strip()}")
+    _driver_notes([], driver_warnings(drivers, s.support_min_judges))
 
 
 task_app = typer.Typer(help="Role tasks", no_args_is_help=True)
@@ -637,7 +686,6 @@ def _eval_report(run) -> None:
         typer.secho(rate_capped_message(e), fg="red")
         raise typer.Exit(1) from None
     typer.echo(Path(r["report"]).read_text())
-
 
 
 @eval_app.command("support")

@@ -42,6 +42,24 @@ def _no_real_model_cli(request, _blocked_clis, monkeypatch):
         pytest.fail(f"test ran a model CLI from PATH instead of a fake: {calls.strip()}")
 
 
+def _catalog_blocked(*args):
+    raise OSError("the model catalog's omp and Ollama listings are blocked in tests")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_model_catalog(request, monkeypatch):
+    """The model catalog (Settings page, ``rk models``) never runs ``omp models`` or asks the local Ollama server in
+    tests: both default listings fail unless a test sets its own (``llm`` tests see the real ones)."""
+    from rk.llm import catalog
+
+    catalog.clear_cache()
+    if not request.node.get_closest_marker("llm"):
+        monkeypatch.setattr(catalog, "default_omp_runner", _catalog_blocked)
+        monkeypatch.setattr(catalog, "default_ollama_runner", _catalog_blocked)
+    yield
+    catalog.clear_cache()
+
+
 @pytest.fixture
 def tmp_home(tmp_path, monkeypatch):
     home = tmp_path / "rkhome"

@@ -30,14 +30,12 @@ def scratch_kernel(slug: str, title: str, *, http=None):
 
 
 def eval_provider(spec: DriverSpec, settings, *, tools: bool = True):
-    """A provider usable inside a scratch kernel. ``omp_gateway`` named explicitly on the command line is enabled
-    for the run. Agentic CLIs reach Kernel tools only through ``rk serve``, so they are refused for tasks that use tools
-    (``tools=False``: no-tool tasks such as the judges', which a CLI runs without any Kernel connection)."""
+    """A provider usable inside a scratch kernel. Agentic CLIs reach Kernel tools only through ``rk serve``, so they
+    are refused for tasks that use tools (``tools=False``: no-tool tasks such as the judges', which a CLI runs without
+    any Kernel connection)."""
     if tools and spec.provider in ("claude_cli", "codex_cli"):
         raise ValueError(f"{spec.provider} reaches the Kernel through rk serve; evaluation runs need a chat-API "
                          "driver (omp_gateway:…, openai_api:…, anthropic_api:…, ollama:…)")
-    if spec.provider == "omp_gateway":
-        settings = settings.model_copy(update={"omp_gateway": True})
     return build_provider(spec, settings)
 
 

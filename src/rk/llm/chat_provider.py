@@ -5,30 +5,9 @@ from __future__ import annotations
 import uuid
 
 from rk.agent.loop import ChatApiSession, run_tool_loop
-from rk.llm.chat.base import Msg, ToolDef, Turn
-from rk.llm.types import (
-    Availability,
-    ChatSpec,
-    ProviderError,
-    RunContext,
-    TaskResult,
-    TaskSpec,
-)
+from rk.llm.types import Availability, ChatSpec, RunContext, TaskResult, TaskSpec
 from rk.llm.vendors import vendor_of
 from rk.roles.prompts import build_system_prompt
-
-
-class DisabledBackend:
-    """Stands in for a backend that is configured off; reports why instead of failing obscurely."""
-
-    def __init__(self, name: str, model: str, reason: str):
-        self.name, self.model, self.reason = name, model, reason
-
-    def available(self) -> Availability:
-        return Availability(ok=False, reason=self.reason)
-
-    def complete(self, messages: list[Msg], tools: list[ToolDef], json_schema: dict | None) -> Turn:
-        raise ProviderError(self.reason)
 
 
 class ChatApiProvider:

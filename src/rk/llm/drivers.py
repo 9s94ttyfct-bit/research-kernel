@@ -46,7 +46,7 @@ def build_provider(spec: DriverSpec, settings: Settings, *, http: httpx.Client |
         return HumanProvider()
     if spec.provider in ("anthropic_api", "openai_api") and not spec.model:
         raise ValueError(f"{spec.provider} needs an explicit model, e.g. '{spec.provider}:<model-id>'")
-    from rk.llm.chat_provider import ChatApiProvider, DisabledBackend
+    from rk.llm.chat_provider import ChatApiProvider
 
     client = http or httpx.Client(timeout=httpx.Timeout(300.0, connect=10.0))
     if spec.provider == "anthropic_api":
@@ -62,14 +62,11 @@ def build_provider(spec: DriverSpec, settings: Settings, *, http: httpx.Client |
 
         backend = OllamaBackend(settings.ollama_url, spec.model or "deepseek-v4.1-flash:cloud", client,
                                 api_key=api_key(settings, "ollama"))
-    else:  # omp_gateway
+    else:  # omp_gateway: available whenever omp is on PATH (OmpGatewayBackend.available)
         from rk.llm.chat.omp_gateway import OmpGatewayBackend
 
-        model = spec.model or "openai-codex/gpt-6-luna"
-        if not settings.omp_gateway:
-            backend = DisabledBackend("omp_gateway", model, "omp_gateway adapter is disabled (Settings.omp_gateway)")
-        else:
-            backend = OmpGatewayBackend(model, omp_bin=settings.cli_paths.get("omp", "omp"))
+        backend = OmpGatewayBackend(spec.model or "openai-codex/gpt-6-luna",
+                                    omp_bin=settings.cli_paths.get("omp", "omp"))
     return ChatApiProvider(backend, spec.provider)
 
 

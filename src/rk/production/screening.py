@@ -186,25 +186,25 @@ def reports_prisma(paper_type: str) -> bool:
     return paper_type in PRISMA_TYPES
 
 
-def screeners_problem(settings, paper_type: str) -> str:
-    """Why the configured screeners cannot dual-screen for ``paper_type`` (both of known vendors, and different),
-    else ``""``; single screening has no such rule."""
-    if screening_mode(paper_type) == "single":
-        return ""
-    seen: list[str] = []
-    vendors: list[str | None] = []
-    for role in SCREENERS:
-        if role not in settings.drivers:
-            seen.append(f"{role} is not configured")
-            vendors.append(None)
-            continue
-        spec = DriverSpec.parse(settings.drivers[role])
-        vendors.append(vendor_of(spec.provider, spec.model))
-        seen.append(f"{role} ({spec}) is {vendors[-1] or 'of an unknown vendor'}")
+def screener_pair_problem(drivers: dict[str, str], what: str = "dual screening") -> str:
+    """Why the screeners of ``drivers`` (every role configured) cannot dual-screen (both of known vendors, and
+    different), else ``""``."""
+    specs = [DriverSpec.parse(drivers[role]) for role in SCREENERS]
+    vendors = [vendor_of(s.provider, s.model) for s in specs]
     if None not in vendors and len(set(vendors)) == len(SCREENERS):
         return ""
-    return (f"dual screening ({paper_type}) needs screener_a and screener_b of two different known vendors, but "
-            f"{' and '.join(seen)}. Set drivers.screener_a or drivers.screener_b in config.toml (rk providers)")
+    seen = " and ".join(f"{r} ({s}) is {v or 'of an unknown vendor'}" for r, s, v in zip(SCREENERS, specs, vendors,
+                                                                                         strict=True))
+    return (f"{what} needs screener_a and screener_b of two different known vendors, but {seen}. Set "
+            "drivers.screener_a or drivers.screener_b in config.toml (rk providers)")
+
+
+def screeners_problem(settings, paper_type: str) -> str:
+    """Why the configured screeners cannot dual-screen for ``paper_type`` (``screener_pair_problem``), else ``""``;
+    single screening has no such rule."""
+    if screening_mode(paper_type) == "single":
+        return ""
+    return screener_pair_problem(settings.drivers, f"dual screening ({paper_type})")
 
 
 def sample_size(n: int) -> int:

@@ -34,7 +34,6 @@ from typing import TypeVar
 
 from rk.discovery.store import frozen_rq, intake_of
 from rk.llm.drivers import DriverSpec
-from rk.llm.vendors import vendor_of
 from rk.orchestrator.graph import DISCOVERY, stages_of
 from rk.orchestrator.state import (
     TERMINAL_RUN_STATES,
@@ -53,16 +52,15 @@ from rk.orchestrator.state import (
     start_run,
 )
 from rk.production.screening import screeners_problem
-from rk.roles.policy import JUDGE_ROLES
+from rk.roles.policy import GENERATOR_ROLES
 from rk.store.project import ProjectStore
 from rk.tools.registry import ToolError
-from rk.verify.judge import judge_vendor_error
+from rk.verify.judge import judges_problem
 
 log = logging.getLogger(__name__)
 
 ACTOR = "orchestrator"
 RUN_UNTIL = ("topics", "question")  # the discovery stages a run may end at; protocol, search_screen, read_extract too
-GENERATOR_ROLES = ("scout", "gapminer", "ideator")  # the discovery roles whose output the judges check
 STOPPED = frozenset({"paused", "paused_budget"}) | TERMINAL_RUN_STATES  # the thread ends on these
 STEPPED = frozenset({"running", "waiting_human", "paused_waiting_human"})  # a thread steps these
 WAITING = frozenset({"waiting_human", "paused_waiting_human"})  # the thread polls the checkpoints
@@ -387,30 +385,10 @@ class RunManager:
 
     def _judges_problem(self) -> str:
         """Why the configured judges cannot give the two cross-vendor opinions V-NOVELTY, the already-done check and
-        V-SUPPORT in gap mining need (each of a known, non-human vendor, different from each other and from the
-        generating roles' vendors), else ``""``. Without them a run cannot pass topics or question."""
-        settings = self.kernel.settings()
-        generators = {vendor_of(s.provider, s.model) for r in GENERATOR_ROLES if r in settings.drivers
-                      for s in [DriverSpec.parse(settings.drivers[r])]}
-        seen: set[str] = set()
-        unusable = []
-        for role in JUDGE_ROLES:
-            if role not in settings.drivers:
-                unusable.append(f"{role} is not configured")
-                continue
-            spec = DriverSpec.parse(settings.drivers[role])
-            vendor = vendor_of(spec.provider, spec.model)
-            if vendor is not None and vendor in generators:
-                unusable.append(f"{role} ({spec}) has the vendor {vendor} of a generating role")
-            elif judge_vendor_error(vendor, None, seen) is not None:
-                unusable.append(f"{role} ({spec}) has an unknown, human or repeated vendor ({vendor or 'unknown'})")
-            else:
-                seen.add(vendor)
-        if len(seen) >= 2:
-            return ""
-        return ("a run needs two judges of different known vendors, neither the vendor of the scout, gapminer or "
-                f"ideator: {'; '.join(unusable)}. Set drivers.{', drivers.'.join(JUDGE_ROLES)} in config.toml "
-                "(rk providers)")
+        V-SUPPORT in gap mining need (``judges_problem`` against the ``GENERATOR_ROLES``), else ``""``. Without them a
+        run cannot pass topics or question."""
+        problem = judges_problem(self.kernel.settings().drivers, GENERATOR_ROLES)
+        return f"a run needs {problem}" if problem else ""
 
     def _start_locked(self, ps: ProjectStore, project: str, until: str, actor: str) -> str:
         """Start the run and its thread (lock held)."""
