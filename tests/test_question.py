@@ -205,6 +205,29 @@ def test_check_rq_names_every_failure():
     assert check_rq(half_pico, hyps) == ["pico.comparison is empty"]
 
 
+@pytest.mark.parametrize("novel", [
+    "This is the first study to measure X.", "X has never been studied.", "The first time anyone asks it.",
+    "It was never investigated in adults over 80.", "No prior studies exist.", "No previous research addressed it.",
+    "An unprecedented question.", "An unexplored area.", "It has not yet been studied.", "Not yet explored.",
+    "A NOVEL question.", "Its novelty: nobody asked it."])
+def test_check_rq_rejects_common_novelty_claims(novel):
+    rq = _rq()
+    body = RQBody(**{**rq["body"], "finer": {**rq["body"]["finer"], "novel": novel}})
+    assert check_rq(body, [HypothesisIn(**h) for h in rq["hypotheses"]]) == [
+        "finer.novel claims novelty; say what was not found within the searched scope"]
+
+
+@pytest.mark.parametrize("novel", [
+    "Not found within the searched scope.", "No trial in PubMed or OpenAlex reports a first stroke in adults over 80.",
+    "The searched sources hold no registry study of first strokes after 80; earlier work stops at 75.",
+    "Studied only in adults under 80 within the searched scope."])
+def test_check_rq_accepts_scoped_not_found_wording(novel):
+    rq = _rq()
+    body = RQBody(**{**rq["body"], "finer": {**rq["body"]["finer"], "novel": novel}})
+    assert check_rq(body, [HypothesisIn(**h) for h in rq["hypotheses"]]) == []
+
+
+
 # ---- the already-done check and what follows ----
 def test_already_done_by_both_vendors_backs_to_topics_in_d2(env):
     k, ps, lib = env

@@ -32,7 +32,16 @@ SOURCES_USED = 2
 SEARCH_LIMIT = 10
 RRF_K = 60  # the usual reciprocal-rank-fusion constant: score = sum of 1 / (RRF_K + rank)
 ABSTRACT_CHARS = 600
-NOVEL = re.compile(r"\bnovel", re.IGNORECASE)  # "novel", "novelty": no difference, nor an RQ's finer.novel, claims it
+# A novelty claim, which no difference and no RQ's finer.novel may make: "novel"/"novelty" (so "novel anticoagulants"
+# is caught too, by design) and the common phrasings of "nobody did this before".
+NOVEL = re.compile(
+    r"\bnovel"
+    r"|\bfirst\s+(?:study|work|paper|report|time|to)\b"
+    r"|\bnever\s+(?:been\s+)?(?:studied|investigated|examined|reported|done|addressed)\b"
+    r"|\bno\s+(?:prior|previous|earlier)\s+(?:study|studies|work|research)\b"
+    r"|\bunprecedented\b|\bunexplored\b"
+    r"|\bnot\s+yet\s+(?:been\s+)?(?:studied|investigated|explored)\b",
+    re.IGNORECASE)
 
 QUERIES_TASK = (
     "Write 2 or 3 search queries in English that retrieve the published works closest to this text (same question, "
