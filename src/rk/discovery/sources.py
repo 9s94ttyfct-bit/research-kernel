@@ -150,21 +150,14 @@ class KernelSources:
         return res.item_id
 
 
-def dropped_reason(source: str, query: str, offset: int, dropped: int) -> str:
-    """Why a search page is incomplete whose source returned ``dropped`` entries it could not read as works."""
-    many = dropped != 1
-    return (f"{source} returned {dropped} malformed result{'s' if many else ''} for query {query!r} (from rank "
-            f"{offset}) that could not be read: {'they were' if many else 'it was'} dropped, so not searched")
-
-
 def _add_and_log(ps: ProjectStore, hits: list[ItemIn], *, discovered_via: str, stage: str, attempt: int,
                  purpose: str, query: str, source: str, limit: int, actor: str, after_year: int | None,
                  offset: int = 0, date_from: int | None = None, date_to: int | None = None,
                  note: Callable[[list[str], int], SearchNote] | None = None) -> list[str]:
     """Add the hits to the library (collection "Search hits"), log the search with their distinct item ids (event
-    ``search.logged``, with ``note`` of the hit ids and the page's dropped entries when given, else, when the source
-    dropped entries, the ``dropped_reason``) and return one item id per hit in rank order: a hit the library merged
-    into an earlier hit's item repeats that item's id."""
+    ``search.logged``, with ``note`` of the hit ids and the page's dropped entries when given, and the number of
+    entries the source dropped, ``SearchNote.dropped``) and return one item id per hit in rank order: a hit the
+    library merged into an earlier hit's item repeats that item's id."""
     lib = Library(ps)
     col = lib.ensure_default_collections(actor=actor)[HITS_COLLECTION]
     hit_ids: list[str] = []
@@ -175,10 +168,7 @@ def _add_and_log(ps: ProjectStore, hits: list[ItemIn], *, discovered_via: str, s
             lib.collect(iid, col, actor=actor, actor_kind="kernel")
         hit_ids.append(iid)
     dropped = dropped_of(hits)
-    if note is not None:
-        said = note(hit_ids, dropped)
-    else:
-        said = SearchNote(incomplete=dropped_reason(source, query, offset, dropped) if dropped else None)
+    said = (note(hit_ids, dropped) if note else SearchNote())._replace(dropped=dropped)
     log_search(ps, stage=stage, attempt=attempt, purpose=purpose, source=source, query=query, limit=limit,
                item_ids=list(dict.fromkeys(hit_ids)), actor=actor, after_year=after_year, offset=offset,
                date_from=date_from, date_to=date_to, note=said)

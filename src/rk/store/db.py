@@ -11,7 +11,8 @@ from pathlib import Path
 # from the events of the rows already there.
 _ADDED_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
     "search_log": (("after_year", "INTEGER"), ("offset_n", "INTEGER NOT NULL DEFAULT 0"), ("date_from", "INTEGER"),
-                   ("date_to", "INTEGER"), ("incomplete", "TEXT"), ("stopped_at_cap", "INTEGER NOT NULL DEFAULT 0")),
+                   ("date_to", "INTEGER"), ("incomplete", "TEXT"), ("stopped_at_cap", "INTEGER NOT NULL DEFAULT 0"),
+                   ("dropped", "INTEGER NOT NULL DEFAULT 0")),
     "screening": (("carried_from", "INTEGER"),),
     "screening_final": (("carried_from", "INTEGER"),),
 }

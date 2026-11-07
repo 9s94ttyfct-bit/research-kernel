@@ -21,6 +21,7 @@ from rk.production.protocol import ProtocolWorker
 from rk.production.search import (
     PAGE_LIMIT,
     check_record_cap,
+    dropped_entries,
     incomplete_searches,
     language_exclusions,
     language_note,
@@ -433,6 +434,19 @@ def test_an_arxiv_error_feed_is_a_source_error_not_no_hits(tmp_path):
     http.close()
 
 
+@pytest.mark.parametrize("body", [b"<html><body>Service unavailable", b"", b"<html><body>busy</body></html>"])
+def test_an_arxiv_body_that_is_no_atom_feed_is_a_bad_body(tmp_path, body):
+    http, seen = _client(tmp_path, lambda req: httpx.Response(200, content=body))
+    ctx = SourceContext(http=http, settings=Settings())
+    with pytest.raises(BadBody, match="not XML|not an Atom feed") as e:
+        resolver.search(ctx, "aspirin", "arxiv", 10)
+    assert transient_source_error(e.value)
+    with pytest.raises(BadBody):
+        resolver.search(ctx, "aspirin", "arxiv", 10)
+    assert len(seen) == 2  # the body was not cached
+    http.close()
+
+
 def test_arxiv_counts_the_entries_it_drops(tmp_path):
     feed = _arxiv_feed(("1501.00001", "A"), (None, "No id"), ("1501.00003", None), ("1501.00004", "D"))
     http, _ = _client(tmp_path, lambda req: httpx.Response(200, content=feed))
@@ -454,7 +468,7 @@ class ArxivSources(FakeSources):
                                date_from=date_from, date_to=date_to)
 
 
-def test_a_full_arxiv_page_with_a_malformed_entry_keeps_paging_and_says_so(env, tmp_path, monkeypatch):
+def test_a_full_arxiv_page_with_a_malformed_entry_keeps_paging_and_counts_it(env, tmp_path, monkeypatch):
     _, ps, _ = env
     monkeypatch.setattr("rk.production.search.PAGE_LIMIT", 3)
     pages = {0: _arxiv_feed(("1501.00001", "A"), (None, "Broken"), ("1501.00003", "C")),
@@ -463,15 +477,17 @@ def test_a_full_arxiv_page_with_a_malformed_entry_keeps_paging_and_says_so(env, 
     res = run_strategy(_ctx(env, ArxivSources(http)), a_protocol(search_strategy=_strategy(sources=["arxiv"])))
     # the first page came back full (3 entries, one unreadable): paging goes on from rank 3, and ends on a short page
     assert [_params(r).get("start") for r in seen] == [None, "3"]
-    why = ("arxiv returned 1 malformed result for query 'aspirin stroke' (from rank 0) that could not be read: it "
-           "was dropped, so not searched")
-    assert res.incomplete == [why] == incomplete_searches(ps, 1)
-    assert [r["incomplete"] for r in searches(ps, "search_screen", 1)] == [why, None]
+    # one unreadable record, not a truncated search: counted on its page, not incomplete
+    assert res.incomplete == [] == incomplete_searches(ps, 1)
+    assert [(r["incomplete"], r["dropped"]) for r in searches(ps, "search_screen", 1)] == [(None, 1), (None, 0)]
+    assert [e["dropped"] for e in _logged(ps)] == [1, 0]
+    assert dropped_entries(ps, 1) == {"arxiv": 1} and dropped_entries(ps, 2) == {}
     assert len(res.record_ids) == 3 and not res.stopped_at_cap
-    # a discovery search records the drop too
+    # a discovery search counts the drop too
     log_and_search(ps, ArxivSources(http), stage="gaps", attempt=1, purpose="gap_check", query="aspirin stroke",
                    source="arxiv", limit=3, actor="t")
-    assert [r["incomplete"] for r in searches(ps, "gaps", 1)] == [why]
+    assert [(r["incomplete"], r["dropped"]) for r in searches(ps, "gaps", 1)] == [(None, 1)]
+    assert dropped_entries(ps, 1) == {"arxiv": 1}  # the protocol search's only
     http.close()
 
 
@@ -497,7 +513,7 @@ def test_an_older_search_log_gets_the_new_columns(tmp_path):
     conn.close()
     conn = open_project_db(db)
     row = dict(conn.execute("SELECT * FROM search_log").fetchone())
-    assert {k: row[k] for k in ("after_year", "offset_n", "date_from", "date_to", "incomplete",
-                                "stopped_at_cap")} == {"after_year": 2015, "offset_n": 0, "date_from": None,
-                                                       "date_to": None, "incomplete": None, "stopped_at_cap": 0}
+    assert {k: row[k] for k in ("after_year", "offset_n", "date_from", "date_to", "incomplete", "stopped_at_cap",
+                                "dropped")} == {"after_year": 2015, "offset_n": 0, "date_from": None, "date_to": None,
+                                                "incomplete": None, "stopped_at_cap": 0, "dropped": 0}
     conn.close()

@@ -1,8 +1,9 @@
 """arXiv API adapter (Atom).
 
 A failed query is a 200 whose feed has one entry with an ``/api/errors`` id (title "Error", the message in its
-summary): ``ArxivError``, a ``BadBody`` (a source error, never "no hits"; its body is dropped from the HTTP cache). An
-entry without an id or title is dropped and counted (``Hits.dropped``), so a full page never looks short."""
+summary): ``ArxivError``, a ``BadBody`` (a source error, never "no hits"). A 200 whose body is no Atom feed (not XML,
+e.g. an HTML error page) is a ``BadBody`` too; either body is dropped from the HTTP cache. An entry without an id or
+title is dropped and counted (``Hits.dropped``), so a full page never looks short."""
 
 from __future__ import annotations
 
@@ -44,9 +45,14 @@ def _name(full: str) -> Creator:
 
 
 def parse_feed(xml: bytes, url: str = API) -> Hits:
-    """The feed's works, counting the entries without an id or title as dropped; arXiv's error feed (fetched from
-    ``url``) raises ``ArxivError``."""
-    root = etree.fromstring(xml)
+    """The feed's works, counting the entries without an id or title as dropped. A body (fetched from ``url``) that is
+    no Atom feed raises ``BadBody``, arXiv's error feed ``ArxivError``."""
+    try:
+        root = etree.fromstring(xml)
+    except etree.XMLSyntaxError as e:
+        raise BadBody(url, f"the body is not XML ({type(e).__name__})") from e
+    if root.tag != f"{{{NS['a']}}}feed":
+        raise BadBody(url, f"the body is not an Atom feed (root {root.tag!r})")
     out = Hits()
     for e in root.findall("a:entry", NS):
         raw_id = _text(e, "a:id") or ""
@@ -86,6 +92,6 @@ def query(http: HttpClient, *, search_query: str | None = None, id_list: list[st
         raise HttpError(res.status, res.url)
     try:
         return parse_feed(res.body, res.url)
-    except ArxivError:
+    except BadBody:  # ArxivError too
         http.forget(API, params)
         raise

@@ -15,8 +15,9 @@
   incomplete too, said the same way. Paging never ends silently.
 
 A page is full when the source returned ``limit`` entries, counting the ones it returned but could not be read
-(``rk.sources.hits.Hits.dropped``, e.g. an arXiv entry without an id or title): paging goes on past them, and the
-page's log and ``SearchResult.incomplete`` say how many were dropped (``dropped_reason``).
+(``rk.sources.hits.Hits.dropped``, e.g. an arXiv entry without an id or title): paging goes on past them. A dropped
+entry is one unreadable record, not a truncated search: the page's log counts it (``dropped``, not ``incomplete``)
+and ``dropped_entries`` sums the counts for the PRISMA notes.
 
 A failed search is never "nothing found": its error propagates (a transient one steps the run again, spec §11.3).
 
@@ -37,7 +38,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from rk.discovery.sources import dropped_reason, log_and_search_hits
+from rk.discovery.sources import log_and_search_hits
 from rk.discovery.store import SearchNote
 from rk.library.models import normalize_language
 from rk.orchestrator.engine import StageContext
@@ -93,9 +94,6 @@ class _Paging:
                                          "searched")
         else:
             self.ended = not full
-        if dropped:
-            why = dropped_reason(self.source, self.query, self.offset, dropped)
-            note = note._replace(incomplete=f"{why}; {note.incomplete}" if note.incomplete else why)
         self.last = note
         return note
 
@@ -152,6 +150,16 @@ def incomplete_searches(ps: ProjectStore, attempt: int) -> list[str]:
     """Why the attempt's search did not search every result it needed (the PRISMA notes show them), in search
     order."""
     return [r["incomplete"] for r in _searches(ps, attempt) if r["incomplete"]]
+
+
+def dropped_entries(ps: ProjectStore, attempt: int) -> dict[str, int]:
+    """How many entries each source returned in the attempt's search that could not be read as works (dropped, so
+    neither recorded nor screened; for the PRISMA notes), for the sources that dropped any, in search order."""
+    out: dict[str, int] = {}
+    for r in _searches(ps, attempt):
+        if r["dropped"]:
+            out[r["source"]] = out.get(r["source"], 0) + r["dropped"]
+    return out
 
 
 def deduplicated(ps: ProjectStore, attempt: int) -> list[dict]:

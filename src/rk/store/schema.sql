@@ -166,7 +166,7 @@ CREATE TABLE IF NOT EXISTS objections (
 );
 
 -- Discovery (Plan 4): searches, landscape clusters, gaps, topics, research questions, exploration rounds.
--- (after_year .. stopped_at_cap: Plan 5a; open_project_db adds them to an older search_log)
+-- (after_year .. dropped: Plan 5a; open_project_db adds them to an older search_log)
 CREATE TABLE IF NOT EXISTS search_log (
     id             TEXT PRIMARY KEY,
     stage          TEXT NOT NULL,
@@ -182,7 +182,8 @@ CREATE TABLE IF NOT EXISTS search_log (
     date_from      INTEGER,
     date_to        INTEGER,
     incomplete     TEXT,
-    stopped_at_cap INTEGER NOT NULL DEFAULT 0
+    stopped_at_cap INTEGER NOT NULL DEFAULT 0,
+    dropped        INTEGER NOT NULL DEFAULT 0  -- entries the source returned that could not be read
 );
 CREATE INDEX IF NOT EXISTS search_log_stage ON search_log(stage, attempt);
 

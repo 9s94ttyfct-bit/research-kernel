@@ -41,9 +41,11 @@ def intake_of(ps: ProjectStore) -> Intake | None:
 class SearchNote(NamedTuple):
     """What a logged search page says beyond its hits: ``incomplete``, why results the search needed were not
     searched (e.g. a source's paging limit); ``stopped_at_cap``, the search stopped after this page because it had
-    passed the record cap with pages or searches left."""
+    passed the record cap with pages or searches left; ``dropped``, how many entries the source returned on the page
+    that could not be read as works (malformed; ``rk.sources.hits.Hits.dropped``), counted, not searched."""
     incomplete: str | None = None
     stopped_at_cap: bool = False
+    dropped: int = 0
 
 
 def log_search(ps: ProjectStore, *, stage: str, attempt: int, purpose: str, source: str, query: str, limit: int,
@@ -58,7 +60,8 @@ def log_search(ps: ProjectStore, *, stage: str, attempt: int, purpose: str, sour
                       payload={"stage": stage, "attempt": attempt, "purpose": purpose, "source": source,
                                "query": query, "limit": limit, "after_year": after_year, "offset": offset,
                                "date_from": date_from, "date_to": date_to, "item_ids": list(item_ids),
-                               "incomplete": note.incomplete, "stopped_at_cap": note.stopped_at_cap}))
+                               "incomplete": note.incomplete, "stopped_at_cap": note.stopped_at_cap,
+                               "dropped": note.dropped}))
     return sid
 
 
@@ -250,11 +253,11 @@ def _intake(conn: sqlite3.Connection, ev: Event) -> None:
 def _search(conn: sqlite3.Connection, ev: Event) -> None:
     p = ev.payload
     conn.execute("INSERT OR REPLACE INTO search_log(id, stage, attempt, purpose, source, query, limit_n, item_ids, "
-                 "ts, after_year, offset_n, date_from, date_to, incomplete, stopped_at_cap) "
-                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                 "ts, after_year, offset_n, date_from, date_to, incomplete, stopped_at_cap, dropped) "
+                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                  (ev.entity_id, p["stage"], p["attempt"], p["purpose"], p["source"], p["query"], p["limit"],
                   json.dumps(p["item_ids"]), ev.ts, p.get("after_year"), p.get("offset", 0), p.get("date_from"),
-                  p.get("date_to"), p.get("incomplete"), int(bool(p.get("stopped_at_cap")))))
+                  p.get("date_to"), p.get("incomplete"), int(bool(p.get("stopped_at_cap"))), p.get("dropped", 0)))
 
 
 @projection("cluster.added")
