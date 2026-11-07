@@ -21,6 +21,7 @@ dependencies = [
     "mcp>=2.3,<3",
     "playwright>=1.64,<2",
     "websockets>=15,<18",
+    "scipy>=1.17,<2",  # rk.stats: t, chi-square and normal quantiles
 ]
 
 [project.optional-dependencies]

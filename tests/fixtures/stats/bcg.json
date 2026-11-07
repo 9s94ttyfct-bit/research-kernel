@@ -1,0 +1,161 @@
+{
+  "id": "bcg",
+  "title": "BCG vaccine against tuberculosis: 13 trials (Colditz et al. 1994), dat.bcg",
+  "data_source": "Viechtbauer W (2010). Conducting meta-analyses in R with the metafor package. J Stat Softw 36(3):1-48, doi:10.18637/jss.v036.i03, Figure 1 (p. 15): TB+/TB- counts per arm (Vaccinated = treatment, Control = control). https://www.jstatsoft.org/article/view/v036i03",
+  "notes": "Arm totals are TB+ + TB- (n = events + nonevents). Statistics compared on the log scale unless the statistic name starts with exp_ (then on the ratio scale, as printed). i2 is a proportion (published percent / 100).",
+  "studies": [
+    {"label": "Aronson, 1948", "events_treatment": 4, "nonevents_treatment": 119, "events_control": 11, "nonevents_control": 128},
+    {"label": "Ferguson & Simes, 1949", "events_treatment": 6, "nonevents_treatment": 300, "events_control": 29, "nonevents_control": 274},
+    {"label": "Rosenthal et al, 1960", "events_treatment": 3, "nonevents_treatment": 228, "events_control": 11, "nonevents_control": 209},
+    {"label": "Hart & Sutherland, 1977", "events_treatment": 62, "nonevents_treatment": 13536, "events_control": 248, "nonevents_control": 12619},
+    {"label": "Frimodt-Moller et al, 1973", "events_treatment": 33, "nonevents_treatment": 5036, "events_control": 47, "nonevents_control": 5761},
+    {"label": "Stein & Aronson, 1953", "events_treatment": 180, "nonevents_treatment": 1361, "events_control": 372, "nonevents_control": 1079},
+    {"label": "Vandiviere et al, 1973", "events_treatment": 8, "nonevents_treatment": 2537, "events_control": 10, "nonevents_control": 619},
+    {"label": "TPT Madras, 1980", "events_treatment": 505, "nonevents_treatment": 87886, "events_control": 499, "nonevents_control": 87892},
+    {"label": "Coetzee & Berjak, 1968", "events_treatment": 29, "nonevents_treatment": 7470, "events_control": 45, "nonevents_control": 7232},
+    {"label": "Rosenthal et al, 1961", "events_treatment": 17, "nonevents_treatment": 1699, "events_control": 65, "nonevents_control": 1600},
+    {"label": "Comstock et al, 1974", "events_treatment": 186, "nonevents_treatment": 50448, "events_control": 141, "nonevents_control": 27197},
+    {"label": "Comstock & Webster, 1969", "events_treatment": 5, "nonevents_treatment": 2493, "events_control": 3, "nonevents_control": 2338},
+    {"label": "Comstock et al, 1976", "events_treatment": 27, "nonevents_treatment": 16886, "events_control": 29, "nonevents_control": 17825}
+  ],
+  "study_checks": [
+    {
+      "measure": "RR",
+      "source": "Viechtbauer (2010), Figure 1 (p. 15), column 'Relative Risk [95% CI]' (Wald CI, 2 decimals)",
+      "expected": [
+        {"study": "Aronson, 1948", "statistic": "exp_yi", "value": 0.41, "tolerance": 0.01},
+        {"study": "Aronson, 1948", "statistic": "exp_ci_low", "value": 0.13, "tolerance": 0.01},
+        {"study": "Aronson, 1948", "statistic": "exp_ci_high", "value": 1.26, "tolerance": 0.01},
+        {"study": "Ferguson & Simes, 1949", "statistic": "exp_yi", "value": 0.20, "tolerance": 0.01},
+        {"study": "Ferguson & Simes, 1949", "statistic": "exp_ci_low", "value": 0.09, "tolerance": 0.01},
+        {"study": "Ferguson & Simes, 1949", "statistic": "exp_ci_high", "value": 0.49, "tolerance": 0.01},
+        {"study": "Rosenthal et al, 1960", "statistic": "exp_yi", "value": 0.26, "tolerance": 0.01},
+        {"study": "Rosenthal et al, 1960", "statistic": "exp_ci_low", "value": 0.07, "tolerance": 0.01},
+        {"study": "Rosenthal et al, 1960", "statistic": "exp_ci_high", "value": 0.92, "tolerance": 0.01},
+        {"study": "Hart & Sutherland, 1977", "statistic": "exp_yi", "value": 0.24, "tolerance": 0.01},
+        {"study": "Hart & Sutherland, 1977", "statistic": "exp_ci_low", "value": 0.18, "tolerance": 0.01},
+        {"study": "Hart & Sutherland, 1977", "statistic": "exp_ci_high", "value": 0.31, "tolerance": 0.01},
+        {"study": "Frimodt-Moller et al, 1973", "statistic": "exp_yi", "value": 0.80, "tolerance": 0.01},
+        {"study": "Frimodt-Moller et al, 1973", "statistic": "exp_ci_low", "value": 0.52, "tolerance": 0.01},
+        {"study": "Frimodt-Moller et al, 1973", "statistic": "exp_ci_high", "value": 1.25, "tolerance": 0.01},
+        {"study": "Stein & Aronson, 1953", "statistic": "exp_yi", "value": 0.46, "tolerance": 0.01},
+        {"study": "Stein & Aronson, 1953", "statistic": "exp_ci_low", "value": 0.39, "tolerance": 0.01},
+        {"study": "Stein & Aronson, 1953", "statistic": "exp_ci_high", "value": 0.54, "tolerance": 0.01},
+        {"study": "Vandiviere et al, 1973", "statistic": "exp_yi", "value": 0.20, "tolerance": 0.01},
+        {"study": "Vandiviere et al, 1973", "statistic": "exp_ci_low", "value": 0.08, "tolerance": 0.01},
+        {"study": "Vandiviere et al, 1973", "statistic": "exp_ci_high", "value": 0.50, "tolerance": 0.01},
+        {"study": "TPT Madras, 1980", "statistic": "exp_yi", "value": 1.01, "tolerance": 0.01},
+        {"study": "TPT Madras, 1980", "statistic": "exp_ci_low", "value": 0.89, "tolerance": 0.01},
+        {"study": "TPT Madras, 1980", "statistic": "exp_ci_high", "value": 1.14, "tolerance": 0.01},
+        {"study": "Coetzee & Berjak, 1968", "statistic": "exp_yi", "value": 0.63, "tolerance": 0.01},
+        {"study": "Coetzee & Berjak, 1968", "statistic": "exp_ci_low", "value": 0.39, "tolerance": 0.01},
+        {"study": "Coetzee & Berjak, 1968", "statistic": "exp_ci_high", "value": 1.00, "tolerance": 0.01},
+        {"study": "Rosenthal et al, 1961", "statistic": "exp_yi", "value": 0.25, "tolerance": 0.01},
+        {"study": "Rosenthal et al, 1961", "statistic": "exp_ci_low", "value": 0.15, "tolerance": 0.01},
+        {"study": "Rosenthal et al, 1961", "statistic": "exp_ci_high", "value": 0.43, "tolerance": 0.01},
+        {"study": "Comstock et al, 1974", "statistic": "exp_yi", "value": 0.71, "tolerance": 0.01},
+        {"study": "Comstock et al, 1974", "statistic": "exp_ci_low", "value": 0.57, "tolerance": 0.01},
+        {"study": "Comstock et al, 1974", "statistic": "exp_ci_high", "value": 0.89, "tolerance": 0.01},
+        {"study": "Comstock & Webster, 1969", "statistic": "exp_yi", "value": 1.56, "tolerance": 0.01},
+        {"study": "Comstock & Webster, 1969", "statistic": "exp_ci_low", "value": 0.37, "tolerance": 0.01},
+        {"study": "Comstock & Webster, 1969", "statistic": "exp_ci_high", "value": 6.53, "tolerance": 0.01},
+        {"study": "Comstock et al, 1976", "statistic": "exp_yi", "value": 0.98, "tolerance": 0.01},
+        {"study": "Comstock et al, 1976", "statistic": "exp_ci_low", "value": 0.58, "tolerance": 0.01},
+        {"study": "Comstock et al, 1976", "statistic": "exp_ci_high", "value": 1.66, "tolerance": 0.01}
+      ]
+    }
+  ],
+  "analyses": [
+    {
+      "measure": "RR", "model": "REML", "hksj": false,
+      "source": "Viechtbauer (2010), Section 3.4, rma() output 'Random-Effects Model (k = 13; tau^2 estimator: REML)' and text (p. 14)",
+      "expected": [
+        {"statistic": "estimate", "value": -0.7145, "tolerance": 0.001},
+        {"statistic": "se", "value": 0.1798, "tolerance": 0.001},
+        {"statistic": "ci_low", "value": -1.0669, "tolerance": 0.01},
+        {"statistic": "ci_high", "value": -0.3622, "tolerance": 0.01},
+        {"statistic": "tau2", "value": 0.3132, "tolerance": 0.001},
+        {"statistic": "i2", "value": 0.9222, "tolerance": 0.001},
+        {"statistic": "q", "value": 152.2330, "tolerance": 0.001},
+        {"statistic": "exp_estimate", "value": 0.49, "tolerance": 0.01},
+        {"statistic": "exp_ci_low", "value": 0.34, "tolerance": 0.01},
+        {"statistic": "exp_ci_high", "value": 0.70, "tolerance": 0.01}
+      ]
+    },
+    {
+      "measure": "RR", "model": "DL", "hksj": false,
+      "source": "Stata metan ('metan tpos tneg cpos cneg, randomi nograph rr log' and '... rr') results recorded in the metafor package's test suite, tests/testthat/test_misc_metan_vs_rma.uni_with_dat.bcg.r, test 'RE model w/ DL estimator, measure=RR' (CRAN metafor; https://rdrr.io/cran/metafor/src/tests/testthat/test_misc_metan_vs_rma.uni_with_dat.bcg.r)",
+      "expected": [
+        {"statistic": "estimate", "value": -0.7141, "tolerance": 0.001},
+        {"statistic": "ci_low", "value": -1.0644, "tolerance": 0.01},
+        {"statistic": "ci_high", "value": -0.3638, "tolerance": 0.01},
+        {"statistic": "tau2", "value": 0.3088, "tolerance": 0.001},
+        {"statistic": "i2", "value": 0.921173, "tolerance": 0.001},
+        {"statistic": "exp_estimate", "value": 0.4896, "tolerance": 0.01},
+        {"statistic": "exp_ci_low", "value": 0.3449, "tolerance": 0.01},
+        {"statistic": "exp_ci_high", "value": 0.6950, "tolerance": 0.01}
+      ]
+    },
+    {
+      "measure": "RR", "model": "FE", "hksj": false,
+      "source": "Stata metan ('metan tpos tneg cpos cneg, fixedi nograph rr log' and '... rr') results recorded in metafor's tests/testthat/test_misc_metan_vs_rma.uni_with_dat.bcg.r, test 'EE model, measure=RR'",
+      "expected": [
+        {"statistic": "estimate", "value": -0.4303, "tolerance": 0.001},
+        {"statistic": "ci_low", "value": -0.5097, "tolerance": 0.01},
+        {"statistic": "ci_high", "value": -0.3509, "tolerance": 0.01},
+        {"statistic": "q", "value": 152.2330, "tolerance": 0.001},
+        {"statistic": "exp_estimate", "value": 0.6503, "tolerance": 0.01},
+        {"statistic": "exp_ci_low", "value": 0.6007, "tolerance": 0.01},
+        {"statistic": "exp_ci_high", "value": 0.7040, "tolerance": 0.01}
+      ]
+    },
+    {
+      "measure": "OR", "model": "DL", "hksj": false,
+      "source": "Stata metan ('metan tpos tneg cpos cneg, randomi nograph or log' and '... or') results recorded in metafor's tests/testthat/test_misc_metan_vs_rma.uni_with_dat.bcg.r, test 'RE model w/ DL estimator, measure=OR'",
+      "expected": [
+        {"statistic": "estimate", "value": -0.7474, "tolerance": 0.001},
+        {"statistic": "ci_low", "value": -1.1242, "tolerance": 0.01},
+        {"statistic": "ci_high", "value": -0.3706, "tolerance": 0.01},
+        {"statistic": "tau2", "value": 0.3663, "tolerance": 0.001},
+        {"statistic": "i2", "value": 0.926455, "tolerance": 0.001},
+        {"statistic": "exp_estimate", "value": 0.4736, "tolerance": 0.01},
+        {"statistic": "exp_ci_low", "value": 0.3249, "tolerance": 0.01},
+        {"statistic": "exp_ci_high", "value": 0.6903, "tolerance": 0.01}
+      ]
+    },
+    {
+      "measure": "OR", "model": "FE", "hksj": false,
+      "source": "Stata metan ('metan tpos tneg cpos cneg, fixedi nograph or log' and '... or') results recorded in metafor's tests/testthat/test_misc_metan_vs_rma.uni_with_dat.bcg.r, test 'EE model, measure=OR'",
+      "expected": [
+        {"statistic": "estimate", "value": -0.4361, "tolerance": 0.001},
+        {"statistic": "ci_low", "value": -0.5190, "tolerance": 0.01},
+        {"statistic": "ci_high", "value": -0.3533, "tolerance": 0.01},
+        {"statistic": "q", "value": 163.1649, "tolerance": 0.001},
+        {"statistic": "exp_estimate", "value": 0.6465, "tolerance": 0.01},
+        {"statistic": "exp_ci_low", "value": 0.5951, "tolerance": 0.01},
+        {"statistic": "exp_ci_high", "value": 0.7024, "tolerance": 0.01}
+      ]
+    },
+    {
+      "measure": "RD", "model": "DL", "hksj": false,
+      "source": "Stata metan ('metan tpos tneg cpos cneg, randomi nograph rd') results recorded in metafor's tests/testthat/test_misc_metan_vs_rma.uni_with_dat.bcg.r, test 'RE model w/ DL estimator, measure=RD'",
+      "expected": [
+        {"statistic": "estimate", "value": -0.0071, "tolerance": 0.001},
+        {"statistic": "ci_low", "value": -0.0101, "tolerance": 0.01},
+        {"statistic": "ci_high", "value": -0.0040, "tolerance": 0.01},
+        {"statistic": "tau2", "value": 0.0000, "tolerance": 0.001},
+        {"statistic": "i2", "value": 0.956596, "tolerance": 0.001}
+      ]
+    },
+    {
+      "measure": "RD", "model": "FE", "hksj": false,
+      "source": "Stata metan ('metan tpos tneg cpos cneg, fixedi nograph rd') results recorded in metafor's tests/testthat/test_misc_metan_vs_rma.uni_with_dat.bcg.r, test 'EE model, measure=RD'",
+      "expected": [
+        {"statistic": "estimate", "value": -0.0009, "tolerance": 0.001},
+        {"statistic": "ci_low", "value": -0.0014, "tolerance": 0.01},
+        {"statistic": "ci_high", "value": -0.0005, "tolerance": 0.01},
+        {"statistic": "q", "value": 276.4737, "tolerance": 0.001}
+      ]
+    }
+  ]
+}

@@ -758,6 +758,29 @@ def eval_litqa2(limit: int = typer.Option(20, "--limit"), driver: str = EVAL_DRI
     _eval_report(lambda: run_litqa2(driver=DriverSpec.parse(driver), limit=limit, report_dir=out))
 
 
+@eval_app.command("stats")
+def eval_stats(write_config: bool = typer.Option(False, "--write-config", help="When every check passes, record "
+                                                 "the validated rk.stats version so meta-analysis is enabled"),
+               out: Path = EVAL_OUT_OPT) -> None:
+    """Reproduce published meta-analyses (BCG trials, Raudenbush 2009, Borenstein et al. 2009) with rk.stats and
+    report every statistic against its published value. Local: no network, no model."""
+    from rk.eval.stats_eval import run_stats_eval
+
+    r = run_stats_eval(out, write_config=write_config)
+    typer.echo(f"{r['n_pass']}/{r['n_checks']} published values reproduced (rk.stats {r['stats_version'][:12]})\n"
+               f"report: {r['report']}")
+    for row in r["rows"]:
+        if not row["pass"]:
+            typer.secho(f"FAIL {row['dataset']} {row['measure']} {row['model']} {row['study']} {row['statistic']}: "
+                        f"published {row['published']}, computed {row['computed']} {row['note']}", fg="red")
+    if r["config_written"]:
+        typer.echo("stats_validated recorded: meta-analysis is enabled for this version")
+    elif write_config:
+        typer.secho("not every check passed: stats_validated not recorded", fg="red")
+    if not r["all_pass"]:
+        raise typer.Exit(1)
+
+
 # ---------------- support check (runs inside rk serve; agentic CLIs reach their tools via rk mcp) ----------------
 support_app = typer.Typer(help="Claim support checks", no_args_is_help=True)
 app.add_typer(support_app, name="support")
