@@ -45,8 +45,9 @@ kind, the same snapshot, which is still the item's latest), or ``not_reported`` 
 degrade) is marked missing; every note the reader linked is of that text and every linked paraphrase passes V-PARA; at
 least one study is left. Each failure names the study, the field and the reason. A failed gate reruns the stage
 (``read_extract->read_extract``); at the edge limit P2 is asked (``stage_blocked``) and P1 degrades (``degrade``): the
-failing fields are marked missing, a study whose retraction could not be checked (or that was never read) is taken out
-of the evidence and its rows marked ``excluded: …``, a failing linked note is dropped, all disclosed
+failing fields are marked missing (their earlier rows marked ``degraded: …``, so none of them passes as evidence), a
+study whose retraction could not be checked (or that was never read) is taken out of the evidence and its rows marked
+``excluded: …`` (a mark is added to a row's earlier problem), a failing linked note is dropped, all disclosed
 (``stage.degraded``) and listed in the limitations input (``extraction_limitations``). A degrade that would leave no
 study in the evidence fails instead, writing nothing.
 
@@ -93,6 +94,7 @@ NOT_REPORTED = "not_reported"  # the value of a field the study does not report;
 QUOTE_FAILED = "quote not verbatim"
 MISSING = "missing"  # the problem of a value the P1 degrade marked missing starts with "missing: "
 EXCLUDED = "excluded"  # the problem of a row whose study the P1 degrade took out of the evidence: "excluded: "
+DEGRADED = "degraded"  # the problem of a row of a field the P1 degrade marked missing: "degraded: "
 RETRACTED = frozenset({"retracted", "withdrawn"})  # flagged: not extracted, kept as a discussed object
 READS = 2  # a reader task without output is asked once more
 SEARCH_SCREEN = "search_screen"
@@ -563,9 +565,10 @@ class ReadExtractWorker:
         return GateResult(not failures, failures)
 
     def degrade(self, ctx: StageContext, failures: list[str]) -> StageOutcome:
-        """P1 at the edge limit: mark every failing field missing, take a study whose retraction could not be checked
-        or that was never read out of the evidence (its rows marked ``excluded: …``), drop a failing linked note;
-        disclosed and listed in the limitations input. Fails, writing nothing, when no study would be left."""
+        """P1 at the edge limit: mark every failing field missing (its earlier rows marked ``degraded: …``), take a
+        study whose retraction could not be checked or that was never read out of the evidence (its rows marked
+        ``excluded: …``), drop a failing linked note; disclosed and listed in the limitations input. Fails, writing
+        nothing, when no study would be left."""
         ps = ctx.ps
         found = findings(ps, ctx.attempt)
         if dead := [f for f in found if f.kind in ("protocol", "no_study")]:
@@ -587,6 +590,9 @@ class ReadExtractWorker:
             for e in extractions(ps, ctx.attempt, item_id=iid):
                 mark_extraction(ps, e["id"], f"{EXCLUDED}: {why}", actor=ctx.actor)
         for m in missing:
+            for e in extractions(ps, ctx.attempt, item_id=m["item_id"]):
+                if e["field"] == m["field"]:
+                    mark_extraction(ps, e["id"], f"{DEGRADED}: {m['reason']}", actor=ctx.actor)
             add_extraction(ps, ctx.attempt, m["item_id"], m["field"], None, None,
                            studies[m["item_id"]]["sufficient"] != "low", actor=ctx.actor, actor_kind="kernel",
                            problem=f"{MISSING}: {m['reason']}")

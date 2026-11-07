@@ -17,6 +17,7 @@ from rk.notes import NoteIn, NoteRejected, add_note, list_notes
 from rk.orchestrator.state import degradations, record_passed, record_ran
 from rk.production import store
 from rk.production.extraction import (
+    CHANGED,
     QUOTE_FAILED,
     READER_TOOLS,
     ReadExtractWorker,
@@ -443,3 +444,27 @@ def test_carry_over_needs_the_same_text(env):
     assert ex.titles() == ["Aspirin A", "Aspirin B"]  # neither is carried over
     assert all(r["carried_from"] is None and r["sufficient"] == 1 for r in store.extractions(ps, 2))
     assert w.gate(ps, 2).ok
+
+
+def test_degrade_marks_the_stale_rows_of_a_missing_field(env):
+    _, ps, lib = env
+    ids = _included(env, {"Aspirin A": "full", "Aspirin B": "full"})
+    a, b = ids["Aspirin A"], ids["Aspirin B"]
+    record_verification(ps, "item", a, "V-RETRACT", "none", {"status": "none"}, actor="tester")  # B's lookup fails
+    ex = Reader({"Aspirin A": [GOOD], "Aspirin B": [{"values": [
+        {"field": "n", "value": 5, "quote": "Five people took part."}, GOOD["values"][1]]}]})
+    w = ReadExtractWorker()
+    ctx = _ctx(env, ex, sources=FailingRetraction({}, lib=lib))
+    assert w.run(ctx).status == "done"
+    add_text_layer(ps, a, [*PAGES, "4. Discussion\nIt may help."])  # A's full text is replaced after the reading
+    assert w.degrade(ctx, w.gate(ps, 1).failures).status == "done"
+    assert [r["problem"] for r in store.extractions(ps, 1, item_id=a)] == [
+        f"degraded: {CHANGED}", f"degraded: {CHANGED}", f"missing: {CHANGED}", f"missing: {CHANGED}"]
+    (usable,) = usable_evidence(ps, 1)
+    assert usable["item_id"] == a and usable["notes"] == []
+    assert all(r["problem"] is not None for r in usable["values"])  # no stale value passes as evidence
+    assert extraction_limitations(ps, 1)["conflicts"] == []
+    excluded = (f"excluded: retraction not checked: retraction lookup of {b} failed "
+                "(HttpError: HTTP 503 for https://api.example/works)")
+    assert [r["problem"] for r in store.extractions(ps, 1, item_id=b)] == [f"{QUOTE_FAILED}; {excluded}", excluded]
+    assert w.gate(ps, 1).ok

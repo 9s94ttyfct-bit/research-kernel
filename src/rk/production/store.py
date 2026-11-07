@@ -150,10 +150,14 @@ def extraction_notes(ps: ProjectStore, attempt: int, *, kind: str | None = None)
 
 
 def mark_extraction(ps: ProjectStore, extraction_id: str, problem: str, *, actor: str) -> None:
-    """Set the ``problem`` of a stored extraction row (e.g. ``"excluded: …"`` when the P1 degrade takes its study out
-    of the evidence)."""
+    """Add ``problem`` to a stored extraction row's ``problem`` ("; "-joined, keeping what it says and leaving out what
+    it already says), e.g. ``"excluded: …"`` when the P1 degrade takes its study out of the evidence."""
+    r = ps.db.execute("SELECT problem FROM extractions WHERE id=?", (extraction_id,)).fetchone()
+    before = (r["problem"] if r else None) or ""
+    if f"; {problem}; " in f"; {before}; ":
+        return
     ps.apply(NewEvent(type="extraction.marked", entity_id=extraction_id, actor_kind="kernel", actor=actor,
-                      payload={"problem": problem}))
+                      payload={"problem": f"{before}; {problem}" if before else problem}))
 
 
 def clear_extractions(ps: ProjectStore, attempt: int, item_id: str, *, actor: str) -> None:
