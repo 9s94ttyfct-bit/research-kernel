@@ -14,6 +14,7 @@ from rk.ids import new_id
 from rk.library.models import ItemIn
 from rk.llm.drivers import DriverSpec
 from rk.llm.types import Availability, TaskResult, TaskSpec
+from rk.orchestrator.engine import GateResult, StageOutcome
 from rk.text.layer import Page, TextLayer
 from rk.verify.judge import JudgeVerdict
 from rk.verify.minicheck import Layer1Score, Layer1Unavailable
@@ -33,6 +34,41 @@ def make_project(tmp_home, replay_http, *, slug: str = "demo", **intake_override
     ps, lib = k.project(slug)
     record_intake(ps, Intake(**{**DEFAULT_INTAKE, **intake_overrides}), actor="tester", actor_kind="human")
     return k, ps, lib
+
+
+class FakeWorker:
+    """A scripted ``Worker``. Each queue item is a ``StageOutcome`` (or ``GateResult`` for ``gates``), an exception
+    to raise, or a callable taking the context; an empty queue gives ``done`` (or a passing gate)."""
+
+    def __init__(self, *, runs=(), answers=(), gates=(), degrades=()):
+        self.runs, self.answers, self.gates, self.degrades = list(runs), list(answers), list(gates), list(degrades)
+        self.calls: list[tuple] = []
+
+    @staticmethod
+    def _next(queue, arg, default):
+        item = queue.pop(0) if queue else default
+        if isinstance(item, BaseException):
+            raise item
+        return item(arg) if callable(item) else item
+
+    def run(self, ctx):
+        self.calls.append(("run", ctx.attempt, ctx.guidance))
+        return self._next(self.runs, ctx, StageOutcome("done"))
+
+    def on_answer(self, ctx, checkpoint):
+        self.calls.append(("on_answer", ctx.attempt, checkpoint["id"], checkpoint["answer"]))
+        return self._next(self.answers, ctx, StageOutcome("done"))
+
+    def gate(self, ps, attempt):
+        self.calls.append(("gate", attempt))
+        return self._next(self.gates, ps, GateResult(True, []))
+
+    def degrade(self, ctx, failures):
+        self.calls.append(("degrade", ctx.attempt, list(failures)))
+        return self._next(self.degrades, ctx, StageOutcome("failed", reason="nothing to degrade"))
+
+    def kinds(self) -> list[str]:
+        return [c[0] for c in self.calls]
 
 
 def add_text_layer(ps, item_id: str, pages: list[str]) -> FulltextResult:

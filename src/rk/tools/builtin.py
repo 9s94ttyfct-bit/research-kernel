@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Callable
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -21,6 +21,7 @@ from rk.browser.tools import register_browser_tools
 from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
 from rk.discovery.models import Intake
 from rk.discovery.store import record_intake
+from rk.discovery.tools import register_discovery_tools
 from rk.flags import flag_injection
 from rk.fulltext import FulltextResult, attach_pdf, fulltext_with_fallback
 from rk.library.add import add_source
@@ -40,6 +41,9 @@ from rk.verify.records import verify_item
 from rk.verify.retract import FLAGGED, retraction_status
 from rk.verify.support import verify_support
 from rk.workspace import Kernel
+
+if TYPE_CHECKING:
+    from rk.orchestrator.runs import RunManager
 
 
 def _added_by(ctx: CallContext) -> Literal["human", "agent"]:
@@ -79,8 +83,10 @@ class ProjectArg(BaseModel):
     project: str
 
 
-def build_registry(k: Kernel, browser: Callable[[], BrowserService | None] | None = None) -> ToolRegistry:
-    """``browser()`` returns the running built-in browser service (``rk serve``), or None."""
+def build_registry(k: Kernel, browser: Callable[[], BrowserService | None] | None = None,
+                   runs: Callable[[], RunManager | None] | None = None) -> ToolRegistry:
+    """``browser()`` returns the running built-in browser service (``rk serve``), or None; ``runs()`` returns
+    ``rk serve``'s RunManager (D2 runs, and its orchestrator for the D1 stages), or None."""
     reg = ToolRegistry(k.home / "kernel.sqlite")
     browser = browser or (lambda: None)
 
@@ -92,6 +98,7 @@ def build_registry(k: Kernel, browser: Callable[[], BrowserService | None] | Non
         return deco
 
     register_browser_tools(tool, browser)
+    register_discovery_tools(tool, k, runs or (lambda: None))
 
     # ---- projects ----
     class ProjectCreate(BaseModel):

@@ -8,8 +8,19 @@ import sys
 from pathlib import Path
 
 import typer
+from typer.core import TyperGroup
 
 from rk.config import load_settings, rk_home, save_settings
+
+
+class _RunGroup(TyperGroup):
+    """``rk run <project> --until ...`` is ``rk run start <project> --until ...``; the other words are commands."""
+
+    def parse_args(self, ctx, args):
+        if args and not args[0].startswith("-") and args[0] not in self.commands:
+            args = ["start", *args]
+        return super().parse_args(ctx, args)
+
 
 app = typer.Typer(help="Research Kernel CLI", no_args_is_help=True, add_completion=False)
 project_app = typer.Typer(help="Projects", no_args_is_help=True)
@@ -18,12 +29,20 @@ note_app = typer.Typer(help="Notes", no_args_is_help=True)
 token_app = typer.Typer(help="Lead tokens for external MCP clients", no_args_is_help=True)
 checkpoint_app = typer.Typer(help="Checkpoints waiting for you", no_args_is_help=True)
 browser_app = typer.Typer(help="The built-in browser (runs inside rk serve)", no_args_is_help=True)
+run_app = typer.Typer(cls=_RunGroup, no_args_is_help=True,
+                      help="Autonomous (D2) discovery runs in rk serve: rk run <project> --until topics|question "
+                           "starts one; status, pause, resume and cancel act on the project's run.")
+stage_app = typer.Typer(help="Discovery stages", no_args_is_help=True)
+topic_app = typer.Typer(help="Candidate topics of the discovery stages", no_args_is_help=True)
 app.add_typer(project_app, name="project")
 app.add_typer(library_app, name="library")
 app.add_typer(note_app, name="note")
 app.add_typer(token_app, name="token")
 app.add_typer(checkpoint_app, name="checkpoint")
 app.add_typer(browser_app, name="browser")
+app.add_typer(run_app, name="run")
+app.add_typer(stage_app, name="stage")
+app.add_typer(topic_app, name="topic")
 
 JSON_OPT = typer.Option(False, "--json", help="Print raw JSON")
 KEYWORD_OPT = typer.Option(None, "--keyword", help="Repeatable")
@@ -114,6 +133,8 @@ def serve(detach: bool = typer.Option(False, help="Start in the background and r
     from rk.browser.pacing import Pacer
     from rk.browser.service import BrowserService
     from rk.browser.session import BrowserSession
+    from rk.orchestrator.engine import Orchestrator
+    from rk.orchestrator.runs import RunManager
     from rk.server.app import create_app
     from rk.server.chat import ChatManager
     from rk.server.runtime import AlreadyRunning, acquire_serve_lock, release
@@ -141,11 +162,26 @@ def serve(detach: bool = typer.Option(False, help="Start in the background and r
         except Exception as e:  # noqa: BLE001 - reported; the Kernel runs without the browser
             typer.secho(f"built-in browser not started ({type(e).__name__}: {e}); run `uv run playwright install "
                         "chromium` or start with --no-browser", fg="yellow", err=True)
-    registry = build_registry(kernel, browser=lambda: service)
+    runs: RunManager | None = None
+    registry = build_registry(kernel, browser=lambda: service, runs=lambda: runs)
+    orchestrator = Orchestrator(kernel, registry)
+    runs = RunManager(kernel, registry, orchestrator)
     chats = ChatManager(kernel, registry)
     server = uvicorn.Server(uvicorn.Config(create_app(registry, rt.token, tokens=kernel.tokens, chats=chats, ui=ui,
-                                                      kernel=kernel, browser=lambda: service), log_level="warning"))
+                                                      kernel=kernel, browser=lambda: service,
+                                                      orchestrator=orchestrator, runs=runs), log_level="warning"))
     signal.signal(signal.SIGTERM, lambda *_: setattr(server, "should_exit", True))
+    stopped = threading.Event()
+
+    def resume_runs() -> None:  # once uvicorn serves, the runs left running, waiting or polling get their threads
+        while not server.started:
+            if stopped.wait(0.05):
+                return
+        resumed = runs.resume_all()
+        if resumed:
+            typer.echo(f"resumed {len(resumed)} run(s): {', '.join(resumed)}", err=True)
+
+    threading.Thread(target=resume_runs, name="rk-resume-runs", daemon=True).start()
     if service is not None:  # the Workbench is the window's first tab (its request waits for uvicorn to start)
         def show_workbench() -> None:
             try:
@@ -161,6 +197,8 @@ def serve(detach: bool = typer.Option(False, help="Start in the background and r
     try:
         server.run(sockets=[rt.sock])
     finally:
+        stopped.set()
+        runs.close()
         chats.close_all()
         if service is not None:
             service.session.close()
@@ -746,6 +784,106 @@ def checkpoint_answer(checkpoint_id: str, answer: str = typer.Option(..., "--jso
         raise typer.Exit(1)
     _call("rk_checkpoint_answer", {"project": slug, "checkpoint_id": checkpoint_id, "answer": payload}, write=True)
     typer.echo(f"answered {checkpoint_id}")
+
+
+# ---------------- discovery runs and stages ----------------
+def _stage_lines(stages: list[dict]) -> None:
+    typer.echo(f"{'stage':<10} {'status':<8} attempt")
+    for s in stages:
+        line = f"{s['stage']:<10} {s['status']:<8} {s['attempt']}"
+        if s.get("waiting_checkpoint"):
+            line += f"  waits on checkpoint {s['waiting_checkpoint']}"
+        gate = s.get("last_gate")
+        if gate and not gate["ok"] and s["status"] != "passed":
+            line += f"  last gate failed: {'; '.join(gate['failures'])[:300]}"
+        typer.echo(line)
+
+
+def _run_line(d: dict) -> None:
+    r = d["run"]
+    if r is None:
+        typer.echo(f"{d['project']}: no run yet")
+        return
+    line = f"{r['id']}: {r['status']} (until {r['until']}, session {r['session']})"
+    if r.get("reason"):
+        line += f": {r['reason']}"
+    if d.get("requested"):
+        line += f"  [{d['requested']} after the current step]"
+    typer.echo(line)
+
+
+@run_app.command("start")
+def run_start(project: str = typer.Argument(..., help="The project (its intake must use discovery mode d2)"),
+              until: str = typer.Option(..., "--until", help="topics or question"), as_json: bool = JSON_OPT) -> None:
+    """Start an autonomous (D2) run of the discovery stages in rk serve (also: rk run <project> --until ...)."""
+    if until not in ("topics", "question"):
+        typer.secho("--until must be topics or question", fg="red", err=True)
+        raise typer.Exit(2)
+    r = _call("rk_run_start", {"project": project, "until": until}, write=True)
+    _out(r, as_json, lambda d: typer.echo(f"started {d['run_id']} on {d['project']} (until {d['until']}); follow it "
+                                          "with: rk run status"))
+
+
+@run_app.command("status")
+def run_status(project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
+    """The project's latest run and its stages."""
+    r = _call("rk_run_status", {"project": _project(project)})
+
+    def render(d):
+        _run_line(d)
+        _stage_lines(d["stages"])
+
+    _out(r, as_json, render)
+
+
+@run_app.command("pause")
+def run_pause(project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
+    """Pause the run between steps (cooperative: a role task in flight finishes first).
+
+    Then the run is paused; rk run resume continues it in a new session."""
+    _out(_call("rk_run_pause", {"project": _project(project)}, write=True), as_json, _run_line)
+
+
+@run_app.command("resume")
+def run_resume(project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
+    """Resume a paused run in a new session: its 12 h wall clock and stage task budgets restart."""
+    _out(_call("rk_run_resume", {"project": _project(project)}, write=True), as_json, _run_line)
+
+
+@run_app.command("cancel")
+def run_cancel(project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
+    """Cancel the run between steps (a role task in flight finishes first)."""
+    _out(_call("rk_run_cancel", {"project": _project(project)}, write=True), as_json, _run_line)
+
+
+@stage_app.command("status")
+def stage_status(project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
+    """Where the discovery stages stand: status, attempts, waits and the back-edges used."""
+    r = _call("rk_stage_status", {"project": _project(project)})
+
+    def render(d):
+        typer.echo(f"{d['project']}: current stage {d['current'] or 'none (discovery passed)'}")
+        _stage_lines(d["stages"])
+        for edge, e in d["edges"].items():
+            extra = f" + {e['allowed']} allowed" if e["allowed"] else ""
+            typer.echo(f"  {edge}: used {e['count']} of {d['edge_limit']}{extra}")
+
+    _out(r, as_json, render)
+
+
+@topic_app.command("list")
+def topic_list(project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
+    """The candidate topics of the topics stage with their gaps and closest works."""
+    r = _call("rk_topic_list", {"project": _project(project)})
+
+    def render(d):
+        if not d["topics"]:
+            typer.echo(f"{d['project']}: no topics yet")
+        for t in d["topics"]:
+            typer.echo(f"{t['id']}  [{t['status']}] {t['title']}\n  {t['summary'][:300]}\n  gaps: "
+                       f"{', '.join(t['gap_ids']) or '-'}; closest works: {len(t['closest'])}")
+
+    _out(r, as_json, render)
 
 
 # ---------------- tokens ----------------

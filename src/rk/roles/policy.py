@@ -12,6 +12,8 @@ NO_TOOL_ROLES = frozenset({"judge", "judge_2", "triage"})
 # metadata and abstracts only; the Scout sees metadata plus discovery tools; the Reader sees full text and notes.
 _FULL_READERS = frozenset({"lead", "gapminer", "ideator", "arguer", "skeptic", "simreader", "writer"})
 _ALL_TOOL_ROLES = frozenset(ROLES) - NO_TOOL_ROLES
+# The roles that work on the discovery stages (Plan 4): the Lead (D1), Scout, Reader, GapMiner and Ideator.
+_DISCOVERY_ROLES = frozenset({"lead", "scout", "reader", "gapminer", "ideator"})
 
 
 def _r(*roles: str) -> frozenset[str]:
@@ -47,6 +49,13 @@ TOOL_ROLES: dict[str, frozenset[str]] = {
     **{name: _r("lead", "scout", "reader") for name in ("rk_browser_open", "rk_browser_snapshot", "rk_browser_act",
                                                         "rk_browser_tabs", "rk_browser_request_human",
                                                         "rk_browser_status")},
+    # discovery stages (Plan 4): D2 runs are yours alone; the Lead sees a run and drives D1 stages and rounds; the
+    # discovery roles read the artifacts; every tool role sees where the stages stand
+    **{name: _r() for name in ("rk_run_start", "rk_run_pause", "rk_run_resume", "rk_run_cancel")},
+    "rk_run_status": _r("lead"),
+    **{name: _r("lead") for name in ("rk_stage_run", "rk_stage_advance", "rk_exploration_round")},
+    **{name: _r(*_DISCOVERY_ROLES) for name in ("rk_gap_list", "rk_topic_list", "rk_rq_get")},
+    "rk_stage_status": _r(*_ALL_TOOL_ROLES),
 }
 
 

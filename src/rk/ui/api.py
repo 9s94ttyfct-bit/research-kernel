@@ -141,7 +141,9 @@ def _event_rows(ps, after: int, limit: int = 500) -> list[dict]:
 
 
 def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
-              browser: Callable[[], Any] | None = None) -> APIRouter:
+              browser: Callable[[], Any] | None = None, orchestrator=None, runs=None) -> APIRouter:
+    """``orchestrator`` and ``runs`` are ``rk serve``'s (the run and stage tools use them; the stage graph and run
+    controls arrive with the Workbench discovery pages)."""
     r = APIRouter()
     ctx_dep = ui_context(auth)
     browser = browser or (lambda: None)

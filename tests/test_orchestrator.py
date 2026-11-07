@@ -31,45 +31,10 @@ from rk.orchestrator.state import (
 from rk.store.projections import rebuild
 from rk.tools.registry import ToolError
 
-from .discovery_fakes import FakeSources, ScriptedExecutor, make_project
+from .discovery_fakes import FakeSources, FakeWorker, ScriptedExecutor, make_project
 
 T0 = 1_800_000_000.0
 STOP = {"done", "failed", "cancelled", "paused", "paused_budget", "paused_waiting_human"}
-
-
-class FakeWorker:
-    """A scripted ``Worker``. Each queue item is a ``StageOutcome`` (or ``GateResult`` for ``gates``), an exception
-    to raise, or a callable taking the context; an empty queue gives ``done`` (or a passing gate)."""
-
-    def __init__(self, *, runs=(), answers=(), gates=(), degrades=()):
-        self.runs, self.answers, self.gates, self.degrades = list(runs), list(answers), list(gates), list(degrades)
-        self.calls: list[tuple] = []
-
-    @staticmethod
-    def _next(queue, arg, default):
-        item = queue.pop(0) if queue else default
-        if isinstance(item, BaseException):
-            raise item
-        return item(arg) if callable(item) else item
-
-    def run(self, ctx):
-        self.calls.append(("run", ctx.attempt, ctx.guidance))
-        return self._next(self.runs, ctx, StageOutcome("done"))
-
-    def on_answer(self, ctx, checkpoint):
-        self.calls.append(("on_answer", ctx.attempt, checkpoint["id"], checkpoint["answer"]))
-        return self._next(self.answers, ctx, StageOutcome("done"))
-
-    def gate(self, ps, attempt):
-        self.calls.append(("gate", attempt))
-        return self._next(self.gates, ps, GateResult(True, []))
-
-    def degrade(self, ctx, failures):
-        self.calls.append(("degrade", ctx.attempt, list(failures)))
-        return self._next(self.degrades, ctx, StageOutcome("failed", reason="nothing to degrade"))
-
-    def kinds(self) -> list[str]:
-        return [c[0] for c in self.calls]
 
 
 class Clock:

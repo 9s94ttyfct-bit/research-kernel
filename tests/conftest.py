@@ -71,36 +71,59 @@ def source_ctx(replay_http):
 
 
 @pytest.fixture
-def live_server(tmp_home, replay_http):
-    """A real ``rk serve`` (uvicorn in a thread) on a temp RK_HOME; yields a CLI-role RkClient."""
+def serve_rk(tmp_home, replay_http):
+    """Starts a real ``rk serve`` (uvicorn in a thread) on a temp RK_HOME and returns a CLI-role RkClient with
+    ``.kernel`` and ``.runs``. ``serve_rk(orchestrator=f)`` wires the runs and stages: ``f(kernel, registry)`` returns
+    the ``Orchestrator`` (tests give it fake workers, never real drivers); without it the run and stage tools are
+    unavailable."""
     import threading
     import time
 
     import uvicorn
 
     from rk.cli.client import RkClient
+    from rk.orchestrator.runs import RunManager
     from rk.server.app import create_app
     from rk.server.chat import ChatManager
     from rk.server.runtime import acquire_serve_lock, release
     from rk.tools.builtin import build_registry
     from rk.workspace import Kernel
 
-    rt = acquire_serve_lock(tmp_home)
-    kernel = Kernel(tmp_home, http=replay_http)
-    registry = build_registry(kernel)
-    chats = ChatManager(kernel, registry)
-    server = uvicorn.Server(uvicorn.Config(create_app(registry, rt.token, tokens=kernel.tokens, chats=chats),
-                                           log_level="warning"))
-    t = threading.Thread(target=server.run, kwargs={"sockets": [rt.sock]}, daemon=True)
-    t.start()
-    client = RkClient.from_home(tmp_home)
-    for _ in range(100):
-        if client.healthy():
-            break
-        time.sleep(0.05)
-    client.kernel = kernel
-    yield client
-    server.should_exit = True
-    t.join(5)
-    kernel.close()
-    release(rt)
+    started: list[tuple] = []
+
+    def start(*, orchestrator=None):
+        rt = acquire_serve_lock(tmp_home)
+        kernel = Kernel(tmp_home, http=replay_http)
+        runs = None
+        registry = build_registry(kernel, runs=lambda: runs)
+        orch = orchestrator(kernel, registry) if orchestrator is not None else None
+        if orch is not None:
+            runs = RunManager(kernel, registry, orch, poll_s=0.05)
+        chats = ChatManager(kernel, registry)
+        server = uvicorn.Server(uvicorn.Config(create_app(registry, rt.token, tokens=kernel.tokens, chats=chats,
+                                                          orchestrator=orch, runs=runs), log_level="warning"))
+        t = threading.Thread(target=server.run, kwargs={"sockets": [rt.sock]}, daemon=True)
+        t.start()
+        started.append((server, t, kernel, runs, rt))
+        client = RkClient.from_home(tmp_home)
+        for _ in range(100):
+            if client.healthy():
+                break
+            time.sleep(0.05)
+        client.kernel, client.runs = kernel, runs
+        return client
+
+    yield start
+    for server, t, kernel, runs, rt in reversed(started):
+        server.should_exit = True
+        t.join(5)
+        if runs is not None:
+            runs.close()
+        kernel.close()
+        release(rt)
+
+
+@pytest.fixture
+def live_server(serve_rk):
+    """A real ``rk serve`` (uvicorn in a thread) on a temp RK_HOME; yields a CLI-role RkClient."""
+    return serve_rk()

@@ -179,6 +179,25 @@ def active_run(ps: ProjectStore) -> dict[str, Any] | None:
     return dict(r) if r else None
 
 
+def latest_run(ps: ProjectStore) -> dict[str, Any] | None:
+    """The project's most recent run, whatever its status."""
+    r = ps.db.execute("SELECT * FROM runs ORDER BY started DESC, id DESC LIMIT 1").fetchone()
+    return dict(r) if r else None
+
+
+def rate_capped_driver(ps: ProjectStore, run_id: str) -> str | None:
+    """The driver (``provider[:model]``) of the run's latest role task that came back ``rate_capped``, if any."""
+    r = ps.db.execute("SELECT t.driver FROM run_tasks r JOIN tasks t ON t.id = r.task_id WHERE r.run_id=? AND "
+                      "t.error='rate_capped' ORDER BY r.rowid DESC LIMIT 1", (run_id,)).fetchone()
+    return r["driver"] if r else None
+
+
+def edge_rows(ps: ProjectStore) -> dict[str, dict[str, int]]:
+    """Every back-edge (or rerun ``X->X``) used or granted so far: its uses and the extra uses you allowed."""
+    return {r["edge"]: {"count": r["count"], "allowed": r["allowed"]}
+            for r in ps.db.execute("SELECT edge, count, allowed FROM back_edges ORDER BY edge")}
+
+
 def degradations(ps: ProjectStore, stage: str | None = None) -> list[dict[str, Any]]:
     """Every ``stage.degraded`` event (for the disclosure and the limitations section), oldest first."""
     rows = ps.db.execute("SELECT payload FROM events WHERE type='stage.degraded' ORDER BY seq").fetchall()
