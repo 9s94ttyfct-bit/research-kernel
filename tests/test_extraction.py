@@ -211,7 +211,8 @@ def test_retracted_study_is_flagged_not_extracted(env):
     assert out.reason.startswith("dead end: every included study is retracted or withdrawn")
     assert f'study {ids["Aspirin A"]} ("Aspirin A"): withdrawn' in out.reason
     assert f'study {ids["Aspirin B"]} ("Aspirin B"): retracted' in out.reason
-    assert "only a revision of the protocol" in out.reason
+    assert "start a new project with a revised protocol (its eligibility or search strategy)" in out.reason
+    assert "only a revision of the protocol" not in out.reason  # no control reopens the frozen protocol
     assert w.gate(ps, 2).failures == ["no included study is left after the retraction check"]
     assert w.degrade(_ctx(env, Reader({}), attempt=2), []).status == "failed"
 
@@ -288,6 +289,7 @@ def test_degrade_with_no_study_left_fails(env):
     assert w.run(ctx).status == "done"
     out = w.degrade(ctx, w.gate(ps, 1).failures)
     assert out.status == "failed" and "no study would be left in the evidence" in out.reason
+    assert "start a new project with a revised protocol" in out.reason
     assert "retraction not checked" in out.reason
     assert degradations(ps, "read_extract") == [] and store.extraction_notes(ps, 1, kind="degraded") == []
 

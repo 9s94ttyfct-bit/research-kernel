@@ -6,6 +6,7 @@ admitted judges, any disagreement, or a failed or invalid answer gives the conse
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -40,15 +41,15 @@ class VoteResult:
 
 
 def vote(ctx: StageContext, subject_type: str, subject_id: str, question: str, options: list[str], conservative: str,
-         inputs: dict, *, generator_vendor: str | None = None) -> VoteResult:
+         inputs: dict, *, generator_vendors: Collection[str | None] = ()) -> VoteResult:
     """Ask every admitted judge ``question`` about the subject (``inputs``, what they see of it) through
-    ``ctx.executor``. ``generator_vendor`` is the vendor that generated the subject, or None when it is not generated
-    text (e.g. a screened record)."""
+    ``ctx.executor``. ``generator_vendors`` are the vendors that generated the subject (e.g. the Ideator's and the
+    Scout's for a protocol), empty when it is no generated text (e.g. a screened record)."""
     if not options or len(set(options)) != len(options):
         raise ValueError(f"options must be distinct and non-empty: {options!r}")
     if conservative not in options:
         raise ValueError(f"the conservative option {conservative!r} is not one of {options!r}")
-    admitted, skipped = admitted_judges(ctx, generator_vendor, None)
+    admitted, skipped = admitted_judges(ctx, generator_vendors, None)
     opinions: list[dict] = []
     if len(admitted) < 2:
         reason = f"fewer than two admitted judges (skipped: {skipped})"

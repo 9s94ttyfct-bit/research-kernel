@@ -190,8 +190,8 @@ def extraction_view(ps: ProjectStore, item_id: str | None = None) -> dict:
     usable evidence: ``rk.production.extraction.usable_evidence``'s rows without a problem, with their verified quote
     note) and the rows that are no evidence (``set_aside``, each with its problem: a quote not verbatim, degraded,
     marked missing, or its study out of the evidence); the attempt's limitations input; and its ``gate``:
-    ``passed`` (whether this attempt passed read_extract's gate) and the ``failures`` of its gate when it failed (``[]``
-    while it was not gated)."""
+    ``passed`` (whether this attempt passed read_extract's gate, also once a later back-edge reopened the stage) and
+    the ``failures`` of its gate when it failed (``[]`` while it was not gated)."""
     row = frozen_protocol(ps)
     fields = row["body"]["extraction_schema"] if row else []
     attempt = shown_attempt(ps, READ_EXTRACT)
@@ -199,7 +199,7 @@ def extraction_view(ps: ProjectStore, item_id: str | None = None) -> dict:
         return {"attempt": None, "fields": fields, "studies": [], "limitations": None, "gate": None}
     stage = stage_row(ps, READ_EXTRACT)
     last = stage["last_gate"] if stage and stage["last_gate"] and stage["last_gate"]["attempt"] == attempt else None
-    gate = {"passed": bool(stage and stage["status"] == "passed" and stage["passed_attempt"] == attempt),
+    gate = {"passed": bool(stage and stage["passed_attempt"] == attempt),
             "failures": list(last["failures"]) if last and not last["ok"] else []}
     titles = _titles(ps)
     noted = {n["item_id"]: n for n in extraction_notes(ps, attempt, kind="study")}

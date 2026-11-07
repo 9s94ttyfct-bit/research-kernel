@@ -124,7 +124,7 @@ def test_vote_with_one_vendor_is_conservative(env):
 def test_vote_skips_a_judge_of_the_generator_vendor(env):
     k, ps, lib = env
     ex = _votes("include", "exclude", "exclude")
-    _, result = _vote(k, ps, lib, ex, generator_vendor="openai")
+    _, result = _vote(k, ps, lib, ex, generator_vendors={"openai"})
     # judge (openai) is skipped; judge_2 and judge_3 decide
     assert (result.decision, result.conservative_used) == ("exclude", False)
     assert [c["role"] for c in ex.calls] == ["judge_2", "judge_3"]
@@ -136,9 +136,17 @@ def test_vote_with_one_admitted_judge_is_conservative(env):
     save_settings(Settings(email="rk-fixtures@users.noreply.github.com",
                            drivers={**DEFAULT_DRIVERS, "judge_3": DEFAULT_DRIVERS["judge"]}))
     ex = _votes("exclude", "exclude", "exclude")
-    _, result = _vote(k, ps, lib, ex, generator_vendor="openai")
+    _, result = _vote(k, ps, lib, ex, generator_vendors={"openai"})
     assert (result.decision, result.conservative_used) == ("include", True)
     assert ex.calls == [] and "fewer than two" in result.reason and "same_or_unknown_vendor" in result.reason
+
+
+def test_vote_skips_a_judge_of_any_generator_vendor(env):
+    k, ps, lib = env
+    ex = _votes("exclude", "exclude", "exclude")
+    _, result = _vote(k, ps, lib, ex, generator_vendors={"openai", "anthropic"})  # e.g. an Ideator and a Scout
+    assert (result.decision, result.conservative_used) == ("include", True) and ex.calls == []
+    assert _decided(ps)[0]["skipped"] == {"judge": "same_or_unknown_vendor", "judge_3": "same_or_unknown_vendor"}
 
 
 def test_vote_rejects_a_conservative_option_outside_the_options(env):

@@ -448,10 +448,37 @@ def test_crash_between_checkpoints_opens_the_missing_one_when_resumed(env, monke
     assert again.checkpoint_id == first["id"] and len(list_checkpoints(ps, "open")) == 2
 
 
-@pytest.mark.parametrize("env", [SR_P1], indirect=True)
-def test_exclusion_without_a_screener_reason_is_unreasoned(env):
+@pytest.mark.parametrize("env", [SR_P2], indirect=True)
+def test_missing_decision_is_noted_once_when_the_phase_runs_again(env, monkeypatch):
     _, ps, _ = env
     _freeze(ps)
+    works = [_work("Aspirin split [yes/no]", 1), _work("Aspirin quiet [yes/yes]", 2)]
+    ex = Screeners(full_text={"Aspirin quiet [yes/yes]": "yes/-"})
+    src = _sources(env, works)
+    ta_cp = _p2_after_ta(env, works, ex, src)
+    real = screening._open
+
+    def crash(*a, **kw):
+        raise RuntimeError("crash before the full-text checkpoint opens")
+
+    w = SearchScreenWorker()
+    monkeypatch.setattr(screening, "_open", crash)
+    with pytest.raises(RuntimeError):
+        w.on_answer(_ctx(env, ex, src), ta_cp)
+    monkeypatch.setattr(screening, "_open", real)
+    assert w.on_answer(_ctx(env, ex, src), ta_cp).status == "waiting_human"
+    rid = _ids(env)["Aspirin quiet [yes/yes]"]
+    notes = screening_notes(ps, 1, kind="missing_decision", phase=FT)
+    assert [(n["screener"], n["record_id"]) for n in notes] == [("screener_b", rid)]
+
+
+@pytest.mark.parametrize("env", [SR_P1], indirect=True)
+def test_exclusion_without_a_screener_reason_is_unreasoned(env, monkeypatch):
+    _, ps, _ = env
+    _freeze(ps)
+    # decisions stored without the reason rule of collection (``screening.unreasoned``), e.g. by an older version:
+    # V-PRISMA still counts them
+    monkeypatch.setattr(screening, "unreasoned", lambda *a: False)
     works = [_work("Aspirin in [yes/yes]", 1), _work("Aspirin out [no/no]", 2), _work("Aspirin late [yes/yes]", 3),
              _work("Aspirin vague [yes/yes]", 4)]
     ex = Screeners(full_text={"Aspirin late [yes/yes]": "no/no", "Aspirin vague [yes/yes]": "no/no"},

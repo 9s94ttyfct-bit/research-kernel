@@ -150,7 +150,7 @@ def _judge(ctx: StageContext, question: dict, report: AlreadyDone, judges: list[
     works = work_inputs(ctx, [w.item_id for w in report.works], abstract_chars=ABSTRACT_CHARS)
     seen = {w["item_id"]: w for w in works}  # what the judges see of each work: quotes count only from it
     by_id = {w.item_id: w for w in report.works}
-    admitted, report.skipped = admitted_judges(ctx, report.author_vendor, judges)
+    admitted, report.skipped = admitted_judges(ctx, {report.author_vendor}, judges)
     for role, spec, vendor in admitted:
         r = ctx.executor.run(role, ANSWERED_TASK, {"rq": question, "works": works}, AnsweredOut, stage=ctx.stage,
                              attempt=ctx.attempt, tools=[], driver=spec, max_turns=4, timeout_s=300)

@@ -14,7 +14,7 @@ from rk.config import Settings, save_settings
 from rk.discovery.models import HypothesisIn, Intake, RQBody
 from rk.discovery.sources import KernelSources
 from rk.discovery.store import add_rq, freeze_rq, frozen_rq, intake_of, record_intake
-from rk.net.http import HttpClient
+from rk.net.http import BudgetExhausted, HttpClient, HttpError
 from rk.orchestrator.engine import Orchestrator, StageOutcome, default_workers
 from rk.orchestrator.state import latest_attempt, record_attempt, start_run
 from rk.production import store
@@ -280,6 +280,29 @@ def test_p1_vote_with_a_judge_of_the_ideator_vendor_is_conservative(tmp_home, re
         k.close()
 
 
+def test_p1_vote_admits_no_judge_of_the_scout_vendor(env):
+    """The voted protocol holds the Scout's search strategy too: a judge of the Scout's vendor is not admitted."""
+    _, ps, _ = env
+    ex = _executor([_draft()], votes=_votes(("approve", "approve")))
+    ex.drivers["scout"] = "codex_cli"  # an openai Scout: the openai judge is out, as is the anthropic (Ideator) one
+    out = ProtocolWorker().run(_ctx(env, ex))
+    assert out.status == "rerun" and "fewer than two admitted judges" in out.reason
+    assert "'judge': 'same_or_unknown_vendor'" in out.reason and "'judge_3': 'same_or_unknown_vendor'" in out.reason
+    assert [c["role"] for c in ex.calls] == ["ideator", "scout"] and store.frozen_protocol(ps) is None
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_frozen_protocol_of_another_question_is_not_given_to_the_redraft(env):
+    """After protocol->question and a new RQ, the version in force answers the previous question: the redraft for
+    the new RQ is not asked to change only what the guidance asks of it."""
+    _, ps, _ = env
+    old = a_protocol(question="I am studying aspirin over 70 because of stroke in order to understand dosing.")
+    store.freeze_protocol(ps, store.add_protocol(ps, 1, old, version=1, actor="tester"), actor="tester")
+    ex = _executor([_draft()])
+    assert ProtocolWorker().run(_ctx(env, ex, attempt=2)).status == "waiting_human"
+    assert "frozen_protocol" not in ex.calls[0]["inputs"] and "frozen_protocol" not in ex.calls[1]["inputs"]
+
+
 # ---- freeze, hash, deviations ----
 def test_freeze_hash_is_stable(env):
     _, ps, _ = env
@@ -452,6 +475,34 @@ def test_probe_without_any_count_says_not_counted(env):
     prompt = get_checkpoint(ps, out.checkpoint_id)["prompt"]
     assert "Record-cap probe (advisory): not counted" in prompt and "probe (advisory): 0" not in prompt
     assert "Not counted (no record count): pubmed." in prompt
+
+
+class FailingCounts(FakeSources):
+    """A source whose count of the first query fails: an HTTP 400 on openalex, an exhausted budget on europepmc."""
+
+    def count(self, query: str, source: str) -> int | None:
+        if query == QUERIES[0] and source == "openalex":
+            raise HttpError(400, "https://api.openalex.org/works")
+        if query == QUERIES[0] and source == "europepmc":
+            raise BudgetExhausted("europepmc", T0)
+        return super().count(query, source)
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_failed_count_fails_nothing_and_is_recorded_in_the_probe(env):
+    _, ps, _ = env
+    sources = FailingCounts({}, record_counts={(q, s): 10 for q in QUERIES for s in ("openalex", "europepmc")})
+    ex = _executor([_draft()])
+    out = ProtocolWorker().run(_ctx(env, ex, sources=sources))
+    assert out.status == "waiting_human"  # the approval opens: the advisory probe failed nothing
+    (row,) = store.protocols(ps, 1)
+    probe = probe_of(ps, row["id"])
+    failed = {c["source"]: c for c in probe["counts"] if c["query"] == QUERIES[0]}
+    assert failed["openalex"]["count"] is None and "HttpError" in failed["openalex"]["error"]
+    assert failed["europepmc"]["count"] is None and "BudgetExhausted" in failed["europepmc"]["error"]
+    assert probe["total"] == 40 and all("error" not in c for c in probe["counts"] if c["query"] != QUERIES[0])
+    prompt = get_checkpoint(ps, out.checkpoint_id)["prompt"]
+    assert f"{QUERIES[0]!r} on openalex: no count (record count of" in prompt
 
 
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)

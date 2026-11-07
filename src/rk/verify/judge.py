@@ -6,7 +6,7 @@ that judge's opinion becomes ``uncertain``."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
@@ -77,28 +77,28 @@ def judge_drivers(settings, drivers: list[DriverSpec] | None) -> list[DriverSpec
     return [spec for _, spec in role_judges(settings, drivers)]
 
 
-def judge_vendor_error(vendor: str | None, generator_vendor: str | None, seen: set[str]) -> str | None:
-    """Why a judge of ``vendor`` cannot judge work of ``generator_vendor`` (``seen``: the vendors of the judges
-    already admitted), else ``None``. A judge must be of a known, non-human vendor that differs from the generator's
-    and from every other judge's."""
-    if vendor is None or vendor == "human" or vendor == generator_vendor:
+def judge_vendor_error(vendor: str | None, generator_vendors: Collection[str | None], seen: set[str]) -> str | None:
+    """Why a judge of ``vendor`` cannot judge work of ``generator_vendors`` (the vendors that generated it; ``seen``:
+    the vendors of the judges already admitted), else ``None``. A judge must be of a known, non-human vendor that
+    differs from every generator's and from every other judge's."""
+    if vendor is None or vendor == "human" or vendor in generator_vendors:
         return "same_or_unknown_vendor"
     if vendor in seen:
         return "duplicate_vendor"
     return None
 
 
-def admit(judges: list[tuple[str, DriverSpec]], generator_vendor: str | None
+def admit(judges: list[tuple[str, DriverSpec]], generator_vendors: Collection[str | None]
           ) -> tuple[list[tuple[str, DriverSpec, str]], dict[str, str]]:
-    """The ``(role, driver)`` judges, in this order, that may judge work of ``generator_vendor``, as
-    ``(role, driver, vendor)``, and the skipped ones as role -> why (``judge_vendor_error``: a known, non-human vendor
-    that is not the generator's and not another admitted judge's)."""
+    """The ``(role, driver)`` judges, in this order, that may judge work of ``generator_vendors`` (every vendor that
+    generated it; empty when it is no generated text), as ``(role, driver, vendor)``, and the skipped ones as role ->
+    why (``judge_vendor_error``: a known, non-human vendor that is no generator's and not another admitted judge's)."""
     admitted: list[tuple[str, DriverSpec, str]] = []
     skipped: dict[str, str] = {}
     seen: set[str] = set()
     for role, spec in judges:
         vendor = vendor_of(spec.provider, spec.model)
-        error = judge_vendor_error(vendor, generator_vendor, seen)
+        error = judge_vendor_error(vendor, generator_vendors, seen)
         if error is not None:
             skipped[role] = error
             continue
@@ -119,7 +119,7 @@ def judges_problem(drivers: dict[str, str], generator_roles: tuple[str, ...] = (
         vendor = vendor_of(spec.provider, spec.model)
         if vendor is not None and vendor in generators:
             unusable.append(f"{role} ({spec}) has the vendor {vendor} of a generating role")
-        elif judge_vendor_error(vendor, None, seen) is not None:
+        elif judge_vendor_error(vendor, (), seen) is not None:
             unusable.append(f"{role} ({spec}) has an unknown, human or repeated vendor ({vendor or 'unknown'})")
         else:
             seen.add(vendor)
@@ -131,10 +131,10 @@ def judges_problem(drivers: dict[str, str], generator_roles: tuple[str, ...] = (
             f"drivers.{', drivers.'.join(JUDGE_ROLES)} in config.toml (rk providers)")
 
 
-def admitted_judges(ctx: StageContext, generator_vendor: str | None,
+def admitted_judges(ctx: StageContext, generator_vendors: Collection[str | None],
                     judges: list[DriverSpec] | None) -> tuple[list[tuple[str, DriverSpec, str]], dict[str, str]]:
     """``admit`` over ``judges``, else the configured ``JUDGE_ROLES``."""
-    return admit(role_judges(ctx.kernel.settings(), judges), generator_vendor)
+    return admit(role_judges(ctx.kernel.settings(), judges), generator_vendors)
 
 
 def ask_judge(run: JudgeRunner, role: str, spec: DriverSpec, *, claim_text: str, evidence_text: str,
@@ -161,7 +161,7 @@ def run_judges(kernel, registry, *, project: str, claim_text: str, evidence_text
         def run(**task):
             return run_task(kernel, registry, project=project, **task)
     judges = role_judges(kernel.settings(), drivers)
-    _, skipped = admit(judges, generator_vendor)
+    _, skipped = admit(judges, {generator_vendor})
     return [JudgeOpinion(driver=str(spec), vendor=vendor_of(spec.provider, spec.model), label="uncertain",
                          error=skipped[role]) if role in skipped else
             ask_judge(run, role, spec, claim_text=claim_text, evidence_text=evidence_text,

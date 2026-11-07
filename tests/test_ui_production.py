@@ -25,6 +25,7 @@ from rk.orchestrator.state import (
     record_gate,
     record_passed,
     record_ran,
+    record_reopened,
     run_row,
     stage_row,
 )
@@ -272,6 +273,10 @@ def test_extraction_tool_shows_usable_evidence_apart(api):
         "passed": False, "failures": ["study x: field n: no value"]}
     record_passed(api.ps, "read_extract", 1, actor="tester")
     assert api.reg.call("rk_extraction_get", {"project": "demo"}, _cli())["gate"]["passed"] is True
+    # a later back-edge reopens read_extract: the attempt shown still is the one that passed its gate
+    record_reopened(api.ps, "read_extract", by_edge="search_screen->protocol", guidance=None, actor="tester")
+    reopened = api.reg.call("rk_extraction_get", {"project": "demo"}, _cli())
+    assert (reopened["attempt"], reopened["gate"]["passed"]) == (1, True)
     # the library item route of the Workbench shows the same through the tool
     assert _get(api, "/ui/api/extraction", item_id=b_id)["studies"] == only["studies"]
 

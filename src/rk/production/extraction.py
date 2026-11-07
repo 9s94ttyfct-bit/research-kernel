@@ -29,8 +29,9 @@ failure is recorded on that study, never fatal):
    problems.
 
 When every included study is retracted or withdrawn the stage fails as a dead end naming them: ``read_extract``'s only
-back-edge, to ``search_screen``, would screen the same studies again under the same protocol; only a revision of the
-protocol resolves it. Else it is done, its reason the counts.
+back-edge, to ``search_screen``, would screen the same studies again under the same protocol, and no control reopens
+the frozen protocol, so the reason tells you to start a new project with a revised protocol. Else it is done, its
+reason the counts.
 
 An attempt interrupted by a rate cap, a budget or a crash is resumed by the next one (``rk.production.resume``): a
 study an interrupted attempt right before it finished, under the same frozen protocol and read on the same text (the
@@ -511,8 +512,8 @@ class ReadExtractWorker:
                               for r in studies)
             return StageOutcome("failed", reason=(
                 f"dead end: every included study is retracted or withdrawn ({which}). Going back to search_screen "
-                "would screen the same studies again under the same protocol; only a revision of the protocol (its "
-                "eligibility or search strategy) can resolve it."))
+                "would screen the same studies again under the same protocol, and the frozen protocol cannot be "
+                "reopened: start a new project with a revised protocol (its eligibility or search strategy)."))
         return StageOutcome("done", reason=reason)
 
     def _carry(self, ctx: StageContext, c: CarriedStudy) -> None:
@@ -582,7 +583,9 @@ class ReadExtractWorker:
         if not left:
             why = "; ".join(f"{_study_label(ps, i)}: {r}" for i, r in excluded.items())
             return StageOutcome("failed", reason=f"read_extract did not pass at the edge limit, and degrading it would "
-                                                 f"take every study out: no study would be left in the evidence ({why})")
+                                                 f"take every study out: no study would be left in the evidence ({why}). "
+                                                 "This project's run cannot get past it (the frozen protocol cannot be "
+                                                 "reopened): start a new project with a revised protocol.")
         missing = [{"item_id": f.item_id, "field": f.field, "reason": f.reason} for f in found
                    if f.kind == "field" and f.item_id not in excluded]
         dropped = [f.note_id for f in found if f.kind == "note" and f.item_id not in excluded]

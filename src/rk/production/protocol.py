@@ -6,17 +6,20 @@ the strategy, summed and stored as ``protocol.probed``) and then:
 
 - P2 (``collab``) opens ``protocol_approval`` (hard human; every section rendered, ``options.protocol_id`` and
   ``options.version`` name the protocol);
-- P1 (``auto``) asks the two-vendor ``vote`` (``conservative="revise"``, ``generator_vendor`` = the Ideator's):
-  ``approve`` freezes the protocol, ``revise`` reruns with the judges' reasons as guidance.
+- P1 (``auto``) asks the two-vendor ``vote`` (``conservative="revise"``, ``generator_vendors`` = the Ideator's and the
+  Scout's): ``approve`` freezes the protocol, ``revise`` reruns with the judges' reasons as guidance.
 
-The probe is advisory: it is shown to you and to the judges but fails nothing. It overestimates (no date range,
-duplicates across queries and sources count again) and leaves out the sources without a count; the record cap is
-enforced by ``search_screen`` on the deduplicated records.
+The probe is advisory: it is shown to you and to the judges but fails nothing. Each count runs inside the per-item
+boundary (a source error or an exhausted source API budget leaves that count ``None`` with its ``error``), so the probe
+never fails or interrupts the stage. It overestimates (no date range, duplicates across queries and sources count
+again) and leaves out the sources without a count; the record cap is enforced by ``search_screen`` on the deduplicated
+records.
 
 A rerun after an unfrozen draft (a revision asked by you or by the vote, a failed check) gives both roles that draft as
 ``previous_draft`` (its body and probe) to change as the guidance asks, but only a draft of the current frozen RQ that no
 back-edge left behind (``protocol->question`` reopens the stage without one); a rerun after a freeze gives them the
-version in force as ``frozen_protocol``.
+version in force as ``frozen_protocol`` when it answers the current frozen RQ (after ``protocol->question`` and a new
+RQ it does not, and they draft afresh).
 
 Answers to ``protocol_approval``:
 - ``{"decision": "approve"}`` freezes the protocol; ``"record_cap": N`` (a whole number >= 1) sets the project's
@@ -47,10 +50,12 @@ from typing import get_args
 from pydantic import BaseModel
 
 from rk.checkpoints import answered_by_actor, create_checkpoint, opened_in_place_of
+from rk.discovery.boundary import error_text, per_item
 from rk.discovery.models import PaperType, RQBody
 from rk.discovery.sources import COUNTED_SOURCES
 from rk.discovery.store import frozen_rq, hypotheses, intake_of
 from rk.llm.vendors import vendor_of
+from rk.net.http import BudgetExhausted
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.production.models import (
     RECORD_CAP,
@@ -204,14 +209,24 @@ def counts_as_preregistration(paper_type: str) -> bool:
 
 
 # ---- the record-cap probe (advisory) ----
+def _count(ctx: StageContext, query: str, source: str) -> dict:
+    """One count of the probe through the per-item boundary: a source error, or an exhausted source API budget, gives
+    ``count: None`` and the ``error`` (the probe is advisory: it never fails or interrupts the stage)."""
+    what = f"record count of {query!r} on {source}"
+    try:
+        n, err = per_item(what, lambda: ctx.sources.count(query, source))
+    except BudgetExhausted as e:
+        n, err = None, f"{what} failed ({error_text(e)})"
+    return {"query": query, "source": source, "count": n} | ({"error": err} if err else {})
+
+
 def _probe(ctx: StageContext, strategy: SearchStrategy) -> dict:
-    """``sources.count`` of every query on every counted source of the strategy, and the sum of the counts given
-    (duplicates across queries and sources count again). A source that gave no count keeps ``count: None``; the
-    strategy's sources without a count at all are listed as ``uncounted``. ``total`` is ``None`` when nothing was
-    counted."""
+    """``sources.count`` of every query on every counted source of the strategy (``_count``), and the sum of the
+    counts given (duplicates across queries and sources count again). A source that gave no count keeps ``count:
+    None`` (and its ``error`` when the count failed); the strategy's sources without a count at all are listed as
+    ``uncounted``. ``total`` is ``None`` when nothing was counted."""
     sources = _unique(strategy.sources)
-    counts = [{"query": q, "source": s, "count": ctx.sources.count(q, s)}
-              for q in _unique(strategy.queries) for s in sources if s in COUNTED_SOURCES]
+    counts = [_count(ctx, q, s) for q in _unique(strategy.queries) for s in sources if s in COUNTED_SOURCES]
     given = [c["count"] for c in counts if c["count"] is not None]
     return {"counts": counts, "uncounted": [s for s in sources if s not in COUNTED_SOURCES],
             "total": sum(given) if given else None}
@@ -295,7 +310,9 @@ def probe_lines(probe: dict | None, cap: int) -> list[str]:
     """The record-cap probe, as the protocol's review shows it."""
     if probe is None:
         return ["Record-cap probe: not run."]
-    per = "; ".join(f"{c['query']!r} on {c['source']}: {'no count' if c['count'] is None else c['count']}"
+    per = "; ".join(f"{c['query']!r} on {c['source']}: "
+                    + (f"no count ({c['error']})" if c.get("error") else "no count" if c["count"] is None
+                       else str(c["count"]))
                     for c in probe["counts"]) or "nothing counted"
     if probe["total"] is None:
         lines = [f"Record-cap probe (advisory): not counted (no source gave a record count; {per})."]
@@ -413,7 +430,7 @@ class ProtocolWorker:
         }
         if (topic := _topic(ps, rq["topic_id"])) is not None:
             context["topic"] = topic
-        if (prior := frozen_protocol(ps)) is not None:
+        if (prior := frozen_protocol(ps)) is not None and prior["body"]["question"] == question:
             context["frozen_protocol"] = {"version": prior["version"], "body": prior["body"]}
         if (draft := _previous_draft(ps, question)) is not None:
             context["previous_draft"] = draft
@@ -441,16 +458,16 @@ class ProtocolWorker:
         if intake.production_mode == "collab":
             return StageOutcome("waiting_human", checkpoint_id=_open(ctx, pid),
                                 reason="the protocol awaits your approval")
-        return self._vote(ctx, pid, vendor_of(d.provider, d.model))
+        return self._vote(ctx, pid, {vendor_of(d.provider, d.model), vendor_of(s.provider, s.model)})
 
     @staticmethod
-    def _vote(ctx: StageContext, protocol_id: str, generator_vendor: str | None) -> StageOutcome:
+    def _vote(ctx: StageContext, protocol_id: str, generator_vendors: set[str | None]) -> StageOutcome:
         row = protocol_row(ctx.ps, protocol_id)
         probe = probe_of(ctx.ps, protocol_id)
         inputs = {"paper_type": intake_of(ctx.ps).paper_type, "protocol": row["body"],
                   "record_probe": probe and {**probe, "note": "advisory: no date range, duplicates count again"}}
         res = vote(ctx, "protocol", protocol_id, VOTE_QUESTION, VOTE_OPTIONS, "revise", inputs,
-                   generator_vendor=generator_vendor)
+                   generator_vendors=generator_vendors)
         if res.decision == "approve":
             _freeze(ctx, protocol_id, actor=ctx.actor, actor_kind="kernel")
             return StageOutcome("done", reason="protocol approved by the P1 vote (not reviewed by a human)")

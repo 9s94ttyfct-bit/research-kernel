@@ -309,7 +309,7 @@ def driver_warnings(drivers: dict[str, str], min_judges: int = 2) -> list[str]:
     for role in WRITING_ROLES:
         spec = DriverSpec.parse(full[role])
         vendor = vendor_of(spec.provider, spec.model)
-        admitted, _ = admit(judges, vendor)
+        admitted, _ = admit(judges, {vendor})
         if len(admitted) < min_judges:
             short.setdefault((spec, vendor, len(admitted)), []).append(role)
     warnings = []

@@ -162,7 +162,7 @@ def _judge(ctx: StageContext, text: str, report: NoveltyReport, generator_vendor
            judges: list[DriverSpec] | None) -> None:
     works = work_inputs(ctx, [c.item_id for c in report.closest])
     by_id = {c.item_id: c for c in report.closest}
-    admitted, report.skipped = admitted_judges(ctx, generator_vendor, judges)
+    admitted, report.skipped = admitted_judges(ctx, {generator_vendor}, judges)
     for role, spec, vendor in admitted:
         r = ctx.executor.run(role, DIFFERENCES_TASK, {"text": text, "works": works}, DifferencesOut, stage=ctx.stage,
                              attempt=ctx.attempt, tools=[], driver=spec, max_turns=4, timeout_s=300)

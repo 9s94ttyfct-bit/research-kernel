@@ -25,10 +25,12 @@ rules), V-PRISMA and the gate.
    - critical review and research proposal: single; the screener's reason is the selection reason.
 5. Records go to a screener in batches of ``BATCH`` (title, abstract, year, venue, language). Every decision is a
    ``screening.decided``. A decision on a record that is not in the batch, or a second one on a record, is ignored and
-   noted (``stray_decision``). The records a batch's output leaves out (a failed task leaves out all of them) go to
-   that screener once more, in new batches; a record still undecided is noted (``missing_decision``) and gets the
-   record's ``problem``, and counts as ``unclear`` in single screening (so it goes to the full text) and as a
-   disagreement in dual screening.
+   noted (``stray_decision``); so is a decision without the reason its selection needs (``unreasoned``: for the
+   PRISMA types an exclusion with a blank reason, at full text unless it names its criterion; for the others any
+   decision with a blank reason), noted ``unreasoned_decision``. The records a batch's output leaves out (a failed
+   task leaves out all of them) go to that screener once more, in new batches; a record still undecided is noted
+   (``missing_decision``) and gets the record's ``problem``, and counts as ``unclear`` in single screening (so it
+   goes to the full text) and as a disagreement in dual screening.
 6. The final decision of a record (``screening.final``):
    - dual: both yes, or yes and unclear: include (``agreement``); both no: exclude (``agreement``); otherwise
      (yes and no, both unclear, no and unclear, a missing decision): a disagreement;
@@ -184,6 +186,18 @@ def reports_prisma(paper_type: str) -> bool:
     an incomplete search keeps ``search_screen`` from completing. The others report the selection reasons instead,
     and an incomplete search is a limitation."""
     return paper_type in PRISMA_TYPES
+
+
+def unreasoned(d: ScreenDecision, phase: str, paper_type: str) -> bool:
+    """Whether a screener's decision lacks the reason its selection needs (``_batch`` treats it as not given): for
+    the PRISMA types an exclusion with a blank reason (at full text the criterion it rests on is its reason, as in
+    ``rk.verify.prisma``), for the others any decision with a blank reason (the selection reason)."""
+    if d.reason.strip():
+        return False
+    if not reports_prisma(paper_type):
+        return True
+    return d.include == "no" and not (phase == FULL_TEXT and d.criterion_id)
+
 
 
 def screener_pair_problem(drivers: dict[str, str], what: str = "dual screening") -> str:
@@ -391,6 +405,10 @@ def _batch(ctx: StageContext, role: str, phase: str, batch: list[str], records: 
             _note(ctx, phase, "stray_decision", screener=role, record_id=d.record_id, include=d.include,
                   why="a second decision on the record" if d.record_id in got else "not a record of the batch")
             continue
+        if unreasoned(d, phase, context["paper_type"]):
+            _note(ctx, phase, "unreasoned_decision", screener=role, record_id=d.record_id, include=d.include,
+                  why="no reason")
+            continue
         got[d.record_id] = d
         add_decision(ctx.ps, ctx.attempt, d.record_id, phase, role, d.include, d.reason, d.criterion_id or None,
                      actor=ctx.actor)
@@ -424,8 +442,11 @@ def _screen(ctx: StageContext, role: str, phase: str, records: dict[str, dict], 
         pending = left
         if not pending:
             break
+    noted = {n["record_id"] for n in screening_notes(ctx.ps, ctx.attempt, kind="missing_decision", phase=phase)
+             if n["screener"] == role}  # the phase run again in the attempt notes a record once
     for rid in pending:
-        _note(ctx, phase, "missing_decision", screener=role, record_id=rid)
+        if rid not in noted:
+            _note(ctx, phase, "missing_decision", screener=role, record_id=rid)
         _add_problem(ctx, rid, f"{role} gave no {PHASE_WORDS[phase]} decision, also when asked again")
     return got
 
@@ -578,7 +599,7 @@ def _apply(ctx: StageContext, phase: str, cp: dict) -> None:
 def _vote_on(ctx: StageContext, phase: str, rid: str, context: dict, record: dict,
              views: dict[str, list[dict]]) -> None:
     inputs = {**context, "record": record, "screeners": _view_of(views, rid)}
-    res = vote(ctx, "record", rid, _vote_question(phase), list(CHOICES), CONSERVATIVE, inputs, generator_vendor=None)
+    res = vote(ctx, "record", rid, _vote_question(phase), list(CHOICES), CONSERVATIVE, inputs)
     inc = "yes" if res.decision == "include" else "no"
     if res.conservative_used:
         reason = f"screeners disagreed; P1 conservative: excluded ({res.reason}; not reviewed by a human)"

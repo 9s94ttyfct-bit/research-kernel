@@ -10,7 +10,7 @@ from rk.discovery.executor import RateCapped
 from rk.library.models import Ids, ItemIn
 from rk.orchestrator.engine import Orchestrator, default_workers
 from rk.orchestrator.runs import RunManager
-from rk.orchestrator.state import record_ran
+from rk.orchestrator.state import latest_attempt, record_ran, start_run
 from rk.production import screening, store
 from rk.production.models import Protocol
 from rk.production.resume import carry_attempts
@@ -26,7 +26,7 @@ from rk.production.store import excluded_by_disagreement, screening_notes
 from rk.tools.builtin import build_registry
 from rk.tools.registry import ToolError
 from rk.verify.prisma import check_selection_reasons
-from tests.discovery_fakes import FakeSources
+from tests.discovery_fakes import FakeSources, FakeWorker
 from tests.production_fakes import (
     CappedAt,
     Screeners,
@@ -35,7 +35,7 @@ from tests.production_fakes import (
     production_ctx,
 )
 
-TA = "title_abstract"
+TA, FT = "title_abstract", "full_text"
 SR_P1 = {"paper_type": "systematic_review", "production_mode": "auto"}
 SR_P2 = {"paper_type": "systematic_review", "production_mode": "collab"}
 SCOPING_P2 = {"paper_type": "scoping_review", "production_mode": "collab"}
@@ -387,8 +387,8 @@ def test_incomplete_search_blocks_systematic_screening(env, monkeypatch):
 
 # ---- resuming an interrupted attempt ----
 
-def _sizes(ex: Screeners, role: str) -> list[int]:
-    return [len(c["inputs"]["records"]) for c in ex.of(role)]
+def _sizes(ex: Screeners, role: str, phase: str = "title_abstract") -> list[int]:
+    return [len(c["inputs"]["records"]) for c in ex.of(role, phase)]
 
 
 @pytest.mark.parametrize("env", [SR_P2], indirect=True)
@@ -564,3 +564,91 @@ def test_carried_final_is_reused_only_on_the_decisions_it_was_made_on(env):
     assert got["Aspirin X [yes/-]"] == ("no", "vote", None)
     assert {(d["screener"], d["carried_from"]) for d in store.decisions(ps, 3) if t[d["record_id"]].startswith(
         "Aspirin X")} == {("screener_a", 1), ("screener_b", 2)}
+
+
+# ---- a decision without a usable reason is not given ----
+@pytest.mark.parametrize(("paper_type", "phase", "include", "reason", "criterion", "unreasoned"), [
+    ("systematic_review", TA, "no", " ", "E1", True),  # an exclusion with a blank reason
+    ("systematic_review", TA, "no", "animal study", None, False),
+    ("systematic_review", TA, "yes", "", "I1", False),  # PRISMA types need reasons on exclusions only
+    ("systematic_review", FT, "no", "", None, True),  # at full text, neither a reason nor a criterion
+    ("systematic_review", FT, "no", "", "E1", False),  # ... the criterion it rests on is its reason
+    ("scoping_review", FT, "unclear", "", None, False),
+    ("critical_review", TA, "yes", "", "I1", True),  # every selection decision carries its reason
+    ("research_proposal", FT, "no", "", "E1", True),
+    ("critical_review", FT, "unclear", "not stated", None, False),
+])
+def test_unreasoned_decision_rule(paper_type, phase, include, reason, criterion, unreasoned):
+    d = screening.ScreenDecision(record_id="r1", include=include, reason=reason, criterion_id=criterion)
+    assert screening.unreasoned(d, phase, paper_type) is unreasoned
+
+
+@pytest.mark.parametrize("env", [SR_P1], indirect=True)
+def test_blank_reason_exclusion_is_asked_again_then_missing(env):
+    _, ps, _ = env
+    _freeze(ps)
+    works = [_work("Aspirin blank [no/no]", 1), _work("Aspirin fine [yes/yes]", 2)]
+    ex = Screeners(reasons={("Aspirin blank [no/no]", TA): ""}, votes={"Aspirin blank [no/no]": ("exclude", "exclude")})
+    out = SearchScreenWorker().run(_ctx(env, ex, FakeSources({"aspirin": works})))
+    assert out.status == "done"
+    assert _sizes(ex, "screener_a") == _sizes(ex, "screener_b") == [2, 1]  # asked once more, alone
+    t = {v: k for k, v in _titles(env).items()}
+    assert not [d for d in store.decisions(ps, 1) if d["record_id"] == t["Aspirin blank [no/no]"]]
+    assert {(n["screener"], n["record_id"]) for n in screening_notes(ps, 1, kind="missing_decision")} == {
+        ("screener_a", t["Aspirin blank [no/no]"]), ("screener_b", t["Aspirin blank [no/no]"])}
+    assert {n["why"] for n in screening_notes(ps, 1, kind="unreasoned_decision")} == {"no reason"}
+    assert _finals(env)["Aspirin blank [no/no]"][:2] == ("no", "vote")  # a disagreement in dual screening
+    assert SearchScreenWorker().gate(ps, 1).ok
+
+
+@pytest.mark.parametrize("env", [SR_P1], indirect=True)
+def test_full_text_exclusion_without_reason_or_criterion_is_asked_again(env):
+    _, ps, _ = env
+    _freeze(ps)
+    works = [_work("Aspirin bare [yes/yes]", 1), _work("Aspirin named [yes/yes]", 2), _work("Aspirin in [yes/yes]", 3)]
+    ex = Screeners(full_text={"Aspirin bare [yes/yes]": "no/no", "Aspirin named [yes/yes]": "no/no"},
+                   reasons={("Aspirin bare [yes/yes]", FT): "", ("Aspirin named [yes/yes]", FT): ""},
+                   criteria={("Aspirin bare [yes/yes]", FT): None},
+                   votes={("Aspirin bare [yes/yes]", FT): ("exclude", "exclude")})
+    out = SearchScreenWorker().run(_ctx(env, ex, FakeSources({"aspirin": works})))
+    assert out.status == "done"
+    assert _sizes(ex, "screener_a", FT) == [3, 1]
+    t = _titles(env)
+    ft = {t[f["record_id"]]: f["decided_by"] for f in store.finals(ps, 1, phase=FT)}
+    assert ft == {"Aspirin bare [yes/yes]": "vote", "Aspirin named [yes/yes]": "agreement",
+                  "Aspirin in [yes/yes]": "agreement"}
+    assert SearchScreenWorker().gate(ps, 1).ok
+
+
+def test_critical_review_decision_without_reason_is_asked_again(env):  # critical_review, P1
+    _, ps, _ = env
+    _freeze(ps)
+    works = [_work("Aspirin terse [yes/-]", 1), _work("Aspirin said [yes/-]", 2)]
+    ex = Screeners(reasons={("Aspirin terse [yes/-]", TA): "  "})
+    out = SearchScreenWorker().run(_ctx(env, ex, FakeSources({"aspirin": works})))
+    assert out.status == "done"
+    assert _sizes(ex, "screener_a") == [2, 1]
+    f = _finals(env)
+    assert f["Aspirin terse [yes/-]"][:2] == ("yes", "single") and "no decision" in f["Aspirin terse [yes/-]"][2]
+    assert check_selection_reasons(ps, 1) == []
+
+
+@pytest.mark.parametrize("env", [SR_P1], indirect=True)
+def test_one_blank_reason_exclusion_does_not_fail_the_stage_through_the_engine(env):
+    """The final review's repro: SR, P1, 30 records, one exclusion both screeners give without a reason. The stage
+    completes in one attempt and its gate passes (before, V-PRISMA failed it until the edge limit)."""
+    k, ps, lib = env
+    _freeze(ps)
+    works = _works("yes/yes", n=29) + [_work("Aspirin blank [no/no]", 99)]
+    ex = Screeners(reasons={("Aspirin blank [no/no]", TA): ""}, votes={"Aspirin blank [no/no]": ("exclude", "exclude")})
+    workers = {s: FakeWorker() for s in ("landscape", "gaps", "topics", "question", "protocol")}
+    workers["search_screen"] = SearchScreenWorker()
+    o = Orchestrator(k, None, workers=workers, executor_factory=lambda project, run_id, session: ex,
+                     sources_factory=lambda project: FakeSources({"aspirin": works}, lib=lib), clock=lambda: 1.8e9)
+    run_id = start_run(ps, until="search_screen", actor="tester", clock=lambda: 1.8e9)
+    for _ in range(40):
+        status = o.step("demo", run_id, actor="tester")
+        if status in {"done", "failed", "paused_waiting_human", "paused_budget"}:
+            break
+    assert status == "done"
+    assert latest_attempt(ps, "search_screen") == 1 and SearchScreenWorker().gate(ps, 1).ok

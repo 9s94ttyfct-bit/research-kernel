@@ -116,7 +116,7 @@ def scenario_verdicts(pairs: list[SupportPair], judges: list[tuple[str, DriverSp
                       ops: dict[str, list[JudgeOpinion]], *, generator: str, min_judges: int) -> tuple[list[str], dict]:
     """Verdicts as production gives them for claims written by ``generator``: a judge ``admit`` skips counts as no
     opinion. Also returns the admitted drivers and the skipped ones with the reason."""
-    _, skipped = admit(judges, generator)
+    _, skipped = admit(judges, {generator})
     roles = [role for role, _ in judges]
     pred = []
     for pair in pairs:
