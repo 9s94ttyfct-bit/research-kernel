@@ -1,11 +1,15 @@
 """``rk eval stats``: reproduce published meta-analyses with ``rk.stats`` (spec §9.1 V-STATS gate).
 
-Each reference dataset in ``tests/fixtures/stats/*.json`` holds the study data and the published results copied from
-the cited source (table or page per analysis), each with its tolerance; nothing in them was computed by this code. The
-evaluation recomputes every statistic, compares it with the published value and writes
-``docs/eval/stats-<date>.{md,json}``. With ``write_config`` and only when every check passes, it records
-``{"version": STATS_VERSION, "report": <md path>}`` as ``Settings.stats_validated``, which ``rk.stats.stats_enabled``
-requires before any pooling. No network, no model."""
+Each reference dataset in ``rk/stats/reference/*.json`` (package data) holds the study data and the published results
+of the cited source (table, page or program output per analysis), each value as printed, digits intact; nothing in
+them was computed by this code. The evaluation recomputes every statistic, compares it with the published value and
+writes ``docs/eval/stats-<date>.{md,json}``. With ``write_config`` and only when every check passes, it records
+``{"version": STATS_VERSION, "report": <absolute md path>}`` as ``Settings.stats_validated``, which
+``rk.stats.stats_enabled`` requires before any pooling. No network, no model.
+
+Tolerance per check: half a unit of the last printed digit plus 10% (``0.55·10^-d``), capped at the plan's tolerance
+(1e-3 on estimates, SEs, τ², I² as a proportion and Q; 1e-2 on interval bounds and ratio-scale ``exp_*`` values). A
+check may state a wider ``tolerance`` only with a ``tolerance_note`` and never above the plan's cap."""
 
 from __future__ import annotations
 
@@ -15,43 +19,61 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from rk.config import load_settings, save_settings
-from rk.stats import STATS_VERSION
+from rk.stats import REFERENCE_DIR, STATS_VERSION
 from rk.stats.effects import Effect, Uncomputable, compute
 from rk.stats.meta import pool
 
-REFS_DIR = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "stats"
-# the plan's statistical tolerance: 1e-3 absolute on estimates, SEs, tau², I² (as a proportion) and Q; 1e-2 on
-# interval bounds as reported (ratio-scale exp_* values included). A fixture may be stricter, never looser.
+REFS_DIR = REFERENCE_DIR
 BOUND_STATS = frozenset({"ci_low", "ci_high", "pi_low", "pi_high", "exp_estimate", "exp_ci_low", "exp_ci_high",
                          "exp_pi_low", "exp_pi_high", "exp_yi"})
 _Z95 = 1.959963984540054
 
-HANDBOOK_NOTE = """## Default estimator against the Cochrane Handbook
+INTRO = """Every published value is copied from the cited source with its printed digits; none was produced by this code.
+Where the source is printed program output — metafor in Viechtbauer (2010), on the metafor website and in its test
+suite, Stata `metan` as recorded in metafor's test suite, metafor reproducing Borenstein et al. (2009) — the reference
+is that program's rounded output, not a number typeset in the original study or book; each source line below says
+which. Study intervals are 95% Wald intervals; pooled analyses use 95% intervals."""
+
+HANDBOOK_NOTE = """## Defaults against the Cochrane Handbook
 
 Checked on 2026-11-07 against the *Cochrane Handbook for Systematic Reviews of Interventions*, Version 6.5.1 (2026),
 Chapter 10 "Analysing data and undertaking meta-analyses" (Deeks, Higgins, Altman, McKenzie, Veroniki, Simmonds, eds.;
 chapter last updated November 2026), https://www.cochrane.org/authors/handbooks-and-manuals/handbook/current/chapter-10.
-The plan (Deviation 5) cites "v6.5"; the current version is 6.5.1.
+`rk.stats.meta.pool` defaults: `model="REML"`, `hksj="auto"`, `pi_df="ci"`.
 
-- **τ² estimator — agrees.** §10.10.4.4: REML is RevMan's default between-study variance estimator, DerSimonian-Laird
-  remains an option; a comprehensive simulation study recommended REML (Langan et al. 2019). `rk.stats` defaults to
-  REML.
-- **HKSJ — the plan goes further than the Handbook.** §10.10.4.4: RevMan's *default* interval is the Wald-type one;
-  users are *prompted* to use HKSJ when the estimated τ² > 0 and there are more than two studies, because HKSJ can be
-  overly narrow when τ² is estimated as 0 and overly wide with few studies (§10.10.4.5). Deviation 5 makes HKSJ the
-  unconditional default; that default is kept here as decided and flagged.
-- **Prediction interval — differs.** §10.10.4.3 gives M ± t(k-1) × √(τ² + SE(M)²), and §10.10.4.4 says RevMan uses the
-  confidence interval's multiplier (t(k-1) with HKSJ, z with Wald). `rk.stats` uses t(k-2) (Higgins, Thompson &
-  Spiegelhalter 2009, eq. 12; Riley et al. 2011), as the plan specifies; the Borenstein et al. (2009) intervals
-  below validate that formula.
-- **I² — agrees.** §10.10.4.4: RevMan computes I² = τ²/(τ² + s²) with the typical within-study variance s², which
-  `rk.stats` uses for random-effects models (equal to (Q − df)/Q under DerSimonian-Laird); a fixed-effect model
-  reports (Q − df)/Q.
+- **τ² estimator: REML.** §10.10.4.4: REML is RevMan's default between-study variance estimator, DerSimonian-Laird
+  remains an option, and a comprehensive simulation study recommended REML (Langan et al. 2019). Validated below on
+  BCG (Viechtbauer 2010) and Raudenbush (2009).
+- **Confidence interval: HKSJ only when τ² > 0 and k > 2, else Wald-normal.** §10.10.4.4: RevMan's default interval
+  is Wald-type and users are prompted to use HKSJ when the estimated τ² > 0 and there are more than two studies,
+  because HKSJ can be overly narrow when τ² is estimated as 0 and overly wide with two studies (§10.10.4.5).
+  `hksj="auto"` applies that rule; `True`/`False` force it. HKSJ uses t(k−1) and q·Var(μ) without truncation; the
+  Raudenbush (2009) quasi-F (Knapp-Hartung) results validate it, with `auto` resolving to HKSJ there.
+- **Prediction interval: the CI's SE and multiplier family.** §10.10.4.3 gives M ± t(k−1)·√(τ² + SE(M)²) and
+  §10.10.4.4 says RevMan uses the CI's multiplier (t(k−1) with HKSJ, z with Wald), so the PI equals the CI when
+  τ² = 0. `rk.stats` uses μ ± t(k−1)·√(τ² + q·Var(μ)) with HKSJ and μ ± z·√(τ² + Var(μ)) with Wald. The Wald form
+  is validated on BCG (metafor's interval, Viechtbauer 2010 p. 21) and Raudenbush (metafor's test suite). No
+  published HKSJ prediction interval was found, so the HKSJ form is checked by a formula test only
+  (`tests/test_stats.py`); metafor documents the same rule for `test="knha"` (`predict.rma`: a t(k−p) quantile).
+  `pi_df="k-2"` gives Higgins, Thompson & Spiegelhalter (2009, eq. 12): t(k−2) with the Wald variance; the
+  Borenstein et al. (2009) intervals validate it.
+- **I².** §10.10.4.4: RevMan computes I² = τ²/(τ² + s²) with the typical within-study variance s², which `rk.stats`
+  uses for random-effects models (equal to (Q − df)/Q under DerSimonian-Laird); a fixed-effect model reports
+  (Q − df)/Q.
 """
 
 
 def plan_tolerance(statistic: str) -> float:
     return 1e-2 if statistic in BOUND_STATS else 1e-3
+
+
+def check_tolerance(exp: dict) -> float:
+    """The tolerance of one check: a stated ``tolerance``, else half a unit of the printed last digit plus 10%,
+    capped at the plan's tolerance."""
+    if "tolerance" in exp:
+        return float(exp["tolerance"])
+    decimals = len(str(exp["value"]).partition(".")[2])
+    return min(plan_tolerance(exp["statistic"]), 0.55 * 10.0**-decimals)
 
 
 def study_data(study: dict) -> dict:
@@ -83,14 +105,18 @@ def _pooled_values(p) -> dict[str, float | None]:
 
 
 def _row(ref: dict, block: dict, exp: dict, computed: float | None, note: str = "", **ctx) -> dict:
-    tol = float(exp["tolerance"])
-    diff = abs(computed - exp["value"]) if computed is not None else None
+    tol = check_tolerance(exp)
+    published = float(exp["value"])
+    diff = abs(computed - published) if computed is not None else None
+    problems = [note] if note else []
     if tol > plan_tolerance(exp["statistic"]):
-        note = (note + "; " if note else "") + "fixture tolerance is looser than the plan's"
-    ok = diff is not None and diff <= tol and not note
+        problems.append("tolerance is looser than the plan's")
+    if "tolerance" in exp and not exp.get("tolerance_note"):
+        problems.append("stated tolerance without a reason")
+    ok = diff is not None and diff <= tol and not problems
     return {"dataset": ref["id"], "measure": block["measure"], **ctx, "statistic": exp["statistic"],
             "published": exp["value"], "computed": computed, "diff": diff, "tolerance": tol, "pass": ok,
-            "source": block["source"], "note": note}
+            "source": block["source"], "note": "; ".join(problems), "tolerance_note": exp.get("tolerance_note", "")}
 
 
 def run_reference(ref: dict) -> list[dict]:
@@ -100,7 +126,7 @@ def run_reference(ref: dict) -> list[dict]:
     for block in ref.get("study_checks", []):
         for exp in block["expected"]:
             e = _effect(studies[exp["study"]], block["measure"])
-            ctx = {"model": "-", "hksj": False, "study": exp["study"]}
+            ctx = {"model": "-", "hksj": False, "pi_df": "-", "ci": "Wald z (study)", "study": exp["study"]}
             if isinstance(e, Uncomputable):
                 rows.append(_row(ref, block, exp, None, f"uncomputable: {e.reason}", **ctx))
             else:
@@ -108,13 +134,17 @@ def run_reference(ref: dict) -> list[dict]:
     for block in ref.get("analyses", []):
         chosen = [s for s in ref["studies"] if s.get("group") == block.get("group")]
         effects = [_effect(s, block["measure"]) for s in chosen]
-        ctx = {"model": block["model"], "hksj": block["hksj"], "study": f"pooled (k = {len(chosen)})"}
+        hksj, pi_df = block["hksj"], block.get("pi_df", "ci")
+        ctx = {"model": block["model"], "hksj": hksj, "pi_df": pi_df, "study": f"pooled (k = {len(chosen)})"}
         bad = [s["label"] for s, e in zip(chosen, effects, strict=True) if isinstance(e, Uncomputable)]
         if bad:
-            rows += [_row(ref, block, exp, None, "uncomputable: " + ", ".join(bad), **ctx) for exp in block["expected"]]
+            rows += [_row(ref, block, exp, None, "uncomputable: " + ", ".join(bad), ci="-", **ctx)
+                     for exp in block["expected"]]
             continue
-        values = _pooled_values(pool(effects, model=block["model"], hksj=block["hksj"]))
-        rows += [_row(ref, block, exp, values[exp["statistic"]], **ctx) for exp in block["expected"]]
+        p = pool(effects, model=block["model"], hksj=hksj, pi_df=pi_df)
+        ci = ("HKSJ t(k-1)" if p.hksj else "Wald z") + (" (auto)" if hksj == "auto" else "")
+        values = _pooled_values(p)
+        rows += [_row(ref, block, exp, values[exp["statistic"]], ci=ci, **ctx) for exp in block["expected"]]
     return rows
 
 
@@ -127,11 +157,10 @@ def _markdown(result: dict, refs: list[dict]) -> str:
     status = "**all checks pass**" if result["all_pass"] else f"**{n_fail} check(s) FAIL**"
     lines = [f"# Statistics module validation — {result['date']}", "",
              (f"`rk.stats` version `{result['stats_version']}`: {result['n_pass']}/{result['n_checks']} published "
-              f"values reproduced within tolerance; {status}. Tolerances follow the plan: 1e-3 absolute on estimates, "
-              "SEs, τ², I² (as a proportion) and Q; 1e-2 on interval bounds as reported (exp_* values are on the "
-              "ratio scale as printed). Every published value was copied from the cited source; none was produced by "
-              "this code. Study intervals are 95% Wald intervals; pooled analyses use 95% intervals."),
-             "", HANDBOOK_NOTE]
+              f"values reproduced within tolerance; {status}. Each tolerance is half a unit of the last printed digit "
+              "plus 10%, capped at the plan's (1e-3 on estimates, SEs, τ², I² as a proportion and Q; 1e-2 on "
+              "interval bounds and ratio-scale exp_* values); a wider one is stated with its reason."),
+             "", INTRO, "", HANDBOOK_NOTE]
     for ref in refs:
         rows = [r for r in result["rows"] if r["dataset"] == ref["id"]]
         lines += [f"## {ref['title']}", "", f"Data: {ref['data_source']}", ""]
@@ -141,13 +170,14 @@ def _markdown(result: dict, refs: list[dict]) -> str:
         for r in rows:
             sources.setdefault(r["source"], len(sources) + 1)
         lines += [f"- [{i}] {s}" for s, i in sources.items()] + [""]
-        lines += [("| measure | model | HKSJ | study | statistic | published | computed | abs diff | tolerance | "
-                   "result | source |"), "|---|---|---|---|---|---|---|---|---|---|---|"]
+        lines += [("| measure | model | CI | PI | study | statistic | published | computed | abs diff | tolerance | "
+                   "result | source |"), "|---|---|---|---|---|---|---|---|---|---|---|---|"]
         for r in rows:
             res = "pass" if r["pass"] else f"FAIL{(' (' + r['note'] + ')') if r['note'] else ''}"
-            lines.append(f"| {r['measure']} | {r['model']} | {'yes' if r['hksj'] else 'no'} | {r['study']} | "
+            tol = f"{r['tolerance']:g}" + (f" ({r['tolerance_note']})" if r["tolerance_note"] else "")
+            lines.append(f"| {r['measure']} | {r['model']} | {r['ci']} | {r['pi_df']} | {r['study']} | "
                          f"{r['statistic']} | {r['published']} | {_fmt(r['computed'])} | {_fmt(r['diff'], 3)} | "
-                         f"{r['tolerance']:g} | {res} | [{sources[r['source']]}] |")
+                         f"{tol} | {res} | [{sources[r['source']]}] |")
         lines.append("")
     return "\n".join(lines)
 
@@ -156,13 +186,14 @@ def run_stats_eval(report_dir: Path = Path("docs/eval"), *, refs_dir: Path = REF
                    write_config: bool = False) -> dict:
     paths = sorted(refs_dir.glob("*.json"))
     if not paths:
-        raise FileNotFoundError(f"no reference datasets in {refs_dir} (run from a checkout of the repository)")
+        raise FileNotFoundError(f"no reference datasets in {refs_dir}")
     refs = [json.loads(p.read_text()) for p in paths]
     rows = [r for ref in refs for r in run_reference(ref)]
     n_pass = sum(r["pass"] for r in rows)
     result = {"date": datetime.now(UTC).date().isoformat(), "stats_version": STATS_VERSION,
               "datasets": [{"id": r["id"], "title": r["title"], "data_source": r["data_source"]} for r in refs],
               "n_checks": len(rows), "n_pass": n_pass, "all_pass": bool(rows) and n_pass == len(rows), "rows": rows}
+    report_dir = report_dir.resolve()
     report_dir.mkdir(parents=True, exist_ok=True)
     stem = report_dir / f"stats-{result['date']}"
     md, js = stem.with_suffix(".md"), stem.with_suffix(".json")

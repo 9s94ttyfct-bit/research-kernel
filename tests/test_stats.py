@@ -1,9 +1,10 @@
-"""rk.stats: effect sizes, pooling and plots, validated against published meta-analyses (tests/fixtures/stats)."""
+"""rk.stats: effect sizes, pooling and plots, validated against published meta-analyses (rk/stats/reference)."""
 
 from __future__ import annotations
 
 import json
 import math
+import random
 import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -12,11 +13,20 @@ import pytest
 from scipy import stats as sps
 
 from rk.config import Settings, load_settings
-from rk.stats import STATS_VERSION, meta, plots, stats_enabled
+from rk.stats import (
+    REFERENCE_DIR,
+    STATS_VERSION,
+    meta,
+    plots,
+    stats_enabled,
+    version_files,
+    version_of,
+)
 from rk.stats import effects as fx
 from rk.stats.effects import Effect, Uncomputable
 
-REFS = Path(__file__).parent / "fixtures" / "stats"
+REFS = REFERENCE_DIR
+HARD = [Effect(1.432, 1.34), Effect(0.459, 0.1198), Effect(-2.208, 2.3243), Effect(-2.525, 10.5635)]
 
 
 def _ref(name: str) -> dict:
@@ -101,8 +111,8 @@ def test_bcg_reproduces_published_dl_and_reml():
     failed = [r for r in rows if not r["pass"]]
     assert not failed, failed
     stats_seen = {(r["model"], r["statistic"]) for r in rows if r["measure"] == "RR"}
-    assert {("REML", "tau2"), ("REML", "i2"), ("REML", "estimate"), ("REML", "se"),
-            ("DL", "tau2"), ("DL", "i2"), ("DL", "estimate")} <= stats_seen
+    assert {("REML", "tau2"), ("REML", "i2"), ("REML", "estimate"), ("REML", "se"), ("REML", "exp_pi_low"),
+            ("REML", "pi_high"), ("DL", "tau2"), ("DL", "i2"), ("DL", "estimate")} <= stats_seen
 
     # the published values themselves (Viechtbauer 2010, p. 14; Stata metan via metafor's tests)
     reml = meta.pool(_bcg_effects("RR"), model="REML", hksj=False)
@@ -138,34 +148,178 @@ def test_hksj_widens_interval_and_uses_t_k_minus_1():
     assert math.isclose(wald.se, math.sqrt(1 / sw), rel_tol=1e-12)
     assert math.isclose(hk.ci_high - hk.estimate, sps.t.ppf(0.975, k - 1) * hk.se, rel_tol=1e-12)
     assert math.isclose(wald.ci_high - wald.estimate, sps.norm.ppf(0.975) * wald.se, rel_tol=1e-12)
-    # the prediction interval: t with k-2 df on tau2 + the (Wald) variance of the mean, either way
-    half = sps.t.ppf(0.975, k - 2) * math.sqrt(hk.tau2 + 1 / sw)
-    for p in (hk, wald):
+
+
+def test_prediction_interval_uses_the_ci_family_or_higgins_k_minus_2():
+    es = _bcg_effects("RR")
+    k = len(es)
+    hk = meta.pool(es, model="REML", hksj=True)
+    wald = meta.pool(es, model="REML", hksj=False)
+    sw = math.fsum(1 / (e.vi + hk.tau2) for e in es)
+    # RevMan rule (Cochrane Handbook 6.5.1 §10.10.4.4): the CI's SE and multiplier family
+    half_hk = sps.t.ppf(0.975, k - 1) * math.sqrt(hk.tau2 + hk.se**2)
+    half_wald = sps.norm.ppf(0.975) * math.sqrt(wald.tau2 + 1 / sw)
+    for p, half in ((hk, half_hk), (wald, half_wald)):
+        assert p.pi_df == "ci"
         assert math.isclose(p.pi_high - p.estimate, half, rel_tol=1e-12)
         assert math.isclose(p.estimate - p.pi_low, half, rel_tol=1e-12)
-    two = meta.pool(es[:2], model="REML")
-    assert two.pi_low is None and two.pi_high is None
+    # Higgins, Thompson & Spiegelhalter (2009): t(k-2) on the Wald variance, whatever the CI
+    half_k2 = sps.t.ppf(0.975, k - 2) * math.sqrt(hk.tau2 + 1 / sw)
+    for hksj in (True, False):
+        p = meta.pool(es, model="REML", hksj=hksj, pi_df="k-2")
+        assert p.pi_df == "k-2" and p.hksj == hksj
+        assert math.isclose(p.pi_high - p.estimate, half_k2, rel_tol=1e-12)
+    # no PI below 3 studies or for a fixed-effect model; tau2 = 0 under Wald gives PI == CI
+    assert meta.pool(es[:2], model="REML").pi_low is None
+    assert meta.pool(es, model="FE").pi_low is None
+    same = meta.pool([Effect(0.3, 0.04)] * 5, model="REML")
+    assert (same.pi_low, same.pi_high) == pytest.approx((same.ci_low, same.ci_high), abs=1e-15)
+    with pytest.raises(ValueError):
+        meta.pool(es, pi_df="k-1")
+
+
+def test_hksj_auto_follows_the_handbook():
+    es = _bcg_effects("RR")
+    default = meta.pool(es)  # REML, hksj="auto": tau2 > 0 and k > 2
+    assert default.model == "REML" and default.tau2 > 0 and default.hksj
+    assert default == meta.pool(es, model="REML", hksj=True)
+    pair = [es[3], es[7]]  # Hart & Sutherland vs TPT Madras: clearly heterogeneous
+    two = meta.pool(pair)  # k = 2: Wald under auto, HKSJ only when forced
+    assert two.tau2 > 0 and not two.hksj
+    assert meta.pool(pair, hksj=True).hksj
+    homogeneous = [Effect(0.10, 0.04), Effect(0.11, 0.04), Effect(0.09, 0.04), Effect(0.10, 0.04)]
+    for model in ("DL", "REML"):
+        p = meta.pool(homogeneous, model=model)  # tau2 floored at 0: Wald under auto
+        assert p.tau2 == 0.0 and p.i2 == 0.0 and not p.hksj
+        assert math.isclose(p.se, math.sqrt(0.04 / 4), rel_tol=1e-12)
+    with pytest.raises(ValueError):
+        meta.pool(es, hksj="yes")
+
+
+def test_identical_studies_and_too_few_studies():
+    same = [Effect(0.3, 0.04)] * 5
+    for model in ("FE", "DL", "REML"):
+        p = meta.pool(same, model=model)
+        assert p.estimate == pytest.approx(0.3, abs=1e-15) and p.q == pytest.approx(0, abs=1e-25)
+        assert p.tau2 == 0.0 and p.i2 == 0.0 and not p.hksj and p.q_df == 4
+    for few in ([], [Effect(0.3, 0.04)]):
+        with pytest.raises(ValueError):
+            meta.pool(few)
+
+
+def test_non_finite_inputs_and_sums_raise():
+    with pytest.raises(ValueError):
+        meta.pool([Effect(0.1, 1e-320), Effect(0.2, 0.1)])  # the weight overflows to inf
+    with pytest.raises(ValueError):
+        meta.pool([Effect(1e200, 0.1), Effect(-1e200, 0.1)])  # Q overflows
+    with pytest.raises(ValueError):
+        meta.pool([Effect(float("nan"), 0.1), Effect(0.2, 0.1)])
 
 
 def test_fe_model_has_zero_tau2():
     es = _bcg_effects("RR")
-    fe = meta.pool(es, model="FE")  # the default hksj=True does not apply to a fixed-effect model
+    fe = meta.pool(es, model="FE")  # hksj does not apply to a fixed-effect model
     assert fe.tau2 == 0.0 and fe.model == "FE" and not fe.hksj
+    assert meta.pool(es, model="FE", hksj=True) == fe
     assert fe.pi_low is None and fe.pi_high is None
     w = [1 / e.vi for e in es]
     assert math.isclose(fe.estimate, math.fsum(wi * e.yi for wi, e in zip(w, es, strict=True)) / math.fsum(w))
     assert math.isclose(fe.se, math.sqrt(1 / math.fsum(w)))
     assert fe.q_df == len(es) - 1 and math.isclose(fe.i2, (fe.q - fe.q_df) / fe.q)
-    with pytest.raises(ValueError):
-        meta.pool(es[:1])
+
+
+def _reml_loglik(y: list[float], v: list[float], t: float) -> float:
+    """The restricted log-likelihood up to a constant, written out independently of rk.stats."""
+    w = [1 / (vi + t) for vi in v]
+    sw = sum(w)
+    mu = sum(wi * yi for wi, yi in zip(w, y, strict=True)) / sw
+    return -0.5 * (sum(math.log(vi + t) for vi in v) + math.log(sw)
+                   + sum(wi * (yi - mu) ** 2 for wi, yi in zip(w, y, strict=True)))
+
+
+def _is_reml_root(y: list[float], v: list[float], t: float) -> bool:
+    """``t`` is a stationary point of the REML likelihood (the score changes sign within 1e-7·(1 + t)), or ``t`` is 0
+    and the score there is not positive."""
+    if t == 0.0:
+        return meta.reml_score(y, v, 0.0) <= 0
+    d = 1e-7 * (1 + t)
+    return meta.reml_score(y, v, max(0.0, t - d)) > 0 > meta.reml_score(y, v, t + d)
+
+
+def test_reml_converges_where_plain_fisher_scoring_cycles():
+    y, v = [e.yi for e in HARD], [e.vi for e in HARD]
+    p = meta.pool(HARD, model="REML")
+    assert p.tau2 > 0 and _is_reml_root(y, v, p.tau2)
+    grid = [i * 1e-4 for i in range(50_001)]  # 0 .. 5
+    best = max(grid, key=lambda t: _reml_loglik(y, v, t))
+    assert abs(p.tau2 - best) <= 1e-4
+    assert _reml_loglik(y, v, p.tau2) >= _reml_loglik(y, v, best) - 1e-12
+
+
+def test_reml_seeded_stress_has_no_failures():
+    rng = random.Random(20261107)
+    failures = []
+    for n in range(2000):
+        k = rng.randint(2, 12)
+        scale = 10 ** rng.uniform(-3, 2)
+        v = [scale * 10 ** rng.uniform(-1.5, 1.5) for _ in range(k)]
+        tau = math.sqrt(scale) * rng.choice([0.0, 0.3, 1.0, 3.0, 10.0])
+        y = [rng.gauss(0, tau) + rng.gauss(0, math.sqrt(vi)) for vi in v]
+        try:
+            p = meta.pool([Effect(a, b) for a, b in zip(y, v, strict=True)], model="REML")
+        except Exception as e:  # noqa: BLE001 - every failure is collected and reported
+            failures.append((n, repr(e)))
+            continue
+        if not _is_reml_root(y, v, p.tau2):
+            failures.append((n, p.tau2))
+    assert failures == []
 
 
 def test_reml_nonconvergence_is_an_error(monkeypatch):
-    es = _bcg_effects("RR")
-    assert meta.pool(es, model="REML").tau2 > 0
+    assert meta.pool(HARD, model="REML").tau2 > 0
     monkeypatch.setattr(meta, "REML_MAX_ITER", 1)
+    assert meta.pool(HARD, model="REML").tau2 > 0  # the safeguarded solve finishes it
+    monkeypatch.setattr(meta, "REML_BRENT_MAXITER", 1)
     with pytest.raises(meta.ConvergenceError):
-        meta.pool(es, model="REML")
+        meta.pool(HARD, model="REML")
+
+
+def test_stats_version_covers_sources_reference_data_and_the_evaluation(tmp_path):
+    files = version_files()
+    names = {p.relative_to(REFS.parents[1]).as_posix() for p in files}
+    assert {"stats/meta.py", "stats/effects.py", "stats/reference/bcg.json", "eval/stats_eval.py"} <= names
+    root = tmp_path / "rk"
+    copies = []
+    for p in files:
+        c = root / p.relative_to(REFS.parents[1])
+        c.parent.mkdir(parents=True, exist_ok=True)
+        c.write_bytes(p.read_bytes())
+        copies.append(c)
+    assert version_of(copies, root) == STATS_VERSION
+    meta_copy = root / "stats" / "meta.py"
+    meta_copy.write_bytes(meta_copy.read_bytes().replace(b"\n", b"\r\n"))  # a CRLF checkout: same version
+    assert version_of(copies, root) == STATS_VERSION
+    data = bytearray(meta_copy.read_bytes())
+    data[-3] ^= 1  # one changed source byte: another version
+    meta_copy.write_bytes(bytes(data))
+    assert version_of(copies, root) != STATS_VERSION
+
+
+def test_reference_tolerances_follow_the_printed_digits():
+    from rk.eval.stats_eval import check_tolerance, plan_tolerance
+
+    for path in sorted(REFS.glob("*.json")):
+        ref = json.loads(path.read_text())
+        for block in ref.get("study_checks", []) + ref.get("analyses", []):
+            for exp in block["expected"]:
+                assert isinstance(exp["value"], str), (path.name, exp)  # as printed, digits intact
+                tol = check_tolerance(exp)
+                assert tol <= plan_tolerance(exp["statistic"])
+                decimals = len(exp["value"].partition(".")[2])
+                if "tolerance" in exp:
+                    assert exp.get("tolerance_note"), (path.name, exp)
+                else:
+                    assert tol == min(plan_tolerance(exp["statistic"]), 0.55 * 10.0**-decimals)
 
 
 def test_forest_svg_escapes_labels_and_is_deterministic():
@@ -208,18 +362,22 @@ def test_stats_enabled_requires_current_version(monkeypatch):
 def test_eval_write_config_only_when_all_pass(tmp_home, tmp_path, monkeypatch):
     from rk.eval.stats_eval import run_stats_eval
 
-    r = run_stats_eval(tmp_path / "out", write_config=True)
+    monkeypatch.chdir(tmp_path)
+    r = run_stats_eval(Path("out"), write_config=True)  # a relative report directory
     assert r["all_pass"] and r["config_written"] and r["n_checks"] > 100
     md, js = Path(r["report"]), Path(r["json"])
     assert md.name == f"stats-{r['date']}.md" and js.name == f"stats-{r['date']}.json"
+    assert md.is_absolute() and md == (tmp_path / "out" / md.name).resolve()
     assert json.loads(js.read_text())["stats_version"] == STATS_VERSION
-    assert "10.10.4.4" in md.read_text()
+    text = md.read_text()
+    assert "10.10.4.4" in text and "10.10.4.3" in text
     assert load_settings().stats_validated == {"version": STATS_VERSION, "report": str(md)}
 
     bad = tmp_path / "bad-refs"
     shutil.copytree(REFS, bad)
     ref = json.loads((bad / "bcg.json").read_text())
-    ref["analyses"][0]["expected"][0]["value"] += 0.01  # a published estimate no longer reproduced
+    exp = ref["analyses"][0]["expected"][0]
+    exp["value"] = f"{float(exp['value']) + 0.01:.4f}"  # a published estimate no longer reproduced
     (bad / "bcg.json").write_text(json.dumps(ref))
     home2 = tmp_path / "home2"
     home2.mkdir()
