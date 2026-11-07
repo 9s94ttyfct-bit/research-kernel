@@ -224,7 +224,8 @@ class Orchestrator:
         return ctx, outcome
 
     def advance(self, project: str, *, actor: str) -> GateResult:
-        """Apply the answer the current attempt waits on, then gate the attempt; a pass writes ``stage.passed``."""
+        """Apply the answer the current attempt waits on, then gate the attempt; a pass writes ``stage.passed``. An
+        attempt that was interrupted (no ``stage.ran``) is never gated: its artifacts may be partial."""
         ps, lib = self.kernel.project(project)
         stage = current_stage(ps)
         if stage is None:
@@ -234,6 +235,9 @@ class Orchestrator:
         if row is None or row["status"] == "reopened":
             return GateResult(False, [f"{stage!r} has no attempt to gate; run the stage first"])
         attempt = row["attempt"]
+        if not attempt_ran(ps, stage, attempt):
+            why = f"{stage!r} attempt {attempt} was interrupted before it finished; run the stage again"
+            return GateResult(False, [why])
         if row["waiting_checkpoint"]:
             cp = get_checkpoint(ps, row["waiting_checkpoint"])
             if cp["status"] == "open":
@@ -413,15 +417,20 @@ class Orchestrator:
 
     def _d1_edge(self, ps: ProjectStore, worker: Worker, ctx: StageContext, to: str,
                  failures: list[str]) -> StageOutcome | None:
-        """A D1 use of ``stage->to`` under the same limit; ``None`` once taken, else what the caller returns."""
+        """A D1 use of ``stage->to`` under the same limit; ``None`` once taken, else what the caller returns. A P1
+        degrade that fails is a dead end, and the reason says so: running the stage again only degrades again."""
         res = self._use_edge(ps, worker, ctx, to, failures)
+        edge = edge_name(ctx.stage, to)
         if res.kind == "blocked":
-            return StageOutcome("waiting_human", checkpoint_id=res.checkpoint_id,
-                                reason=f"{edge_name(ctx.stage, to)} reached its limit")
+            return StageOutcome("waiting_human", checkpoint_id=res.checkpoint_id, reason=f"{edge} reached its limit")
         if res.kind == "passed":
             return StageOutcome("done", reason="passed its gate after degrading")
         if res.kind == "failed":
-            return StageOutcome("failed", reason=res.reason)
+            return StageOutcome("failed", reason=(
+                f"dead end: {edge} reached its limit of {EDGE_LIMIT} uses and degrading {ctx.stage!r} (P1) did not "
+                f"get it through: {res.reason}; running {ctx.stage!r} again gives the same result. Only the "
+                f"researcher can change this: with production mode collab (P2, recorded in the intake) the stage asks "
+                f"them at an edge limit instead of degrading."))
         return None
 
     def _take_edge(self, ps: ProjectStore, stage: str, to: str, failures: list[str], *, actor: str) -> None:

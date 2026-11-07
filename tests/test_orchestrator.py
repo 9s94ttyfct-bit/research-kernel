@@ -464,7 +464,8 @@ def test_d1_degrade_failure_returns_failed(project):
         o.run_stage("demo", "landscape", actor="tester")
         o.advance("demo", actor="tester")
     out = o.run_stage("demo", "landscape", actor="tester")
-    assert (out.status, out.reason) == ("failed", "no cluster with 5 verified sources")
+    assert out.status == "failed" and out.reason.startswith("dead end: landscape->landscape reached its limit")
+    assert "no cluster with 5 verified sources" in out.reason
     assert current_stage(ps) == "landscape" and landscape.kinds().count("run") == 3
 
 
@@ -483,6 +484,23 @@ def test_d1_interrupted_attempt_reruns_as_a_new_attempt_without_an_edge(project,
     # an attempt that finished is still rerun as a use of X->X
     assert o.run_stage("demo", "landscape", actor="tester").status == "done"
     assert edge_count(ps, "landscape->landscape") == 1 and latest_attempt(ps, "landscape") == 3
+
+
+@pytest.mark.parametrize("interruption", [RateCapped("claude_cli", 60.0), RuntimeError("the kernel crashed")])
+def test_d1_advance_does_not_gate_an_interrupted_attempt(project, interruption):
+    k, ps = project
+    landscape = FakeWorker(runs=[interruption])
+    o = _orch(k, _workers(landscape=landscape))
+    o.run_stage("demo", "intake", actor="tester")
+    assert o.advance("demo", actor="tester").ok
+    with pytest.raises(type(interruption)):
+        o.run_stage("demo", "landscape", actor="tester")
+    res = o.advance("demo", actor="tester")
+    assert res == GateResult(False, ["'landscape' attempt 1 was interrupted before it finished; run the stage again"])
+    assert landscape.kinds() == ["run"] and _events(ps, "stage.gate")[-1]["stage"] == "intake"
+    assert current_stage(ps) == "landscape"
+    assert o.run_stage("demo", "landscape", actor="tester").status == "done"
+    assert o.advance("demo", actor="tester").ok and current_stage(ps) == "gaps"
 
 
 def _one_gap(ctx, clusters):

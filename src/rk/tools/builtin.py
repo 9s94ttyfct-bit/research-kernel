@@ -31,7 +31,8 @@ from rk.llm.drivers import DriverSpec, available_all
 from rk.llm.runner import FreeText, run_task
 from rk.llm.vendors import vendor_of
 from rk.notes import NoteIn, NoteRejected, add_note, list_notes, text_find, text_read
-from rk.roles.policy import ROLES, tool_roles
+from rk.orchestrator.state import current_stage
+from rk.roles.policy import LEAD_STAGE_TOOLS, ROLES, tool_roles
 from rk.sources import openalex
 from rk.sources.identifiers import Identifier, parse_identifier
 from rk.sources.resolver import resolve, search
@@ -83,6 +84,25 @@ class ProjectArg(BaseModel):
     project: str
 
 
+def _lead_stage_gate(k: Kernel, name: str, handler: Callable) -> Callable:
+    """``handler`` of a stage-gated Lead tool (``LEAD_STAGE_TOOLS``): the Lead is refused with ``stage_closed`` once
+    every discovery stage passed. A call without a project, or with an unknown one, goes on to the handler."""
+    def gated(ctx: CallContext, a: BaseModel):
+        slug = getattr(a, "project", None)
+        if ctx.role == "lead" and slug:
+            try:
+                ps, _ = k.project(slug)
+            except LookupError:
+                ps = None
+            if ps is not None and current_stage(ps) is None:
+                raise ToolError("stage_closed", f"{name} is closed to the Lead: every discovery stage of {slug} "
+                                                f"passed (question included); from protocol on the orchestrator's "
+                                                f"roles do this work, and the Lead reads and reports status",
+                                status=409)
+        return handler(ctx, a)
+    return gated
+
+
 def build_registry(k: Kernel, browser: Callable[[], BrowserService | None] | None = None,
                    runs: Callable[[], RunManager | None] | None = None) -> ToolRegistry:
     """``browser()`` returns the running built-in browser service (``rk serve``), or None; ``runs()`` returns
@@ -92,8 +112,9 @@ def build_registry(k: Kernel, browser: Callable[[], BrowserService | None] | Non
 
     def tool(name: str, summary: str, inp: type[BaseModel], writes: bool):
         def deco(fn):
+            handler = _lead_stage_gate(k, name, fn) if name in LEAD_STAGE_TOOLS else fn
             reg.register(Tool(name=name, summary=summary, input_model=inp, output_model=Out, roles=tool_roles(name),
-                              writes=writes, handler=fn))
+                              writes=writes, handler=handler))
             return fn
         return deco
 

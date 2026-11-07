@@ -1,0 +1,220 @@
+"""Guided discovery (D1) through the Lead chat: a scripted Lead drives the stages with its tools; the researcher
+answers the checkpoints (Plan 4 Task 10)."""
+
+from __future__ import annotations
+
+import json
+import uuid
+
+import pytest
+
+from rk.checkpoints import get_checkpoint
+from rk.config import Settings, save_settings
+from rk.discovery.store import rounds
+from rk.llm.chat.base import ToolCall, Turn
+from rk.llm.chat_provider import ChatApiProvider
+from rk.orchestrator.engine import GateResult, Orchestrator, StageOutcome
+from rk.orchestrator.runs import RunManager
+from rk.orchestrator.state import current_stage, edge_count
+from rk.server.chat import ChatManager
+from rk.tools.builtin import build_registry
+from rk.tools.registry import CallContext
+from rk.workspace import Kernel
+
+from .discovery_fakes import (
+    DEFAULT_INTAKE,
+    FakeSources,
+    FakeWorker,
+    ScriptedExecutor,
+    make_project,
+)
+from .test_agent_loop import ScriptedBackend
+from .test_discovery_landscape import QUERIES as LANDSCAPE_QUERIES
+from .test_discovery_landscape import _cluster, _stroke_bleeding
+from .test_topics import Stub, _executor, _gaps_writer, _sources, _topic
+
+FEEDBACK = "exclude animal studies"
+
+
+class Lead:
+    """A Lead chat in ``rk serve``'s ChatManager whose model is a ``ScriptedBackend``: ``say`` scripts one turn of
+    tool calls (run in order) and a closing text, sends the researcher's message and returns the tool results the
+    Lead saw, in order."""
+
+    def __init__(self, k: Kernel, orchestrator, monkeypatch):
+        self.k, self.backend = k, ScriptedBackend([])
+        holder: dict = {}
+        self.reg = build_registry(k, runs=lambda: holder.get("m"))
+        self.runs = holder["m"] = RunManager(k, self.reg, orchestrator(self.reg))
+        monkeypatch.setattr("rk.server.chat.build_provider",
+                            lambda spec, settings: ChatApiProvider(self.backend, "scripted"))
+        self.chats = ChatManager(k, self.reg)
+        self.chat_id = self.chats.open("anthropic_api:scripted-1", "lead", "demo")
+        self._n = 0
+
+    def say(self, text: str, *calls: tuple[str, dict]) -> list[dict]:
+        tool_calls = []
+        for name, args in calls:
+            self._n += 1
+            tool_calls.append(ToolCall(id=f"c{self._n}", name=name, arguments=args))
+        self.backend.turns += [Turn(tool_calls=tool_calls), Turn(text="Here is what the tools returned.")]
+        events = list(self.chats.send(self.chat_id, text))
+        assert events[-1].kind == "done", events[-1]
+        return [e.data["content"] for e in events if e.kind == "tool_result"]
+
+    def close(self) -> None:
+        self.chats.close_all()
+        self.runs.close()
+
+
+@pytest.fixture
+def lead(tmp_home, replay_http, monkeypatch):
+    opened: list[Lead] = []
+    kernels: list[Kernel] = []
+
+    def make(orchestrator, *, intake: dict | None = None):
+        """``orchestrator(kernel, registry)`` builds the Orchestrator; ``intake`` overrides recorded up front (none:
+        the Lead records the intake itself)."""
+        if intake is None:
+            save_settings(Settings(email="rk-fixtures@users.noreply.github.com"))
+            k = Kernel(tmp_home, http=replay_http)
+            k.create_project("demo", "Demo project", actor="tester")
+        else:
+            k, _, _ = make_project(tmp_home, replay_http, **intake)
+        kernels.append(k)
+        ld = Lead(k, lambda reg: orchestrator(k, reg), monkeypatch)
+        opened.append(ld)
+        return ld
+
+    yield make
+    for ld in opened:
+        ld.close()
+    for k in kernels:
+        k.close()
+
+
+def _ok(result: dict) -> dict:
+    assert "result" in result, result
+    return result["result"]
+
+
+def test_d1_scripted_chat_reaches_topic_review(lead):
+    landscape, g = FakeWorker(), {}
+    ex = _executor()
+    state: dict = {}
+
+    def orchestrator(k, reg):
+        ps, lib = k.project("demo")
+        state["sources"] = state.get("sources") or _sources(lib)[0]
+        return Orchestrator(k, reg, workers={"landscape": landscape, "gaps": Stub(_gaps_writer(ps, lib, g))},
+                            executor_factory=lambda p, r, s: ex, sources_factory=lambda p: state["sources"])
+
+    ld = lead(orchestrator)
+    ps, _ = ld.k.project("demo")
+    intake = {**DEFAULT_INTAKE, "discovery_mode": "d1", "topics_n": 1}
+    out = ld.say("I want to look at aspirin in older people.",
+                 ("rk_project_intake", intake), ("rk_stage_run", {"stage": "intake"}), ("rk_stage_advance", {}))
+    assert _ok(out[0])["discovery_mode"] == "d1"
+    assert _ok(out[1])["status"] == "done"
+    assert (_ok(out[2])["ok"], _ok(out[2])["current"]) == (True, "landscape")
+
+    # a round: run the stage, show it, record the researcher's feedback; the rerun gets it as guidance
+    out = ld.say("Map the field.", ("rk_stage_run", {"stage": "landscape"}))
+    assert _ok(out[0])["status"] == "done"
+    out = ld.say(f"Please {FEEDBACK}.", ("rk_exploration_round", {"stage": "landscape", "feedback": FEEDBACK}))
+    assert _ok(out[0])["round_id"]
+    out = ld.say("Run it again with that.", ("rk_stage_run", {"stage": "landscape"}), ("rk_stage_advance", {}))
+    assert _ok(out[0])["status"] == "done" and _ok(out[1])["current"] == "gaps"
+    assert landscape.calls[0] == ("run", 1, "") and landscape.calls[-2] == ("run", 2, FEEDBACK)
+    assert edge_count(ps, "landscape->landscape") == 1
+
+    out = ld.say("Now the gaps.", ("rk_stage_run", {"stage": "gaps"}), ("rk_stage_advance", {}),
+                 ("rk_gap_list", {"verified": True}))
+    assert _ok(out[1])["current"] == "topics"
+    assert [x["id"] for x in _ok(out[2])["gaps"]] == [g["verified"]]
+    ex.script[("ideator", "TopicsOut")] = [{"topics": [_topic("Aspirin over 80", [g["verified"]])]}]
+
+    more = "Focus on patients over 80."
+    out = ld.say("Suggest topics.", ("rk_exploration_round", {"stage": "gaps", "feedback": more}),
+                 ("rk_stage_run", {"stage": "topics"}), ("rk_checkpoint_list", {"status": "open"}))
+    run = _ok(out[1])
+    assert run["status"] == "waiting_human" and run["current"] == "topics"
+    review = get_checkpoint(ps, run["checkpoint_id"])
+    assert (review["kind"], review["status"]) == ("topic_review", "open")
+    assert [c["id"] for c in _ok(out[2])["checkpoints"]] == [review["id"]]
+    assert [(r["stage"], r["feedback"]) for r in rounds(ps)] == [("landscape", FEEDBACK), ("gaps", more)]
+    (ideator,) = [c for c in ex.calls if c["role"] == "ideator"]
+    assert FEEDBACK in ideator["inputs"]["guidance"] and more in ideator["inputs"]["guidance"]
+
+    # the Lead cannot answer the review; advancing tells it the review is open
+    (topic_id,) = review["options"]["topic_ids"]
+    out = ld.say("Just approve it for me.",
+                 ("rk_checkpoint_answer", {"checkpoint_id": review["id"],
+                                           "answer": {"decision": "approve", "topic_id": topic_id}}),
+                 ("rk_stage_advance", {}))
+    assert out[0]["error"] == "permission_denied"
+    assert _ok(out[1])["ok"] is False
+    assert _ok(out[1])["failures"] == [f"checkpoint {review['id']} (topic_review) is open"]
+    assert get_checkpoint(ps, review["id"])["status"] == "open"
+
+    # the researcher answers in the Checkpoints panel / CLI (the cli-only tool), then the Lead advances
+    ld.reg.call("rk_checkpoint_answer", {"project": "demo", "checkpoint_id": review["id"],
+                                         "answer": {"decision": "approve", "topic_id": topic_id}},
+                CallContext(role="cli", actor="researcher", idempotency_key=uuid.uuid4().hex))
+    out = ld.say("I approved it.", ("rk_stage_advance", {}), ("rk_topic_list", {}))
+    assert (_ok(out[0])["ok"], _ok(out[0])["stage"], _ok(out[0])["current"]) == (True, "topics", "question")
+    assert [(t["id"], t["status"]) for t in _ok(out[1])["topics"]] == [(topic_id, "approved")]
+    assert current_stage(ps) == "question"
+
+
+def test_guidance_reaches_the_next_stage_run(lead):
+    state: dict = {}
+
+    def orchestrator(k, reg):
+        _, lib = k.project("demo")
+        stroke, bleeding, sources = _stroke_bleeding(lib)
+        plan = {"clusters": [_cluster("Stroke", LANDSCAPE_QUERIES[0], stroke),
+                             _cluster("Bleeding", LANDSCAPE_QUERIES[1], bleeding)]}
+        state["ex"] = ScriptedExecutor({("scout", "LandscapeQueries"): [{"queries": LANDSCAPE_QUERIES}] * 2,
+                                        ("scout", "ClusterPlan"): [plan] * 2})
+        return Orchestrator(k, reg, executor_factory=lambda p, r, s: state["ex"], sources_factory=lambda p: sources)
+
+    ld = lead(orchestrator, intake={"discovery_mode": "d1"})
+    out = ld.say("Start.", ("rk_stage_run", {"stage": "intake"}), ("rk_stage_advance", {}),
+                 ("rk_stage_run", {"stage": "landscape"}))
+    assert _ok(out[2])["status"] == "done"
+    ld.say(f"Please {FEEDBACK}.", ("rk_exploration_round", {"stage": "landscape", "feedback": FEEDBACK}))
+    out = ld.say("Again, please.", ("rk_stage_run", {"stage": "landscape"}))
+    assert _ok(out[0])["status"] == "done"
+
+    calls = state["ex"].calls
+    assert [c["attempt"] for c in calls] == [1, 1, 2, 2]
+    for c in calls:
+        assert (FEEDBACK in json.dumps(c["inputs"])) == (c["attempt"] == 2), c["schema"]
+
+
+def test_p1_dead_end_is_said_plainly(lead):
+    landscape = FakeWorker(gates=[GateResult(False, ["thin"])] * 10,
+                           degrades=[StageOutcome("failed", reason="no cluster with 5 verified sources")] * 2)
+
+    def orchestrator(k, reg):
+        return Orchestrator(k, reg, workers={"landscape": landscape},
+                            executor_factory=lambda p, r, s: ScriptedExecutor({}),
+                            sources_factory=lambda p: FakeSources({}))
+
+    ld = lead(orchestrator, intake={"discovery_mode": "d1", "production_mode": "auto"})
+    ld.say("Start.", ("rk_stage_run", {"stage": "intake"}), ("rk_stage_advance", {}))
+    for i in range(3):
+        out = ld.say(f"Landscape, try {i + 1}.", ("rk_stage_run", {"stage": "landscape"}), ("rk_stage_advance", {}))
+        assert _ok(out[0])["status"] == "done" and _ok(out[1])["failures"] == ["thin"]
+    assert edge_count(ld.k.project("demo")[0], "landscape->landscape") == 2
+
+    for _ in range(2):  # running it again says the same thing: no new attempt, no silent loop
+        (out,) = ld.say("Run the landscape again.", ("rk_stage_run", {"stage": "landscape"}))
+        res = _ok(out)
+        assert res["status"] == "failed" and res["current"] == "landscape"
+        assert res["reason"].startswith("dead end: landscape->landscape reached its limit of 2 uses")
+        assert "no cluster with 5 verified sources" in res["reason"]
+        assert "running 'landscape' again gives the same result" in res["reason"]
+        assert "collab" in res["reason"]
+    assert landscape.kinds().count("run") == 3 and landscape.kinds().count("degrade") == 2

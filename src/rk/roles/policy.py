@@ -58,6 +58,17 @@ TOOL_ROLES: dict[str, frozenset[str]] = {
     "rk_stage_status": _r(*_ALL_TOOL_ROLES),
 }
 
+# The Lead's write tools of the discovery stages (spec §8.1): the D1 tools and the Scout/Reader tools it shares,
+# browser included. They are open to the Lead while a discovery stage is current; once `question` passed their
+# handlers refuse the Lead with `stage_closed` (from protocol on the orchestrator's roles do that work and the Lead
+# only reads and reports status). Reads and status tools (rk_browser_tabs, rk_browser_status included) stay open.
+LEAD_STAGE_TOOLS = frozenset({
+    "rk_project_intake", "rk_stage_run", "rk_stage_advance", "rk_exploration_round",
+    "rk_search_works", "rk_expand_citations", "rk_source_add", "rk_source_fetch_fulltext", "rk_note_add",
+    "rk_browser_search", "rk_browser_fetch_fulltext", "rk_browser_open", "rk_browser_snapshot", "rk_browser_act",
+    "rk_browser_request_human",
+})
+
 
 def tool_roles(name: str) -> frozenset[str]:
     try:

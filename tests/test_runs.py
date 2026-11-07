@@ -471,8 +471,11 @@ def test_discovery_read_tools_show_the_latest_attempt(env):
     assert st["current"] is None and [s["status"] for s in st["stages"]] == ["passed"] * 5
     with pytest.raises(PermissionDenied):
         reg.call("rk_exploration_round", {"project": "demo", "stage": "gaps", "feedback": "More."}, _ctx("scout"))
+    with pytest.raises(ToolError) as e:  # every discovery stage passed: closed to the Lead (Task 10) ...
+        reg.call("rk_exploration_round", {"project": "demo", "stage": "gaps", "feedback": "More."}, _ctx("lead"))
+    assert e.value.type == "stage_closed"
     out = reg.call("rk_exploration_round", {"project": "demo", "stage": "gaps", "feedback": "More trials."},
-                   _ctx("lead"))
+                   _ctx())  # ... the researcher still records feedback
     assert [(r["id"], r["stage"], r["feedback"]) for r in rounds(ps)] == [(out["round_id"], "gaps", "More trials.")]
 
 
