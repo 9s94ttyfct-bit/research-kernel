@@ -9,49 +9,64 @@ failure is recorded on that study, never fatal):
    as a verification and on the item (a flagged status also puts it in the "Retracted / EoC" collection). A failed
    lookup is the study's problem: its retraction is not checked. A retracted or withdrawn study is flagged and not
    extracted; it stays a discussed object and is listed for the limitations.
-2. The ``reader`` reads the study: its full text with ``rk_text_find``, ``rk_text_read`` and ``rk_note_add``, or, with
-   no full text (``abstract_only`` at full-text screening), the abstract it is given (no tools). It returns
-   ``ExtractOut``: ``values`` (``field``, ``value``, ``quote``, optional ``locator``) and ``notes`` (the ids of the
-   notes it saved itself). A task without output is asked once more.
-3. For each value the kernel checks the value against its field (a number, one of the categories, a text; or
-   ``"not_reported"``, whose quote shows the section searched), then adds its quote with ``add_note(kind="quote")``:
-   V-QUOTE, a given locator only where it holds the quote, against the full text or, for an abstract-only study,
-   against the abstract (``against="abstract"``). A verified quote note of the item with the same text (and the same
-   snapshot and locator) is linked instead of adding it again. A value whose quote fails is stored with
-   ``problem="quote not verbatim"`` and no note, as is a value that does not fit its field (with that problem). A
-   value of a field outside the schema is not stored; it is the study's problem, as is a listed note that is not the
-   study's.
-4. Values from the abstract carry ``sufficient`` False (``sufficient="low"``), and the study's note says so.
-5. The study's ``study`` note (``rk.production.store.extraction_notes``) is written last: its retraction check,
-   whether it is flagged, the text it was read on and its sufficiency, the reader's notes and its problems.
+2. The text it is read on (``_text``): its full text when the item has one (the latest snapshot, whatever the record
+   says), else its abstract. A record marked retrieved whose full text is no longer stored, or a study with neither a
+   full text nor an abstract, is not read: that is the study's problem (no silent fall-back to the abstract).
+3. The ``reader`` reads the study: its full text with ``rk_text_find``, ``rk_text_read`` and ``rk_note_add``, or the
+   abstract it is given (no tools). It returns ``ExtractOut``: ``values`` (``field``, ``value``, ``quote``, optional
+   ``locator``) and ``notes`` (the ids of the notes it saved itself). A task without output is asked once more.
+4. For each value the kernel checks the value against its field (a number, one of the categories, a text; or
+   ``"not_reported"``, whose quote shows the section searched) and that it has a quote, then verifies the quote
+   (V-QUOTE, ``rk.notes.locate_quote``: a given locator only where it holds the quote) against the text the study is
+   read on: the full text, or the abstract (``against="abstract"``; never for an item with a full text). A verified
+   quote note of the item with the same text at the same verified position (same snapshot) is linked; else the quote
+   is added with ``add_note(kind="quote")``. A value whose quote fails is stored with ``problem="quote not
+   verbatim"`` and no note, as is a value that does not fit its field or has no quote (with that problem). A value of
+   a field outside the schema is not stored; it is the study's problem, as is a listed note that is not the study's.
+5. Values from the abstract carry ``sufficient`` False (``sufficient="low"``), and the study's note says so.
+6. The study's ``study`` note (``rk.production.store.extraction_notes``) is written last: its retraction check,
+   whether it is flagged, the text it was read on (and the snapshot), its sufficiency, the reader's notes and its
+   problems.
 
-When every included study is retracted or withdrawn the stage goes back to ``search_screen`` (the only back-edge of
-``read_extract``; "no included study is left after the retraction check"); else it is done, its reason the counts.
+When every included study is retracted or withdrawn the stage fails as a dead end naming them: ``read_extract``'s only
+back-edge, to ``search_screen``, would screen the same studies again under the same protocol; only a revision of the
+protocol resolves it. Else it is done, its reason the counts.
 
 An attempt interrupted by a rate cap, a budget or a crash is resumed by the next one (``rk.production.resume``): a
-study an interrupted attempt right before it finished, under the same frozen protocol and read on the same kind of
-text, is carried over with its values and notes (``carried_from``) instead of being read again; a study it left
-half-read is read again. Within an attempt a study with a ``study`` note is never read again.
+study an interrupted attempt right before it finished, under the same frozen protocol and read on the same text (the
+same kind and the same snapshot), is carried over with its values and notes (``carried_from``) instead of being read
+again; any other is read again. Never from an attempt that ran to completion. Within an attempt a study with a
+``study`` note is never read again, and a half-read one (values but no note) is read again in place of its earlier
+values.
 
-The gate (``gate``): every non-flagged included study was read and its retraction checked; every extraction field of
-each has a value with a verified quote note, or ``not_reported`` with a verified quote, or (after a P1 degrade) is
-marked missing; every paraphrase note the reader linked passes V-PARA; at least one study is left. Each failure names
-the study, the field and the reason. A failed gate reruns the stage (``read_extract->read_extract``); at the edge limit
-P2 is asked (``stage_blocked``) and P1 degrades (``degrade``): the failing fields are marked missing, a study whose
-retraction could not be checked is taken out of the evidence, a failing paraphrase note is dropped, all disclosed
-(``stage.degraded``) and listed in the limitations input (``extraction_limitations``)."""
+The gate (``gate``, from ``findings``): every non-flagged included study was read and its retraction checked; every
+extraction field of each has a value whose quote note is a verified quote of the text the study was read on (the same
+kind, the same snapshot, which is still the item's latest), or ``not_reported`` with such a quote, or (after a P1
+degrade) is marked missing; every note the reader linked is of that text and every linked paraphrase passes V-PARA; at
+least one study is left. Each failure names the study, the field and the reason. A failed gate reruns the stage
+(``read_extract->read_extract``); at the edge limit P2 is asked (``stage_blocked``) and P1 degrades (``degrade``): the
+failing fields are marked missing, a study whose retraction could not be checked (or that was never read) is taken out
+of the evidence and its rows marked ``excluded: …``, a failing linked note is dropped, all disclosed
+(``stage.degraded``) and listed in the limitations input (``extraction_limitations``). A degrade that would leave no
+study in the evidence fails instead, writing nothing.
+
+``usable_evidence`` is what later stages read: the studies left in the evidence, their rows and their notes without
+the dropped ones."""
 
 from __future__ import annotations
 
 import json
 from collections import Counter
+from dataclasses import dataclass
+from typing import Literal
 
 from pydantic import BaseModel
 
+from rk.canon import canonical_json
 from rk.discovery.boundary import per_item
 from rk.discovery.gaps.retraction import recorded_retraction
 from rk.fulltext import latest_snapshot
-from rk.notes import Locator, NoteIn, NoteRejected, add_note, list_notes
+from rk.notes import Locator, NoteIn, NoteRejected, add_note, list_notes, locate_quote
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.orchestrator.state import record_degraded, stage_row
 from rk.production.models import FULL_TEXT, ExtractionField, Protocol
@@ -59,10 +74,12 @@ from rk.production.resume import CarriedStudy, carried_extraction, mark_protocol
 from rk.production.store import (
     add_extraction,
     add_extraction_note,
+    clear_extractions,
     extraction_notes,
     extractions,
     finals,
     frozen_protocol,
+    mark_extraction,
     records,
 )
 from rk.store.project import ProjectStore
@@ -74,12 +91,15 @@ ROLE = "reader"
 READER_TOOLS = ["rk_text_find", "rk_text_read", "rk_note_add"]
 NOT_REPORTED = "not_reported"  # the value of a field the study does not report; its quote shows the section searched
 QUOTE_FAILED = "quote not verbatim"
-MISSING = "missing"  # the problem of a value the P1 degrade marked missing starts with this
+MISSING = "missing"  # the problem of a value the P1 degrade marked missing starts with "missing: "
+EXCLUDED = "excluded"  # the problem of a row whose study the P1 degrade took out of the evidence: "excluded: "
 RETRACTED = frozenset({"retracted", "withdrawn"})  # flagged: not extracted, kept as a discussed object
 READS = 2  # a reader task without output is asked once more
 SEARCH_SCREEN = "search_screen"
 NO_STUDY = "no included study is left after the retraction check"
+NOT_READ = "not read"
 FULL, ABSTRACT = "full_text", "abstract"  # the text a study is read on
+CHANGED = "the study's full text changed since it was read"
 
 EXTRACT_TASK = (
     "Extract the given fields from the given study for the review question. Read the study's text with rk_text_find "
@@ -108,6 +128,20 @@ class ExtractOut(BaseModel):
     notes: list[str] = []
 
 
+FindingKind = Literal["protocol", "no_study", "not_read", "retraction", "field", "note"]
+
+
+@dataclass(frozen=True)
+class Finding:
+    """What keeps an attempt from its gate: a field of a study (``field``), a study (``not_read``, ``retraction``, a
+    linked ``note``: ``note_id``) or the attempt (``protocol``, ``no_study``)."""
+    kind: FindingKind
+    reason: str
+    item_id: str | None = None
+    field: str | None = None
+    note_id: str | None = None
+
+
 # ---- queries ----
 def included_studies(ps: ProjectStore) -> list[dict]:
     """The records ``search_screen`` included at full text in the attempt that passed its gate, in search order
@@ -120,9 +154,13 @@ def included_studies(ps: ProjectStore) -> list[dict]:
     return [r for r in records(ps, attempt) if r["id"] in yes]
 
 
+def _marked(row: dict, mark: str) -> bool:
+    return (row["problem"] or "").startswith(f"{mark}: ")
+
+
 def is_missing(row: dict) -> bool:
     """Whether an extraction row is a value the P1 degrade marked missing."""
-    return (row["problem"] or "").startswith(f"{MISSING}:")
+    return _marked(row, MISSING)
 
 
 def _note_data(ps: ProjectStore, note_id: str) -> dict | None:
@@ -137,13 +175,7 @@ def _title(ps: ProjectStore, item_id: str) -> str:
 
 def _study_label(ps: ProjectStore, item_id: str) -> str:
     title = _title(ps, item_id)
-    return f'study {item_id}' + (f' ("{title}")' if title else "")
-
-
-def _verified_quote(ps: ProjectStore, item_id: str, note_id: str | None) -> bool:
-    n = _note_data(ps, note_id) if note_id else None
-    return (n is not None and n["item_id"] == item_id and n["kind"] == "quote"
-            and bool(n["verified"].get("quote", {}).get("ok")))
+    return f"study {item_id}" + (f' ("{title}")' if title else "")
 
 
 def _studies(ps: ProjectStore, attempt: int) -> dict[str, dict]:
@@ -162,6 +194,30 @@ def _degraded(ps: ProjectStore, attempt: int) -> tuple[dict[str, str], set[str]]
     return out, dropped
 
 
+def _snapshot_sha(ps: ProjectStore, item_id: str) -> str | None:
+    snap = latest_snapshot(ps, item_id)
+    return snap[0] if snap else None
+
+
+def usable_evidence(ps: ProjectStore, attempt: int) -> list[dict]:
+    """The attempt's evidence for later stages, one entry per included study left in it (not flagged as retracted or
+    withdrawn, not taken out by the P1 degrade), in search order: ``item_id``, ``sufficient`` (``"full"`` or
+    ``"low"``), ``values`` (its rows: a row with a problem, e.g. one marked missing, is no evidence but stays visible)
+    and ``notes`` (the notes it links: its values' quote notes and the reader's notes, without the dropped ones)."""
+    studies = _studies(ps, attempt)
+    excluded, dropped = _degraded(ps, attempt)
+    out = []
+    for rec in included_studies(ps):
+        s = studies.get(rec["item_id"])
+        if s is None or s["flagged"] or s["item_id"] in excluded:
+            continue
+        rows = extractions(ps, attempt, item_id=s["item_id"])
+        notes = [r["note_id"] for r in rows if r["note_id"] and r["problem"] is None] + s["notes"]
+        out.append({"item_id": s["item_id"], "sufficient": s["sufficient"], "values": rows,
+                    "notes": [n for n in dict.fromkeys(notes) if n not in dropped]})
+    return out
+
+
 # ---- the gate's findings ----
 def _paraphrase_ok(n: dict) -> bool:
     """V-PARA: the note's recorded check passed and its text still is no near-copy of its source span."""
@@ -169,69 +225,119 @@ def _paraphrase_ok(n: dict) -> bool:
             and check_paraphrase(n["text"], n.get("source_span") or "").ok)
 
 
-def _field_problem(ps: ProjectStore, item_id: str, rows: list[dict]) -> str | None:
+def _source_problem(n: dict, study: dict, current: str | None) -> str | None:
+    """Why a verified note is not of the text the study was read on (``None``: it is)."""
+    against = n["verified"].get("quote", {}).get("against", "text")
+    if study["text"] == ABSTRACT:
+        return None if against == "abstract" else "its quote was not verified against the abstract the study was read on"
+    if against != "text":
+        return "its quote was verified against the abstract, not the full text the study was read on"
+    if n.get("snapshot_sha") != study.get("snapshot"):
+        return "its quote note is of another full text than the one the study was read on"
+    if study.get("snapshot") != current:
+        return CHANGED
+    return None
+
+
+def _quote_problem(ps: ProjectStore, study: dict, current: str | None, note_id: str) -> str | None:
+    """Why a value's quote note is not usable evidence (``None``: it is)."""
+    n = _note_data(ps, note_id)
+    if (n is None or n["item_id"] != study["item_id"] or n["kind"] != "quote"
+            or not n["verified"].get("quote", {}).get("ok")):
+        return "its quote note is not a verified quote of the study"
+    return _source_problem(n, study, current)
+
+
+def _field_problem(ps: ProjectStore, study: dict, current: str | None, rows: list[dict]) -> str | None:
     """Why a field of a study has no value the gate accepts (``None``: it has one)."""
-    if any(r["note_id"] and r["problem"] is None and _verified_quote(ps, item_id, r["note_id"]) for r in rows):
-        return None
-    if any(is_missing(r) for r in rows):
-        return None
-    problems = list(dict.fromkeys(r["problem"] or "its quote note is not a verified quote of the study" for r in rows))
-    return "; ".join(problems) if problems else "no value"
+    why = []
+    for r in rows:
+        if r["problem"] is None and r["note_id"]:
+            p = _quote_problem(ps, study, current, r["note_id"])
+            if p is None:
+                return None
+            why.append(p)
+        elif is_missing(r):
+            return None
+        else:
+            why.append(r["problem"] or "no quote note")
+    return "; ".join(dict.fromkeys(why)) if why else "no value"
 
 
-def findings(ps: ProjectStore, attempt: int) -> list[tuple[str | None, str | None, str]]:
-    """What keeps the attempt from its gate, as ``(study item id, field, reason)``: a study-level finding has no
-    field, the attempt-level one (no study left) neither a study."""
+def findings(ps: ProjectStore, attempt: int) -> list[Finding]:
+    """What keeps the attempt from its gate, in study and field order."""
     row = frozen_protocol(ps)
     if row is None:
-        return [(None, None, "no frozen protocol")]
+        return [Finding("protocol", "no frozen protocol")]
     fields = [f.name for f in Protocol.model_validate(row["body"]).extraction_schema]
     studies = _studies(ps, attempt)
     excluded, dropped = _degraded(ps, attempt)
-    out: list[tuple[str | None, str | None, str]] = []
+    out: list[Finding] = []
     left = 0
     for rec in included_studies(ps):
         iid = rec["item_id"]
+        if iid in excluded:
+            continue
         s = studies.get(iid)
         if s is None:
-            out.append((iid, None, "not read"))
+            out.append(Finding("not_read", NOT_READ, iid))
             left += 1
             continue
-        if s["flagged"] or iid in excluded:
+        if s["flagged"]:
             continue
         left += 1
         if err := s["retraction"].get("error"):
-            out.append((iid, None, f"retraction not checked: {err}"))
+            out.append(Finding("retraction", f"retraction not checked: {err}", iid))
+        current = _snapshot_sha(ps, iid) if s["text"] == FULL else None
         values = extractions(ps, attempt, item_id=iid)
         for f in fields:
-            why = _field_problem(ps, iid, [v for v in values if v["field"] == f])
+            why = _field_problem(ps, s, current, [v for v in values if v["field"] == f])
             if why is not None:
-                out.append((iid, f, why))
+                out.append(Finding("field", why, iid, f))
         for nid in s["notes"]:
             n = _note_data(ps, nid)
-            if nid not in dropped and n is not None and n["kind"] == "paraphrase" and not _paraphrase_ok(n):
-                out.append((iid, None, f"paraphrase note {nid} fails V-PARA"))
+            if nid in dropped or n is None:
+                continue
+            why = None
+            if n["kind"] in ("quote", "paraphrase"):
+                why = _source_problem(n, s, current)
+            if why is None and n["kind"] == "paraphrase" and not _paraphrase_ok(n):
+                why = "fails V-PARA"
+            if why is not None:
+                out.append(Finding("note", f"{n['kind']} note {nid}: {why}", iid, note_id=nid))
     if not left:
-        out.append((None, None, NO_STUDY))
+        out.append(Finding("no_study", NO_STUDY))
     return out
 
 
-def _say(ps: ProjectStore, finding: tuple[str | None, str | None, str]) -> str:
-    iid, field, why = finding
-    if iid is None:
-        return why
-    return _study_label(ps, iid) + (f', field "{field}"' if field else "") + f": {why}"
+def _say(ps: ProjectStore, f: Finding) -> str:
+    if f.item_id is None:
+        return f.reason
+    return _study_label(ps, f.item_id) + (f', field "{f.field}"' if f.field else "") + f": {f.reason}"
 
 
 def extraction_limitations(ps: ProjectStore, attempt: int) -> dict:
     """The limitations input of the attempt: the studies flagged as retracted or withdrawn (not extracted), those
     extracted despite another retraction flag (partial retraction, expression of concern), those whose retraction
     status is unknown, those the P1 degrade took out of the evidence, those read on the abstract alone
-    (``sufficient="low"``), the values marked missing, and the studies' problems."""
+    (``sufficient="low"``), the values marked missing, the fields with conflicting verified values (``not_reported``
+    included), and the studies' problems."""
     studies = list(_studies(ps, attempt).values())
     excluded, _ = _degraded(ps, attempt)
+    rows = extractions(ps, attempt)
     missing = [{"item_id": e["item_id"], "field": e["field"], "reason": e["problem"][len(MISSING) + 2:]}
-               for e in extractions(ps, attempt) if is_missing(e)]
+               for e in rows if is_missing(e)]
+    conflicts = []
+    usable = {s["item_id"] for s in studies if not s["flagged"] and s["item_id"] not in excluded}
+    seen: dict[tuple[str, str], list] = {}
+    for e in rows:
+        if e["item_id"] in usable and e["problem"] is None and e["note_id"]:
+            values = seen.setdefault((e["item_id"], e["field"]), [])
+            if canonical_json(e["value"]) not in {canonical_json(v) for v in values}:
+                values.append(e["value"])
+    for (iid, field), values in seen.items():
+        if len(values) > 1:
+            conflicts.append({"item_id": iid, "field": field, "values": values})
     return {
         "flagged": [{"item_id": s["item_id"], "status": s["retraction"]["status"]} for s in studies if s["flagged"]],
         "retraction_concerns": [{"item_id": s["item_id"], "status": s["retraction"]["status"]} for s in studies
@@ -241,16 +347,23 @@ def extraction_limitations(ps: ProjectStore, attempt: int) -> dict:
         "excluded": [{"item_id": i, "reason": why} for i, why in excluded.items()],
         "low_sufficiency": [s["item_id"] for s in studies if s["sufficient"] == "low"],
         "missing": missing,
+        "conflicts": conflicts,
         "problems": [{"item_id": s["item_id"], "problems": s["problems"]} for s in studies if s["problems"]],
     }
 
 
 # ---- reading ----
-def _text_kind(ctx: StageContext, rec: dict) -> str | None:
-    """The text a study is read on: its full text, its abstract, or neither."""
-    if rec["retrieved"] and latest_snapshot(ctx.ps, rec["item_id"]) is not None:
-        return FULL
-    return ABSTRACT if (ctx.lib.get(rec["item_id"]).abstract or "").strip() else None
+def _text(ctx: StageContext, rec: dict) -> tuple[str | None, str | None, str | None]:
+    """The text a study is read on: ``(kind, snapshot sha, problem)``. Its full text when the item has one, else its
+    abstract; a record marked retrieved without a stored full text, or a study with no text at all, is not read."""
+    iid = rec["item_id"]
+    if (sha := _snapshot_sha(ctx.ps, iid)) is not None:
+        return FULL, sha, None
+    if rec["retrieved"]:
+        return None, None, "recorded as retrieved, but no full text is stored: not read"
+    if (ctx.lib.get(iid).abstract or "").strip():
+        return ABSTRACT, None, None
+    return None, None, "no full text and no abstract to read"
 
 
 def _retraction(ctx: StageContext, item_id: str) -> dict:
@@ -285,33 +398,31 @@ def _value_problem(field: ExtractionField, value) -> str | None:
     return None
 
 
-def _same_quote(ps: ProjectStore, item_id: str, v: ExtractValue, against: str, sha: str | None) -> str | None:
-    """A verified quote note of the item with the value's quote (same text it was verified against, same locator when
-    one is given), so the same quote is not added twice."""
+def _same_quote(ps: ProjectStore, item_id: str, text: str, against: str, sha: str | None,
+                locator: Locator) -> str | None:
+    """A verified quote note of the item with ``text`` at the verified ``locator`` of the same text (snapshot)."""
     for n in list_notes(ps, item_id):
         q = n["verified"].get("quote") or {}
-        if (n["kind"] == "quote" and n["text"] == v.quote and q.get("ok") and q.get("against", "text") == against
-                and n.get("snapshot_sha") == sha
-                and (v.locator is None or n["locator"] == v.locator.model_dump())):
+        if (n["kind"] == "quote" and n["text"] == text and q.get("ok") and q.get("against", "text") == against
+                and n.get("snapshot_sha") == sha and n["locator"] == locator.model_dump()):
             return n["id"]
     return None
 
 
 def _quote(ctx: StageContext, item_id: str, field: str, v: ExtractValue, against: str) -> tuple[str | None, str | None]:
-    """The value's quote as a verified quote note (V-QUOTE): ``(note id, None)``, or ``(None, problem)``."""
-    snap = latest_snapshot(ctx.ps, item_id) if against == "text" else None
-    if (nid := _same_quote(ctx.ps, item_id, v, against, snap[0] if snap else None)) is not None:
-        return nid, None
+    """The value's quote as a verified quote note (V-QUOTE): ``(note id, None)``, or ``(None, problem)``. The quote is
+    verified first; a note of it at the verified position is linked instead of adding another."""
+    if not v.quote.strip():
+        return None, "no quote"
+    note = NoteIn(source_id=item_id, kind="quote", text=v.quote, locator=v.locator, role_in_source="main",
+                  keywords=["extraction", field], against=against)
     try:
-        note = add_note(ctx.ps, ctx.lib, NoteIn(source_id=item_id, kind="quote", text=v.quote, locator=v.locator,
-                                                role_in_source="main", keywords=["extraction", field],
-                                                against=against),
-                        actor=ctx.actor, actor_kind="agent")
+        sha, locator = locate_quote(ctx.ps, ctx.lib, note)
+        if (nid := _same_quote(ctx.ps, item_id, v.quote, against, sha, locator)) is not None:
+            return nid, None
+        return add_note(ctx.ps, ctx.lib, note, actor=ctx.actor, actor_kind="agent").note_id, None
     except NoteRejected as e:
         return None, QUOTE_FAILED if e.reason == "quote_not_found" else f"quote not verified ({e.reason})"
-    except ValueError:  # an empty quote
-        return None, "no quote"
-    return note.note_id, None
 
 
 def _inputs(ctx: StageContext, protocol: Protocol, rec: dict, kind: str) -> dict:
@@ -373,7 +484,7 @@ class ReadExtractWorker:
             return StageOutcome("failed", reason="no frozen protocol")
         studies = included_studies(ps)
         if not studies:
-            return StageOutcome("back_edge", to=SEARCH_SCREEN, reason="no included study to read")
+            return StageOutcome("failed", reason="no included study to read: search_screen has not passed")
         mark_protocol(ps, ctx.stage, ctx.attempt, row["frozen_hash"], actor=ctx.actor)
         protocol = Protocol.model_validate(row["body"])
         done = set(_studies(ps, ctx.attempt))
@@ -382,15 +493,24 @@ class ReadExtractWorker:
             iid = rec["item_id"]
             if iid in done:
                 continue
+            if extractions(ps, ctx.attempt, item_id=iid):  # half-read in this attempt: read again in its place
+                clear_extractions(ps, ctx.attempt, iid, actor=ctx.actor)
             c = carried.get(iid)
-            if c is not None and (c.note["flagged"] or c.note["text"] == _text_kind(ctx, rec)):
+            kind, sha, _ = _text(ctx, rec)
+            if c is not None and (c.note["flagged"] or (kind is not None and c.note["text"] == kind
+                                                        and c.note.get("snapshot") == sha)):
                 self._carry(ctx, c)
             else:
                 self._study(ctx, protocol, rec)
         noted = _studies(ps, ctx.attempt)
         reason = _summary(ps, ctx.attempt, len(studies))
         if all(noted[r["item_id"]]["flagged"] for r in studies):
-            return StageOutcome("back_edge", to=SEARCH_SCREEN, reason=f"{NO_STUDY}: {reason}")
+            which = "; ".join(f"{_study_label(ps, r['item_id'])}: {noted[r['item_id']]['retraction']['status']}"
+                              for r in studies)
+            return StageOutcome("failed", reason=(
+                f"dead end: every included study is retracted or withdrawn ({which}). Going back to search_screen "
+                "would screen the same studies again under the same protocol; only a revision of the protocol (its "
+                "eligibility or search strategy) can resolve it."))
         return StageOutcome("done", reason=reason)
 
     def _carry(self, ctx: StageContext, c: CarriedStudy) -> None:
@@ -410,11 +530,12 @@ class ReadExtractWorker:
             problems.append(err)
         flagged = retraction["status"] in RETRACTED
         kind: str | None = None
+        sha: str | None = None
         linked: list[str] = []
         if not flagged:
-            kind = _text_kind(ctx, rec)
-            if kind is None:
-                problems.append("no full text and no abstract to read")
+            kind, sha, why = _text(ctx, rec)
+            if why:
+                problems.append(why)
             else:
                 got, err = per_item(f"reading of {iid}", lambda: _read(ctx, protocol, rec, kind))
                 if err:
@@ -423,7 +544,7 @@ class ReadExtractWorker:
                     linked, more = got
                     problems += more
         add_extraction_note(ctx.ps, ctx.attempt, "study", actor=ctx.actor, item_id=iid, record_id=rec["id"],
-                            retraction=retraction, flagged=flagged, text=kind,
+                            retraction=retraction, flagged=flagged, text=kind, snapshot=sha,
                             sufficient=None if kind is None else ("full" if kind == FULL else "low"),
                             notes=linked, problems=problems, carried_from=None)
 
@@ -434,50 +555,49 @@ class ReadExtractWorker:
                                              f"({checkpoint['kind']})")
 
     def gate(self, ps: ProjectStore, attempt: int) -> GateResult:
-        """Every non-flagged included study was read and its retraction checked, every field has a value with a
-        verified quote note (or ``not_reported`` with one, or was marked missing by the P1 degrade), every linked
-        paraphrase note passes V-PARA, and a study is left. Each failure names the study, the field and the reason."""
+        """Every non-flagged included study was read and its retraction checked, every field has a value whose quote
+        note is a verified quote of the text the study was read on (or ``not_reported`` with one, or was marked missing
+        by the P1 degrade), every linked note is of that text and every linked paraphrase passes V-PARA, and a study is
+        left. Each failure names the study, the field and the reason."""
         failures = [_say(ps, f) for f in findings(ps, attempt)]
         return GateResult(not failures, failures)
 
     def degrade(self, ctx: StageContext, failures: list[str]) -> StageOutcome:
-        """P1 at the edge limit: mark every failing field missing (a study never read: all its fields), take a study
-        whose retraction could not be checked out of the evidence, drop a paraphrase note failing V-PARA; disclosed
-        and listed in the limitations input. Fails when no study is left."""
+        """P1 at the edge limit: mark every failing field missing, take a study whose retraction could not be checked
+        or that was never read out of the evidence (its rows marked ``excluded: …``), drop a failing linked note;
+        disclosed and listed in the limitations input. Fails, writing nothing, when no study would be left."""
         ps = ctx.ps
         found = findings(ps, ctx.attempt)
-        if any(iid is None for iid, _, _ in found):
+        if dead := [f for f in found if f.kind in ("protocol", "no_study")]:
             return StageOutcome("failed", reason="read_extract did not pass at the edge limit: "
-                                                 + "; ".join(_say(ps, f) for f in found))
-        row = frozen_protocol(ps)
-        fields = [f.name for f in Protocol.model_validate(row["body"]).extraction_schema]
+                                                 + "; ".join(_say(ps, f) for f in dead))
+        excluded = {f.item_id: f.reason for f in found if f.kind in ("not_read", "retraction")}
         studies = _studies(ps, ctx.attempt)
-        missing: list[dict] = []
-        excluded: list[dict] = []
-        dropped: list[str] = []
-        for iid, field, why in found:
-            if field is not None:
-                missing.append({"item_id": iid, "field": field, "reason": why})
-            elif why == "not read":
-                missing += [{"item_id": iid, "field": f, "reason": why} for f in fields]
-            elif why.startswith("retraction not checked"):
-                excluded.append({"item_id": iid, "reason": why})
-            else:  # a paraphrase note failing V-PARA
-                dropped.append(why.split()[2])
-        out = {e["item_id"] for e in excluded}
-        missing = [m for m in missing if m["item_id"] not in out]
+        already, _ = _degraded(ps, ctx.attempt)
+        left = [r["item_id"] for r in included_studies(ps) if r["item_id"] not in excluded
+                and r["item_id"] not in already and not studies.get(r["item_id"], {}).get("flagged")]
+        if not left:
+            why = "; ".join(f"{_study_label(ps, i)}: {r}" for i, r in excluded.items())
+            return StageOutcome("failed", reason=f"read_extract did not pass at the edge limit, and degrading it would "
+                                                 f"take every study out: no study would be left in the evidence ({why})")
+        missing = [{"item_id": f.item_id, "field": f.field, "reason": f.reason} for f in found
+                   if f.kind == "field" and f.item_id not in excluded]
+        dropped = [f.note_id for f in found if f.kind == "note" and f.item_id not in excluded]
+        for iid, why in excluded.items():
+            for e in extractions(ps, ctx.attempt, item_id=iid):
+                mark_extraction(ps, e["id"], f"{EXCLUDED}: {why}", actor=ctx.actor)
         for m in missing:
-            s = studies.get(m["item_id"])
             add_extraction(ps, ctx.attempt, m["item_id"], m["field"], None, None,
-                           s is None or s["sufficient"] != "low", actor=ctx.actor, actor_kind="kernel",
+                           studies[m["item_id"]]["sufficient"] != "low", actor=ctx.actor, actor_kind="kernel",
                            problem=f"{MISSING}: {m['reason']}")
-        add_extraction_note(ps, ctx.attempt, "degraded", actor=ctx.actor, missing=missing, excluded=excluded,
+        add_extraction_note(ps, ctx.attempt, "degraded", actor=ctx.actor, missing=missing,
+                            excluded=[{"item_id": i, "reason": r} for i, r in excluded.items()],
                             dropped_notes=dropped)
-        removed = ([f"{m['item_id']}:{m['field']}" for m in missing] + [e["item_id"] for e in excluded] + dropped)
+        removed = [f"{m['item_id']}:{m['field']}" for m in missing] + list(excluded) + dropped
         record_degraded(ps, stage=ctx.stage, attempt=ctx.attempt, removed=removed,
                         reason=f"read_extract at the edge limit: {len(missing)} values marked missing, "
-                               f"{len(excluded)} studies taken out of the evidence (retraction not checked), "
-                               f"{len(dropped)} paraphrase notes dropped", actor=ctx.actor)
+                               f"{len(excluded)} studies taken out of the evidence (retraction not checked or not "
+                               f"read), {len(dropped)} linked notes dropped", actor=ctx.actor)
         return StageOutcome("done", reason="degraded: " + "; ".join(failures))
 
 

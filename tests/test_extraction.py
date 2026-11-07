@@ -8,11 +8,12 @@ from __future__ import annotations
 import pytest
 
 from rk.discovery.executor import RateCapped
+from rk.fulltext import latest_snapshot
 from rk.library.models import Ids, ItemIn
 from rk.llm.drivers import DriverSpec
 from rk.llm.types import TaskResult
 from rk.net.http import HttpError
-from rk.notes import NoteIn, add_note, list_notes
+from rk.notes import NoteIn, NoteRejected, add_note, list_notes
 from rk.orchestrator.state import degradations, record_passed, record_ran
 from rk.production import store
 from rk.production.extraction import (
@@ -20,6 +21,7 @@ from rk.production.extraction import (
     READER_TOOLS,
     ReadExtractWorker,
     extraction_limitations,
+    usable_evidence,
 )
 from rk.store.events import NewEvent
 from rk.verify.records import record_verification
@@ -67,20 +69,22 @@ class Reader(ScriptedExecutor):
 
 
 def _included(env, studies: dict[str, str]) -> dict[str, str]:
-    """Freeze the protocol and record ``studies`` (title -> ``"full"``, ``"abstract"``) as included by a passed
-    ``search_screen`` attempt 1; returns title -> item id."""
+    """Freeze the protocol and record ``studies`` (title -> ``"full"``, ``"abstract"``; ``"none"``: no full text and
+    no abstract; ``"gone"``: recorded as retrieved but no full text stored) as included by a passed ``search_screen``
+    attempt 1; returns title -> item id."""
     _, ps, lib = env
     pid = store.add_protocol(ps, 1, a_protocol(), version=1, actor="tester")
     store.freeze_protocol(ps, pid, actor="tester")
     ids = {}
     for i, (title, kind) in enumerate(studies.items()):
         iid = lib.add_item(ItemIn(title=title, year=2015, venue="Age Ageing", ids=Ids(doi=f"10.1000/x{i}"),
-                                  abstract=f"Abstract of {title}: 80 people over 80 in a cohort."),
+                                  abstract=None if kind == "none" else f"Abstract of {title}: 80 people over 80 "
+                                                                       "in a cohort."),
                            added_by="agent", actor="tester").item_id
         rid = store.add_record(ps, 1, iid, language="en", actor="tester")
         for phase in (TA, FT):
             store.set_final(ps, rid, 1, phase, "yes", "single", "fits", actor="tester")
-        store.set_record(ps, rid, actor="tester", retrieved=kind == "full", abstract_only=kind == "abstract")
+        store.set_record(ps, rid, actor="tester", retrieved=kind in ("full", "gone"), abstract_only=kind == "abstract")
         if kind == "full":
             add_text_layer(ps, iid, PAGES)
         ids[title] = iid
@@ -195,16 +199,20 @@ def test_retracted_study_is_flagged_not_extracted(env):
     assert w.gate(ps, 1).ok
 
     # a later attempt uses the recorded V-RETRACT (here a newer check found Aspirin A withdrawn) without a lookup;
-    # when every study is retracted or withdrawn the stage goes back to search_screen
+    # when every study is retracted or withdrawn the stage fails: a back-edge would screen the same studies again
     record_ran(ps, "read_extract", 1, "done", "", actor="tester")
     record_verification(ps, "item", ids["Aspirin A"], "V-RETRACT", "withdrawn",
                         RetractionInfo(status="withdrawn", sources=["crossref:x"]).model_dump(), actor="tester")
     src2 = FakeSources({}, lib=lib)
     out = w.run(_ctx(env, Reader({}), attempt=2, sources=src2))
     assert [c for c in src2.calls if c[0] == "retraction"] == []
-    assert (out.status, out.to) == ("back_edge", "search_screen")
-    assert out.reason.startswith("no included study is left after the retraction check")
+    assert out.status == "failed" and out.to is None
+    assert out.reason.startswith("dead end: every included study is retracted or withdrawn")
+    assert f'study {ids["Aspirin A"]} ("Aspirin A"): withdrawn' in out.reason
+    assert f'study {ids["Aspirin B"]} ("Aspirin B"): retracted' in out.reason
+    assert "only a revision of the protocol" in out.reason
     assert w.gate(ps, 2).failures == ["no included study is left after the retraction check"]
+    assert w.degrade(_ctx(env, Reader({}), attempt=2), []).status == "failed"
 
 
 class FailingRetraction(FakeSources):
@@ -263,6 +271,24 @@ def test_p1_degrade_marks_missing(env):
     (deg,) = degradations(ps, "read_extract")
     assert deg["removed"] == [f"{ids['Aspirin A']}:design", f"{ids['Aspirin B']}:design", ids["Aspirin C"]]
     assert w.gate(ps, 1).ok
+    c_rows = store.extractions(ps, 1, item_id=ids["Aspirin C"])  # the excluded study's rows are marked
+    assert c_rows and all(r["problem"].startswith("excluded: retraction not checked") for r in c_rows)
+    usable = usable_evidence(ps, 1)
+    assert [s["item_id"] for s in usable] == [ids["Aspirin A"], ids["Aspirin B"]]
+    assert all(v["item_id"] != ids["Aspirin C"] for s in usable for v in s["values"])
+    assert [s["sufficient"] for s in usable] == ["full", "low"]
+
+
+def test_degrade_with_no_study_left_fails(env):
+    _, ps, lib = env
+    _included(env, {"Aspirin A": "full"})
+    w = ReadExtractWorker()
+    ctx = _ctx(env, Reader({"Aspirin A": [GOOD]}), sources=FailingRetraction({}, lib=lib))
+    assert w.run(ctx).status == "done"
+    out = w.degrade(ctx, w.gate(ps, 1).failures)
+    assert out.status == "failed" and "no study would be left in the evidence" in out.reason
+    assert "retraction not checked" in out.reason
+    assert degradations(ps, "read_extract") == [] and store.extraction_notes(ps, 1, kind="degraded") == []
 
 
 def test_rate_capped_extraction_resumes_without_rereading_finished_studies(env):
@@ -313,7 +339,8 @@ def test_linked_paraphrase_notes_pass_v_para(env):
     ps.apply(NewEvent(type="note.added", entity_id=a, actor_kind="agent", actor="reader", payload={"note": {
         "id": copied, "item_id": a, "kind": "paraphrase", "text": "Fewer strokes on aspirin.", "locator": None,
         "role_in_source": "main", "keywords": [], "source_span": "Fewer strokes on aspirin.", "hedge_level": None,
-        "snapshot_sha": None, "verified": {"paraphrase": {"ok": True}}}}))
+        "snapshot_sha": latest_snapshot(ps, a)[0], "verified": {"quote": {"ok": True, "page": 2, "located": "search"},
+                                                                "paraphrase": {"ok": True}}}}))
     ex = Reader({"Aspirin A": [{**GOOD, "notes": [para, other, copied]}], "Aspirin B": [GOOD]})
     w = ReadExtractWorker()
     ctx = _ctx(env, ex)
@@ -322,7 +349,97 @@ def test_linked_paraphrase_notes_pass_v_para(env):
     assert study["notes"] == [para, copied]
     assert study["problems"] == [f"note {other} is not a note of this study"]
     gate = w.gate(ps, 1)
-    assert gate.failures == [f'study {a} ("Aspirin A"): paraphrase note {copied} fails V-PARA']
+    assert gate.failures == [f'study {a} ("Aspirin A"): paraphrase note {copied}: fails V-PARA']
     assert w.degrade(ctx, gate.failures).status == "done"  # P1: the note is dropped from the evidence
     assert degradations(ps, "read_extract")[0]["removed"] == [copied]
     assert w.gate(ps, 1).ok
+    assert copied not in usable_evidence(ps, 1)[0]["notes"] and para in usable_evidence(ps, 1)[0]["notes"]
+
+
+def test_quote_sources_follow_the_text_read(env):
+    _, ps, lib = env
+    ids = _included(env, {"Aspirin A": "full", "Aspirin B": "none", "Aspirin C": "gone"})
+    a = ids["Aspirin A"]
+    ex = Reader({"Aspirin A": [{"values": [
+        {"field": "n", "value": 80, "quote": "80 people over 80 in a cohort"},  # only in the item's abstract
+        {"field": "design", "value": "cohort", "quote": "  "}]}]})
+    w = ReadExtractWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    assert ex.titles() == ["Aspirin A"]  # B has no text at all, C's full text is gone: neither is read
+    assert [r["problem"] for r in store.extractions(ps, 1)] == [QUOTE_FAILED, "no quote"]
+    problems = {n["item_id"]: n["problems"] for n in store.extraction_notes(ps, 1, kind="study")}
+    assert problems[ids["Aspirin B"]] == ["no full text and no abstract to read"]
+    assert problems[ids["Aspirin C"]] == ["recorded as retrieved, but no full text is stored: not read"]
+    with pytest.raises(NoteRejected) as e:  # an item with a full text is never verified against its abstract
+        add_note(ps, lib, NoteIn(source_id=a, kind="quote", text="80 people over 80", role_in_source="main",
+                                 against="abstract"), actor="reader")
+    assert e.value.reason == "has_full_text"
+    with pytest.raises(NoteRejected) as e:
+        add_note(ps, lib, NoteIn(source_id=ids["Aspirin B"], kind="quote", text="anything", role_in_source="main",
+                                 against="abstract"), actor="reader")
+    assert e.value.reason == "no_abstract"
+
+
+def test_gate_refuses_a_note_of_another_text(env):
+    _, ps, _ = env
+    ids = _included(env, {"Aspirin A": "full"})
+    w = ReadExtractWorker()
+    assert w.run(_ctx(env, Reader({"Aspirin A": [GOOD]}))).status == "done"
+    assert w.gate(ps, 1).ok
+    add_text_layer(ps, ids["Aspirin A"], [*PAGES, "4. Discussion\nIt may help."])  # a newer full text
+    a = ids["Aspirin A"]
+    assert w.gate(ps, 1).failures == [
+        f'study {a} ("Aspirin A"), field "n": the study\'s full text changed since it was read',
+        f'study {a} ("Aspirin A"), field "design": the study\'s full text changed since it was read']
+
+
+def test_a_wrong_locator_links_the_same_note(env):
+    _, ps, _ = env
+    ids = _included(env, {"Aspirin A": "full"})
+    ex = Reader({"Aspirin A": [{"values": [
+        {"field": "n", "value": 100, "quote": METHODS},
+        {"field": "design", "value": "cohort", "quote": METHODS, "locator": {"page": 1, "start": 0, "end": 5}}]}]})
+    assert ReadExtractWorker().run(_ctx(env, ex)).status == "done"
+    rows = store.extractions(ps, 1)
+    assert [r["problem"] for r in rows] == [None, None]
+    assert len(list_notes(ps, ids["Aspirin A"])) == 1 and rows[0]["note_id"] == rows[1]["note_id"]
+
+
+def test_conflicting_values_are_listed(env):
+    _, ps, _ = env
+    ids = _included(env, {"Aspirin A": "full"})
+    ex = Reader({"Aspirin A": [{"values": [
+        {"field": "n", "value": 100, "quote": METHODS},
+        {"field": "n", "value": "not_reported", "quote": "Fewer strokes on aspirin."},
+        {"field": "design", "value": "cohort", "quote": "A cohort of 100 people over 80"},
+        {"field": "design", "value": "cohort", "quote": METHODS}]}]})
+    assert ReadExtractWorker().run(_ctx(env, ex)).status == "done"
+    assert extraction_limitations(ps, 1)["conflicts"] == [
+        {"item_id": ids["Aspirin A"], "field": "n", "values": [100, "not_reported"]}]
+
+
+def test_half_read_study_is_replaced_in_the_same_attempt(env):
+    _, ps, _ = env
+    ids = _included(env, {"Aspirin A": "full"})
+    a = ids["Aspirin A"]
+    store.add_extraction(ps, 1, a, "n", 5, None, True, actor="reader", problem=QUOTE_FAILED)  # before a crash
+    w = ReadExtractWorker()
+    assert w.run(_ctx(env, Reader({"Aspirin A": [GOOD]}))).status == "done"
+    assert [(r["field"], r["value"]) for r in store.extractions(ps, 1)] == [("n", 100), ("design", "cohort")]
+    assert w.gate(ps, 1).ok
+
+
+def test_carry_over_needs_the_same_text(env):
+    _, ps, _ = env
+    ids = _included(env, {"Aspirin A": "abstract", "Aspirin B": "full"})
+    c_out = {"values": [{"field": "n", "value": 80, "quote": "80 people over 80"},
+                        {"field": "design", "value": "cohort", "quote": "in a cohort"}]}
+    w = ReadExtractWorker()
+    w.run(_ctx(env, Reader({"Aspirin A": [c_out], "Aspirin B": [GOOD]})))  # attempt 1 reads both, then crashes
+    for t in ("Aspirin A", "Aspirin B"):  # A's full text is found; B's full text is replaced by a newer one
+        add_text_layer(ps, ids[t], [*PAGES, f"Appendix of {t}."])
+    ex = Reader({"Aspirin A": [GOOD], "Aspirin B": [GOOD]})
+    w.run(_ctx(env, ex, attempt=2))
+    assert ex.titles() == ["Aspirin A", "Aspirin B"]  # neither is carried over
+    assert all(r["carried_from"] is None and r["sufficient"] == 1 for r in store.extractions(ps, 2))
+    assert w.gate(ps, 2).ok

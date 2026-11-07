@@ -56,6 +56,46 @@ class NoteRejected(Exception):
         self.details = details
 
 
+def _source(ps: ProjectStore, lib: Library, note: NoteIn) -> tuple[str | None, TextLayer]:
+    """What a quote or paraphrase is verified against: ``(snapshot sha, text layer)`` of the item's full text, or
+    ``(None, its abstract)``. An item with a full text is never verified against its abstract."""
+    snap = latest_snapshot(ps, note.source_id)
+    if note.against == "abstract":
+        if snap is not None:
+            raise NoteRejected("has_full_text", hint="the item has a full text: quote it (against 'text')")
+        layer = abstract_layer(lib.get(note.source_id).abstract)
+        if layer is None:
+            raise NoteRejected("no_abstract", hint="the item has no abstract to verify against")
+        return None, layer
+    if snap is None:
+        raise NoteRejected("no_snapshot", hint="fetch full text first (rk fetch)")
+    return snap
+
+
+def _locate(note: NoteIn, layer: TextLayer) -> tuple[Locator, str]:
+    """V-QUOTE of the quote (or the paraphrase's source span): its locator and how it was found (``given``: the
+    given locator holds it; ``search``: found by searching, a given locator that does not hold it is replaced)."""
+    target = note.text if note.kind == "quote" else note.source_span
+    q = None
+    if note.kind == "quote" and note.locator is not None:  # a known position must hold an acceptable occurrence
+        loc = note.locator
+        q = verify_quote_at(target, layer, loc.page, loc.start, loc.end)
+    located = "given" if q is not None and q.ok else "search"
+    if located == "search":
+        q = verify_quote(target, layer)
+    if not q.ok:
+        raise NoteRejected("quote_not_found" if note.kind == "quote" else "span_not_found",
+                           best_snippet=q.best_snippet, best_score=q.best_score, page=q.page)
+    return Locator(page=q.page, start=q.start, end=q.end), located
+
+
+def locate_quote(ps: ProjectStore, lib: Library, note: NoteIn) -> tuple[str | None, Locator]:
+    """V-QUOTE of a quote note without storing it: ``(snapshot sha, locator)`` as ``add_note`` would store them;
+    raises ``NoteRejected`` as ``add_note`` does."""
+    snapshot_sha, layer = _source(ps, lib, note)
+    return snapshot_sha, _locate(note, layer)[0]
+
+
 def add_note(ps: ProjectStore, lib: Library, note: NoteIn, *, actor: str,
              actor_kind: Literal["human", "agent"] = "agent") -> NoteResult:
     lib.get(note.source_id)
@@ -67,37 +107,18 @@ def add_note(ps: ProjectStore, lib: Library, note: NoteIn, *, actor: str,
     locator = note.locator
     snapshot_sha = None
     if note.kind in ("quote", "paraphrase"):
-        if note.against == "abstract":
-            layer = abstract_layer(lib.get(note.source_id).abstract)
-            if layer is None:
-                raise NoteRejected("no_abstract", hint="the item has no abstract to verify against")
-        else:
-            snap = latest_snapshot(ps, note.source_id)
-            if snap is None:
-                raise NoteRejected("no_snapshot", hint="fetch full text first (rk fetch)")
-            snapshot_sha, layer = snap
-        target = note.text if note.kind == "quote" else note.source_span
+        snapshot_sha, layer = _source(ps, lib, note)
         if note.kind == "paraphrase" and not (note.source_span or "").strip():
             raise ValueError("paraphrase notes need source_span (the original passage)")
-        q = None
-        if note.kind == "quote" and note.locator is not None:  # a known position must hold an acceptable occurrence
-            loc = note.locator
-            q = verify_quote_at(target, layer, loc.page, loc.start, loc.end)
-        located = "given" if q is not None and q.ok else "search"
-        if located == "search":  # locate the text (a given locator that does not hold it is replaced)
-            q = verify_quote(target, layer)
-        if not q.ok:
-            raise NoteRejected("quote_not_found" if note.kind == "quote" else "span_not_found",
-                               best_snippet=q.best_snippet, best_score=q.best_score, page=q.page)
-        locator = Locator(page=q.page, start=q.start, end=q.end)
-        verified["quote"] = {"ok": True, "page": q.page, "located": located}
+        locator, located = _locate(note, layer)
+        verified["quote"] = {"ok": True, "page": locator.page, "located": located}
         if note.against == "abstract":
             verified["quote"]["against"] = "abstract"
         if note.kind == "paraphrase":
             if verify_quote(note.text, layer).ok:
                 raise NoteRejected("too_close", reason_detail="paraphrase text occurs verbatim in the source")
-            page_text = next(p.text for p in layer.pages if p.n == q.page)
-            context = page_text[max(0, q.start - PARA_CONTEXT) : q.end + PARA_CONTEXT]
+            page_text = next(p.text for p in layer.pages if p.n == locator.page)
+            context = page_text[max(0, locator.start - PARA_CONTEXT) : locator.end + PARA_CONTEXT]
             p = check_paraphrase(note.text, note.source_span, context=context)
             if not p.ok:
                 raise NoteRejected("too_close", **p.model_dump())

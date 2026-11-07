@@ -294,7 +294,7 @@ async function showItem(id, box) {
   el("h2", {}, "Notes"),
   d.notes.length
     ? el("div", {}, d.notes.map((n) => el("blockquote", { class: `note ${n.kind === "quote" && !n.verified?.quote?.ok ? "unverified" : ""}` },
-        n.text, el("div", { class: "hint" }, `${n.kind}${n.locator ? `, page ${n.locator.page}` : ""}`))))
+        n.text, el("div", { class: "hint" }, `${n.kind}${n.verified?.quote?.against === "abstract" ? ", abstract" : n.locator ? `, page ${n.locator.page}` : ""}`))))
     : el("p", { class: "empty" }, "No notes yet."));
 }
 

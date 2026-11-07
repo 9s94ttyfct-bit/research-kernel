@@ -149,6 +149,17 @@ def extraction_notes(ps: ProjectStore, attempt: int, *, kind: str | None = None)
     return [n for n in notes if kind is None or n["kind"] == kind]
 
 
+def mark_extraction(ps: ProjectStore, extraction_id: str, problem: str, *, actor: str) -> None:
+    """Set the ``problem`` of a stored extraction row (e.g. ``"excluded: …"`` when the P1 degrade takes its study out
+    of the evidence)."""
+    ps.apply(NewEvent(type="extraction.marked", entity_id=extraction_id, actor_kind="kernel", actor=actor,
+                      payload={"problem": problem}))
+
+
+def clear_extractions(ps: ProjectStore, attempt: int, item_id: str, *, actor: str) -> None:
+    """Remove the attempt's rows of one study (a half-read study read again in the same attempt replaces them)."""
+    ps.apply(NewEvent(type="extraction.cleared", entity_id=item_id, actor_kind="kernel", actor=actor,
+                      payload={"attempt": attempt}))
 
 
 # ---- votes ----
@@ -327,6 +338,16 @@ def _extraction(conn: sqlite3.Connection, ev: Event) -> None:
                  "carried_from) VALUES (?,?,?,?,?,?,?,?,?)",
                  (ev.entity_id, p["attempt"], p["item_id"], p["field"], json.dumps(p["value"]), p["note_id"],
                   int(p["sufficient"]), p["problem"], p.get("carried_from")))
+
+
+@projection("extraction.marked")
+def _extraction_marked(conn: sqlite3.Connection, ev: Event) -> None:
+    conn.execute("UPDATE extractions SET problem=? WHERE id=?", (ev.payload["problem"], ev.entity_id))
+
+
+@projection("extraction.cleared")
+def _extraction_cleared(conn: sqlite3.Connection, ev: Event) -> None:
+    conn.execute("DELETE FROM extractions WHERE attempt=? AND item_id=?", (ev.payload["attempt"], ev.entity_id))
 
 
 @projection("vote.decided")
