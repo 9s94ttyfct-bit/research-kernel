@@ -199,6 +199,18 @@ def test_uncertain_creates_checkpoint_in_collab_and_no_evidence(env):
     assert set(cp["options"]) == {"claim_id", "opinions", "reason"} and len(cp["options"]["opinions"]) == 2
 
 
+def test_withdrawn_claim_is_refused_before_any_judge_or_record(env):
+    k, reg, ps, svc, claim = env
+    cid = claim(CLAIM)
+    svc.withdraw_claim(cid, reason="uncertain in P1", actor="kernel")
+    js = judges((LUNA, "supported"), (DEEPSEEK, "supported"))
+    with pytest.raises(ValueError, match="withdrawn"):
+        verify_support(k, reg, ps, cid, actor="t", **js)
+    assert all(p.inputs == [] for p in js["judge_providers"].values())
+    assert ps.db.execute("SELECT COUNT(*) FROM verifications WHERE target_id=?", (cid,)).fetchone()[0] == 0
+    assert list_checkpoints(ps) == []
+
+
 def test_rk_verify_claim_tool_returns_the_judges_verdict(env, monkeypatch):
     _k, reg, _ps, _, claim = env
     cid = claim(CLAIM)

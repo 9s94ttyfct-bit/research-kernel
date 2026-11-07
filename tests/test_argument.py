@@ -155,8 +155,11 @@ def test_withdraw_and_narrow_claims(env):
     with pytest.raises(KeyError):  # an artifact a claim cites must exist
         svc.add_claim(ClaimIn(text="x", kind="stat_result", artifact_ids=["stt_missing"]), generator_vendor=None,
                       actor="kernel", actor_kind="kernel", origin="synthesis")
-    stat = svc.add_claim(ClaimIn(text="Pooled RR 0.62.", kind="stat_result"), generator_vendor=None, actor="kernel",
-                         actor_kind="kernel", origin="synthesis")
+    sid = add_artifact(ps, ArtifactIn(kind="stt", code_path="rk.stats.meta:pool", code_version="c0de",
+                                      input_hashes=[], values={"k": 2}, output_path=None),
+                       stage="synthesize", attempt=1, actor="kernel")
+    stat = svc.add_claim(ClaimIn(text="Pooled RR 0.62.", kind="stat_result", artifact_ids=[sid]),
+                         generator_vendor=None, actor="kernel", actor_kind="kernel", origin="synthesis")
     feas = svc.add_claim(ClaimIn(text="The cells can be built in a month.", kind="feasibility"),
                          generator_vendor="openai", actor="arguer")
     assert {x["id"] for x in svc.list_claims()} == {broad, narrow, feas}

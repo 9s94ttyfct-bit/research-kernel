@@ -205,9 +205,11 @@ class ArgumentService:
     def add_claim(self, c: ClaimIn, *, generator_vendor: str | None, actor: str, actor_kind: str = "agent",
                   origin: ClaimOrigin = "argument") -> str:
         """A draft claim. The claim it narrows (``narrowed_from``) and the artifacts it reports must exist; only the
-        kernel writes a ``stat_result`` or links artifacts."""
+        kernel writes a ``stat_result`` or links artifacts, and a ``stat_result`` reports at least one artifact."""
         if actor_kind != "kernel" and (c.kind == "stat_result" or c.artifact_ids):
             raise ValueError("only the kernel writes a stat_result claim or links a claim to artifacts")
+        if c.kind == "stat_result" and not c.artifact_ids:
+            raise ValueError("a stat_result claim reports at least one artifact (artifact_ids)")
         if c.narrowed_from is not None and self._row("claims", c.narrowed_from) is None:
             raise KeyError(c.narrowed_from)
         for a in c.artifact_ids:

@@ -9,6 +9,12 @@ uncertain      everything else, including missing evidence or too few valid judg
 A judge is valid when it ran and its vendor is admitted (``rk.verify.judge.run_judges``: a known, non-human vendor
 that is neither the claim author's nor another judge's); a failed or skipped judge does not count. V-NUM runs
 alongside: a number in the claim that its evidence does not contain keeps the claim from "supported".
+
+A ``stat_result`` claim (kernel-written from its artifacts) gets no judges: it is supported when V-STATS passes on
+every artifact it reports and V-NUM finds each of its numbers among those artifacts' values, else unsupported.
+
+Also here: V-HEDGE of a stored claim (``check_claim_hedge``) and the claim gate of the synthesize and argue stages
+(``gate_claims``).
 """
 
 from __future__ import annotations
@@ -20,9 +26,12 @@ from pydantic import BaseModel
 from rk.argument import ArgumentService
 from rk.checkpoints import create_checkpoint
 from rk.llm.drivers import DriverSpec
+from rk.production.artifacts import artifact
+from rk.verify.hedge import HedgeResult, check_hedge, hedge_level, universal_terms
 from rk.verify.judge import JudgeOpinion, JudgeRunner, run_judges
 from rk.verify.numbers import Num, check_numbers
 from rk.verify.records import record_verification
+from rk.verify.stats import check_stats
 
 Verdict = Literal["supported", "uncertain", "unsupported", "contradicted"]
 
@@ -47,18 +56,24 @@ def combine(opinions: list[JudgeOpinion], *, min_judges: int) -> Verdict:
     return label if label in ("supported", "unsupported", "contradicted") else "uncertain"
 
 
-def evidence_texts(claim: dict) -> list[str]:
-    """The verified passages behind a claim: quote notes' text, paraphrase notes' original span."""
-    out = []
+def _evidence_notes(claim: dict) -> dict[str, str]:
+    """note id -> the verified passage of each note behind a claim: a quote note's text, a paraphrase note's original
+    span."""
+    out: dict[str, str] = {}
     for ev in claim["evidence"]:
         for n in ev["notes"]:
             if n is None:
                 continue
             if n["kind"] == "quote":
-                out.append(n["text"])
+                out[n["id"]] = n["text"]
             elif n["kind"] == "paraphrase" and n.get("source_span"):
-                out.append(n["source_span"])
+                out[n["id"]] = n["source_span"]
     return out
+
+
+def evidence_texts(claim: dict) -> list[str]:
+    """The verified passages behind a claim: quote notes' text, paraphrase notes' original span."""
+    return list(_evidence_notes(claim).values())
 
 
 def verify_support(kernel, registry, ps, claim_id: str, *, actor: str,
@@ -69,10 +84,15 @@ def verify_support(kernel, registry, ps, claim_id: str, *, actor: str,
     ``uncertain`` verdict opens an ``uncertain_support`` checkpoint unless ``checkpoint`` is false (the gap miners:
     their claims are evidence checks of a candidate gap, not claims of the argument). ``run`` replaces ``run_task`` for
     the judge tasks (``run_judges``), e.g. a stage's task executor; its exceptions propagate, and no verification of
-    the claim is recorded then."""
-    k = kernel.settings().support_min_judges if min_judges is None else min_judges
+    the claim is recorded then. A ``stat_result`` claim is decided by V-STATS and V-NUM (``_verify_stat``). A
+    withdrawn claim is refused (``ValueError``) before any judge runs or anything is recorded."""
     svc = ArgumentService(ps)
     claim = svc.get_claim(claim_id)
+    if claim["status"] == "withdrawn":
+        raise ValueError(f"claim {claim_id} is withdrawn: it is out of the argument and is not verified")
+    if claim.get("kind") == "stat_result":
+        return _verify_stat(ps, svc, claim, actor=actor)
+    k = kernel.settings().support_min_judges if min_judges is None else min_judges
     texts = evidence_texts(claim)
     if not texts:
         result = SupportResult(verdict="uncertain", min_judges=k, reason="no_evidence")
@@ -97,6 +117,98 @@ def verify_support(kernel, registry, ps, claim_id: str, *, actor: str,
                           {"claim_id": claim_id, "opinions": [o.model_dump() for o in result.opinions],
                            "reason": result.reason}, stage="argue", actor=actor)
     return result
+
+
+def _verify_stat(ps, svc: ArgumentService, claim: dict, *, actor: str) -> SupportResult:
+    """A ``stat_result`` claim: V-STATS on every artifact it reports, then V-NUM of its text against their values (and
+    any evidence it has). No judge runs (``min_judges`` 0); the verdict is ``supported`` or ``unsupported``."""
+    cid, ids = claim["id"], list(claim.get("artifact_ids") or [])
+    stats = {a: check_stats(ps, a, actor=actor) for a in ids}
+    nums = check_numbers(claim["text"], evidence_texts(claim), artifact_values=[artifact(ps, a)["values"] for a in ids])
+    reason = ("no_artifact" if not ids else "stats_mismatch" if not all(s.ok for s in stats.values())
+              else None if nums.ok else "ungrounded_number")
+    result = SupportResult(verdict="unsupported" if reason else "supported", numbers_ok=nums.ok,
+                           ungrounded_numbers=nums.ungrounded, min_judges=0, reason=reason)
+    record_verification(ps, "claim", cid, "V-NUM", "pass" if nums.ok else "ungrounded_number",
+                        {"ungrounded": [n.model_dump() for n in nums.ungrounded], "artifact_ids": ids}, actor=actor)
+    vid = record_verification(ps, "claim", cid, "V-SUPPORT", result.verdict,
+                              {"by": "V-STATS", "artifacts": {a: s.model_dump() for a, s in stats.items()},
+                               **result.model_dump(mode="json")}, actor=actor)
+    svc.set_claim_status(cid, result.verdict, verification_id=vid, actor=actor)
+    return result
+
+
+# A stat_result claim's source is its artifact: kernel code computed the value, which the claim states plainly.
+STAT_SOURCE_LEVEL = 2
+
+
+def check_claim_hedge(ps, claim_id: str, *, actor: str = "kernel") -> HedgeResult:
+    """V-HEDGE of a stored claim, recorded on it (``pass`` / ``overstated``).
+
+    * Level: the claim's level is at most the highest level of its evidence notes' verified passages
+      (``check_hedge``); a ``stat_result`` claim's source level is ``STAT_SOURCE_LEVEL`` (its artifacts). A claim
+      with neither is overstated (``reason="no_evidence"``).
+    * Universal quantifiers ("all", "every", "never", "always", "none") need at least two evidence notes, and one of
+      them must itself state a universal."""
+    claim = ArgumentService(ps).get_claim(claim_id)
+    notes = _evidence_notes(claim)
+    level = hedge_level(claim["text"])
+    if notes:
+        r = check_hedge(claim["text"], list(notes.values()))
+    elif claim.get("kind") == "stat_result":
+        r = HedgeResult(ok=level <= STAT_SOURCE_LEVEL, claim_level=level, source_level=STAT_SOURCE_LEVEL)
+    else:
+        r = HedgeResult(ok=False, claim_level=level, source_level=None, reason="no_evidence",
+                        problems=["the claim has no evidence note to compare its wording with"])
+    problems = list(r.problems)
+    if r.source_level is not None and not r.ok:
+        problems.append(f"the claim's level {r.claim_level} is above its evidence's highest level {r.source_level}")
+    universal = universal_terms(claim["text"])
+    if universal:
+        said = ", ".join(f'"{u}"' for u in universal)
+        if len(notes) < 2:
+            problems.append(f"the universal {said} needs at least two evidence notes (it has {len(notes)})")
+        if not any(universal_terms(t) for t in notes.values()):
+            problems.append(f"the universal {said} is not stated by any evidence note")
+    result = r.model_copy(update={"ok": not problems, "universal": universal, "problems": problems})
+    record_verification(ps, "claim", claim_id, "V-HEDGE", "pass" if result.ok else "overstated",
+                        result.model_dump(), actor=actor)
+    return result
+
+
+def _latest_verdict(ps, claim_id: str, verifier: str) -> str | None:
+    r = ps.db.execute("SELECT verdict FROM verifications WHERE target_type='claim' AND target_id=? AND verifier=? "
+                      "ORDER BY rowid DESC LIMIT 1", (claim_id, verifier)).fetchone()
+    return r["verdict"] if r else None
+
+
+def gate_claims(ps, claim_ids: list[str]) -> list[str]:
+    """One line per claim that fails the claim gate, naming each of its problems: its status is not ``supported``,
+    its latest V-HEDGE is not ``pass`` (or V-HEDGE never ran), or a priority-1 objection is still open against it, its
+    evidence or an edge into it. Withdrawn claims are out of the argument and skipped; an unknown id is a
+    ``KeyError``. Edges and objections are read with their legacy shapes tolerated (no typed warrant, hand-added
+    ``response_to`` edges, objections without a priority: priority 1)."""
+    svc = ArgumentService(ps)
+    out = []
+    for cid in claim_ids:
+        claim = svc.get_claim(cid)
+        if claim["status"] == "withdrawn":
+            continue
+        problems = []
+        if claim["status"] != "supported":
+            problems.append(f"status {claim['status']} (not supported)")
+        hedge = _latest_verdict(ps, cid, "V-HEDGE")
+        if hedge != "pass":
+            problems.append("V-HEDGE not run" if hedge is None else f"V-HEDGE {hedge}")
+        targets = [cid, *(e["id"] for e in claim["evidence"]), *(e.get("id") for e in svc.list_edges(to_id=cid))]
+        open_p1 = [o["id"] for t in targets if t for o in svc.list_objections(target_id=t)
+                   if o.get("status", "open") == "open" and o.get("priority", 1) == 1]
+        if open_p1:
+            problems.append("open priority-1 objection " + ", ".join(open_p1))
+        if problems:
+            out.append(f"{cid}: " + "; ".join(problems))
+    return out
+
 
 
 def _slug(ps) -> str:

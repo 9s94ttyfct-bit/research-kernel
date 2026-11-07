@@ -2,11 +2,16 @@
 
 Format variants normalise to the same value: thousands separators (``,`` or thin/narrow no-break spaces), the Unicode
 minus, ``e``-notation and ``×10^n`` / superscript exponents, ``%`` / ``percent``. Digits glued to letters (``CO2``,
-``COVID-19``), citation parentheticals and ``[[…]]`` source markers are not quantities and are ignored."""
+``COVID-19``), citation parentheticals and ``[[…]]`` source markers are not quantities and are ignored.
+
+A number may instead match a value of a kernel-made artifact (``artifact_values``: every number in their ``values``,
+at any depth; booleans are not numbers) rounded as the claim writes it: to the claim's last digit, so "0.62" matches
+0.6213 and "41%" matches 41.3. Artifact values carry no unit; the template that wrote the claim chose it."""
 
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 
 from pydantic import BaseModel
 
@@ -45,18 +50,29 @@ def _mask(text: str, pattern: re.Pattern) -> str:
     return pattern.sub(lambda m: " " * (m.end() - m.start()), text)
 
 
-def _value(m: re.Match) -> float:
-    mant = re.sub(r"[,\u2009\u202f]", "", m["mant"])
-    v = float(mant)
+def _exp10(m: re.Match) -> int:
+    """The power of ten of a matched number's exponent (0 without one)."""
     exp = m["exp"]
-    if exp:
-        exp = exp.translate(_SUP)
-        if exp[0] in "eE":
-            v *= 10 ** int(exp[1:].replace("−", "-"))
-        else:
-            power = re.search(r"10\s*\^?\s*([-+]?\d+)$", exp.replace("−", "-"))
-            v *= 10 ** int(power.group(1))
+    if not exp:
+        return 0
+    exp = exp.translate(_SUP)
+    if exp[0] in "eE":
+        return int(exp[1:].replace("−", "-"))
+    return int(re.search(r"10\s*\^?\s*([-+]?\d+)$", exp.replace("−", "-")).group(1))
+
+
+def _value(m: re.Match) -> float:
+    v = float(re.sub(r"[,\u2009\u202f]", "", m["mant"])) * 10 ** _exp10(m)
     return -v if m["sign"] else v
+
+
+def _step(text: str) -> float:
+    """The value of the last digit of a number as written: 0.01 for "0.62", 1 for "41%", 10 for "1.23e3"."""
+    m = _NUM.match(text)
+    if m is None:
+        return 0.0
+    _, _, frac = m["mant"].partition(".")
+    return 10.0 ** (_exp10(m) - len(frac))
 
 
 def _unit(raw: str | None) -> str | None:
@@ -81,7 +97,29 @@ def _same(a: Num, b: Num) -> bool:
     return a.unit == b.unit and abs(a.value - b.value) <= 1e-9 * max(1.0, abs(a.value))
 
 
-def check_numbers(claim_text: str, evidence_texts: list[str]) -> NumResult:
+def _rounds_to(n: Num, value: float) -> bool:
+    """Whether ``value`` rounded to the claim number's last digit is that number."""
+    half = _step(n.text) / 2
+    return abs(value - n.value) <= half * (1 + 1e-9) + 1e-12 * max(1.0, abs(value))
+
+
+def _leaves(obj) -> list[float]:
+    """Every number in a JSON value, at any depth (booleans are not numbers)."""
+    if isinstance(obj, bool):
+        return []
+    if isinstance(obj, int | float):
+        return [float(obj)]
+    if isinstance(obj, dict):
+        return [x for v in obj.values() for x in _leaves(v)]
+    if isinstance(obj, list | tuple):
+        return [x for v in obj for x in _leaves(v)]
+    return []
+
+
+def check_numbers(claim_text: str, evidence_texts: list[str], *,
+                  artifact_values: Sequence[dict] = ()) -> NumResult:
     pool = [n for t in evidence_texts for n in extract_numbers(t)]
-    ungrounded = [n for n in extract_numbers(claim_text) if not any(_same(n, e) for e in pool)]
+    computed = [x for v in artifact_values for x in _leaves(v)]
+    ungrounded = [n for n in extract_numbers(claim_text)
+                  if not any(_same(n, e) for e in pool) and not any(_rounds_to(n, x) for x in computed)]
     return NumResult(ok=not ungrounded, ungrounded=ungrounded)
