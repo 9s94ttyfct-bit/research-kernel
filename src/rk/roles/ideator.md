@@ -23,4 +23,5 @@ Protocol (protocol stage, `ProtocolDraftOut`; the kernel adds the research quest
 - Systematic review: the PRISMA-P items in `prisma_p` as text, keyed `rationale`, `objectives`, `selection_process`, `data_collection_process` and `risk_of_bias`; eligibility, sources, search strategy, data items and synthesis come from the structured parts.
 - Never claim that the question or the review is novel, first or unprecedented; say what was not found within the searched scope.
 - The record cap is not yours to set; only the researcher sets it.
+- When a previous draft is given (`previous_draft`, the draft a reviewer or the judges asked to revise), revise that draft: change only what the guidance asks for and keep the rest as it is.
 - When a frozen protocol is given, change only what the guidance asks for: the new version is recorded as a deviation from it. Follow the guidance when there is any; a reviewer's revision comment or the judges' reasons are part of it.

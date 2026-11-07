@@ -39,11 +39,13 @@ def search(http: HttpClient, query: str, *, open_access_only: bool = False, page
     return [result_to_item(r) for r in ((data or {}).get("resultList") or {}).get("result", [])]
 
 
-def count(http: HttpClient, query: str) -> int:
-    """How many records match ``query`` (``hitCount`` of a one-result id list)."""
+def count(http: HttpClient, query: str) -> int | None:
+    """How many records match ``query`` (``hitCount`` of a one-result id list); ``None`` when the response gives
+    none."""
     data, _ = http.get_json(f"{BASE}/search", {"query": query, "format": "json", "resultType": "idlist",
                                                "pageSize": 1})
-    return int((data or {}).get("hitCount") or 0)
+    n = (data or {}).get("hitCount")
+    return int(n) if isinstance(n, int | str) and str(n).isdigit() else None
 
 
 def fulltext_xml(http: HttpClient, pmcid: str) -> bytes | None:

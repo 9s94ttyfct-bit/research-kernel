@@ -11,15 +11,12 @@ import pytest
 from rk.canon import canonical_json, sha256_hex
 from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
 from rk.config import Settings, save_settings
+from rk.discovery.models import Intake
 from rk.discovery.sources import KernelSources
+from rk.discovery.store import intake_of, record_intake
 from rk.net.http import HttpClient
 from rk.orchestrator.engine import Orchestrator, StageOutcome, default_workers
-from rk.orchestrator.state import (
-    degradations,
-    latest_attempt,
-    record_attempt,
-    start_run,
-)
+from rk.orchestrator.state import latest_attempt, record_attempt, start_run
 from rk.production import store
 from rk.production.models import Protocol
 from rk.production.protocol import (
@@ -99,9 +96,8 @@ def test_sr_protocol_needs_prisma_p_items():
                         ("objectives", "selection_process", "data_collection_process", "risk_of_bias")]
     assert check_protocol(body.model_copy(update={"prisma_p": SR_ITEMS}), "systematic_review") == []
     no_plan = body.model_copy(update={"prisma_p": SR_ITEMS, "synthesis_plan": None, "extraction_schema": []})
-    assert check_protocol(no_plan, "systematic_review") == [
-        "extraction_schema has no field", "synthesis_plan is missing", "PRISMA-P item 'data_items' is missing",
-        "PRISMA-P item 'synthesis' is missing"]
+    assert check_protocol(no_plan, "systematic_review") == [  # each structural PRISMA-P item is reported once
+        "extraction_schema has no field", "synthesis_plan is missing"]
     assert check_protocol(no_plan, "scoping_review") == ["extraction_schema has no field", "synthesis_plan is missing"]
     assert counts_as_preregistration("systematic_review") and counts_as_preregistration("scoping_review")
 
@@ -179,7 +175,7 @@ def test_p2_opens_protocol_approval_p1_votes(env):
                              "choices": ["approve", "revise", "back"], "replaces": None}
     prompt = cp["prompt"]
     for text in ("Protocol version 1", "traceability only", "I am studying aspirin over 80", "Search strategy",
-                 *QUERIES, "openalex, europepmc", "2000", "Record cap: 3000", "Record-cap probe: 0 records",
+                 *QUERIES, "openalex, europepmc", "2000", "Record cap: 3000", "Record-cap probe (advisory): 0 records",
                  "Eligibility", "I1: People over 80", "E1: Animal studies", "Extraction schema",
                  "n (number, unit people): Participants", "design (category: rct | cohort | other): Study design",
                  "Synthesis plan", "narrative_swim", "PRISMA-P", "risk_of_bias: RoB 2 for trials",
@@ -207,6 +203,19 @@ def test_p2_opens_protocol_approval_p1_votes(env):
     assert w.gate(ps, 1).ok
     assert store.votes(ps, "protocol", row["id"]) == []
 
+    # P1: the same stage votes instead of asking (here over the frozen version 1: a deviation)
+    record_intake(ps, Intake(**{**intake_of(ps).model_dump(), "production_mode": "auto"}), actor="tester",
+                  actor_kind="human")
+    ex1 = _executor([_draft()], votes=_votes(("approve", "approve")))
+    n_checkpoints = len(list_checkpoints(ps))
+    assert w.run(_ctx(env, ex1, attempt=2)).status == "done"
+    (p1,) = store.protocols(ps, 2)
+    assert len(list_checkpoints(ps)) == n_checkpoints  # no checkpoint in P1
+    assert [c["role"] for c in ex1.calls] == ["ideator", "scout", "judge", "judge_2"]
+    assert store.votes(ps, "protocol", p1["id"])[0]["decision"] == "approve"
+    assert store.frozen_protocol(ps)["id"] == p1["id"]
+    assert [(d["from_version"], d["to_version"]) for d in store.deviations(ps)] == [(1, 2)]
+
 
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
 def test_p2_revise_reruns_and_back_goes_to_question(env):
@@ -216,7 +225,13 @@ def test_p2_revise_reruns_and_back_goes_to_question(env):
     cid = w.run(_ctx(env, ex)).checkpoint_id
     out = w.on_answer(_ctx(env, ex), _answer(ps, cid, {"decision": "revise", "comment": "Add a harm outcome."}))
     assert (out.status, out.reason) == ("rerun", "Add a harm outcome.")
+    (draft,) = store.protocols(ps, 1)
     cid = w.run(_ctx(env, ex, attempt=2)).checkpoint_id
+    assert "previous_draft" not in ex.calls[0]["inputs"]
+    for call in ex.calls[2:4]:  # the attempt-2 Ideator and Scout revise the draft they were asked to revise
+        assert call["role"] in ("ideator", "scout")
+        assert call["inputs"]["previous_draft"] == {"version": 1, "body": draft["body"],
+                                                    "record_probe": probe_of(ps, draft["id"])}
     out = w.on_answer(_ctx(env, ex, attempt=2), _answer(ps, cid, {"decision": "back", "comment": "RQ too broad"}))
     assert (out.status, out.to) == ("back_edge", "question") and "RQ too broad" in out.reason
     assert store.frozen_protocol(ps) is None and not w.gate(ps, 2).ok
@@ -234,7 +249,14 @@ def test_p1_vote_approves_or_reruns_with_the_judges_reasons(env):
     assert (v1["decision"], v1["conservative"], v1["question"]) == ("revise", 1, VOTE_QUESTION)
     assert store.frozen_protocol(ps) is None and not w.gate(ps, 1).ok
 
-    assert w.run(_ctx(env, ex, attempt=2)).status == "done"
+    rerun = _ctx(env, ex, attempt=2)
+    rerun.guidance = out.reason  # what the engine gives the rerun (the edge's failures)
+    assert w.run(rerun).status == "done"
+    for call in ex.calls[4:6]:  # attempt 2: the Ideator and the Scout get the draft the judges asked to revise
+        assert call["inputs"]["previous_draft"]["version"] == 1
+        assert call["inputs"]["previous_draft"]["body"] == first["body"]
+        assert call["inputs"]["previous_draft"]["record_probe"]["total"] == 0
+        assert "judge: revise" in call["inputs"]["guidance"]
     (second,) = store.protocols(ps, 2)
     assert store.frozen_protocol(ps)["id"] == second["id"] and w.gate(ps, 2).ok
     judged = [c for c in ex.calls if c["schema"] == "VoteOut"]
@@ -327,26 +349,29 @@ def test_first_freeze_after_screening_began_is_not_preregistered(env):
     assert not protocol_prereg_ok(ps)
 
 
-# ---- the record-cap probe ----
+# ---- the record-cap probe (advisory) ----
 def _big(n_openalex: int, n_epmc: int) -> FakeSources:
-    return FakeSources({}, record_counts={(QUERIES[0], "openalex"): n_openalex, (QUERIES[0], "europepmc"): n_epmc})
+    return FakeSources({}, record_counts={(QUERIES[0], "openalex"): n_openalex, (QUERIES[0], "europepmc"): n_epmc,
+                                          (QUERIES[1], "openalex"): None})
 
 
-def test_record_cap_probe_fails_the_gate(env):
+def test_record_cap_probe_is_advisory(env):
     _, ps, _ = env
-    ex = _executor([_draft()], [_strategy(sources=["openalex", "europepmc", "pubmed"])])
+    ex = _executor([_draft()], [_strategy(sources=["openalex", "europepmc", "pubmed"])],
+                   votes=_votes(("approve", "approve")))
     sources = _big(2500, 1500)
     w = ProtocolWorker()
     out = w.run(_ctx(env, ex, sources=sources))
-    assert (out.status, out.reason) == ("rerun", "narrow the search strategy (4000 records > 3000)")
+    assert out.status == "done"  # 4000 > 3000 fails nothing: search_screen enforces the cap after deduplication
     assert [c for c in sources.calls if c[0] == "count"] == [("count", q, s) for q in QUERIES
                                                              for s in ("openalex", "europepmc")]
     (row,) = store.protocols(ps, 1)
     probe = probe_of(ps, row["id"])
     assert (probe["total"], probe["uncounted"]) == (4000, ["pubmed"])
-    gate = w.gate(ps, 1)
-    assert not gate.ok and "narrow the search strategy (4000 records > 3000)" in gate.failures
-    assert not [c for c in ex.calls if c["schema"] == "VoteOut"]  # no vote on a strategy over the cap
+    assert {"query": QUERIES[1], "source": "openalex", "count": None} in probe["counts"]  # no count: recorded, not 0
+    assert w.gate(ps, 1).ok
+    (judged, _) = [c for c in ex.calls if c["schema"] == "VoteOut"]
+    assert judged["inputs"]["subject"]["record_probe"]["total"] == 4000  # the judges see it
 
 
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
@@ -356,9 +381,9 @@ def test_p2_raises_the_record_cap_on_approval(env):
     w = ProtocolWorker()
     out = w.run(_ctx(env, ex, sources=_big(2500, 1500)))
     cp = get_checkpoint(ps, out.checkpoint_id)
-    assert "4000 records, above the record cap 3000" in cp["prompt"]
-    plain = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decision": "approve"}))
-    assert plain.status == "waiting_human" and "record_cap of at least 4000" in plain.reason
+    for text in ("Record-cap probe (advisory): 4000 records", f"{QUERIES[1]!r} on openalex: no count",
+                 "4000 records, above the record cap 3000", "search_screen stops above the cap"):
+        assert text in cp["prompt"], text
     for bad in (True, "5000", 0):
         cid = list_checkpoints(ps, "open")[0]["id"]
         assert "whole number" in w.on_answer(_ctx(env, ex), _answer(ps, cid, {"decision": "approve",
@@ -371,7 +396,7 @@ def test_p2_raises_the_record_cap_on_approval(env):
     assert (draft["status"], by_you["status"], by_you["version"]) == ("draft", "frozen", 2)
     assert by_you["body"] == {**draft["body"], "record_cap": 5000}
     assert [e.actor_kind for e in _events(ps, "protocol.added")] == ["agent", "human"]
-    assert probe_of(ps, by_you["id"])["total"] == 4000 and w.gate(ps, 1).ok
+    assert probe_of(ps, by_you["id"]) == probe_of(ps, draft["id"]) and w.gate(ps, 1).ok
     assert store.deviations(ps) == []  # one frozen version: nothing to deviate from
 
     # the raised cap stays the project's: the next draft carries it
@@ -379,32 +404,34 @@ def test_p2_raises_the_record_cap_on_approval(env):
     assert store.protocols(ps, 2)[0]["body"]["record_cap"] == 5000
 
 
-def test_p1_degrade_narrows_the_strategy_under_the_cap(env):
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_raised_record_cap_over_a_frozen_version_records_the_deviation(env):
     _, ps, _ = env
-    counts = {(QUERIES[0], "openalex"): 2500, (QUERIES[1], "openalex"): 400, (QUERIES[2], "europepmc"): 300,
-              (QUERIES[2], "openalex"): 200}
-    ex = _executor([_draft()], votes=_votes(("approve", "approve")))
-    sources = FakeSources({}, record_counts=counts)
+    ex = _executor([_draft(), _draft()])
     w = ProtocolWorker()
-    out = w.run(_ctx(env, ex, sources=sources))
-    assert out.reason == "narrow the search strategy (3400 records > 3000)"
-    done = w.degrade(_ctx(env, ex, sources=sources), [out.reason])
-    assert done.status == "done"
-    first, narrowed = store.protocols(ps, 1)
-    assert narrowed["body"]["search_strategy"]["queries"] == QUERIES[1:]
-    assert narrowed["status"] == "frozen" and probe_of(ps, narrowed["id"])["total"] == 900 and w.gate(ps, 1).ok
-    (d,) = degradations(ps, "protocol")
-    assert d["removed"] == [first["id"]] and QUERIES[0] in d["reason"]
-    assert w.degrade(_ctx(env, ex, sources=sources), []).status == "done"  # narrowed once per attempt
+    cid = w.run(_ctx(env, ex)).checkpoint_id
+    assert w.on_answer(_ctx(env, ex), _answer(ps, cid, {"decision": "approve"})).status == "done"
+    again = _ctx(env, ex, attempt=2)
+    again.guidance = "search too broad"
+    cid = w.run(again).checkpoint_id
+    assert ex.calls[2]["inputs"]["frozen_protocol"]["version"] == 1
+    assert "previous_draft" not in ex.calls[2]["inputs"]  # the latest protocol is frozen
+    assert "Version 1 is frozen: approving records a deviation from it." in get_checkpoint(ps, cid)["prompt"]
+    assert w.on_answer(again, _answer(ps, cid, {"decision": "approve", "record_cap": 5000})).status == "done"
+    draft, by_you = store.protocols(ps, 2)
+    assert (draft["version"], draft["status"], by_you["version"], by_you["status"]) == (2, "draft", 3, "frozen")
+    assert [(d["from_version"], d["to_version"], d["stage"], d["reason"]) for d in store.deviations(ps)] == [
+        (1, 3, "protocol", "search too broad")]
+    assert w.gate(ps, 2).ok and protocol_prereg_ok(ps)
 
 
-def test_p1_degrade_without_a_cap_problem_fails(env):
+def test_p1_degrade_fails(env):
     ex = _executor([_draft()], votes=_votes(("revise", "revise")))
     w = ProtocolWorker()
     out = w.run(_ctx(env, ex))
     assert out.status == "rerun"
     failed = w.degrade(_ctx(env, ex), [out.reason])
-    assert failed.status == "failed" and "not approved" in failed.reason
+    assert failed.status == "failed" and "not approved" in failed.reason and "judge: revise" in failed.reason
 
 
 # ---- sources.count ----
@@ -413,6 +440,8 @@ def test_kernel_sources_count_reads_openalex_and_europepmc(tmp_home, tmp_path):
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append((request.url.host, dict(request.url.params)))
+        if request.url.params.get("search") == "nothing" or request.url.params.get("query") == "nothing":
+            return httpx.Response(200, json={"results": []})  # no count field
         if "openalex" in request.url.host:
             return httpx.Response(200, json={"meta": {"count": 1234}, "results": [{"id": "https://openalex.org/W1"}]})
         return httpx.Response(200, json={"version": "6.9", "hitCount": 567, "resultList": {"result": []}})
@@ -428,6 +457,7 @@ def test_kernel_sources_count_reads_openalex_and_europepmc(tmp_home, tmp_path):
         assert seen[-1][1]["search"] == "aspirin stroke" and seen[-1][1]["per_page"] == "1"
         assert src.count("aspirin stroke", "europepmc") == 567
         assert seen[-1][1]["query"] == "aspirin stroke" and seen[-1][1]["pageSize"] == "1"
+        assert src.count("nothing", "openalex") is None and src.count("nothing", "europepmc") is None
         with pytest.raises(ValueError, match="pubmed"):
             src.count("aspirin stroke", "pubmed")
     finally:

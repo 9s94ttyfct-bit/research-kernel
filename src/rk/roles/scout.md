@@ -12,4 +12,5 @@ Protocol (protocol stage, `SearchStrategyOut`; the kernel runs and logs every se
 - At least 3 queries, always in English, that together cover the research question and the eligibility criteria (population, exposure or intervention, outcome), with the synonyms each concept needs.
 - At least 2 sources, taken from `available_sources` exactly as given.
 - The publication-year range: `date_from` and `date_to` (inclusive; null for an open end).
-- The kernel sizes every query (OpenAlex and Europe PMC record counts); a strategy above the project's record cap comes back to you to narrow. Follow the guidance when there is any.
+- The kernel sizes every query (OpenAlex and Europe PMC record counts, an advisory estimate shown to the reviewer); the record cap is enforced on the deduplicated records when the search runs.
+- When a previous draft is given (`previous_draft`, with the record counts of its queries), revise its strategy: change only what the guidance asks for and keep the rest. Follow the guidance when there is any.

@@ -33,9 +33,9 @@ class DiscoverySources(Protocol):
 
     def year_counts(self, query: str) -> dict[int, int]: ...
 
-    def count(self, query: str, source: str) -> int:
+    def count(self, query: str, source: str) -> int | None:
         """How many works ``query`` matches on ``source`` (one of ``COUNTED_SOURCES``; another raises
-        ``ValueError``)."""
+        ``ValueError``); ``None`` when the source gave no count."""
         ...
 
     def verify(self, item_id: str) -> str: ...
@@ -75,8 +75,8 @@ class KernelSources:
         ctx = self.kernel.ctx()
         return openalex.year_counts(ctx.http, query, api_key=ctx.settings.openalex_key)
 
-    def count(self, query: str, source: str) -> int:
-        """OpenAlex ``meta.count`` or Europe PMC ``hitCount`` of the query."""
+    def count(self, query: str, source: str) -> int | None:
+        """OpenAlex ``meta.count`` or Europe PMC ``hitCount`` of the query (``None`` when the response has none)."""
         ctx = self.kernel.ctx()
         if source == "openalex":
             return openalex.count(ctx.http, query, api_key=ctx.settings.openalex_key)

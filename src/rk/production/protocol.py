@@ -5,15 +5,22 @@ systematic review, the PRISMA-P items) for the frozen RQ, the Scout its search s
 the strategy, summed and stored as ``protocol.probed``) and then:
 
 - P2 (``collab``) opens ``protocol_approval`` (hard human; every section rendered, ``options.protocol_id`` and
-  ``options.version`` name the protocol), also over the record cap, so that you may raise it;
-- P1 (``auto``) reruns over the record cap, else asks the two-vendor ``vote`` (``conservative="revise"``,
-  ``generator_vendor`` = the Ideator's): ``approve`` freezes the protocol, ``revise`` reruns with the judges' reasons
-  as guidance.
+  ``options.version`` name the protocol);
+- P1 (``auto``) asks the two-vendor ``vote`` (``conservative="revise"``, ``generator_vendor`` = the Ideator's):
+  ``approve`` freezes the protocol, ``revise`` reruns with the judges' reasons as guidance.
+
+The probe is advisory: it is shown to you and to the judges but fails nothing. It overestimates (no date range,
+duplicates across queries and sources count again) and leaves out the sources without a count; the record cap is
+enforced by ``search_screen`` on the deduplicated records.
+
+A rerun after an unfrozen draft (a revision asked by you or by the vote, a failed check) gives both roles that draft as
+``previous_draft`` (its body and probe) to change as the guidance asks; a rerun after a freeze gives them the version in
+force as ``frozen_protocol``.
 
 Answers to ``protocol_approval``:
 - ``{"decision": "approve"}`` freezes the protocol; ``"record_cap": N`` (a whole number >= 1) sets the project's
   record cap: the protocol with that cap is a new version added and frozen by you. Only you set the cap: agents' drafts
-  carry the cap of the latest protocol (default ``RECORD_CAP``). Approving while the probe exceeds the cap is refused;
+  carry the cap of the latest protocol (default ``RECORD_CAP``);
 - ``{"decision": "revise", "comment"}`` reruns the stage with the comment as guidance;
 - ``{"decision": "back"}`` (optional ``comment``) goes back to ``question`` (``protocol->question``).
 An answer that cannot be applied opens ``protocol_approval`` again, saying why; handling an answer again freezes
@@ -26,24 +33,24 @@ G-PREREG input; only the systematic and scoping reviews count the freeze as prer
 (``counts_as_preregistration``), the others freeze for traceability only.
 
 Budget per attempt (protocol is an open stage, 40 role tasks per run session): 1 ideator + 1 scout task, plus 2 judge
-tasks in P1 (4); a P1 degrade spends 2 more (the vote on the narrowed protocol).
+tasks in P1 (4).
 
-Gate: a frozen protocol in the latest attempt that passes ``check_protocol``, whose probe ran and is within its record
-cap, and that has a deviation from the frozen version before it, if any."""
+Gate: a frozen protocol in the latest attempt that passes ``check_protocol`` and has a deviation from the frozen
+version before it, if any. A P1 degrade fails: P1 never freezes a protocol the vote did not approve."""
 
 from __future__ import annotations
 
 import json
+from typing import get_args
 
 from pydantic import BaseModel
 
 from rk.checkpoints import answered_by_actor, create_checkpoint, opened_in_place_of
-from rk.discovery.models import RQBody
+from rk.discovery.models import PaperType, RQBody
 from rk.discovery.sources import COUNTED_SOURCES
 from rk.discovery.store import frozen_rq, hypotheses, intake_of
 from rk.llm.vendors import vendor_of
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
-from rk.orchestrator.state import degradations, record_degraded
 from rk.production.models import (
     RECORD_CAP,
     Eligibility,
@@ -73,9 +80,9 @@ VOTE_OPTIONS = ["approve", "revise"]
 QUERIES_MIN, SOURCES_MIN = 3, 2  # what the Scout's strategy needs
 LIGHT_TYPES = frozenset({"critical_review", "research_proposal"})  # question, search and selection principles only
 PREREG_TYPES = frozenset({"systematic_review", "scoping_review"})  # the freeze counts as preregistration (G-PREREG)
-PAPER_TYPES = ("systematic_review", "scoping_review", "critical_review", "research_proposal")
+PAPER_TYPES: tuple[str, ...] = get_args(PaperType)
 # PRISMA-P items a systematic review needs, in order. The text items are written in ``prisma_p``; the others are the
-# structured parts of the protocol.
+# structured parts of the protocol, which the structural checks cover.
 PRISMA_P_ITEMS = ("rationale", "objectives", "eligibility", "information_sources", "search_strategy",
                   "selection_process", "data_collection_process", "data_items", "risk_of_bias", "synthesis")
 PRISMA_P_TEXT = ("rationale", "objectives", "selection_process", "data_collection_process", "risk_of_bias")
@@ -86,12 +93,14 @@ DRAFT_TASK = (
     "schema (each field named, described and typed: text, number or category with its categories, and a unit where "
     "there is one), the synthesis plan and, for a systematic review, the PRISMA-P items (rationale, objectives, "
     "selection process, data collection process, risk of bias). Never claim that the question or the review is novel. "
-    "When a frozen protocol is given, change only what the guidance asks for. Follow the guidance when there is any.")
+    "When a previous draft is given, revise it: change only what the guidance asks for and keep the rest. When a frozen "
+    "protocol is given, change only what the guidance asks for. Follow the guidance when there is any.")
 STRATEGY_TASK = (
     "Write the search strategy for the protocol: at least 3 English search queries that together cover the research "
     "question and the eligibility criteria, at least 2 sources taken from `available_sources` exactly as given, and "
-    "the publication-year range (date_from, date_to; null for an open end). The kernel runs the searches; do not "
-    "search yourself. Follow the guidance when there is any.")
+    "the publication-year range (date_from, date_to; null for an open end). When a previous draft is given (with the "
+    "record counts of its queries), revise its strategy: change only what the guidance asks for. The kernel runs the "
+    "searches; do not search yourself. Follow the guidance when there is any.")
 VOTE_QUESTION = (
     "Is this review protocol complete and fit to freeze for the research question: its eligibility criteria, search "
     "strategy, extraction schema, synthesis plan and, for a systematic review, the PRISMA-P items? Answer approve to "
@@ -148,16 +157,9 @@ def _free_texts(body: Protocol) -> list[tuple[str, str]]:
 
 
 def _prisma_p_missing(body: Protocol) -> list[str]:
+    """The PRISMA-P text items without a text; the structured items are the structural checks'."""
     texts = body.prisma_p or {}
-    present = {
-        "eligibility": any(c.text.strip() for c in body.eligibility.include),
-        "information_sources": bool(_unique(body.search_strategy.sources)),
-        "search_strategy": bool(_unique(body.search_strategy.queries)),
-        "data_items": bool(body.extraction_schema),
-        "synthesis": body.synthesis_plan is not None,
-    }
-    return [i for i in PRISMA_P_ITEMS
-            if not (present[i] if i in present else (texts.get(i) or "").strip())]
+    return [i for i in PRISMA_P_TEXT if not (texts.get(i) or "").strip()]
 
 
 def check_protocol(body: Protocol, paper_type: str) -> list[str]:
@@ -201,34 +203,27 @@ def counts_as_preregistration(paper_type: str) -> bool:
     return paper_type in PREREG_TYPES
 
 
-# ---- the record-cap probe ----
+# ---- the record-cap probe (advisory) ----
 def _probe(ctx: StageContext, strategy: SearchStrategy) -> dict:
-    """``sources.count`` of every query on every counted source of the strategy, and their sum (duplicates across
-    queries and sources count again; sources without a count are listed as ``uncounted``)."""
+    """``sources.count`` of every query on every counted source of the strategy, and the sum of the counts given
+    (duplicates across queries and sources count again). A source that gave no count keeps ``count: None``; the
+    strategy's sources without a count at all are listed as ``uncounted``."""
     sources = _unique(strategy.sources)
     counts = [{"query": q, "source": s, "count": ctx.sources.count(q, s)}
               for q in _unique(strategy.queries) for s in sources if s in COUNTED_SOURCES]
     return {"counts": counts, "uncounted": [s for s in sources if s not in COUNTED_SOURCES],
-            "total": sum(c["count"] for c in counts)}
+            "total": sum(c["count"] for c in counts if c["count"] is not None)}
 
 
-def _record_probe(ps: ProjectStore, protocol_id: str, probe: dict, *, generator_vendor: str | None,
-                  actor: str) -> None:
-    """Store the probe of a protocol (``generator_vendor``: the Ideator's, the vote's generator)."""
-    ps.apply(NewEvent(type="protocol.probed", entity_id=protocol_id, actor_kind="kernel", actor=actor,
-                      payload={**probe, "generator_vendor": generator_vendor}))
+def _record_probe(ps: ProjectStore, protocol_id: str, probe: dict, *, actor: str) -> None:
+    ps.apply(NewEvent(type="protocol.probed", entity_id=protocol_id, actor_kind="kernel", actor=actor, payload=probe))
 
 
 def probe_of(ps: ProjectStore, protocol_id: str) -> dict | None:
-    """The record-cap probe of the protocol (``counts``, ``uncounted``, ``total``, ``generator_vendor``), or
-    ``None`` when it did not run."""
+    """The record-cap probe of the protocol (``counts``, ``uncounted``, ``total``), or ``None`` when it did not run."""
     r = ps.db.execute("SELECT payload FROM events WHERE type='protocol.probed' AND entity_id=? ORDER BY seq DESC "
                       "LIMIT 1", (protocol_id,)).fetchone()
     return json.loads(r["payload"]) if r else None
-
-
-def _over_cap(probe: dict, cap: int) -> str:
-    return f"narrow the search strategy ({probe['total']} records > {cap})" if probe["total"] > cap else ""
 
 
 # ---- versions, freeze, deviations ----
@@ -297,14 +292,16 @@ def _field_line(f: dict) -> str:
 def _probe_lines(probe: dict | None, cap: int) -> list[str]:
     if probe is None:
         return ["Record-cap probe: not run."]
-    per = "; ".join(f"{c['query']!r} on {c['source']}: {c['count']}" for c in probe["counts"]) or "nothing counted"
-    lines = [(f"Record-cap probe: {probe['total']} records (summed per query and counted source, so duplicates "
-              f"count again; {per}).")]
+    per = "; ".join(f"{c['query']!r} on {c['source']}: {'no count' if c['count'] is None else c['count']}"
+                    for c in probe["counts"]) or "nothing counted"
+    lines = [(f"Record-cap probe (advisory): {probe['total']} records (summed per query and counted source, so "
+              f"duplicates count again, with no date range; {per}).")]
     if probe["uncounted"]:
         lines.append(f"Not counted (no record count): {', '.join(probe['uncounted'])}.")
     if probe["total"] > cap:
-        lines.append(f"The probe found {probe['total']} records, above the record cap {cap}: narrow the strategy "
-                     f"(revise), or approve with a raised record_cap of at least {probe['total']}.")
+        lines.append(f"The probe found {probe['total']} records, above the record cap {cap}. search_screen stops "
+                     f"above the cap after deduplication: narrow the strategy (revise), or approve with a raised "
+                     f"record_cap.")
     return lines
 
 
@@ -364,6 +361,16 @@ def _topic(ps: ProjectStore, topic_id: str) -> dict | None:
     return {"title": t["title"], "summary": t["summary"], "data_needed": t["data_needed"], "risks": t["risks"]}
 
 
+def _previous_draft(ps: ProjectStore) -> dict | None:
+    """The latest protocol when it is an unfrozen draft (a rerun after a revision or a failed check), with its probe:
+    what the roles revise. ``None`` when there is none or the latest protocol is frozen."""
+    rows = query_rows(ps, "SELECT * FROM protocols ORDER BY rowid DESC LIMIT 1", (), ("body",))
+    if not rows or rows[0]["status"] == "frozen":
+        return None
+    row = rows[0]
+    return {"version": row["version"], "body": row["body"], "record_probe": probe_of(ps, row["id"])}
+
+
 def _revise_reason(res) -> str:
     why = "; ".join(f"{o['role']} ({o['vendor']}): {o['reason']}" for o in res.opinions if o["reason"])
     head = (f"the protocol vote did not approve it ({res.reason})" if res.conservative_used
@@ -393,6 +400,8 @@ class ProtocolWorker:
             context["topic"] = topic
         if (prior := frozen_protocol(ps)) is not None:
             context["frozen_protocol"] = {"version": prior["version"], "body": prior["body"]}
+        if (draft := _previous_draft(ps)) is not None:
+            context["previous_draft"] = draft
         if ctx.guidance:
             context["guidance"] = ctx.guidance
         d = ctx.executor.run("ideator", DRAFT_TASK, context, ProtocolDraftOut, stage=ctx.stage, attempt=ctx.attempt,
@@ -413,23 +422,18 @@ class ProtocolWorker:
         failures = check_strategy(strategy, ctx.sources.sources()) + check_protocol(body, intake.paper_type)
         if failures:
             return StageOutcome("rerun", reason="; ".join(failures))
-        vendor = vendor_of(d.provider, d.model)
-        probe = _probe(ctx, strategy)
-        _record_probe(ps, pid, probe, generator_vendor=vendor, actor=ctx.actor)
+        _record_probe(ps, pid, _probe(ctx, strategy), actor=ctx.actor)
         if intake.production_mode == "collab":
             return StageOutcome("waiting_human", checkpoint_id=_open(ctx, pid),
                                 reason="the protocol awaits your approval")
-        over = _over_cap(probe, body.record_cap)
-        if over:
-            return StageOutcome("rerun", reason=over)
-        return self._vote(ctx, pid, vendor)
+        return self._vote(ctx, pid, vendor_of(d.provider, d.model))
 
     @staticmethod
     def _vote(ctx: StageContext, protocol_id: str, generator_vendor: str | None) -> StageOutcome:
         row = protocol_row(ctx.ps, protocol_id)
-        probe = probe_of(ctx.ps, protocol_id) or {}
+        probe = probe_of(ctx.ps, protocol_id)
         inputs = {"paper_type": intake_of(ctx.ps).paper_type, "protocol": row["body"],
-                  "record_probe": {"total": probe.get("total"), "uncounted": probe.get("uncounted", [])}}
+                  "record_probe": probe and {**probe, "note": "advisory: no date range, duplicates count again"}}
         res = vote(ctx, "protocol", protocol_id, VOTE_QUESTION, VOTE_OPTIONS, "revise", inputs,
                    generator_vendor=generator_vendor)
         if res.decision == "approve":
@@ -444,7 +448,7 @@ class ProtocolWorker:
             return StageOutcome("failed", reason=f"protocol cannot apply checkpoint {checkpoint['id']} "
                                                  f"({checkpoint['kind']})")
         answer = checkpoint.get("answer") or {}
-        why = self._invalid(answer, row, probe_of(ctx.ps, pid))
+        why = self._invalid(answer)
         if why:
             cid = _open(ctx, pid, replaces=checkpoint["id"], why=f"Your answer could not be applied: {why}.")
             return StageOutcome("waiting_human", checkpoint_id=cid, reason=why)
@@ -461,22 +465,17 @@ class ProtocolWorker:
                             reason="protocol_approval: back to question" + (f": {comment}" if comment else ""))
 
     @staticmethod
-    def _invalid(answer: dict, row: dict, probe: dict | None) -> str:
+    def _invalid(answer: dict) -> str:
         """Why the answer cannot be applied, else ``""``."""
         decision = answer.get("decision")
         if decision not in CHOICES:
             return f"decision {decision!r} is not one of {', '.join(CHOICES)}"
         if decision == "revise" and not (isinstance(answer.get("comment"), str) and answer["comment"].strip()):
             return "revise needs a comment saying what to change"
-        if decision != "approve":
-            return ""
         cap = answer.get("record_cap")
-        if cap is not None and (not isinstance(cap, int) or isinstance(cap, bool) or cap < 1):
+        if decision == "approve" and cap is not None and (not isinstance(cap, int) or isinstance(cap, bool)
+                                                          or cap < 1):
             return f"record_cap must be a whole number of records, at least 1 (got {cap!r})"
-        cap = cap if cap is not None else row["body"]["record_cap"]
-        if probe is not None and probe["total"] > cap:
-            return (f"the record-cap probe found {probe['total']} records, above the record cap {cap}: approve with a "
-                    f"record_cap of at least {probe['total']}, ask for a revision or go back")
         return ""
 
     @staticmethod
@@ -493,9 +492,9 @@ class ProtocolWorker:
                 return done["id"]
             pid = add_protocol(ctx.ps, row["attempt"], Protocol.model_validate(body), version=_next_version(ctx.ps),
                                actor=by, actor_kind="human")
-            probe = probe_of(ctx.ps, row["id"]) or {"counts": [], "uncounted": [], "total": 0}
-            _record_probe(ctx.ps, pid, {k: probe[k] for k in ("counts", "uncounted", "total")},
-                          generator_vendor=probe.get("generator_vendor"), actor=by)
+            probe = probe_of(ctx.ps, row["id"])
+            if probe is not None:
+                _record_probe(ctx.ps, pid, probe, actor=by)
         return pid
 
     def gate(self, ps: ProjectStore, attempt: int) -> GateResult:
@@ -507,11 +506,7 @@ class ProtocolWorker:
         row = frozen[-1] if frozen else rows[-1]
         intake = intake_of(ps)
         failures += check_protocol(Protocol.model_validate(row["body"]), intake.paper_type)
-        probe = probe_of(ps, row["id"])
-        if probe is None:
-            failures.append("the record-cap probe did not run")
-        elif over := _over_cap(probe, row["body"]["record_cap"]):
-            failures.append(over)
+        # the record-cap probe is advisory: search_screen enforces the cap on the deduplicated records
         if frozen:
             earlier = ps.db.execute("SELECT MAX(version) FROM protocols WHERE status='frozen' AND version<?",
                                     (row["version"],)).fetchone()[0]
@@ -520,52 +515,8 @@ class ProtocolWorker:
         return GateResult(not failures, failures)
 
     def degrade(self, ctx: StageContext, failures: list[str]) -> StageOutcome:
-        """P1 at an edge limit. A protocol over its record cap is narrowed: the queries with the largest counts are
-        dropped (at least one stays) until the probe fits, and the narrowed protocol goes to the vote; anything else
-        (a structural failure, a vote that did not approve) fails, since P1 never freezes a protocol the vote did not
-        approve. Narrows once per attempt."""
-        ps = ctx.ps
-        if any(d["attempt"] == ctx.attempt for d in degradations(ps, ctx.stage)):
-            if any(r["status"] == "frozen" for r in protocols(ps, ctx.attempt)):
-                return StageOutcome("done", reason="narrowed protocol frozen")
-            return StageOutcome("failed", reason="the protocol could not be narrowed (narrowed once already)")
-        rows = protocols(ps, ctx.attempt)
-        last = rows[-1] if rows else None
-        probe = probe_of(ps, last["id"]) if last is not None else None
-        if last is None or probe is None:
-            return StageOutcome("failed", reason="; ".join(failures) or "the protocol did not pass its gate")
-        body = Protocol.model_validate(last["body"])
-        cap = body.record_cap
-        if probe["total"] <= cap:
-            return StageOutcome("failed", reason="the protocol was not approved at the edge limit, and P1 does not "
-                                                 "freeze a protocol the vote did not approve: "
-                                                 + ("; ".join(failures) or "no reason given"))
-        per_query: dict[str, int] = {}
-        for c in probe["counts"]:
-            per_query[c["query"]] = per_query.get(c["query"], 0) + c["count"]
-        keep = list(body.search_strategy.queries)
-        dropped: list[str] = []
-        for q in sorted(keep, key=lambda q: -per_query.get(q, 0)):
-            if sum(per_query.get(k, 0) for k in keep) <= cap or len(keep) == 1:
-                break
-            keep.remove(q)
-            dropped.append(q)
-        total = sum(per_query.get(k, 0) for k in keep)
-        if total > cap:
-            return StageOutcome("failed", reason=f"the protocol could not be narrowed under its record cap: even "
-                                                 f"{keep[0]!r} alone finds {total} records > {cap}")
-        narrowed = body.model_copy(update={"search_strategy": body.search_strategy.model_copy(
-            update={"queries": keep})})
-        pid = add_protocol(ps, ctx.attempt, narrowed, version=_next_version(ps), actor=ctx.actor,
-                           actor_kind="kernel")
-        _record_probe(ps, pid, {"counts": [c for c in probe["counts"] if c["query"] in keep],
-                                "uncounted": probe["uncounted"], "total": total},
-                      generator_vendor=probe.get("generator_vendor"), actor=ctx.actor)
-        record_degraded(ps, stage=ctx.stage, attempt=ctx.attempt, removed=[last["id"]],
-                        reason=f"the strategy found {probe['total']} records > the record cap {cap} at the edge "
-                               f"limit; dropped the queries {', '.join(repr(q) for q in dropped)} ({total} records "
-                               f"left), as protocol {pid}", actor=ctx.actor)
-        out = self._vote(ctx, pid, probe.get("generator_vendor"))
-        if out.status == "done":
-            return out
-        return StageOutcome("failed", reason=f"the narrowed protocol was not approved: {out.reason}")
+        """P1 at an edge limit: nothing can be deleted or narrowed into an approved protocol, and P1 never freezes a
+        protocol the vote did not approve, so the run fails with the failures."""
+        return StageOutcome("failed", reason="the protocol was not approved at the edge limit, and P1 does not freeze a "
+                                             "protocol the vote did not approve: "
+                                             + ("; ".join(failures) or "no reason given"))

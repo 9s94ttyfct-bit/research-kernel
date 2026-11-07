@@ -180,16 +180,16 @@ class FakeSources:
     by item title and need ``lib`` (the project library): ``statuses`` (``verify`` result, also written to the item's
     ``ref_status``; default ``default_status``), ``retractions``, ``citing`` (``cited_by``, filtered to
     ``year > after_year``) and ``fulltexts`` (pages recorded as the text layer by ``fulltext``). ``year_counts`` is keyed
-    by query; ``record_counts`` (``count``) by ``(query, source)``, default 0, and ``count`` refuses a source outside
-    ``COUNTED_SOURCES`` as ``KernelSources`` does. ``resolvable`` maps an identifier to the work ``add`` adds to the
-    library (unknown: ``None``). Every call is recorded in ``calls``."""
+    by query; ``record_counts`` (``count``) by ``(query, source)``, default 0 (``None``: the source gave no count), and
+    ``count`` refuses a source outside ``COUNTED_SOURCES`` as ``KernelSources`` does. ``resolvable`` maps an identifier
+    to the work ``add`` adds to the library (unknown: ``None``). Every call is recorded in ``calls``."""
 
     def __init__(self, items: dict[str, list[ItemIn]], *, lib=None, s2: bool = False,
                  statuses: dict[str, str] | None = None, default_status: str = "pass",
                  year_counts: dict[str, dict[int, int]] | None = None,
                  retractions: dict[str, RetractionInfo] | None = None, citing: dict[str, list[ItemIn]] | None = None,
                  fulltexts: dict[str, list[str]] | None = None, resolvable: dict[str, ItemIn] | None = None,
-                 record_counts: dict[tuple[str, str], int] | None = None):
+                 record_counts: dict[tuple[str, str], int | None] | None = None):
         self.items, self.lib, self.s2 = items, lib, s2
         self.statuses, self.default_status = statuses or {}, default_status
         self.counts, self.retractions = year_counts or {}, retractions or {}
@@ -219,7 +219,7 @@ class FakeSources:
         self.calls.append(("year_counts", query))
         return dict(self.counts.get(query, {}))
 
-    def count(self, query: str, source: str) -> int:
+    def count(self, query: str, source: str) -> int | None:
         if source not in COUNTED_SOURCES:
             raise ValueError(f"no record count for source {source!r}")
         self.calls.append(("count", query, source))
