@@ -4,6 +4,8 @@ rk 0.1.0. Data: SciFact dev (claims CC BY 4.0, abstracts ODC-By), a seeded sampl
 
 Failed judge calls: 0 (counted as no opinion; not admitted is listed apart).
 
+All 180 judge calls of this run went to the three cloud gateway drivers above; the run's task records show no call to a local model.
+
 ## Generator `anthropic` (headline)
 
 - Admitted: `omp_gateway:openai-codex/gpt-6-luna`, `omp_gateway:ollama-cloud/deepseek-v4.1-flash`; not admitted: `omp_gateway:anthropic/claude-haiku-5-5` (same_or_unknown_vendor).

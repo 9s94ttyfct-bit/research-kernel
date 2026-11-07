@@ -276,6 +276,31 @@ def test_omp_gateway_needs_no_flag(tmp_home):
     assert "omp_gateway" not in tomllib.loads(config_path().read_text())
 
 
+def test_cli_models_json_with_a_failing_listing_and_unknown_vendor(tmp_home, monkeypatch):
+    def missing(argv, timeout):
+        raise FileNotFoundError("omp")
+
+    monkeypatch.setattr(catalog, "default_omp_runner", missing)
+    monkeypatch.setattr(catalog, "default_ollama_runner", no_ollama)
+    runner = CliRunner()
+    r = runner.invoke(app, ["models", "--json"])
+    assert r.exit_code == 0, r.output
+    out = json.loads(r.output)
+    assert set(out) == {"models", "omp_status"} and "omp is not installed" in out["omp_status"]
+    assert "claude_cli:claude-haiku-5-5" in {m["driver"] for m in out["models"]}  # the other drivers still listed
+    assert any(x.startswith("omp: ") and "omp is not installed" in x
+               for x in runner.invoke(app, ["models"]).output.splitlines())
+
+    catalog.clear_cache()
+    listing = json.dumps({"models": [{"kind": "chat", "selector": "foo/unknown-model", "id": "unknown-model"}]})
+    monkeypatch.setattr(catalog, "default_omp_runner", lambda argv, t: listing)
+    line = next(x for x in runner.invoke(app, ["models"]).output.splitlines()
+                if x.startswith("omp_gateway:foo/unknown-model"))
+    assert "vendor=?" in line and "cannot judge" in line  # as the Settings page says
+    assert "cannot judge" not in next(x for x in runner.invoke(app, ["models"]).output.splitlines()
+                                      if x.startswith("claude_cli:claude-haiku-5-5"))
+
+
 def test_cli_models_and_driver_set(tmp_home, monkeypatch):
     monkeypatch.setattr(catalog, "default_omp_runner", omp_ok)
     monkeypatch.setattr(catalog, "default_ollama_runner", no_ollama)

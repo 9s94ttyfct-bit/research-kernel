@@ -105,7 +105,7 @@
 | `claude -p` 的用法 | 必须用非 `--bare` 模式，否则不读 OAuth 凭据；官方计划把 `--bare` 设为默认值，所以要固定 CLI 版本。用 `--strict-mcp-config --mcp-config`、`--allowedTools`、干净的工作目录来隔离 | 尽调 C14 |
 | `codex exec` | 用 `--output-schema`、`--json`、`--sandbox read-only`、`--ephemeral`；当前是 alpha 版，flag 可能变化 | 尽调 C15 |
 | Ollama Cloud | **不强制 JSON schema**，结果要先解析、再用 Pydantic 校验，失败就重试；本地模型支持 `format` schema | 尽调 C16 |
-| omp auth-gateway（只作可选适配器） | 实测 `omp auth-gateway stdio` 能用本机的 omp 登录调用 `anthropic/claude-haiku-4-5`（200）和 `openai-codex/gpt-6-luna`（2026-11-05 实测 200，工具调用正常），但同样不保证按 JSON schema 输出。**系统不依赖它**：不装 omp 时整个系统照常工作 | 本机实测 |
+| omp auth-gateway（2026-11-05 尽调结论；2026-11-07 起是普通驱动，见 §8.1） | 实测 `omp auth-gateway stdio` 能用本机的 omp 登录调用 `anthropic/claude-haiku-4-5`（200）和 `openai-codex/gpt-6-luna`（2026-11-05 实测 200，工具调用正常），但同样不保证按 JSON schema 输出。**系统不依赖它**：不装 omp 时整个系统照常工作 | 本机实测 |
 | 浏览器自动化 | Playwright 1.60（Python），使用持久化 profile 的 Chromium，可以有界面运行。Google Scholar 禁止自动化查询，会触发验证码；出版商的许可协议禁止系统性批量下载，下载过多可能导致整个学校的 IP 被封。因此浏览器检索必须保持人类节奏，并设每日上限 | 本机实测（版本）；`[推断]`（站点行为） |
 | 元数据抓取 | Zotero translation-server（Node；Zotero 本体是 AGPL，该仓库的许可证字段 `[待核实]`），不用 Docker 也能 `npm start` 启动，端口 1969，提供 `/web`、`/search`、`/export`、`/import`；本机已有 Node | GitHub README |
 | OpenAlex | 2026 年起免费 key 每天额度 1 美元，不带 key 时同一 IP 共享每天 0.10 美元；按 DOI 单条查询免费，搜索每千次 1 美元；申请 key 需要真实邮箱并点击激活 | 尽调 A1 |
@@ -114,7 +114,7 @@
 | arXiv | API 每 3 秒 1 次；全文按 `/html` 优先、`/pdf` 其次，每 15 秒最多 1 篇；只限个人研究用途，不得再分发 | 尽调 A4 |
 | PMC | 2026 年 8 月 OA web service 和批量文件已下线；BioC JSON 仍可用（带段落偏移） | 尽调 A5 |
 | doi.org | 对脚本返回 Cloudflare 403，不能依赖；改用 Crossref transform 或 DataCite | 尽调 A6 |
-| 许可证 | 避开 AGPL 的 `pymupdf` 和权重受限的 `marker`；`bespoke-minicheck` 是 CC BY-NC，只能个人使用 | 尽调 B8、B10 |
+| 许可证 | 避开 AGPL 的 `pymupdf` 和权重受限的 `marker`；`bespoke-minicheck` 是 CC BY-NC，只能个人使用（2026-11-05 尽调结论；2026-11-07 起已不使用 MiniCheck） | 尽调 B8、B10 |
 | Europe PMC | REST 可用；能按 `OPEN_ACCESS:y` 检索，有全文链接和文本挖掘注释 | 本机实测 |
 | bioRxiv、ClinicalTrials.gov v2、PubChem PUG-REST | 可用 | 本机实测 |
 | ChemRxiv | 公共 API 实测无返回，改由 OpenAlex 覆盖 | 本机实测 |
@@ -132,7 +132,7 @@
 | 问题 | 选项 | 选择与理由 |
 |---|---|---|
 | 运行在哪里、谁来编排 | (1) 跑在 omp 里；(2) 独立程序；(3) 先 (1) 后 (2) | **(2) 独立程序** `[决定]`，这是你的要求：以后不能依赖 omp。核心是一个常驻的本地服务 **`rk serve`**，它是唯一的状态写入者，进程模型见 §6.0。它负责：持久化阶段状态机与编排器；进程内工具调用循环；内置浏览器；Workbench 网页（聊天、文献库、检查点、进度、运行控制）。D1 在 Workbench 里与 Lead agent 对话完成；D2、P1、P2 的流水线由 `rk serve` 内的编排器派发给各个角色，可以在 Workbench 上启动、暂停、继续，`rk run` 只是同一功能的命令行入口。MCP 有两种用途：**内部通道**，供 claude、codex CLI 驱动回调工具（是必需的，对你不可见）；**外部接入**，让 Claude Code、Codex、omp 等 MCP 客户端也能连接同一个项目（可选）。门只在 Kernel 里，任何入口都无法绕过。 |
-| 怎么调用 LLM | 复制 omp 的 OAuth；官方 CLI；官方 API key；Ollama；omp 网关 | **官方渠道的模型提供层** `[决定]`，分三类：① 订阅 → 官方 CLI（`claude -p`、`codex exec`），这是政策允许的用法；② 官方 API key（v1 支持 Anthropic、OpenAI；Gemini、OpenRouter 放到以后），有 key 时启用，无人值守长跑最稳；③ Ollama 本地或云端。omp 网关是第 ④ 类可选适配器，只在你装了 omp 并主动打开时使用。**不实现 OAuth 冒用**，理由见 §3。 |
+| 怎么调用 LLM | 复制 omp 的 OAuth；官方 CLI；官方 API key；Ollama；omp 网关 | **官方渠道的模型提供层** `[决定]`，分三类：① 订阅 → 官方 CLI（`claude -p`、`codex exec`），这是政策允许的用法；② 官方 API key（v1 支持 Anthropic、OpenAI；Gemini、OpenRouter 放到以后），有 key 时启用，无人值守长跑最稳；③ Ollama 云端（2026-11-07 起默认不用本地模型）。omp 网关是第 ④ 类普通驱动，装了 omp 并登录即可用，无需开关；产品不依赖它。**不实现 OAuth 冒用**，理由见 §3。 |
 | 内置浏览器 | Playwright 控制的 Chromium；Electron 或 Tauri 桌面壳；omp-webui 的浏览器 | **Playwright 持久化 profile 的 Chromium，有界面运行** `[决定]`。一个浏览器窗口就是整个"内置浏览器"：第一个标签页是 `rk` 的 Workbench 网页，其余标签页是 agent 检索时打开的页面。你在同一个窗口里登录图书馆，登录状态保存在 `$RK_HOME/browser-profile/`。全部用 Python 实现，不需要另写桌面壳。Electron 方案的界面更像一个应用，但前后端要写两套语言，代码量约是这个方案的两倍。 |
 | 文献库 | 直接用 Zotero 桌面版；自建 | **自建、每个项目一个库，并与 Zotero 格式兼容** `[决定]`。验证器需要内容寻址的原文快照和字符级定位，Zotero 的数据模型给不了。库支持导入导出 BibTeX、RIS、CSL-JSON；可以选装 Zotero translation-server，从任意出版商页面抓取元数据；后续计划可加与 Zotero 的同步。 |
 | 状态与持久化 | SQLite 事件日志 + 自写状态机；LangGraph；DBOS；Temporal | **SQLite WAL + 追加式事件日志（哈希链）+ 显式状态机** `[决定]`。零基础设施，事件日志本身就是审计记录。DBOS 留作备选：如果自写的崩溃恢复不够用再换。 |
@@ -402,7 +402,7 @@ $RK_HOME/                         默认 ~/ResearchKernel
 - 其余按模型族，匹配模型 id（`llm/vendors.toml` 的 `families`），用于 `ollama:<id>` 和 omp_gateway 的 `anthropic`、`openai`、`openai-codex`、`ollama-cloud`、`ollama` 主机：`claude*` → anthropic，`gpt-<数字>*`、`gpt-oss*`、`codex*` → openai，`deepseek*` → deepseek，`gemini*`、`gemma*` → google，`qwen*` → alibaba，`llama*` → meta，`mistral*` → mistral，`kimi*` → moonshot，`glm*` → zhipu，`minimax*` → minimax；其他主机上的模型须带该厂商的组织名（如 `omp_gateway:openrouter/deepseek-ai/…`），否则算未知；用户上传的命名空间模型（`ollama:someuser/…`）也算未知
 - 未在映射表中的模型视为未知厂商，**不能**作为审查方。
 
-默认配置下，生成方是 anthropic，审查方是 openai + deepseek。codex 不可用时，审查方只剩 deepseek，此时仍满足"不同厂商"，但第二意见只有一票，按"一票不足以通过"的保守规则处理。
+默认配置下，生成方是 anthropic，三个评审里 anthropic 的 `judge_3`（Haiku）被跳过，由 openai（`judge`）和 deepseek（`judge_2`）判定；生成方是 openai 或 human 时，跳过的是同厂商的那一个或一个也不跳过。只剩一个有效评审时（例如 codex 不可用），仍满足"不同厂商"，但第二意见只有一票，按"一票不足以通过"的保守规则处理。
 
 ### 8.2 模型提供层（llm/）与角色执行
 
@@ -608,7 +608,7 @@ class TaskResult:
 
 ### 9.1 验证器
 
-阈值是初始值，Plan 2 会在金标集上校准；校准后的值写进 `config.toml` 并记录版本。
+词面和元数据类验证器（如 V-PARA、V-REF）的阈值是初始值，可在金标集上校准；校准后的值写进 `config.toml` 并记录版本。V-SUPPORT 自 2026-11-07 起没有阈值。
 
 | ID | 检查内容 | 实现 | 判定 |
 |---|---|---|---|
@@ -617,7 +617,7 @@ class TaskResult:
 | V-QUOTE | 引语逐字一致 | 在规范文本层上，先用规范化键匹配：NFKC、连字展开、统一各种破折号和引号、合并空白，行末连字符既试"保留"也试"删除"两种变体；再用 `rapidfuzz.partial_ratio_alignment` 定位 | 规范化键完全一致才算 pass，并返回页码和字符区间；否则 fail，同时返回最接近的片段 |
 | V-PARA | 转述不过近（书中的"手指测试"） | **只做词面相似度检查**：与对应原文片段比，最长连续共有词 ≤8；4-gram 包含率 ≤0.35；`token_set_ratio` ≤85。它能发现近乎照抄，但发现不了意思走样；转述是否忠实原意由 V-SUPPORT（转述作 claim，原文片段作证据）判定，抽样交人复核 | pass / too_close |
 | V-HEDGE | 措辞强度单调 | 词表分 4 级：0 推测（may, might, possibly）、1 倾向（suggest, indicate, likely）、2 断言（show, find, demonstrate）、3 绝对（prove, establish, always, all, never）；claim 的等级 ≤ 其证据笔记中的最高等级；全称量词需要证据覆盖 | pass / overstated |
-| V-SUPPORT | 证据是否支持 claim | **只用云端评审，没有第一层模型**（2026-11-07 你决定：去掉第一层 MiniCheck，判定只来自三家云端评审；默认不用任何本地模型）。三个评审角色 `judge`、`judge_2`、`judge_3`，默认是 `codex_cli:gpt-6-luna`（openai）、`ollama:deepseek-v4.1-flash:cloud`（deepseek，由 Ollama Cloud 托管）、`claude_cli:claude-haiku-5-5`（anthropic），可以换成任意厂商已知的驱动（例如 `omp_gateway:…`）。每个评审各自给出结构化判定 {supported, partial, unsupported, contradicted}；判 supported、partial、contradicted 时须逐字引用证据，引文在证据里找不到的意见记为 uncertain。评审的厂商必须已知、不是 human、不同于 claim 作者的厂商，也不同于另一个已采纳评审的厂商；不符合的评审被跳过（`same_or_unknown_vendor`），不计票 | 有效评审（已采纳且调用成功）至少 `support_min_judges` 个（默认 2），且**全部**给出同一个标签时，取这个标签：**supported**（V-NUM 也须通过）、**unsupported** 或 **contradicted**；其余一律 **uncertain**（包括任一评审意见不同、判 partial、只有一个有效评审），触发 `uncertain_support` 检查点或降级。没有阈值，也不校准；`rk eval support` 在 SciFact dev 上按生成方场景（以 anthropic 为主，另有 openai、human）报告覆盖率和各判定的精确率，见 `docs/eval/support-2026-11-07-judges.md`（60 对：anthropic 场景覆盖率 0.533，supported 6/6）。2026-11-06 的两层规则和联合阈值作废 |
+| V-SUPPORT | 证据是否支持 claim | **只用云端评审，没有第一层模型**（2026-11-07 你决定：去掉第一层 MiniCheck，判定只来自三家云端评审；默认不用任何本地模型）。三个评审角色 `judge`、`judge_2`、`judge_3`，默认是 `codex_cli:gpt-6-luna`（openai）、`ollama:deepseek-v4.1-flash:cloud`（deepseek，由 Ollama Cloud 托管）、`claude_cli:claude-haiku-5-5`（anthropic），可以换成任意厂商已知的驱动（例如 `omp_gateway:…`）。每个评审各自给出结构化判定 {supported, partial, unsupported, contradicted}；判 supported、partial、contradicted 时须逐字引用证据，引文在证据里找不到的意见记为 uncertain。评审的厂商必须已知、不是 human、不同于 claim 作者的厂商，也不同于另一个已采纳评审的厂商；不符合的评审被跳过，不计票（厂商未知、是 human 或与作者相同记为 `same_or_unknown_vendor`，与已采纳评审同厂商记为 `duplicate_vendor`） | 有效评审（已采纳且调用成功）至少 `support_min_judges` 个（默认 2），且**全部**给出同一个标签时，取这个标签：**supported**（V-NUM 也须通过）、**unsupported** 或 **contradicted**；其余一律 **uncertain**（包括任一评审意见不同、判 partial、只有一个有效评审），触发 `uncertain_support` 检查点或降级。没有阈值，也不校准；`rk eval support` 在 SciFact dev 上按生成方场景（以 anthropic 为主，另有 openai、human）报告覆盖率和各判定的精确率，见 `docs/eval/support-2026-11-07-judges.md`（60 对：anthropic 场景覆盖率 0.533，supported 6/6）。2026-11-06 的两层规则和联合阈值作废 |
 | V-NUM | 数字出自证据 | 抽出 claim 和句子中的数字、百分比、单位，统一规范。数字必须出现在关联笔记的原文片段中，或者等于句子标记所引用的 `run`/`fig`/`stat` 产物中的值 | pass / ungrounded_number |
 | V-COVER | 句子来源标记覆盖 | 分句后，每句必须带**至少一个**来源标记（标记语法 `[[kind:id]]`），一句里可以同时出现多个：<br>① `[[clm:clm_…]]` 来自文献的 claim；<br>② `[[run:evt_…]]` 或 `[[run:prt_…]]` 描述系统自身做过的研究操作（检索、筛选、提取），指向事件日志中的具体事件或已冻结的 protocol；<br>③ `[[fig:fig_…]]` / `[[stat:stt_…]]` 计算结果，指向由代码生成的产物（含数据哈希）；<br>④ `[[plan:dsg_…]]` 或 `[[plan:hyp_…]]` research_proposal 中计划要做的工作；<br>⑤ `[[inf]]` 作者推断；<br>⑥ `[[ck]]` 常识（不超过 5%，且不能含数字）。<br>②—④ 的目标必须存在且哈希一致。句中的每个数字都必须至少能被句内某一个标记的目标覆盖（见 V-NUM）。导出时：`clm` 转为对其证据来源的 citeproc 引用；`run`、`fig`、`stat`、`plan` 转为指向正文中方法部分、图或表的交叉引用；`[[inf]]` 转为推断性措辞 | pass / fail |
 | V-BALANCE | 争议点有反方 | claim 被标为 `contested`，或存在有来源支撑的异议时，所在小节必须写出反方观点并引用回应 | pass / one_sided |
