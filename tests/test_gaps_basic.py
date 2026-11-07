@@ -213,20 +213,21 @@ def test_retracted_cited_after_retraction_is_a_gap(env):
 
 
 CELL_ITEMS = [ItemIn(title=f"Aspirin study {i}", year=2015 + i, abstract=f"Abstract {i}.",
-                     ids=Ids(doi=f"10.1000/cell-{i}")) for i in range(4)]
+                     ids=Ids(doi=f"10.1000/cell-{i}")) for i in range(6)]
 MATCH = ItemIn(title="Aspirin and mortality in children", year=2020, ids=Ids(doi="10.1000/match"),
                abstract="Mortality in children given aspirin was recorded.")
 
 
 def test_empty_cell_needs_a_targeted_search_with_no_match(env):
     k, ps, lib = env
-    a, b, c, d = _landscape(ps, lib, {"Aspirin": CELL_ITEMS})["Aspirin"]
+    a, b, c, d, e, f = _landscape(ps, lib, {"Aspirin": CELL_ITEMS})["Aspirin"]
     [match] = _add(lib, [MATCH])
     sources = FakeSources({"mortality children": [MATCH]}, lib=lib)
     plan = {"dims": [{"name": "population", "values": ["adults", "children"]},
                      {"name": "outcome", "values": ["stroke", "bleeding", "mortality"]}],
             "cells": {a: ["adults", "stroke"], b: ["adults", "bleeding"], c: ["children", "stroke"],
-                      d: ["adults", "mortality"], "itm_invented": ["children", "bleeding"]},
+                      d: ["adults", "mortality"], e: ["adults", "stroke"], f: ["children", "stroke"],
+                      "itm_invented": ["children", "bleeding"]},
             "empty_cell_queries": {"children|bleeding": "aspirin bleeding children",
                                    "children|mortality": "aspirin mortality children"}}
     ex = ScriptedExecutor({("gapminer", "MapPlan"): [plan], ("triage", "CellMatchOut"): [{"matches": [match]}]})
@@ -242,16 +243,102 @@ def test_empty_cell_needs_a_targeted_search_with_no_match(env):
         "Evidence-map hole: no work with population = 'children' and outcome = 'bleeding' was found within the "
         'searched scope (the landscape and the query "aspirin bleeding children" on openalex, europepmc).')
     assert "searched scope" not in filled["statement"]
-    assert hole["details"]["counts"]["adults|stroke"] == 1 and hole["details"]["counts"]["children|bleeding"] == 0
+    assert hole["details"]["counts"]["adults|stroke"] == 2 and hole["details"]["counts"]["children|bleeding"] == 0
     assert hole["details"]["ignored_items"] == ["itm_invented"]
+    assert hole["checks"]["map_coverage"] == "pass" and hole["checks"]["placed_neighbours"] == "pass"
+    assert set(hole["evidence"]["item_ids"]) == {b, c, f}  # the placed works that share a value with the cell
 
     logged = searches(ps, "gaps", 1)
     assert {r["query"] for r in logged} == {"aspirin bleeding children", "aspirin mortality children"}
     assert {r["purpose"] for r in logged} == {"gap_check"}
     miner, triage = ex.calls
     assert miner["role"] == "gapminer" and miner["inputs"]["guidance"] == "children only"
-    assert {w["item_id"] for w in miner["inputs"]["works"]} == {a, b, c, d}
+    assert {w["item_id"] for w in miner["inputs"]["works"]} == {a, b, c, d, e, f}
     assert triage["role"] == "triage" and [w["item_id"] for w in triage["inputs"]["works"]] == [match]
+
+
+def _run_map(k, ps, lib, plan, sources=None, triage=()):
+    ex = ScriptedExecutor({("gapminer", "MapPlan"): [plan], ("triage", "CellMatchOut"): list(triage)})
+    out = GapsWorker(miners=[maphole.mine]).run(_ctx(k, ps, lib, ex, sources or FakeSources({}, lib=lib)))
+    return out, gaps(ps, 1), ex
+
+
+def test_cell_keyed_map_of_the_live_demo_yields_no_verified_hole(env):
+    """The live demo's GapMiner keyed ``cells`` by cell ("a|b" -> item ids): nothing is placed, so no cell is a hole,
+    and the miner says why."""
+    k, ps, lib = env
+    a, b, c, d, e, f = _landscape(ps, lib, {"Aspirin": CELL_ITEMS})["Aspirin"]
+    plan = {"dims": [{"name": "population", "values": ["adults", "children"]},
+                     {"name": "outcome", "values": ["stroke", "bleeding"]}],
+            "cells": {"adults|stroke": [a, b], "adults|bleeding": [c, d], "children|stroke": [e, f]},
+            "empty_cell_queries": {"children|bleeding": "aspirin bleeding children"}}
+    out, stored, ex = _run_map(k, ps, lib, plan)
+    assert out.status == "rerun"
+    assert "keyed by something other than a given item id" in out.reason
+    assert "placed 0 of 6 works" in out.reason
+    assert stored and not any(g["verified"] for g in stored)
+    assert {g["checks"]["map_coverage"] for g in stored} == {"fail"}
+    assert {g["checks"]["targeted_search"] for g in stored} == {"skipped"}
+    assert [c["role"] for c in ex.calls] == ["gapminer"]  # no search, no triage for a vacuous map
+    assert searches(ps, "gaps", 1) == []
+
+
+def test_map_plan_cells_need_exactly_two_values():
+    from pydantic import ValidationError
+
+    from rk.discovery.models import MapPlan
+    with pytest.raises(ValidationError):
+        MapPlan.model_validate({"dims": [], "cells": {"itm_1": ["adults", "stroke", "extra"]}})
+    with pytest.raises(ValidationError):
+        MapPlan.model_validate({"dims": [], "cells": {"itm_1": ["adults"]}})
+    schema = MapPlan.model_json_schema()
+    cell = schema["properties"]["cells"]["additionalProperties"]
+    assert (cell["minItems"], cell["maxItems"]) == (2, 2)
+
+
+def test_map_values_match_case_folded_and_trimmed(env):
+    k, ps, lib = env
+    a, b, c, d, e, _ = _landscape(ps, lib, {"Aspirin": CELL_ITEMS})["Aspirin"]
+    plan = {"dims": [{"name": "population", "values": ["Adults", "Children"]},
+                     {"name": "outcome", "values": ["Stroke", "Bleeding"]}],
+            "cells": {a: [" adults ", "STROKE"], b: ["adults", "bleeding"], c: ["children ", "Stroke"],
+                      d: ["Adults", "Bleeding"], f" {e} ": ["adults", "stroke"]},
+            "empty_cell_queries": {" children | BLEEDING ": "aspirin bleeding children"}}
+    _, [hole], _ = _run_map(k, ps, lib, plan)
+    assert hole["details"]["cell"] == ["Children", "Bleeding"]
+    assert hole["details"]["query"] == "aspirin bleeding children"
+    assert hole["details"]["counts"] == {"Adults|Stroke": 2, "Adults|Bleeding": 2, "Children|Stroke": 1,
+                                         "Children|Bleeding": 0}
+    assert hole["verified"] is True and hole["details"]["ignored_items"] == []
+
+
+def test_map_with_low_coverage_fails_every_cell(env):
+    k, ps, lib = env
+    items = [ItemIn(title=f"Coverage study {i}", year=2015, ids=Ids(doi=f"10.1000/cov-{i}")) for i in range(12)]
+    ids = _landscape(ps, lib, {"Aspirin": items})["Aspirin"]
+    plan = {"dims": [{"name": "population", "values": ["adults", "children"]},
+                     {"name": "outcome", "values": ["stroke", "bleeding"]}],
+            "cells": {ids[0]: ["adults", "stroke"], ids[1]: ["adults", "bleeding"], ids[2]: ["children", "stroke"],
+                      ids[3]: ["adults", "stroke"], ids[4]: ["adults", "stroke"]},  # 5 of 12 < 50 %
+            "empty_cell_queries": {"children|bleeding": "aspirin bleeding children"}}
+    out, [cell], _ = _run_map(k, ps, lib, plan)
+    assert cell["verified"] is False and cell["checks"]["map_coverage"] == "fail"
+    assert cell["checks"]["reasons"]["map_coverage"] == "the map placed 5 of 12 works (needs at least 6)"
+    assert out.status == "rerun" and "placed 5 of 12 works" in out.reason
+
+
+def test_hole_needs_a_placed_neighbour(env):
+    k, ps, lib = env
+    a, b, c, d, e, f = _landscape(ps, lib, {"Aspirin": CELL_ITEMS})["Aspirin"]
+    plan = {"dims": [{"name": "population", "values": ["adults", "children", "infants"]},
+                     {"name": "outcome", "values": ["stroke", "bleeding", "rash"]}],
+            "cells": {a: ["adults", "stroke"], b: ["adults", "bleeding"], c: ["children", "stroke"],
+                      d: ["children", "bleeding"], e: ["adults", "stroke"], f: ["children", "stroke"]},
+            "empty_cell_queries": {"infants|rash": "aspirin rash infants"}}
+    _, stored, _ = _run_map(k, ps, lib, plan)
+    lonely = next(g for g in stored if g["details"]["cell"] == ["infants", "rash"])
+    assert lonely["verified"] is False and lonely["checks"]["placed_neighbours"] == "fail"
+    assert lonely["checks"]["targeted_search"] == "skipped"
 
 
 def test_map_plan_without_two_dimensions_stores_nothing(env):

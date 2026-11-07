@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -87,11 +87,15 @@ class Dim(BaseModel):
     values: list[str]
 
 
+CellValues = Annotated[list[str], Field(min_length=2, max_length=2)]  # [value of dim 1, value of dim 2]
+
+
 class MapPlan(BaseModel):
-    """The GapMiner's evidence map: exactly two dimensions, each given work's value on both, and a search query per
-    empty cell keyed ``"<value of dim 1>|<value of dim 2>"`` (gaps: evidence_map_hole)."""
+    """The GapMiner's evidence map: exactly two dimensions, each given work's values on both (``cells`` is keyed by
+    item id, never by cell), and a search query per empty cell keyed ``"<value of dim 1>|<value of dim 2>"`` (gaps:
+    evidence_map_hole)."""
     dims: list[Dim]
-    cells: dict[str, list[str]] = {}
+    cells: dict[str, CellValues] = {}
     empty_cell_queries: dict[str, str] = {}
 
 
