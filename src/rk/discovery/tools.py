@@ -9,9 +9,10 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel
 
-from rk.discovery.store import add_round, gaps, hypotheses, rqs, topics
+from rk.discovery.store import add_round, gaps, hypotheses, intake_of, rqs, topics
 from rk.orchestrator.graph import EDGE_LIMIT
 from rk.orchestrator.state import (
+    active_run,
     current_stage,
     edge_rows,
     latest_attempt,
@@ -79,6 +80,13 @@ def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManag
                                            "available here", status=503)
         return m
 
+    def d1_only(ps: ProjectStore, slug: str) -> None:
+        """Guided stage calls are for D1 projects: a D2 project's stages run in a D2 run."""
+        intake = intake_of(ps)
+        if intake is not None and intake.discovery_mode == "d2":
+            raise ToolError("not_d1", f"{slug} uses autonomous discovery (d2): its stages run in a D2 run (uv run rk "
+                                      f"run {slug} --until topics|question), not through guided stage calls")
+
     # ---- D2 runs (the human only) ----
     @tool("rk_run_start", "Start an autonomous (D2) run of the discovery stages up to topics or question; it runs "
           "in rk serve.", RunStart, True)
@@ -127,6 +135,7 @@ def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManag
     def _stage_run(ctx: CallContext, a: StageRun) -> dict:
         ps = project(a.project)
         m = manager()
+        d1_only(ps, a.project)
         m.orchestrator.check_stage(a.project, a.stage)
         attempt = latest_attempt(ps, a.stage) + 1
 
@@ -142,6 +151,7 @@ def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManag
     def _stage_advance(ctx: CallContext, a: ProjectArg) -> dict:
         ps = project(a.project)
         m = manager()
+        d1_only(ps, a.project)
         stage = current_stage(ps)
         if stage is None:
             raise ToolError("stage_unavailable", "every discovery stage passed")
@@ -153,10 +163,14 @@ def register_discovery_tools(tool: Callable, kernel, runs: Callable[[], RunManag
         return started(a, "advance", stage, latest_attempt(ps, stage), m.d1_start(a.project, "advance", stage,
                                                                                    advance))
 
-    @tool("rk_exploration_round", "Record feedback on a stage's output; it guides the next runs of the stages.",
-          RoundArgs, True)
+    @tool("rk_exploration_round", "Record feedback on a stage's output; it guides the next runs of the stages. "
+          "Refused to agents while a D2 run is active (only the researcher guides a run).", RoundArgs, True)
     def _round(ctx: CallContext, a: RoundArgs) -> dict:
         ps = project(a.project)
+        if ctx.role != "cli" and (run := active_run(ps)) is not None:
+            raise ToolError("run_active", f"run {run['id']} is {run['status']}: an agent's feedback would guide every "
+                                          "later stage of it; only the researcher records rounds during a run",
+                            {"run_id": run["id"]})
         rid = add_round(ps, a.stage, a.feedback, actor=ctx.actor, actor_kind="human" if ctx.role == "cli" else "agent")
         return {"project": a.project, "round_id": rid, "stage": a.stage}
 

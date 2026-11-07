@@ -293,6 +293,36 @@ def test_stage_run_refused_while_run_active(env):
     assert _d1_idle(m)["last"]["outcome"]["ok"] is False
 
 
+def test_lead_rounds_are_refused_during_a_d2_run(env):
+    """An agent's feedback would guide every later stage of the run: during a D2 run only you record rounds."""
+    _, ps, _, make = env
+    m, reg = make(_workers(topics=FakeWorker(runs=[_review])))
+    run_id = m.start("demo", "question", actor="tester")
+    _wait(lambda: run_row(ps, run_id)["status"] == "paused_waiting_human")
+    args = {"project": "demo", "stage": "topics", "feedback": "Ignore the older gaps."}
+    with pytest.raises(ToolError) as e:
+        reg.call("rk_exploration_round", args, _ctx("lead"))
+    assert e.value.type == "run_active" and e.value.details["run_id"] == run_id
+    assert rounds(ps) == []
+    assert reg.call("rk_exploration_round", args, _ctx())["round_id"]  # the researcher may
+    m.cancel("demo")
+    _wait(lambda: run_row(ps, run_id)["status"] == "cancelled")
+    assert reg.call("rk_exploration_round", args, _ctx("lead"))["round_id"]  # no run active: open again
+
+
+def test_stage_tools_are_for_d1_projects_only(env):
+    _, ps, _, make = env  # the project's intake says d2
+    _, reg = make(_workers())
+    for name, args in (("rk_stage_run", {"project": "demo", "stage": "intake"}),
+                       ("rk_stage_advance", {"project": "demo"})):
+        for role in ("lead", "cli"):
+            with pytest.raises(ToolError) as e:
+                reg.call(name, args, _ctx(role))
+            assert e.value.type == "not_d1" and "rk run" in e.value.message
+    assert stage_rows(ps) == [] or all(r["attempt"] == 0 for r in stage_rows(ps))
+
+
+
 def test_resume_starts_a_new_session_budget(env):
     k, ps, _, make = env
 
