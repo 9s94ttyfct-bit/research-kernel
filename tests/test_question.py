@@ -194,10 +194,11 @@ def test_check_rq_names_every_failure():
     body, hyps = RQBody(**good["body"]), [HypothesisIn(**h) for h in good["hypotheses"]]
     assert check_rq(body, hyps) == []
     bad = RQBody(**{**good["body"], "three_step": {"x": " ", "y": "y", "z": ""}, "pico": None,
-                    "finer": {**good["body"]["finer"], "ethical": ""}})
+                    "finer": {**good["body"]["finer"], "ethical": "", "novel": "A novel question: nobody asked it."}})
     same = [HypothesisIn(statement="Aspirin lowers  the rate.", falsification="HR > 1."),
             HypothesisIn(statement="aspirin lowers the rate", falsification="")]
     assert check_rq(bad, same) == ["three_step.x is empty", "three_step.z is empty", "finer.ethical is empty",
+                                   "finer.novel claims novelty; say what was not found within the searched scope",
                                    "a clinical RQ needs a PICO", "1 distinct hypotheses (need at least 2)",
                                    "hypothesis 2 has no falsification condition"]
     half_pico = RQBody(**{**good["body"], "pico": {**good["body"]["pico"], "comparison": ""}})
@@ -313,6 +314,53 @@ def test_unverbatim_judge_quote_is_invalid(env):
     for w in result["works"]:
         assert w["judgements"]["deepseek"]["ok_quote"] is False
         assert w["judgements"]["openai"]["ok_quote"] is True
+
+
+def _direct_ctx(k, ps, lib, ex, sources) -> StageContext:
+    return StageContext(kernel=k, registry=None, ps=ps, lib=lib, project="demo", stage="question", attempt=1,
+                        run_id=None, guidance="", executor=ex, sources=sources, actor="tester")
+
+
+def test_both_answered_with_one_unverbatim_quote_is_split(env):
+    k, ps, lib = env
+    sources, ids = _sources(lib)
+    ex = _executor([], [_verdicts(lib, ids, (ids[0],))],
+                   [_verdicts(lib, ids, (ids[0],), quote="Aspirin settles it for everyone.")])
+    report = already_done(_direct_ctx(k, ps, lib, ex, sources), _stored_rq(ps), author_vendor="anthropic")
+    first = next(w for w in report.works if w.item_id == ids[0])
+    assert [j.answered for j in first.judgements.values()] == [True, True]
+    assert report.result == "split" and report.answered_by_both() == []
+
+
+def test_judge_quote_counts_only_from_what_the_judge_saw(env):
+    k, ps, lib = env
+    visible = "Aspirin in adults over 80 did not change the stroke rate."
+    hidden = "A later subgroup answered the question."
+    work = ItemIn(title="Aspirin over 80", year=2020, abstract=f"{visible} {'Background. ' * 200}{hidden}",
+                  ids=Ids(doi="10.1000/long"))
+    (iid,) = [lib.add_item(work, added_by="agent", actor="tester").item_id]
+    sources = FakeSources({"aspirin": [work]}, lib=lib)
+    ex = _executor([], [{"items": [{"item_id": iid, "answered": False, "quote": visible}]}],
+                   [{"items": [{"item_id": iid, "answered": True, "quote": hidden}]}])
+    report = already_done(_direct_ctx(k, ps, lib, ex, sources), _stored_rq(ps), author_vendor="anthropic")
+    (w,) = report.works
+    assert w.judgements["openai"].ok_quote is True  # from the abstract, within what the judge saw
+    assert w.judgements["deepseek"].ok_quote is False  # in the abstract, but past the slice the judge saw
+    assert report.result == "split"
+
+
+def test_unknown_author_vendor_is_split(env):
+    k, ps, lib = env
+    sources, ids = _sources(lib)
+    ex = _executor([_rq()], [_verdicts(lib, ids)], [_verdicts(lib, ids)])
+    ex.drivers["ideator"] = "ollama:mystery-model"  # a driver whose vendor is unknown
+    o = _orch(k, ps, ex, sources)
+    run_id = _to_question(o, ps)
+    assert o.step("demo", run_id, actor="tester") == "running"
+    result = rqs(ps, 1)[0]["already_done"]
+    assert result["author_vendor"] is None and result["result"] == "split"
+    assert result["split_reason"] == "the RQ author's vendor is unknown, so no judge can be shown to differ from it"
+    assert current_stage(ps) == "topics"  # P1: a split counts as already done
 
 
 def test_d2_auto_freezes_with_agent_adoption(env):

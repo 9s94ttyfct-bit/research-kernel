@@ -32,7 +32,7 @@ SOURCES_USED = 2
 SEARCH_LIMIT = 10
 RRF_K = 60  # the usual reciprocal-rank-fusion constant: score = sum of 1 / (RRF_K + rank)
 ABSTRACT_CHARS = 600
-_NOVEL = re.compile(r"\bnovel", re.IGNORECASE)  # "novel", "novelty": a difference may not claim it
+NOVEL = re.compile(r"\bnovel", re.IGNORECASE)  # "novel", "novelty": no difference, nor an RQ's finer.novel, claims it
 
 QUERIES_TASK = (
     "Write 2 or 3 search queries in English that retrieve the published works closest to this text (same question, "
@@ -176,6 +176,6 @@ def _judge(ctx: StageContext, text: str, report: NoveltyReport, generator_vendor
             continue
         for d in r.output.items:
             work, diff = by_id.get(d.item_id), d.difference.strip()
-            if work is not None and diff and vendor not in work.differences and not _NOVEL.search(diff):
+            if work is not None and diff and vendor not in work.differences and not NOVEL.search(diff):
                 work.differences[vendor] = diff
         report.judged.append(vendor)

@@ -2,13 +2,15 @@
 
 The Scout writes 3-5 English queries; each runs on the first two discovery sources (logged, purpose ``already_done``);
 the hits are fused by reciprocal rank (RRF) and the top 10 judged by ``judge`` and ``judge_2`` (``AnsweredOut``):
-does each work already answer the RQ, with a quote from its title or abstract. A judgement is valid only if its
-judge's vendor is admitted (known, not human, not the RQ author's and not the other judge's: ``admitted_judges``) and
-its quote is verbatim in the work's title or abstract (``span_in``); an invalid judgement counts as missing.
+does each work already answer the RQ, with a quote from its title or abstract (the judge sees the first
+``ABSTRACT_CHARS`` of the abstract). A judgement is valid only if its judge's vendor is admitted (known, not human, not
+the RQ author's and not the other judge's: ``admitted_judges``) and its quote is verbatim in the title or in the part of
+the abstract the judge saw (``span_in``); an invalid judgement counts as missing.
 
 Result: ``already_done`` when some work is judged answered by two valid judges (of different vendors);
 ``not_found_in_scope`` when every work is judged not answered by two such judges; ``split`` otherwise, including when
-fewer than two judge vendors gave valid judgements. "Not found" holds only within the searched scope: nothing here
+fewer than two judge vendors gave valid judgements and when the RQ author's vendor is unknown (no judge can then be
+shown to differ from it; ``split_reason`` says so). "Not found" holds only within the searched scope: nothing here
 says the RQ is novel. Cost: 1 scout task + at most 2 judge tasks."""
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ TOP_K = 10
 VOTES = 2  # valid judges of different vendors needed for "already done" and for "not found"
 ABSTRACT_CHARS = 1500
 Result = Literal["already_done", "not_found_in_scope", "split"]
+UNKNOWN_AUTHOR = "the RQ author's vendor is unknown, so no judge can be shown to differ from it"
 
 QUERIES_TASK = (
     "Write 3 to 5 search queries in English that retrieve published works that may already answer this research "
@@ -58,7 +61,7 @@ class AnsweredOut(BaseModel):
 class Judgement(BaseModel):
     answered: bool
     quote: str
-    ok_quote: bool  # the quote is verbatim in the work's title or abstract
+    ok_quote: bool  # the quote is verbatim in the work's title or in the part of its abstract the judge saw
 
 
 class JudgedWork(BaseModel):
@@ -74,8 +77,9 @@ class JudgedWork(BaseModel):
 
 class AlreadyDone(BaseModel):
     """``found``: distinct works the searches returned (``works`` holds the top 10); ``judged``: vendors whose
-    judgements were recorded; ``skipped``: judge role -> why it gave none; ``problems``: why no check ran (the result
-    then means nothing and the RQ is checked again)."""
+    judgements were recorded; ``skipped``: judge role -> why it gave none; ``split_reason``: why the result is ``split``
+    whatever the judges said (else ``""``); ``problems``: why no check ran (the result then means nothing and the RQ is
+    checked again)."""
     result: Result = "split"
     queries: list[str] = []
     sources_used: list[str] = []
@@ -84,11 +88,16 @@ class AlreadyDone(BaseModel):
     author_vendor: str | None = None
     judged: list[str] = []
     skipped: dict[str, str] = {}
+    split_reason: str = ""
     problems: list[str] = []
 
     def answering(self) -> list[JudgedWork]:
         """The works at least one valid judgement says already answer the RQ."""
         return [w for w in self.works if any(j.answered for j in w.valid().values())]
+
+    def answered_by_both(self) -> list[JudgedWork]:
+        """The works ``VOTES`` valid judgements (of different vendors) say already answer the RQ."""
+        return [w for w in self.works if sum(j.answered for j in w.valid().values()) >= VOTES]
 
 
 def rq_input(rq: dict, hyps: list[dict]) -> dict:
@@ -99,10 +108,10 @@ def rq_input(rq: dict, hyps: list[dict]) -> dict:
             "hypotheses": [h["statement"] for h in hyps]}
 
 
-def verdict(works: list[JudgedWork]) -> Result:
-    if any(sum(j.answered for j in w.valid().values()) >= VOTES for w in works):
+def verdict(report: AlreadyDone) -> Result:
+    if report.answered_by_both():
         return "already_done"
-    if works and all(sum(not j.answered for j in w.valid().values()) >= VOTES for w in works):
+    if report.works and all(sum(not j.answered for j in w.valid().values()) >= VOTES for w in report.works):
         return "not_found_in_scope"
     return "split"
 
@@ -129,12 +138,15 @@ def already_done(ctx: StageContext, rq_id: str, *, author_vendor: str | None,
     report.works = [JudgedWork(item_id=i, title=(it := ctx.lib.get(i)).title, year=it.year)
                     for i in found.ranked[:TOP_K]]
     _judge(ctx, question, report, judges)
-    report.result = verdict(report.works)
+    if author_vendor is None:
+        report.split_reason = UNKNOWN_AUTHOR
+    report.result = "split" if report.split_reason else verdict(report)
     return report
 
 
 def _judge(ctx: StageContext, question: dict, report: AlreadyDone, judges: list[DriverSpec] | None) -> None:
     works = work_inputs(ctx, [w.item_id for w in report.works], abstract_chars=ABSTRACT_CHARS)
+    seen = {w["item_id"]: w for w in works}  # what the judges see of each work: quotes count only from it
     by_id = {w.item_id: w for w in report.works}
     admitted, report.skipped = admitted_judges(ctx, report.author_vendor, judges)
     for role, spec, vendor in admitted:
@@ -147,7 +159,7 @@ def _judge(ctx: StageContext, question: dict, report: AlreadyDone, judges: list[
             work = by_id.get(item.item_id)
             if work is None or vendor in work.judgements:  # an unknown work, or a second verdict on one: ignored
                 continue
-            it = ctx.lib.get(work.item_id)
-            ok = span_in(it.title, item.quote) or span_in(it.abstract or "", item.quote)
+            shown = seen[work.item_id]
+            ok = span_in(shown["title"], item.quote) or span_in(shown["abstract"], item.quote)
             work.judgements[vendor] = Judgement(answered=item.answered, quote=item.quote, ok_quote=ok)
         report.judged.append(vendor)

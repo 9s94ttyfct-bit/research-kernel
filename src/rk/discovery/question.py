@@ -44,6 +44,7 @@ from rk.llm.vendors import vendor_of
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.orchestrator.state import degradations, record_degraded, stage_row
 from rk.store.project import ProjectStore
+from rk.verify.novelty import NOVEL
 
 DECISIONS: dict[str, tuple[str, ...]] = {"rq_approval": ("approve", "revise"),
                                          "significance_novelty": ("proceed", "back")}
@@ -72,6 +73,8 @@ def check_rq(body: RQBody, hyps: list[HypothesisIn]) -> list[str]:
     if n < 2:
         out.append(f"problem.consequences has {n} (need at least 2)")
     out += [f"finer.{f} is empty" for f in Finer.model_fields if not getattr(body.finer, f).strip()]
+    if NOVEL.search(body.finer.novel):
+        out.append("finer.novel claims novelty; say what was not found within the searched scope")
     if body.clinical:
         if body.pico is None:
             out.append("a clinical RQ needs a PICO")
@@ -111,10 +114,13 @@ def _done_reason(report: AlreadyDone) -> str:
     """Why the RQ counts as already done: the works two judges said answer it, or (a split, P1) what the judges
     left open."""
     if report.result == "already_done":
-        return "already done: " + _titles(w for w in report.answering()
-                                          if sum(j.answered for j in w.valid().values()) >= 2)
-    open_ = (f"answered per one judge: {_titles(report.answering())}" if report.answering() else
-             f"{len(report.judged)} judge vendor(s) gave judgements ({', '.join(report.judged) or 'none'})")
+        return "already done: " + _titles(report.answered_by_both())
+    if report.split_reason:
+        open_ = report.split_reason
+    elif report.answering():
+        open_ = f"answered per one judge: {_titles(report.answering())}"
+    else:
+        open_ = f"{len(report.judged)} judge vendor(s) gave judgements ({', '.join(report.judged) or 'none'})"
     return f"already done? the judges split ({open_}); in P1 a split counts as already done"
 
 
@@ -136,7 +142,8 @@ def _already_done_lines(done: dict | None) -> list[str]:
     head = {
         "not_found_in_scope": "prior work answering this RQ was not found within the searched scope",
         "already_done": "two judges of different vendors say published work already answers this RQ",
-        "split": "the judges did not agree, or fewer than two judge vendors gave valid judgements",
+        "split": report.split_reason or "the judges did not agree, or fewer than two judge vendors gave valid "
+                                        "judgements",
     }[report.result]
     lines = [f"Already-done check: {head} ({scope})."]
     if report.skipped:
@@ -146,7 +153,7 @@ def _already_done_lines(done: dict | None) -> list[str]:
             continue
         verdicts = "; ".join(
             f"{v}: {'answered' if j.answered else 'not answered'}, quote \"{j.quote}\""
-            + ("" if j.ok_quote else " (not verbatim in the title or abstract: discarded)")
+            + ("" if j.ok_quote else " (not verbatim in the title or in the abstract part the judge saw: discarded)")
             for v, j in w.judgements.items())
         lines.append(f"- {w.title} ({w.item_id}{f', {w.year}' if w.year else ''}): {verdicts}")
     return lines
@@ -308,7 +315,11 @@ class QuestionWorker:
         """P1 at an edge limit: the Ideator rewrites the RQ the already-done check stopped narrower and weaker, given
         the works judged as answering it; the structural and already-done checks run again. ``not_found_in_scope``:
         D2 adopts it (``adopted_by="agent"``), D1 asks ``rq_approval``; anything else fails. Narrows once per
-        attempt; ``failed`` with the failures when no already-done result led here."""
+        attempt; ``failed`` with the failures when no already-done result led here.
+
+        A dead end in D1: answering that ``rq_approval`` with ``revise`` reruns the stage, the rerun hits the same
+        ``question->question`` limit on the same attempt, and this second degrade call fails ("narrowed once
+        already") instead of narrowing again; only ``approve`` carries the narrowed RQ on."""
         if any(d["attempt"] == ctx.attempt for d in degradations(ctx.ps, ctx.stage)):
             if any(r["status"] == "frozen" for r in rqs(ctx.ps, ctx.attempt)):
                 return StageOutcome("done", reason="narrowed RQ frozen")
