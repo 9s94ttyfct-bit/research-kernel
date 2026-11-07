@@ -317,6 +317,20 @@ def test_reml_returns_the_global_maximum(data, boundary_wins):
     assert _reml_loglik(y, v, p.tau2) >= lls[best] - 1e-12
 
 
+# Two interior maxima and score(0) > 0 (found by a seeded search): Fisher scoring from the DL start settles on the
+# lower mode near 0.05; the higher one is near 2.17.
+TWO_INTERIOR = ([-3.148002, 0.9752, 0.695612, 0.952994], [1.99672, 0.002256, 0.023911, 8.966038])
+
+
+def test_reml_returns_the_higher_of_two_interior_maxima():
+    y, v = TWO_INTERIOR
+    assert meta.reml_score(y, v, 0.0) > 0
+    grid = [10 ** (e / 400) for e in range(-2400, 1201)]
+    best = max(grid, key=lambda t: _reml_loglik(y, v, t))
+    p = meta.pool([Effect(a, b) for a, b in zip(y, v, strict=True)], model="REML")
+    assert _is_reml_root(y, v, p.tau2) and abs(p.tau2 - best) <= 0.03 * best and p.tau2 > 1.0
+
+
 def test_reml_nonconvergence_is_an_error(monkeypatch):
     assert meta.pool(HARD, model="REML").tau2 > 0
     monkeypatch.setattr(meta, "REML_MAX_ITER", 1)

@@ -13,8 +13,8 @@ With ``w_i = 1/(v_i + τ²)`` (τ² = 0 for FE) the summary is ``μ = Σw_i·y_i
   τ² = 0 when the score there is not positive (the boundary maximum); otherwise it is halved until τ² stays ≥ 0. It
   stops when a step changes τ² by less than ``REML_TOL`` (1e-10) or gives up after ``REML_MAX_ITER`` (100) steps.
   The REML likelihood can be bimodal, so the result is the candidate with the highest restricted log-likelihood
-  (``reml_loglik``; ties go to the smaller τ²) among the Fisher result, τ² = 0 when the score there is ≤ 0, and —
-  when Fisher scoring failed or τ² = 0 is a candidate — every interior local maximum: the score is scanned at
+  (``reml_loglik``; ties go to the smaller τ²) among the Fisher result, τ² = 0 when the score there is ≤ 0, and
+  every interior local maximum (always: Fisher scoring can settle on the lower of two interior modes): the score is scanned at
   ``REML_SCAN_POINTS`` log-spaced points over [U·1e-12, U] and each + → − sign change is solved by Brent's method to
   ``REML_TOL``. ``U = 2·max(max v_i, 4·S/(k-1))`` with ``S = Σ(y_i - ȳ)²`` bounds every maximum (the score is negative
   beyond it). Proof: ``yᵀPPy = Σw_i²(y_i-μ)² ≤ w_max·Σw_i(y_i-ȳ)² ≤ S/τ⁴`` and
@@ -193,13 +193,12 @@ def reml_loglik(y: list[float], v: list[float], tau2: float) -> float:
 
 def _reml(y: list[float], v: list[float], start: float) -> float:
     """The REML τ²: the candidate with the highest restricted likelihood among the Fisher-scoring result, the boundary
-    τ² = 0 when the score there is not positive, and — when Fisher scoring did not converge or the boundary is a
-    candidate — every interior local maximum found by scanning the score on [0, U]."""
+    τ² = 0 when the score there is not positive, and every interior local maximum found by scanning the score on
+    [0, U] (always, since Fisher scoring can settle on the lower of two interior modes)."""
     fisher = _fisher(y, v, start)
     at_zero = reml_score(y, v, 0.0) <= 0
     candidates = ([0.0] if at_zero else []) + ([fisher] if fisher is not None else [])
-    if fisher is None or at_zero:
-        candidates += _score_maxima(y, v)
+    candidates += _score_maxima(y, v)
     if not candidates:
         raise ConvergenceError("REML: no maximum of the restricted likelihood was found")
     return max(candidates, key=lambda t: (reml_loglik(y, v, t), -t))
