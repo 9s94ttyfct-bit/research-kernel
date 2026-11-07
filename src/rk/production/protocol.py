@@ -14,8 +14,9 @@ duplicates across queries and sources count again) and leaves out the sources wi
 enforced by ``search_screen`` on the deduplicated records.
 
 A rerun after an unfrozen draft (a revision asked by you or by the vote, a failed check) gives both roles that draft as
-``previous_draft`` (its body and probe) to change as the guidance asks; a rerun after a freeze gives them the version in
-force as ``frozen_protocol``.
+``previous_draft`` (its body and probe) to change as the guidance asks, but only a draft of the current frozen RQ that no
+back-edge left behind (``protocol->question`` reopens the stage without one); a rerun after a freeze gives them the
+version in force as ``frozen_protocol``.
 
 Answers to ``protocol_approval``:
 - ``{"decision": "approve"}`` freezes the protocol; ``"record_cap": N`` (a whole number >= 1) sets the project's
@@ -81,10 +82,9 @@ QUERIES_MIN, SOURCES_MIN = 3, 2  # what the Scout's strategy needs
 LIGHT_TYPES = frozenset({"critical_review", "research_proposal"})  # question, search and selection principles only
 PREREG_TYPES = frozenset({"systematic_review", "scoping_review"})  # the freeze counts as preregistration (G-PREREG)
 PAPER_TYPES: tuple[str, ...] = get_args(PaperType)
-# PRISMA-P items a systematic review needs, in order. The text items are written in ``prisma_p``; the others are the
-# structured parts of the protocol, which the structural checks cover.
-PRISMA_P_ITEMS = ("rationale", "objectives", "eligibility", "information_sources", "search_strategy",
-                  "selection_process", "data_collection_process", "data_items", "risk_of_bias", "synthesis")
+# The PRISMA-P items a systematic review needs that are written as text in ``prisma_p``; the others (eligibility,
+# information sources, search strategy, data items, synthesis) are the structured parts of the protocol, which the
+# structural checks cover.
 PRISMA_P_TEXT = ("rationale", "objectives", "selection_process", "data_collection_process", "risk_of_bias")
 
 DRAFT_TASK = (
@@ -207,12 +207,14 @@ def counts_as_preregistration(paper_type: str) -> bool:
 def _probe(ctx: StageContext, strategy: SearchStrategy) -> dict:
     """``sources.count`` of every query on every counted source of the strategy, and the sum of the counts given
     (duplicates across queries and sources count again). A source that gave no count keeps ``count: None``; the
-    strategy's sources without a count at all are listed as ``uncounted``."""
+    strategy's sources without a count at all are listed as ``uncounted``. ``total`` is ``None`` when nothing was
+    counted."""
     sources = _unique(strategy.sources)
     counts = [{"query": q, "source": s, "count": ctx.sources.count(q, s)}
               for q in _unique(strategy.queries) for s in sources if s in COUNTED_SOURCES]
+    given = [c["count"] for c in counts if c["count"] is not None]
     return {"counts": counts, "uncounted": [s for s in sources if s not in COUNTED_SOURCES],
-            "total": sum(c["count"] for c in counts if c["count"] is not None)}
+            "total": sum(given) if given else None}
 
 
 def _record_probe(ps: ProjectStore, protocol_id: str, probe: dict, *, actor: str) -> None:
@@ -294,11 +296,14 @@ def _probe_lines(probe: dict | None, cap: int) -> list[str]:
         return ["Record-cap probe: not run."]
     per = "; ".join(f"{c['query']!r} on {c['source']}: {'no count' if c['count'] is None else c['count']}"
                     for c in probe["counts"]) or "nothing counted"
-    lines = [(f"Record-cap probe (advisory): {probe['total']} records (summed per query and counted source, so "
-              f"duplicates count again, with no date range; {per}).")]
+    if probe["total"] is None:
+        lines = [f"Record-cap probe (advisory): not counted (no source gave a record count; {per})."]
+    else:
+        lines = [(f"Record-cap probe (advisory): {probe['total']} records (summed per query and counted source, so "
+                  f"duplicates count again, with no date range; {per}).")]
     if probe["uncounted"]:
         lines.append(f"Not counted (no record count): {', '.join(probe['uncounted'])}.")
-    if probe["total"] > cap:
+    if probe["total"] is not None and probe["total"] > cap:
         lines.append(f"The probe found {probe['total']} records, above the record cap {cap}. search_screen stops "
                      f"above the cap after deduplication: narrow the strategy (revise), or approve with a raised "
                      f"record_cap.")
@@ -361,13 +366,22 @@ def _topic(ps: ProjectStore, topic_id: str) -> dict | None:
     return {"title": t["title"], "summary": t["summary"], "data_needed": t["data_needed"], "risks": t["risks"]}
 
 
-def _previous_draft(ps: ProjectStore) -> dict | None:
-    """The latest protocol when it is an unfrozen draft (a rerun after a revision or a failed check), with its probe:
-    what the roles revise. ``None`` when there is none or the latest protocol is frozen."""
+def _previous_draft(ps: ProjectStore, question: str) -> dict | None:
+    """The draft this attempt revises, with its probe: the latest protocol when it is an unfrozen draft of the current
+    research question (``question``, the frozen RQ's sentence) and ``protocol`` was not reopened since by an edge
+    from another stage (a back-edge to question). ``None`` otherwise: a frozen latest protocol, a draft of another
+    question, or one an edge left behind."""
     rows = query_rows(ps, "SELECT * FROM protocols ORDER BY rowid DESC LIMIT 1", (), ("body",))
-    if not rows or rows[0]["status"] == "frozen":
+    if not rows or rows[0]["status"] == "frozen" or rows[0]["body"]["question"] != question:
         return None
     row = rows[0]
+    added = ps.db.execute("SELECT MIN(seq) FROM events WHERE type='protocol.added' AND entity_id=?",
+                          (row["id"],)).fetchone()[0]
+    left_behind = ps.db.execute(
+        "SELECT 1 FROM events WHERE type='stage.reopened' AND json_extract(payload, '$.stage')='protocol' AND seq>? "
+        "AND json_extract(payload, '$.by_edge')!='protocol->protocol' LIMIT 1", (added,)).fetchone()
+    if left_behind is not None:
+        return None
     return {"version": row["version"], "body": row["body"], "record_probe": probe_of(ps, row["id"])}
 
 
@@ -400,7 +414,7 @@ class ProtocolWorker:
             context["topic"] = topic
         if (prior := frozen_protocol(ps)) is not None:
             context["frozen_protocol"] = {"version": prior["version"], "body": prior["body"]}
-        if (draft := _previous_draft(ps)) is not None:
+        if (draft := _previous_draft(ps, question)) is not None:
             context["previous_draft"] = draft
         if ctx.guidance:
             context["guidance"] = ctx.guidance

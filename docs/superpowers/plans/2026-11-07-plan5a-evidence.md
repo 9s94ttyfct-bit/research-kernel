@@ -41,7 +41,7 @@
   - `protocol` is an open stage: 40 role tasks per session.
   - `search_screen` and `read_extract` are enumerated stages: no fixed task cap, only the per-driver hourly caps (`waiting_rate`).
   - Screening batch size is 25 records per role task.
-  - Record cap: 3,000 after deduplication. Above it, the protocol gate fails with "narrow the search strategy (N records > 3,000)" in both P1 and P2. In P2 you may raise the cap for this project (setting `record_cap`).
+  - Record cap: 3,000 after deduplication. `search_screen` enforces it on the deduplicated records: above it, the stage goes back to `protocol` with "N records > cap" ("narrow the search strategy") in both P1 and P2 (Task 4). The protocol stage's record-count probe is advisory only: it is shown in `protocol_approval` and to the P1 judges, and fails nothing. In P2 you may raise the cap for this project (`record_cap` in the `protocol_approval` answer).
 - **Paper-type rules** (§7.3):
   - `systematic_review`: full protocol with the PRISMA-P required items; freeze counts as preregistration (G-PREREG); dual title/abstract screening and dual full-text screening; PRISMA counts.
   - `scoping_review`: protocol frozen and counted as preregistration; single screening plus a random 10% dual sample (seeded by the protocol hash). If the disagreement rate on included-or-not in the sample is > 10%, the stage switches to full dual screening. PRISMA-ScR counts.
@@ -61,7 +61,7 @@
 2. **The two screeners disagree on 30 records in P2.** You get two `screening_disagreements` checkpoints (25 + 5), your answers settle exactly those records, and PRISMA counts match. Test: Task 5 `test_disagreements_batch_into_checkpoints_of_25`.
 3. **One judge vendor is missing in P1** (as in the Plan 4 demo). The vote cannot pass, every vote takes the conservative option, and the run says why at start. Test: Task 2 `test_vote_with_one_vendor_is_conservative`.
 4. **A study has no full text.** It is assessed on the abstract, its extraction values carry `sufficient=low`, and it is counted as "not retrieved" only when no abstract exists either. Test: Task 7 `test_abstract_only_study_is_marked_low_sufficiency`.
-5. **The search returns 4,000 records after deduplication.** The protocol gate fails, telling you to narrow the strategy. In P2 you can raise `record_cap` and continue. Test: Task 4 `test_record_cap_fails_the_gate`.
+5. **The search returns 4,000 records after deduplication.** `search_screen` stops and goes back to `protocol`, telling you to narrow the strategy. In P2 you can raise `record_cap` and continue. Test: Task 4 `test_record_cap_fails_the_gate`.
 
 ---
 
@@ -178,7 +178,7 @@ New tables (`CREATE TABLE IF NOT EXISTS`, all in `PROJECTION_TABLES`):
     - every extraction field is named and typed;
     - SR also needs the PRISMA-P required items: rationale, objectives, eligibility, information sources, search strategy, selection process, data collection process, data items, risk of bias, synthesis;
     - light types need question, search and selection principles only.
-  - Then the record-cap probe: `sources.count(query)` per query (an OpenAlex count, Europe PMC `hitCount`), summed. Above `record_cap` the gate fails with the size.
+  - Then the record-cap probe: `sources.count(query, source)` per query and counted source (an OpenAlex count, Europe PMC `hitCount`), summed, stored and shown. It is advisory (no date range, duplicates count again, some sources have no count): it never fails the gate; the cap is enforced by `search_screen` after deduplication (Task 4).
   - P2 → `protocol_approval` (the prompt renders every section).
   - P1 → `vote(... conservative="revise", generator_vendor=<ideator task vendor>)`: approve → freeze; revise → rerun with the judges' reasons as guidance.
 - `on_answer`:
@@ -197,7 +197,7 @@ New tables (`CREATE TABLE IF NOT EXISTS`, all in `PROJECTION_TABLES`):
   - `test_p2_opens_protocol_approval_p1_votes`;
   - `test_change_after_screening_is_a_recorded_deviation` (Review Focus 1);
   - `test_freeze_hash_is_stable`;
-  - `test_record_cap_probe_fails_the_gate` (count 4,000 > 3,000).
+  - `test_record_cap_probe_is_advisory` (count 4,000 > 3,000 is recorded and shown; the gate passes).
 - [ ] **Step 2–5:** FAIL, implement, PASS. **Commit** `feat(production): protocol drafting, gate, approval and freeze`
 
 ### Task 4: Search and deduplication

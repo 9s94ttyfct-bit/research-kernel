@@ -11,9 +11,9 @@ import pytest
 from rk.canon import canonical_json, sha256_hex
 from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
 from rk.config import Settings, save_settings
-from rk.discovery.models import Intake
+from rk.discovery.models import HypothesisIn, Intake, RQBody
 from rk.discovery.sources import KernelSources
-from rk.discovery.store import intake_of, record_intake
+from rk.discovery.store import add_rq, freeze_rq, frozen_rq, intake_of, record_intake
 from rk.net.http import HttpClient
 from rk.orchestrator.engine import Orchestrator, StageOutcome, default_workers
 from rk.orchestrator.state import latest_attempt, record_attempt, start_run
@@ -308,6 +308,73 @@ def _run_to(k, ps, workers: dict, ex, until: str, sources=None) -> list[str]:
     raise AssertionError(out)
 
 
+def _steps(o: Orchestrator, run_id: str) -> str:
+    for _ in range(40):
+        status = o.step("demo", run_id, actor="tester")
+        if status in {"done", "failed", "paused_waiting_human", "paused_budget"}:
+            return status
+    raise AssertionError("run did not settle")
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+@pytest.mark.parametrize("new_rq", [True, False])
+def test_back_to_question_leaves_no_draft_to_revise(env, new_rq):
+    """P2 back -> question reopened (and the RQ frozen again, changed or not) -> the next protocol attempt drafts
+    afresh: the draft of the earlier attempt is no previous_draft."""
+    k, ps, _ = env
+
+    def requestion(ctx):
+        if new_rq:
+            old = frozen_rq(ps)
+            body = RQBody.model_validate({**old["body"], "three_step": {**old["body"]["three_step"],
+                                                                        "x": "aspirin over 85"}})
+            rid = add_rq(ps, ctx.attempt, old["topic_id"], body,
+                         [HypothesisIn(statement="H.", falsification="X.")], actor="tester")
+            freeze_rq(ps, rid, adopted_by="human", actor="tester")
+        return StageOutcome("done")
+
+    ex = _executor([_draft(), _draft()])
+    workers = {s: FakeWorker() for s in ("landscape", "gaps", "topics")}
+    workers["question"] = FakeWorker(runs=[StageOutcome("done"), requestion])
+    workers["protocol"] = ProtocolWorker()
+    o = Orchestrator(k, None, workers=workers, executor_factory=lambda project, run_id, session: ex,
+                     sources_factory=lambda project: FakeSources({}), clock=lambda: T0)
+    run_id = start_run(ps, until="protocol", actor="tester", clock=lambda: T0)
+    assert _steps(o, run_id) == "paused_waiting_human"
+    (cp,) = list_checkpoints(ps, "open")
+    answer_checkpoint(ps, cp["id"], {"decision": "back", "comment": "RQ too broad"}, answered_by="human",
+                      actor="researcher")
+    assert _steps(o, run_id) == "paused_waiting_human"
+    assert [latest_attempt(ps, s) for s in ("question", "protocol")] == [2, 2]
+    ideator = [c for c in ex.calls if c["role"] == "ideator"]
+    scout = [c for c in ex.calls if c["role"] == "scout"]
+    assert [c["attempt"] for c in ideator] == [1, 2]
+    assert "previous_draft" not in ideator[1]["inputs"] and "previous_draft" not in scout[1]["inputs"]
+    assert ideator[1]["inputs"]["research_question"]["sentence"].startswith(
+        "I am studying aspirin over 85" if new_rq else "I am studying aspirin over 80")
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_revise_through_a_run_keeps_the_draft_to_revise(env):
+    """A revise reruns protocol (protocol->protocol): the rerun revises the draft of the same RQ."""
+    k, ps, _ = env
+    ex = _executor([_draft(), _draft()])
+    workers = {s: FakeWorker() for s in ("landscape", "gaps", "topics", "question")}
+    workers["protocol"] = ProtocolWorker()
+    o = Orchestrator(k, None, workers=workers, executor_factory=lambda project, run_id, session: ex,
+                     sources_factory=lambda project: FakeSources({}), clock=lambda: T0)
+    run_id = start_run(ps, until="protocol", actor="tester", clock=lambda: T0)
+    assert _steps(o, run_id) == "paused_waiting_human"
+    (cp,) = list_checkpoints(ps, "open")
+    answer_checkpoint(ps, cp["id"], {"decision": "revise", "comment": "Add a harm outcome."}, answered_by="human",
+                      actor="researcher")
+    assert _steps(o, run_id) == "paused_waiting_human"
+    (draft,) = store.protocols(ps, 1)
+    ideator = [c for c in ex.calls if c["role"] == "ideator"]
+    assert ideator[1]["inputs"]["previous_draft"]["body"] == draft["body"]
+    assert "Add a harm outcome." in ideator[1]["inputs"]["guidance"]
+
+
 @pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
 def test_change_after_screening_is_a_recorded_deviation(env):
     k, ps, _ = env
@@ -372,6 +439,19 @@ def test_record_cap_probe_is_advisory(env):
     assert w.gate(ps, 1).ok
     (judged, _) = [c for c in ex.calls if c["schema"] == "VoteOut"]
     assert judged["inputs"]["subject"]["record_probe"]["total"] == 4000  # the judges see it
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_probe_without_any_count_says_not_counted(env):
+    _, ps, _ = env
+    sources = FakeSources({}, record_counts={(q, "openalex"): None for q in QUERIES})
+    ex = _executor([_draft()], [_strategy(sources=["openalex", "pubmed"])])
+    out = ProtocolWorker().run(_ctx(env, ex, sources=sources))
+    (row,) = store.protocols(ps, 1)
+    assert probe_of(ps, row["id"])["total"] is None
+    prompt = get_checkpoint(ps, out.checkpoint_id)["prompt"]
+    assert "Record-cap probe (advisory): not counted" in prompt and "probe (advisory): 0" not in prompt
+    assert "Not counted (no record count): pubmed." in prompt
 
 
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
