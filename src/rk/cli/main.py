@@ -799,6 +799,8 @@ def _stage_lines(stages: list[dict]) -> None:
 
 
 def _run_line(d: dict) -> None:
+    if d.get("message"):
+        typer.echo(d["message"])
     r = d["run"]
     if r is None:
         typer.echo(f"{d['project']}: no run yet")
@@ -845,7 +847,8 @@ def run_pause(project: str | None = typer.Option(None, "--project"), as_json: bo
 
 @run_app.command("resume")
 def run_resume(project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
-    """Resume a paused run in a new session: its 12 h wall clock and stage task budgets restart."""
+    """Resume a paused run in a new session: its 12 h wall clock and stage task budgets restart. A failed or cancelled
+    run cannot be resumed: a new run with the same --until starts instead (and says so)."""
     _out(_call("rk_run_resume", {"project": _project(project)}, write=True), as_json, _run_line)
 
 

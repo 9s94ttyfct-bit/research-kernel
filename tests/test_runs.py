@@ -396,6 +396,69 @@ def test_step_error_fails_the_run_with_its_reason(env):
     assert run_row(ps, run2)["reason"] == "RuntimeError: disk full"
 
 
+def test_transient_source_error_backs_off_and_steps_again(env):
+    from rk.net.http import HttpError
+
+    _, ps, _, make = env
+    flaky = FakeWorker(runs=[HttpError(503, "https://api.openalex.org/works"), HttpError(0, "https://x.org"),
+                             StageOutcome("done")])
+    m, _ = make(_workers(landscape=flaky), source_backoff_s=0.01)
+    run_id = m.start("demo", "topics", actor="tester")
+    _wait(lambda: run_row(ps, run_id)["status"] == "done")
+    assert flaky.kinds().count("run") == 3  # each retry is a new attempt of the interrupted stage
+    reasons = [e.payload["reason"] for e in ps.log.iter() if e.type == "run.status" and e.entity_id == run_id]
+    assert any("a source failed (HttpError: HTTP 503" in r and "retrying" in r for r in reasons)
+
+
+def test_source_error_that_persists_fails_the_run_after_retries(env):
+    from rk.net.http import HttpError
+
+    _, ps, _, make = env
+    down = FakeWorker(runs=[HttpError(502, "https://api.openalex.org/works")] * 4)
+    m, _ = make(_workers(landscape=down), source_backoff_s=0.01, max_source_retries=2)
+    run_id = m.start("demo", "topics", actor="tester")
+    _wait(lambda: run_row(ps, run_id)["status"] == "failed")
+    assert down.kinds().count("run") == 3
+    reason = run_row(ps, run_id)["reason"]
+    assert "kept failing after 2 retries" in reason and "HTTP 502" in reason
+
+
+def test_a_non_transient_source_error_fails_at_once(env):
+    from rk.net.http import HttpError
+
+    _, ps, _, make = env
+    m, _ = make(_workers(landscape=FakeWorker(runs=[HttpError(403, "https://api.openalex.org/works")])),
+                source_backoff_s=0.01)
+    run_id = m.start("demo", "topics", actor="tester")
+    _wait(lambda: run_row(ps, run_id)["status"] == "failed")
+    assert run_row(ps, run_id)["reason"] == "HttpError: HTTP 403 for https://api.openalex.org/works"
+
+
+@pytest.mark.parametrize("end", ["failed", "cancelled"])
+def test_resume_of_a_failed_or_cancelled_run_starts_a_new_run(env, end):
+    _, ps, _, make = env
+    first = [RuntimeError("disk full")] if end == "failed" else [_review]
+    m, reg = make(_workers(landscape=FakeWorker(runs=first)))
+    with pytest.raises(ToolError) as e:
+        m.resume("demo")
+    assert e.value.type == "no_run"
+    old = m.start("demo", "question", actor="tester")
+    if end == "cancelled":
+        _wait(lambda: run_row(ps, old)["status"] == "paused_waiting_human")
+        m.cancel("demo")
+    _wait(lambda: run_row(ps, old)["status"] == end)
+    _wait(lambda: not _run_threads())
+    out = reg.call("rk_run_resume", {"project": "demo"}, _ctx())
+    new = out["run"]["id"]
+    assert new != old and out["replaced"] == old
+    assert out["message"] == (f"run {old} was {end}, so it cannot be resumed; started a new run {new} (until "
+                              "question): it goes on from the stages that already passed")
+    assert run_row(ps, new)["until"] == "question"
+    if end == "cancelled":
+        m.cancel("demo")
+    _wait(lambda: run_row(ps, new)["status"] in ("done", "cancelled"))
+
+
 def test_run_tools_are_cli_only(env):
     _, ps, _, make = env
     _, reg = make(_workers())

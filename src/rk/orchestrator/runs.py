@@ -49,6 +49,8 @@ STEPPED = frozenset({"running", "waiting_human", "paused_waiting_human"})  # a t
 WAITING = frozenset({"waiting_human", "paused_waiting_human"})  # the thread polls the checkpoints
 MAX_RATE_WAIT_S = 300.0  # longest single wait on a call cap before the run steps again
 UNKNOWN_RATE_WAIT_S = 60.0  # wait on a call cap whose driver is unknown
+SOURCE_BACKOFF_S = 30.0  # first wait after a transient source error; doubles per retry, at most MAX_RATE_WAIT_S
+MAX_SOURCE_RETRIES = 5  # transient source errors in a row before the run fails
 REASONS = {"paused": "paused by you", "cancelled": "cancelled by you"}
 T = TypeVar("T")
 
@@ -59,14 +61,17 @@ class _Runner:
     wake: threading.Event = field(default_factory=threading.Event)
     request: tuple[str, str] | None = None  # ("paused" | "cancelled", actor), applied by the thread between steps
     thread: threading.Thread | None = None
+    source_errors: int = 0  # transient source errors in a row (``waiting_source``)
 
 
 class RunManager:
     def __init__(self, kernel, registry, orchestrator, *, poll_s: float = 2.0,
                  max_rate_wait_s: float = MAX_RATE_WAIT_S, unknown_rate_wait_s: float = UNKNOWN_RATE_WAIT_S,
+                 source_backoff_s: float = SOURCE_BACKOFF_S, max_source_retries: int = MAX_SOURCE_RETRIES,
                  join_timeout_s: float = 30.0):
         self.kernel, self.registry, self.orchestrator = kernel, registry, orchestrator
         self.poll_s, self.max_rate_wait_s, self.unknown_rate_wait_s = poll_s, max_rate_wait_s, unknown_rate_wait_s
+        self.source_backoff_s, self.max_source_retries = source_backoff_s, max_source_retries
         self.join_timeout_s = join_timeout_s
         self._lock = threading.Lock()  # guards _runners, _d1, _closed and every status write outside a step
         self._runners: dict[str, _Runner] = {}
@@ -81,22 +86,9 @@ class RunManager:
         if until not in RUN_UNTIL:
             raise ToolError("stage_unavailable", f"a run ends at topics or question, not {until!r}")
         ps = self._ps(project)
-        intake = intake_of(ps)
-        if intake is None:
-            raise ToolError("intake_missing", f"{project} has no intake yet; record it first (rk project intake)")
-        if intake.discovery_mode != "d2":
-            raise ToolError("not_d2", f"{project} uses guided discovery (d1): run its stages in the Lead chat, or "
-                                      "record the intake again with discovery mode d2")
+        self._check_startable(ps, project)
         with self._lock:
-            self._check_open()
-            self._check_no_d1(project)
-            old = self._runners.get(project)
-            if old is not None:
-                raise ToolError("run_active", f"run {old.run_id} of {project} is still stopping",
-                                {"run_id": old.run_id})
-            run_id = start_run(ps, until=until, actor=actor, clock=self.orchestrator.clock)
-            self._spawn(project, run_id)
-        return run_id
+            return self._start_locked(ps, project, until, actor)
 
     def pause(self, project: str, *, actor: str = ACTOR) -> dict:
         """Pause the run between steps: a step in flight (a role task) finishes first, then the run is ``paused``."""
@@ -109,26 +101,44 @@ class RunManager:
     def resume(self, project: str, *, actor: str = ACTOR) -> dict:
         """Resume a ``paused`` or ``paused_budget`` run in a new session (``run.session`` n + 1: the 12 h wall clock
         and the stage budgets restart). A run that a thread should step but none does (``rk serve`` restarted and
-        did not resume it) gets its thread back in the same session; a pause not yet applied is withdrawn."""
+        did not resume it) gets its thread back in the same session; a pause not yet applied is withdrawn.
+
+        A ``failed`` or ``cancelled`` run cannot be resumed: when the latest run ended so, a new run with the same
+        ``until`` starts instead (it goes on from the stages that already passed), and the result says so
+        (``message``, ``replaced``)."""
         ps = self._ps(project)
         with self._lock:
             self._check_open()
             self._check_no_d1(project)
-            run = self._active(ps, project)
-            r = self._runners.get(project)
-            if r is not None:
-                if r.request is None or r.request[0] != "paused":
-                    state = "being cancelled" if r.request else run["status"]
-                    raise ToolError("run_active", f"run {run['id']} is {state}", {"run_id": run["id"]})
-                r.request = None
-            elif run["status"] in ("paused", "paused_budget"):
-                clock = self.orchestrator.clock
-                record_run_session(ps, run["id"], run["session"] + 1, actor=actor, clock=clock)
-                record_run_status(ps, run["id"], "running", actor=actor, clock=clock)
-                self._spawn(project, run["id"])
+            run = active_run(ps)
+            last = latest_run(ps)
+            if run is None and last is not None and last["status"] in ("failed", "cancelled") \
+                    and project not in self._runners:
+                self._check_startable(ps, project)
+                new = self._start_locked(ps, project, last["until"], actor)
+                message = (f"run {last['id']} was {last['status']}, so it cannot be resumed; started a new run {new} "
+                           f"(until {last['until']}): it goes on from the stages that already passed")
+                replaced = last["id"]
             else:
-                self._spawn(project, run["id"])
-        return self.status(project)
+                message = replaced = None
+                run = self._active(ps, project)
+                r = self._runners.get(project)
+                if r is not None:
+                    if r.request is None or r.request[0] != "paused":
+                        state = "being cancelled" if r.request else run["status"]
+                        raise ToolError("run_active", f"run {run['id']} is {state}", {"run_id": run["id"]})
+                    r.request = None
+                elif run["status"] in ("paused", "paused_budget"):
+                    clock = self.orchestrator.clock
+                    record_run_session(ps, run["id"], run["session"] + 1, actor=actor, clock=clock)
+                    record_run_status(ps, run["id"], "running", actor=actor, clock=clock)
+                    self._spawn(project, run["id"])
+                else:
+                    self._spawn(project, run["id"])
+        out = self.status(project)
+        if message:
+            out.update(message=message, replaced=replaced)
+        return out
 
     def status(self, project: str) -> dict:
         """The latest run (or ``None``), the current stage and one row per discovery stage."""
@@ -230,6 +240,26 @@ class RunManager:
             raise ToolError("run_active", f"a guided (D1) stage call of {project} is in progress; start or resume "
                                           "the run when it returns")
 
+    def _check_startable(self, ps: ProjectStore, project: str) -> None:
+        """A run needs an intake with discovery mode d2."""
+        intake = intake_of(ps)
+        if intake is None:
+            raise ToolError("intake_missing", f"{project} has no intake yet; record it first (rk project intake)")
+        if intake.discovery_mode != "d2":
+            raise ToolError("not_d2", f"{project} uses guided discovery (d1): run its stages in the Lead chat, or "
+                                      "record the intake again with discovery mode d2")
+
+    def _start_locked(self, ps: ProjectStore, project: str, until: str, actor: str) -> str:
+        """Start the run and its thread (lock held)."""
+        self._check_open()
+        self._check_no_d1(project)
+        old = self._runners.get(project)
+        if old is not None:
+            raise ToolError("run_active", f"run {old.run_id} of {project} is still stopping", {"run_id": old.run_id})
+        run_id = start_run(ps, until=until, actor=actor, clock=self.orchestrator.clock)
+        self._spawn(project, run_id)
+        return run_id
+
     @staticmethod
     def _active(ps: ProjectStore, project: str) -> dict:
         run = active_run(ps)
@@ -279,6 +309,16 @@ class RunManager:
             self._drop(project, r)
             return True
 
+    def _source_error(self, ps: ProjectStore, r: _Runner) -> str:
+        """Count a transient source error of the run's step; past ``max_source_retries`` in a row the run fails."""
+        r.source_errors += 1
+        if r.source_errors <= self.max_source_retries:
+            return "waiting_source"
+        last = run_row(ps, r.run_id)["reason"] or "a source failed"
+        reason = f"a source kept failing after {self.max_source_retries} retries: {last}"
+        record_run_status(ps, r.run_id, "failed", reason=reason, actor=ACTOR, clock=self.orchestrator.clock)
+        return "failed"
+
     def _loop(self, project: str, r: _Runner) -> None:
         try:
             ps = self._ps(project)
@@ -287,10 +327,16 @@ class RunManager:
                 if self._between_steps(ps, project, r, None):
                     return
                 status = self.orchestrator.step(project, r.run_id, actor=ACTOR)
+                if status == "waiting_source":
+                    status = self._source_error(ps, r)
+                else:
+                    r.source_errors = 0
                 if self._between_steps(ps, project, r, status):
                     return
                 if status == "waiting_rate":
                     r.wake.wait(min(self.rate_wait_s(project, r.run_id), self.max_rate_wait_s))
+                elif status == "waiting_source":
+                    r.wake.wait(min(self.source_backoff_s * 2 ** (r.source_errors - 1), self.max_rate_wait_s))
                 elif status in WAITING:
                     r.wake.wait(self.poll_s)
         except Exception as e:  # noqa: BLE001 - the run fails with the reason instead of the thread dying silently

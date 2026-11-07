@@ -14,6 +14,7 @@ from typing import Any, Literal, Protocol
 from pydantic import ValidationError
 
 from rk.checkpoints import create_checkpoint, get_checkpoint
+from rk.discovery.boundary import error_text, transient_source_error
 from rk.discovery.executor import (
     BudgetExceeded,
     KernelExecutor,
@@ -263,9 +264,10 @@ class Orchestrator:
     # ---- D2 ----
     def step(self, project: str, run_id: str, *, actor: str) -> str:
         """One unit of a D2 run: start (or rerun) the current stage's attempt, or apply the answer it waits on, and
-        settle the outcome. Returns the run status, or ``waiting_rate`` when a driver is at its hourly cap (the run
-        stays ``running``; the next step runs the interrupted attempt again as a new attempt with the same guidance,
-        or applies the answer again)."""
+        settle the outcome. Returns the run status, or ``waiting_rate`` when a driver is at its hourly cap, or
+        ``waiting_source`` when a source failed in a way that may go away (HTTP 429, 5xx, a transport error, an
+        unreadable body; the run's reason says which). In both the run stays ``running``; the next step runs the
+        interrupted attempt again as a new attempt with the same guidance, or applies the answer again."""
         ps, lib = self.kernel.project(project)
         run = run_row(ps, run_id)
         if run is None:
@@ -300,6 +302,12 @@ class Orchestrator:
             return self._set_run(ps, run, "paused_budget", str(e), actor=actor)
         except RateCapped:
             return "waiting_rate"
+        except Exception as e:
+            if not transient_source_error(e):
+                raise
+            self._set_run(ps, run, "running", f"a source failed ({error_text(e)}); retrying after a backoff",
+                          actor=actor)
+            return "waiting_source"
 
     # ---- internals ----
     def _worker(self, stage: str) -> Worker:

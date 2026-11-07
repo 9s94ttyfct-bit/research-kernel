@@ -546,7 +546,10 @@ function runControls(g, act) {
   const btn = (text, onclick, cls) => el("button", { type: "button", class: cls, onclick }, text);
   const buttons = [];
   if (!g.run_active) {
-    buttons.push(btn("Start D2 run until topics", () => act("start", "topics")), btn("Start D2 run until question", () => act("start", "question"), "secondary"));
+    // a failed or cancelled run cannot go on: Resume starts a new run with the same end stage, and the server says so
+    if (run && ["failed", "cancelled"].includes(run.status))
+      buttons.push(btn(`Resume: start a new run until ${run.until}`, () => act("resume")));
+    buttons.push(btn("Start D2 run until topics", () => act("start", "topics"), buttons.length ? "secondary" : undefined), btn("Start D2 run until question", () => act("start", "question"), "secondary"));
   } else if (g.requested === "cancelled") {
     status.append(" Cancelling after the current step…");
   } else {
@@ -597,7 +600,10 @@ pages.progress = async (root) => {
     runButtons.querySelectorAll("button").forEach((b) => { b.disabled = true; });
     try {
       if (action === "start") await api("/ui/api/run", { method: "POST", body: { project: state.project, until } });
-      else await api(`/ui/api/run/${action}`, { method: "POST", body: { project: state.project } });
+      else {
+        const r = await api(`/ui/api/run/${action}`, { method: "POST", body: { project: state.project } });
+        if (r && r.message) toast(r.message);
+      }
     } catch (err) { toast(err.message, "error"); }
     await refresh();
     runButtons.querySelectorAll("button").forEach((b) => { b.disabled = false; });  // also when nothing changed

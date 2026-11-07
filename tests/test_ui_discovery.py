@@ -302,8 +302,14 @@ def test_run_routes_start_pause_resume_cancel(wb):
     assert post(wb.client, "/ui/api/run/stop", {"project": "demo"}).status_code in (404, 422)
     assert post(wb.client, "/ui/api/run", {"project": "demo", "until": "gaps"}).status_code == 422
     assert post(wb.client, "/ui/api/run/pause", {"project": "demo"}).json()["detail"]["type"] == "no_run"
+    r = post(wb.client, "/ui/api/run/resume", {"project": "demo"}).json()["result"]  # a cancelled run: a new run
+    new = r["run"]["id"]
+    assert new != run_id and r["replaced"] == run_id and f"started a new run {new} (until topics)" in r["message"]
+    waiting(wb, new, "topic_review")
+    assert post(wb.client, "/ui/api/run/cancel", {"project": "demo"}).status_code == 200
+    until(lambda: run_row(wb.ps, new)["status"] == "cancelled")
     events = wb.ps.db.execute("SELECT actor FROM events WHERE type IN ('run.started') ").fetchall()
-    assert [e["actor"] for e in events] == ["ui:user"]
+    assert [e["actor"] for e in events] == ["ui:user", "ui:user"]
 
 
 def _run_events(ps) -> list[tuple]:
