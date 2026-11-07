@@ -1,4 +1,4 @@
-"""The P1 multi-vendor vote: where P2 asks the human, P1 asks the judges (``rk.verify.judge.JUDGE_ROLES``) the same
+"""The P1 multi-vendor vote: where P2 asks the human, P1 asks the judges (``rk.roles.policy.JUDGE_ROLES``) the same
 question. Only admitted judges vote: distinct known, non-human vendors, none the generator's (the shared admission of
 ``rk.verify.judge.admitted_judges``). The decision is the choice shared by every admitted judge; fewer than two
 admitted judges, any disagreement, or a failed or invalid answer gives the conservative option. Every vote is recorded

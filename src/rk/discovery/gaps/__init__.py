@@ -30,7 +30,7 @@ GAP_CHECK_SOURCES = 2  # a gap-check search runs on the first two sources
 GAP_CHECK_LIMIT = 10
 ABSTRACT_CHARS = 600
 READ_TOOLS = ["rk_text_read", "rk_text_find"]  # the gapminer reads the full texts it mines
-SUPPORT_JUDGES = 2  # V-SUPPORT in gap mining needs two agreeing cross-vendor judges
+SUPPORT_JUDGES = 2  # V-SUPPORT in gap mining: at least two admitted cross-vendor judges, all agreeing
 PASS, FAIL, SKIPPED = "pass", "fail", "skipped"
 
 
