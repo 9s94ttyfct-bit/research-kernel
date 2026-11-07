@@ -195,6 +195,25 @@ def test_topics_drop_unverified_gap_ids(env):
     assert cp["kind"] == "topic_review" and cp["options"]["topic_ids"] == [t["id"] for t in stored]
 
 
+@pytest.mark.parametrize("env", [{"topics_n": 1}], indirect=True)
+@pytest.mark.parametrize("field, text", [("title", "The first study to dose aspirin after 80"),
+                                         ("summary", "This has never been studied."),
+                                         ("feasibility", "An unexplored registry."),
+                                         ("risks", "No prior studies to lean on.")])
+def test_a_topic_that_claims_novelty_reruns_the_stage(env, field, text):
+    ps = env[1]
+    claiming = {**_topic("Aspirin over 80", ["{verified}"]), field: text}
+    o, ex, run_id, _ = _to_topics(env, [[claiming], [_topic("Aspirin over 80", ["{verified}"])]])
+    assert o.step("demo", run_id, actor="tester") == "running"  # rerun: topics->topics
+    assert edge_count(ps, "topics->topics") == 1
+    guidance = stage_row(ps, "topics")["guidance"]
+    label = text if field == "title" else "Aspirin over 80"
+    assert f"topic {label!r}: {field} claims novelty" in guidance and "searched scope" in guidance
+    assert [c["role"] for c in ex.calls if c["attempt"] == 1 and c["stage"] == "topics"] == ["ideator"]
+    assert topics(ps, 1) == []  # nothing stored, no V-NOVELTY spent on it
+    assert _drive(o, run_id)[-1] == "paused_waiting_human"
+
+
 def test_topics_open_topic_review_in_auto_mode_too(env):
     ps = env[1]
     assert ps.meta("production_mode") == "auto"

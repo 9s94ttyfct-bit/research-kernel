@@ -136,9 +136,10 @@ The checkpoints you answer (only a human can, in the Workbench Checkpoints page 
   passages the Kernel picks from the cited work), stated limitations (a verbatim quote in the last 40 % of the text
   that Triage finds no later work addressing), evidence-map holes (an empty cell whose targeted search found nothing)
   and retracted works still cited. Absence is always worded "not found within the searched scope".
-- **V-NOVELTY is a reference only.** Each topic shows its closest works so you can judge overlap yourself; nothing calls
-  a topic, gap or question novel. The already-done check of the RQ works the same way: two judges of other vendors
-  than the RQ's author must each quote the title or abstract.
+- **V-NOVELTY is a reference only.** Each topic shows its closest works so you can judge overlap yourself. The kernel
+  refuses a novelty claim ("novel", "first study to", "never been studied", …) in every text the Ideator writes for a
+  topic or an RQ, and in the judges' differences: such an output is rerun. The already-done check of the RQ works the
+  same way: two judges of other vendors than the RQ's author must each quote the title or abstract.
 - **Models are configurable per role** (`drivers` in `config.toml`): the Scout, GapMiner and Ideator generate;
   `judge` and `judge_2` (V-SUPPORT, V-NOVELTY, the already-done check) and `triage` check, from other vendors.
 - A recorded run: `docs/demo/plan4-discovery.md`.

@@ -45,7 +45,7 @@ from rk.llm.vendors import vendor_of
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.orchestrator.state import degradations, record_degraded, stage_row
 from rk.store.project import ProjectStore
-from rk.verify.novelty import NOVEL
+from rk.verify.novelty import novelty_claims
 
 DECISIONS: dict[str, tuple[str, ...]] = {"rq_approval": ("approve", "revise"),
                                          "significance_novelty": ("proceed", "back")}
@@ -74,8 +74,7 @@ def check_rq(body: RQBody, hyps: list[HypothesisIn]) -> list[str]:
     if n < 2:
         out.append(f"problem.consequences has {n} (need at least 2)")
     out += [f"finer.{f} is empty" for f in Finer.model_fields if not getattr(body.finer, f).strip()]
-    if NOVEL.search(body.finer.novel):
-        out.append("finer.novel claims novelty; say what was not found within the searched scope")
+    out += novelty_claims(_rq_texts(body, hyps))
     if body.clinical:
         if body.pico is None:
             out.append("a clinical RQ needs a PICO")
@@ -91,6 +90,19 @@ def check_rq(body: RQBody, hyps: list[HypothesisIn]) -> list[str]:
 
 def _norm(statement: str) -> str:
     return " ".join(re.findall(r"\w+", statement.lower()))
+
+
+def _rq_texts(body: RQBody, hyps: list[HypothesisIn]) -> list[tuple[str, str]]:
+    """Every generated text of the RQ and its hypotheses, by name."""
+    out = [(f"three_step.{f}", getattr(body.three_step, f)) for f in ("x", "y", "z")]
+    out.append(("problem.condition", body.problem.condition))
+    out += [(f"problem.consequences.{i}", c) for i, c in enumerate(body.problem.consequences, 1)]
+    out += [(f"finer.{f}", getattr(body.finer, f)) for f in Finer.model_fields]
+    if body.pico is not None:
+        out += [(f"pico.{f}", getattr(body.pico, f)) for f in Pico.model_fields]
+    for i, h in enumerate(hyps, 1):
+        out += [(f"hypothesis {i}.statement", h.statement), (f"hypothesis {i}.falsification", h.falsification)]
+    return out
 
 
 def _approved_topic(ps: ProjectStore) -> dict | None:

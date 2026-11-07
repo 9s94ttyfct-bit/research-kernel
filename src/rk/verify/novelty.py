@@ -43,6 +43,13 @@ NOVEL = re.compile(
     r"|\bnot\s+yet\s+(?:been\s+)?(?:studied|investigated|explored)\b",
     re.IGNORECASE)
 
+
+def novelty_claims(texts: list[tuple[str, str]]) -> list[str]:
+    """One failure per named text (``(name, text)``) that claims novelty; ``[]`` when none does. Every generated
+    text of a topic or an RQ goes through it: the result is a rerun reason."""
+    return [f"{name} claims novelty; say what was not found within the searched scope"
+            for name, text in texts if NOVEL.search(text or "")]
+
 QUERIES_TASK = (
     "Write 2 or 3 search queries in English that retrieve the published works closest to this text (same question, "
     "population, method or data). The kernel runs the queries; do not search yourself.")

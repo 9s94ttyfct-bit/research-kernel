@@ -40,9 +40,10 @@ from rk.llm.vendors import vendor_of
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.orchestrator.state import record_degraded, stage_row
 from rk.store.project import ProjectStore
-from rk.verify.novelty import novelty_reference
+from rk.verify.novelty import novelty_claims, novelty_reference
 
 CLOSEST_K = 5
+TOPIC_TEXTS = ("title", "summary", "feasibility", "data_needed", "risks")  # a topic's generated texts
 DECISIONS = ("approve", "revise", "reject")
 TARGETS = ("topics", "gaps")
 
@@ -167,6 +168,10 @@ class TopicsWorker:
                 seen.add(key)
                 kept.append(t.model_copy(update={"gap_ids": gap_ids}))
         kept = kept[:wanted]
+        claims = [f"topic {t.title.strip()!r}: {c}" for t in kept
+                  for c in novelty_claims([(f, getattr(t, f)) for f in TOPIC_TEXTS])]
+        if claims:  # before any V-NOVELTY task is spent on them
+            return StageOutcome("rerun", reason="; ".join(claims))
         short = self._too_few(intake, len(kept))
         if short:
             return StageOutcome("rerun", reason=short)

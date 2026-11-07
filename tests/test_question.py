@@ -227,6 +227,29 @@ def test_check_rq_accepts_scoped_not_found_wording(novel):
     assert check_rq(body, [HypothesisIn(**h) for h in rq["hypotheses"]]) == []
 
 
+@pytest.mark.parametrize("path, text", [
+    (("three_step", "x"), "a novel aspirin dose"), (("three_step", "y"), "what was never studied"),
+    (("three_step", "z"), "the first time aspirin is dosed so"), (("problem", "condition"), "It is unexplored."),
+    (("problem", "consequences"), ["No previous research exists.", "Consequence 2."]),
+    (("finer", "interesting"), "It is unprecedented.")])
+def test_check_rq_rejects_novelty_claims_in_every_field(path, text):
+    rq = _rq()
+    body = json.loads(json.dumps(rq["body"]))
+    body[path[0]][path[1]] = text
+    out = check_rq(RQBody(**body), [HypothesisIn(**h) for h in rq["hypotheses"]])
+    name = ".".join(path) + (".1" if isinstance(text, list) else "")
+    assert out == [f"{name} claims novelty; say what was not found within the searched scope"]
+
+
+def test_check_rq_rejects_novelty_claims_in_hypotheses():
+    rq = _rq()
+    hyps = [HypothesisIn(statement="A novel dose lowers the rate.", falsification="HR > 1."),
+            HypothesisIn(statement="Aspirin does not lower it.", falsification="Never been studied, so none.")]
+    assert check_rq(RQBody(**rq["body"]), hyps) == [
+        "hypothesis 1.statement claims novelty; say what was not found within the searched scope",
+        "hypothesis 2.falsification claims novelty; say what was not found within the searched scope"]
+
+
 
 # ---- the already-done check and what follows ----
 def test_already_done_by_both_vendors_backs_to_topics_in_d2(env):
