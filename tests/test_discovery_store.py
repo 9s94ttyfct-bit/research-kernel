@@ -166,6 +166,53 @@ def test_intake_tool_policy(proj):
         reg.call("rk_project_intake", args, CallContext(role="scout", actor="scout", idempotency_key="c"))
 
 
+def test_intake_refused_while_a_run_is_active(tmp_home, replay_http):
+    """A Lead (e.g. after an injection) cannot switch a P2 run to P1 mid-run; nobody can change the intake then."""
+    import time
+
+    from rk.orchestrator.state import record_run_status, start_run
+    from rk.tools.registry import ToolError
+
+    k, ps, _ = make_project(tmp_home, replay_http, production_mode="collab")
+    try:
+        reg = build_registry(k)
+        run_id = start_run(ps, until="question", actor="me", clock=time.time)
+        args = {"project": "demo", **store.intake_of(ps).model_dump(), "production_mode": "auto"}
+        for i, role in enumerate(("lead", "cli")):
+            with pytest.raises(ToolError) as e:
+                reg.call("rk_project_intake", args, CallContext(role=role, actor=role, idempotency_key=f"r{i}"))
+            assert e.value.type == "run_active" and run_id in e.value.message
+        assert store.intake_of(ps).production_mode == "collab"
+        record_run_status(ps, run_id, "cancelled", actor="me", clock=time.time)
+        reg.call("rk_project_intake", args, CallContext(role="cli", actor="me", idempotency_key="after"))
+        assert store.intake_of(ps).production_mode == "auto"
+    finally:
+        k.close()
+
+
+def test_intake_modes_are_human_only_once_landscape_ran(proj):
+    from rk.orchestrator.state import record_attempt
+    from rk.tools.registry import ToolError
+
+    k, ps, _ = proj
+    reg = build_registry(k)
+    base = {"project": "demo", **store.intake_of(ps).model_dump()}
+    record_attempt(ps, "landscape", 1, run_id=None, guidance="", requested=None, actor="lead")
+    for i, change in enumerate(({"discovery_mode": "d1"}, {"production_mode": "collab"},
+                                {"paper_type": "scoping_review"})):
+        with pytest.raises(ToolError) as e:
+            reg.call("rk_project_intake", {**base, **change}, CallContext(role="lead", actor="lead",
+                                                                          idempotency_key=f"m{i}"))
+        assert e.value.type == "intake_frozen" and next(iter(change)) in e.value.message
+    assert store.intake_of(ps).production_mode == "auto"
+    reg.call("rk_project_intake", {**base, "audience": "nurses"}, CallContext(role="lead", actor="lead",
+                                                                             idempotency_key="aud"))
+    assert store.intake_of(ps).audience == "nurses"
+    reg.call("rk_project_intake", {**base, "production_mode": "collab"}, CallContext(role="cli", actor="me",
+                                                                                    idempotency_key="human"))
+    assert store.intake_of(ps).production_mode == "collab"
+
+
 def test_cli_intake_maps_production_modes(live_server):
     from typer.testing import CliRunner
 

@@ -20,7 +20,7 @@ from rk.browser.service import BrowserService
 from rk.browser.tools import register_browser_tools
 from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
 from rk.discovery.models import Intake
-from rk.discovery.store import record_intake
+from rk.discovery.store import intake_of, record_intake
 from rk.discovery.tools import register_discovery_tools
 from rk.flags import flag_injection
 from rk.fulltext import FulltextResult, attach_pdf, fulltext_with_fallback
@@ -31,8 +31,13 @@ from rk.llm.drivers import DriverSpec, available_all
 from rk.llm.runner import FreeText, run_task
 from rk.llm.vendors import vendor_of
 from rk.notes import NoteIn, NoteRejected, add_note, list_notes, text_find, text_read
-from rk.orchestrator.state import current_stage
-from rk.roles.policy import ROLES, lead_closed_after_discovery, tool_roles
+from rk.orchestrator.state import active_run, current_stage, latest_attempt
+from rk.roles.policy import (
+    INTAKE_HUMAN_ONLY,
+    ROLES,
+    lead_closed_after_discovery,
+    tool_roles,
+)
 from rk.sources import openalex
 from rk.sources.identifiers import Identifier, parse_identifier
 from rk.sources.resolver import resolve, search
@@ -155,11 +160,28 @@ def build_registry(k: Kernel, browser: Callable[[], BrowserService | None] | Non
         project: str
 
     @tool("rk_project_intake", "Record the project's intake: audience, paper type, discovery mode (d1 guided, d2 "
-          "autonomous), production mode (auto = P1, collab = P2), language and number of topics.", IntakeArgs, True)
+          "autonomous), production mode (auto = P1, collab = P2), language and number of topics. Refused while a run "
+          "or a guided stage call is active; once landscape ran, only you may change the discovery mode, the "
+          "production mode and the paper type.", IntakeArgs, True)
     def _intake(ctx: CallContext, a: IntakeArgs) -> Out:
         ps, _ = _project(k, a.project)
         intake = Intake.model_validate(a.model_dump(exclude={"project"}))
-        record_intake(ps, intake, actor=ctx.actor, actor_kind=_added_by(ctx))
+        with ps.lock:
+            run = active_run(ps)
+            if run is not None:
+                raise ToolError("run_active", f"run {run['id']} is {run['status']}; the intake cannot change while a "
+                                              "run is active (cancel it first: rk run cancel)", {"run_id": run["id"]})
+            m = runs() if runs is not None else None
+            if m is not None and m.d1_active(a.project):
+                raise ToolError("stage_busy", f"a guided stage call of {a.project} is running; change the intake when "
+                                              "it finished (rk_stage_status)")
+            old = intake_of(ps)
+            if old is not None and ctx.role != "cli" and latest_attempt(ps, "landscape") > 0:
+                changed = [f for f in INTAKE_HUMAN_ONLY if getattr(old, f) != getattr(intake, f)]
+                if changed:
+                    raise ToolError("intake_frozen", f"discovery started (landscape ran): only the researcher may "
+                                                     f"change {', '.join(changed)}", {"fields": changed})
+            record_intake(ps, intake, actor=ctx.actor, actor_kind=_added_by(ctx))
         return Out(project=a.project, **intake.model_dump(mode="json"))
 
     class FlagArgs(BaseModel):

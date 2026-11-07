@@ -163,6 +163,11 @@ class RunManager:
             with self._lock:
                 self._d1.discard(project)
 
+    def d1_active(self, project: str) -> bool:
+        """Whether a guided (D1) stage call of ``project`` is in flight."""
+        with self._lock:
+            return project in self._d1
+
     def resume_all(self) -> list[str]:
         """At ``rk serve`` start: a thread for every run that is ``running``, ``waiting_human`` or
         ``paused_waiting_human``. Returns their run ids."""

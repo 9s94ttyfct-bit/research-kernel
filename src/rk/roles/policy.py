@@ -58,6 +58,11 @@ TOOL_ROLES: dict[str, frozenset[str]] = {
     "rk_stage_status": _r(*_ALL_TOOL_ROLES),
 }
 
+# Spec §5.3/§7.2: the P1/P2 checkpoints and the discovery path depend on these intake fields. The intake cannot change
+# while a run (or a guided stage call) is active; once the first landscape attempt exists only the human (role cli)
+# may change these, so no agent can switch a project from P2 to P1 (or D1 to D2) after discovery started.
+INTAKE_HUMAN_ONLY = ("discovery_mode", "production_mode", "paper_type")
+
 # Spec §8.1: the Lead's write access opens by stage. While a discovery stage is current (D1) it may use every tool its
 # policy grants; once `question` passed it only reads and queries status, so every tool that writes, and the built-in
 # browser (§9.3: the Lead browses in D1 only), is refused to it with `stage_closed`. A new write tool is closed by
