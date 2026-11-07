@@ -451,7 +451,9 @@ def test_pubmed_summary_missing_for_good_is_dropped_and_not_cached(tmp_path):
 
 
 @pytest.mark.parametrize("error", [lambda: httpx.Response(200, json={"esummaryresult": ["Unable to obtain query #1"]}),
-                                   lambda: httpx.Response(404)], ids=["error_body", "404"])
+                                   lambda: httpx.Response(404),
+                                   lambda: httpx.Response(200, json={"result": {"uids": []}})],
+                         ids=["error_body", "404", "empty_result"])
 def test_pubmed_error_body_raises_for_a_retry_and_drops_nothing(tmp_path, error):
     """An esummary body with no ``result`` (NCBI's error body, a 404), also when fetched again at once, is a source
     error the run retries after a backoff, never a page of dropped records; the retry then finds them."""
@@ -484,6 +486,21 @@ def test_pubmed_uid_with_an_error_entry_is_dropped(tmp_path):
     http, _ = _client(tmp_path, respond)
     hits = resolver.search(SourceContext(http=http, settings=Settings()), "aspirin", "pubmed", 2)
     assert ([h.title for h in hits], hits.dropped) == (["P7"], 1)  # no "(untitled)" record
+    http.close()
+
+
+def test_pubmed_page_of_only_withdrawn_uids_is_dropped_not_retried(tmp_path):
+    """A well-formed result whose every uid is an error entry (withdrawn records) is a page of dropped entries, not a
+    source error: retrying could never change it."""
+    def respond(req):
+        if req.url.path.endswith("esearch.fcgi"):
+            return httpx.Response(200, json={"esearchresult": {"idlist": ["8"]}})
+        return httpx.Response(200, json={"result": {"uids": ["8"],
+                                                    "8": {"uid": "8", "error": "cannot get document summary"}}})
+
+    http, _ = _client(tmp_path, respond)
+    hits = resolver.search(SourceContext(http=http, settings=Settings()), "aspirin", "pubmed", 1)
+    assert (list(hits), hits.dropped) == ([], 1)
     http.close()
 
 

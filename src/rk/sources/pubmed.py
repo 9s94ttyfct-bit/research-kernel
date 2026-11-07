@@ -57,14 +57,17 @@ def _esummary_params(pmids: list[str]) -> dict:
 
 
 def _summaries(http: HttpClient, pmids: list[str], *, use_cache: bool = True) -> list[ItemIn] | None:
-    """The works of ``pmids``' esummary body, or ``None`` when it holds no ``result`` (NCBI's error body, a 404). A
-    uid whose entry is an ``error`` (no document summary) is left out."""
+    """The works of ``pmids``' esummary body, or ``None`` when it is no usable ``result``: NCBI's error body, a 404, or
+    a result that names none of the PMIDs asked for. A uid whose entry is an ``error`` (no document summary, e.g. a
+    withdrawn record) is left out."""
     data, _ = http.get_json(f"{EUTILS}/esummary.fcgi", _esummary_params(pmids), use_cache=use_cache)
     result = (data or {}).get("result") if isinstance(data, dict) else None
     if not isinstance(result, dict):
         return None
-    return [summary_to_item(uid, result[uid]) for uid in result.get("uids", [])
-            if isinstance(result.get(uid), dict) and "error" not in result[uid]]
+    uids = [uid for uid in result.get("uids") or [] if isinstance(result.get(uid), dict)]
+    if not set(uids) & set(pmids):
+        return None
+    return [summary_to_item(uid, result[uid]) for uid in uids if "error" not in result[uid]]
 
 
 def esummary(http: HttpClient, pmids: list[str], *, use_cache: bool = True) -> list[ItemIn]:
@@ -77,8 +80,9 @@ def summaries(http: HttpClient, pmids: list[str]) -> Hits:
     """The works of a page of ``pmids``, as full as its PMID list: a body short of a summary (cut, or a withdrawn
     record) is dropped from the HTTP cache and fetched again at once; a PMID still without one is counted as a
     dropped entry (``Hits.dropped``, as arXiv's unreadable entries), and that short body is not kept either. A body
-    that is no ``result`` (an error body, a 404), or that gives no summary at all, also when fetched again, is a
-    ``BadBody`` (transient: the run retries after a backoff), never a page of dropped records."""
+    that is no usable ``result`` (an error body, a 404, a result naming none of the PMIDs), also when fetched again, is
+    a ``BadBody`` (transient: the run retries after a backoff), never a page of dropped records. A result whose every
+    PMID is an error entry (withdrawn records) is a page of dropped entries: no retry can change it."""
     if not pmids:
         return Hits()
     url, params = f"{EUTILS}/esummary.fcgi", _esummary_params(pmids)
@@ -88,7 +92,7 @@ def summaries(http: HttpClient, pmids: list[str]) -> Hits:
         items = _summaries(http, pmids, use_cache=False)
         if items is None or len(items) < len(pmids):
             http.forget(url, params)
-        if not items:
+        if items is None:
             raise BadBody(url, f"no esummary result for {len(pmids)} PMIDs")
     return Hits(items, dropped=len(pmids) - len(items))
 
