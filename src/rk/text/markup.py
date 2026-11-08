@@ -135,7 +135,7 @@ def jats_to_layer(xml: bytes, sha: str) -> TextLayer:
                 lines.append(t)
     text = utf8_safe("\n\n".join(lines))
     tables = _jats_tables(root)  # after the body, so layers built before tables were read keep their offsets
-    full = text + utf8_safe("".join(f"\n\n{t}" for t in tables))
+    full = utf8_safe("\n\n".join(x for x in (text, *tables) if x))
     return TextLayer(source_kind="jats", pages=[Page(n=1, text=full)], sha256=sha, body_chars=len(text))
 
 

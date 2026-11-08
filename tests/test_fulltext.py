@@ -226,6 +226,16 @@ def test_jats_nested_tables_and_table_groups():
     assert got == "\n\nTable 5. Two parts.\n\nTable 5a\n\nA | x 1\n\nTable 5b\n\nB | 2"
 
 
+def test_tables_only_jats_has_no_leading_blank_lines():
+    """A JATS document with tables and no body text starts with its first table (no leading blank lines), and its body
+    is empty."""
+    from rk.text.markup import jats_to_layer
+
+    layer = jats_to_layer(b"<article><floats-group><table-wrap><label>Table 1</label><table><tr><td>A</td><td>1</td>"
+                          b"</tr></table></table-wrap></floats-group></article>", "x")
+    assert (layer.pages[0].text, layer.body_chars) == ("Table 1\n\nA | 1", 0)
+
+
 def test_a_quote_from_a_jats_table_cell_passes_v_quote():
     from rk.text.markup import jats_to_layer
     from rk.verify.quote import verify_quote, verify_quote_at
