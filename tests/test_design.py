@@ -510,7 +510,6 @@ def test_refused_drafts_end_at_design_design_not_argue(env):
         assert results[-1] == "failed" and not [c for c in list_checkpoints(ps) if c["kind"] == "stage_blocked"]
 
 
-
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
 def test_design_back_edges(env):
     _, ps, _ = env
@@ -612,7 +611,6 @@ def test_untestable_draft_survives_a_crash_in_storing_it(env, monkeypatch):
     cp = get_checkpoint(ps, out.checkpoint_id)
     assert cp["options"]["choices"] == ["approve", "revise", "question"] and cp["options"]["draft_id"] == "design:1"
     assert len(design_notes(ps, 1, kind="draft")) == 1
-
 
 
 def test_interrupted_attempt_neither_duplicates_nor_orphans(env):

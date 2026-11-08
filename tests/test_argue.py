@@ -1390,7 +1390,6 @@ def test_degrade_keeps_a_dropped_link_out_of_the_narrowed_main_claim(env, skepti
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
 
 
-
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
 def test_conceded_priority1_objection_on_a_reason_link_drops_it_in_p2(env):
     """I6 on links (P2): once the conceded link objection dropped the link, your final review lists nothing and the
