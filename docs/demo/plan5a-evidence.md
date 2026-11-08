@@ -376,8 +376,8 @@ the typed synthesis plan (no `pool_model`, a free-text `effect_measure`, no `out
 Scout narrowed the search with `NOT ("intensive care" OR ICU)`, which on Europe PMC's full-text matching would also drop
 ward and surgical trials that mention an ICU. The stand-in asked for the four short queries of version 8, publication
 years 2024 to now, and REML with HKSJ "auto"; attempt 12 did that and was approved with `record_cap` 800 (frozen as
-version 13, a recorded deviation from version 9). Before approving, the stand-in counted the sources itself: Europe PMC
-union 715 (2024–2026), PubMed 43/29/45/32 per query, union 84.
+version 13, a recorded deviation from version 9). Before approving, the stand-in counted the sources itself with their
+own APIs at 09:25 UTC: Europe PMC union 715 (2024–2026), PubMed 43/29/45/32 per query, union 84.
 
 **Search and PRISMA** (`rk prisma`, search_screen attempt 27):
 
@@ -392,9 +392,15 @@ note: 2 excluded for language
 note: 1263 screening decisions carried over from interrupted attempts
 ```
 
-The four queries returned 1,464 works (PubMed 42 + 29 + 45 + 32; Europe PMC 486 + 161 + 426 + 243 in pages of 200).
+The kernel's searches (attempt 27, its `search.logged` events, about two hours later) list 1,464 works: PubMed
+42, 29, 45 and 32 (the first query returned 42 works where the stand-in's own count had been 43; not investigated),
+Europe PMC 486, 161, 426 and 243 in pages of 200. PRISMA's "identified 1468" counts records, 4 more than the works
+listed: as in the 5a run (356 records for 354 works), some works were stored as more than one record (not
+investigated).
 
-**Title/abstract screening agreement** (713 records both screeners decided; Haiku = screener_a, codex = screener_b):
+**Title/abstract screening agreement** (Haiku = screener_a, codex = screener_b). Convention: the 713 records both
+screeners decided at title/abstract in attempt 27 (the 2 language exclusions are decided by rule), each screener's
+label `yes`, `no` or `unclear` as given, agreement = the same label, Cohen's κ unweighted over the three labels:
 
 | screener_a \ screener_b | yes | no | unclear |
 |---|---|---|---|
@@ -404,7 +410,8 @@ The four queries returned 1,464 works (PubMed 42 + 29 + 45 + 32; Europe PMC 486 
 
 Raw agreement 94.8%, Cohen's κ 0.31 (three categories; 0.31 also for "no" against "yes or unclear"). Most
 disagreements are records without an abstract (conference programmes, editorials) that screener_b called "unclear"
-and screener_a excluded. An "unclear" on both sides counts as a disagreement, so 45 records went to the stand-in in two
+and screener_a excluded. The kernel sends every pair that does not settle the record to you, an "unclear" on both
+sides included, so 45 records went to the stand-in in two
 `screening_disagreements` checkpoints (25 + 20). **Answers (stand-in):** include 7 (the four melatonin trials of
 older surgical or ward patients, two title-only ramelteon or delirium-drug records and one title-only melatonin bundle
 record, to be checked at full text), exclude 38 (reviews, editorials, conference sections, prediction or cohort
@@ -423,8 +430,9 @@ said "unclear" on the Khaled 2025 surgical pilot because the excerpt named no de
 two dose values (5 and 8 mg, both kept). Khaled 2025: 7 vs 2 events, but `n_intervention`, `n_control`, mean age and
 sex `not_reported`. That was wrong: the per-arm sizes (43 and 42) are in the paper's Table 3, and the JATS text layer
 contained no table cells. This was fixed during the 5b demo (`fix(text): JATS tables in the text layer`; see the 5b
-demo), but the extraction above was **not** redone. The Reader also wrote prose into fields meant for note ids, which
-the kernel kept as extraction problems ("… is not a note of this study"), 3 for RESTORE and 5 for Khaled.
+demo), but the extraction above was **not** redone. Apart from the values, the kernel rejected 8 of the Reader's
+notes (3 for RESTORE, 5 for Khaled): the Reader wrote prose where note ids belong, kept as extraction problems "… is
+not a note of this study"; no value depends on them.
 
 **Cost of the hourly caps.** Haiku's 30 calls an hour ran out after 24 title/abstract batches and codex's 20 after 20
 of screener_b's 29; screener_b never started while screener_a waited. Each wait was an interrupted attempt retried

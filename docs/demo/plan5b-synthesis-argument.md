@@ -35,7 +35,7 @@ Before the run, `rk eval stats --write-config` was run against this home: 180/18
 
 | Driver | Vendor | Done | Failed | Roles (done) |
 |---|---|---|---|---|
-| `claude_cli:claude-haiku-5-5` | anthropic | 44 | 14 `rate_capped`, 2 "claude success (exit 1)" (session limit) | screener_a 30, arguer 6, ideator 3, scout 3, reader 2 |
+| `claude_cli:claude-haiku-5-5` | anthropic | 44 | 14 `rate_capped`, 2 "claude success (exit 1)" (session limit) | screener_a 30, arguer 6, ideator 3 and scout 3 (protocol drafts and search strategies), reader 2 |
 | `codex_cli` | openai | 30 | 11 `rate_capped` | screener_b 30 |
 | `codex_cli:gpt-6-luna` | openai | 10 | 1 `rate_capped` | judge 10 |
 | `ollama:deepseek-v4.1-flash:cloud` | deepseek | 10 | 0 | judge_2 10 |
@@ -68,9 +68,9 @@ NOT clauses, because Europe PMC matches full texts and would drop ward and surgi
 ICU (the ICU exclusion is eligibility E1's job); pool with REML and HKSJ "auto" (the Cochrane Handbook 6.5.1
 defaults). Version 12 did exactly that and kept eligibility, schema and PRISMA-P unchanged.
 
-**Approve (version 12):** the stand-in first counted the sources (Europe PMC union 2024–2026: 715; PubMed 43, 29, 45,
-32 per query, union 84), so 800 would hold. The approval froze version 13 (the draft with the cap, hash
-`d7613188…`) and recorded a version deviation from the frozen version 9.
+**Approve (version 12):** the stand-in first counted the sources with their own APIs at 09:25 UTC (Europe PMC union
+2024–2026: 715; PubMed 43, 29, 45, 32 per query, union 84), so 800 would hold. The approval froze version 13 (the
+draft with the cap, hash `d7613188…`) and recorded a version deviation from the frozen version 9.
 
 **Method pre-specified:** random-effects meta-analysis of the risk ratio for incident delirium (REML, HKSJ auto,
 prediction interval with the CI's df), "if fewer than three eligible studies are found, the synthesis is narrative
@@ -80,18 +80,22 @@ prediction interval with the CI's df), "if fewer than three eligible studies are
 
 PRISMA: identified 1,468, duplicates removed 753, screened 715, excluded at title/abstract 707, sought 8, not
 retrieved 5, assessed at full text 3, excluded 1 (I2: aged 40–80), **included 2**; V-PRISMA: the counts add up.
-Screening agreement at title/abstract: 94.8% raw, Cohen's κ 0.31; 45 disagreements (mostly records without an
-abstract) went to the stand-in (7 include, 38 exclude), 1 at full text (included after `rk find` showed the trial
-used the 3D-CAM). Full texts: all 3 retrieved ones came as Europe PMC JATS; the browser fallback fetched nothing.
+Screening agreement at title/abstract: 94.8% raw, Cohen's κ 0.31 (the 713 records both screeners decided, labels
+yes/no/unclear as given, unweighted κ; the 5a page has the table); 45 records the screeners did not settle (mostly
+without an abstract) went to the stand-in (7 include, 38 exclude), 1 at full text (included after `rk find` showed
+the trial used the 3D-CAM). Full texts: all 3 retrieved ones came as Europe PMC JATS; the browser fallback fetched
+nothing. (PRISMA counts 1,468 records; the kernel's searches listed 1,464 works: some works became two records, as in
+the 5a run.)
 
 The two included trials:
 
 - **Al Alawi 2026 (RESTORE)**, general medical wards, melatonin 5 or 8 mg vs placebo, 2/55 vs 1/54 delirium (3D-CAM).
 - **Khaled 2025**, pilot RCT after major non-cardiac surgery, melatonin 3 mg vs placebo, 7 vs 2 delirium events.
 
-read_extract: 39 values with a verified quote, 10 `not_reported`, 0 with a problem. For Khaled 2025 the Reader marked
-`n_intervention` and `n_control` (and mean age, sex) `not_reported`. They are in the paper's Table 3 (43 and 42), but
-the JATS text layer had no table cells: see "Defect found and fixed".
+read_extract: 39 values with a verified quote, 10 `not_reported`, 0 values with a problem; apart from the values, 8 of
+the Reader's notes were rejected (prose where note ids belong). For Khaled 2025 the Reader marked `n_intervention` and
+`n_control` (and mean age, sex) `not_reported`. They are in the paper's Table 3 (43 and 42), but the JATS text layer
+had no table cells: see "Defect found and fixed".
 
 ## Synthesize
 
@@ -110,7 +114,11 @@ deviation** from version 13 (kind `analysis`, version 13 → 13; G-PREREG ignore
   the protocol's fallback to narrative synthesis applies".
 
 No `pooling_approval` checkpoint opened (no comparable group), no `stt_`/`fig_` artifact was made, and **V-STATS ran
-on nothing**. The honest k is 1 computable study (pre-fix); with the fixed text layer it would be 2, but see below.
+on nothing**. 1 study had computable counts (pre-fix); with Khaled's arm sizes recovered there would be 2, and the
+frozen protocol (version 13) still says "If fewer than three eligible studies are found, the synthesis is narrative
+(SWiM) and no pooled estimate is reported". So even after re-extraction the protocol calls for a narrative synthesis.
+That minimum is free text in the synthesis plan: the kernel does not enforce it (it pools from two computable
+studies); the Arguer cited it in attempt 2, and gave other reasons (computable counts, settings) in attempt 1.
 
 **Findings and verdicts (attempt 1).** Seven findings, judged by `judge` (openai) and `judge_2` (deepseek); `judge_3`
 skipped (the Arguer is anthropic). V-HEDGE passed on all seven.
@@ -152,11 +160,20 @@ snapshot hash, the layer file is rewritten). Khaled 2025's layer grew from 30,78
 "Table 3. Incidence of postoperative delirium." with the row "| Melatonin Group (n = 43) | Placebo Group (n = 42) |
 …" and "Incidence of POD, n (%) | 7 (16.3) | 2 (4.9) | …"; "Melatonin Group (n = 43)" passes V-QUOTE at its place in
 the new layer (it does not in the old one). All 44 verified quote notes on the two rebuilt layers still verify at
-their stored locators.
+their stored locators. A layer is never rebuilt by itself: every layer built before the fix (in any project) keeps no
+table text until its item is fetched again with `rk fetch`; the two demo layers were rebuilt with the first version of
+the fix and so also lack the later body-end marker (`fix(text): body-relative positions and table text joins`).
 
-**Unmet: re-extraction / pooled k=2 — blocked by gaps (a) and (b) below; to be redone on a fresh demo home after the
-5b fix wave.** The planned re-extraction after the fix did **not** happen. The synthesis above is the pre-fix
-narrative fallback (1 computable study). Nothing here shows a pooled result.
+A review of the fix found that appended tables lengthen the layer, which moved the stated-limitation miner's position
+check (a quote must start in the last 40% of the text). The follow-up commit records where the body ends
+(`TextLayer.body_chars`), measures positions on the body, and treats a quote found only in the appended tables as not
+late text; it also keeps the words of a caption's title and paragraph, a `<break/>` and a cell's paragraphs apart,
+reads a nested table once and keeps a table group's label and caption.
+
+**Unmet: re-extraction with Khaled's arm sizes recovered, and the synthesis that the frozen protocol then calls for
+(narrative by its fewer-than-three rule) — blocked by gaps (a) and (b) below; to be redone on a fresh demo home after
+the 5b fix wave.** The planned re-extraction after the fix did **not** happen. The synthesis above is the pre-fix
+narrative fallback (1 study with computable counts). Nothing here shows a pooled result.
 
 - **(a) A human has no way to rerun read_extract.** Only back-edges reopen a stage (`record_reopened` in the engine);
   `rk run start` has only `--until`, and no CLI or Workbench action reopens a passed stage. The `uncertain_support`
@@ -178,7 +195,7 @@ on the same hourly caps that took most of this demo's time.
 ## Wall time
 
 - Session 1 of this run: 09:19:42 – 11:44:13 UTC (2 h 25 min) until the `stage_blocked` checkpoint.
-- protocol 4.8 min including three answers; search_screen 2 h 5 min (09:24–11:29), most of it waiting for the Haiku
+- protocol 4.8 min including four answers; search_screen 2 h 5 min (09:24–11:29), most of it waiting for the Haiku
   (09:33–10:20) and codex (about 10:40–11:25) hourly caps; read_extract 2 min (11:29–11:31); synthesize attempt 1
   2 min plus 4 min waiting on `uncertain_support`; attempt 2 until the codex cap at 11:39; attempts 3–4 failed in
   8 s at 11:44.
