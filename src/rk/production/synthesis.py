@@ -513,6 +513,15 @@ def _group_label(g: dict) -> str:
     return f"'{g['outcome']}' ({g['measure']})"
 
 
+def _map_text(field_map: dict[str, str] | None, measure: str) -> str:
+    """A field map in the measure's role order (a stored one comes back with sorted keys)."""
+    if not field_map:
+        return "no field map"
+    roles = MEASURES.get(measure, ())
+    order = [r for r in roles if r in field_map] + sorted(set(field_map) - set(roles))
+    return ", ".join(f"{r} = {field_map[r]}" for r in order)
+
+
 def _decided(answer: dict, groups: list[int]) -> str:
     """Why a ``pooling_approval`` answer cannot be applied, else ``""``."""
     decisions = answer.get("decisions")
@@ -1114,6 +1123,13 @@ class SynthesizeWorker:
                          for i, n in pooled.items() if n["measure"] != s.measure]
             failures += [f"group {i} was pooled for {n['outcome']!r}, not a pre-specified outcome"
                          for i, n in pooled.items() if n["outcome"] not in s.outcomes]
+            for i, n in pooled.items():
+                made = (artifact(ps, n["stt"]) or {}).get("values", {}).get("field_map")
+                expected = s.field_map(n["outcome"], n["measure"])
+                if made != expected:
+                    failures.append(f"group {i} {_group_label(n)} was pooled from other fields than the frozen "
+                                    f"protocol maps to it ({_map_text(made, n['measure'])}; the protocol: "
+                                    f"{_map_text(expected, n['measure'])})")
             whole = any(n["kind"] == "fallback" and n.get("group") is None and n.get("outcome") is None for n in notes)
             if plan is not None and not whole:
                 done = {n.get("outcome") for n in notes if n["kind"] in ("pooled", "fallback")}

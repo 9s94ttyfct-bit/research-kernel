@@ -329,10 +329,12 @@ POOL_KEYS = frozenset({"pool_model", "hksj", "pi_df", "outcomes"})  # shown only
 def _outcome_problems(plan: SynthesisPlan, schema: dict[str, ExtractionField]) -> list[str]:
     """What keeps a meta-analysis plan's outcomes from being computed as pre-specified: each named once (after case
     and whitespace folding), mapping every role of the effect measure (and nothing else) to a number field of the
-    extraction schema, no two outcomes to the same fields."""
+    extraction schema, a field to one role only, no two outcomes to the same fields, and no outcome's numerator
+    fields (events, means, SDs: every role but ``n_*``) to another outcome's."""
     out: list[str] = []
     seen: dict[str, str] = {}
     sets: dict[frozenset, str] = {}
+    numerators: dict[str, str] = {}  # numerator field -> the outcome that uses it
     roles = MEASURES.get(plan.effect_measure or "")
     for o in plan.outcomes:
         name = o.name.strip()
@@ -360,6 +362,14 @@ def _outcome_problems(plan: SynthesisPlan, schema: dict[str, ExtractionField]) -
             if fields in sets:
                 out.append(f"synthesis_plan.outcomes: outcomes {sets[fields]!r} and {name!r} map to the same fields")
             sets.setdefault(fields, name)
+        mapped = [(r, o.fields[r]) for r in roles if r in o.fields]
+        for f in dict.fromkeys(f for _, f in mapped):
+            if len(used := [r for r, g in mapped if g == f]) > 1:
+                out.append(f"{say} maps {f!r} to more than one role ({', '.join(used)})")
+        for f in dict.fromkeys(f for r, f in mapped if not r.startswith("n_")):  # events, means, SDs
+            if (owner := numerators.setdefault(f, name)) != name:
+                out.append(f"synthesis_plan.outcomes: outcomes {owner!r} and {name!r} share the numerator field {f!r} "
+                           f"(only n_* fields may be shared)")
     return out
 
 

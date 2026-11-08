@@ -665,6 +665,50 @@ def test_meta_analysis_protocol_needs_typed_pool_options():
         SynthesisPlan(method="meta_analysis", pool_model="ML")
 
 
+def _outcome_failures(*outcomes: OutcomeSpec) -> list[str]:
+    from rk.production.protocol import check_protocol
+
+    plan = META.model_copy(update={"outcomes": list(outcomes)})
+    return check_protocol(a_protocol(synthesis_plan=plan, prisma_p=SR_ITEMS, extraction_schema=BINARY_AE),
+                          "systematic_review")
+
+
+def test_outcome_fields_are_distinct():
+    dup = OutcomeSpec(name="tuberculosis", fields={**TB.fields, "n_control": "n_treatment"})
+    assert ("synthesis_plan.outcomes: outcome 'tuberculosis' maps 'n_treatment' to more than one role "
+            "(n_treatment, n_control)") in _outcome_failures(dup)
+
+
+def test_outcome_numerators_are_not_shared():
+    # an outcome's events may not be another outcome's; the arm sizes may be shared
+    shares_events = OutcomeSpec(name="harm", fields={**AE.fields, "events_treatment": "events_treatment"})
+    assert ("synthesis_plan.outcomes: outcomes 'tuberculosis' and 'harm' share the numerator field "
+            "'events_treatment' (only n_* fields may be shared)") in _outcome_failures(TB, shares_events)
+    shares_sizes = OutcomeSpec(name="harm", fields={**AE.fields, "n_treatment": "n_treatment",
+                                                    "n_control": "n_control"})
+    assert _outcome_failures(TB, shares_sizes) == []
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_gate_checks_the_pooled_field_map_against_the_frozen_protocol(env):
+    _, ps, _ = env
+    _enable_stats()
+    _setup(env, BCG_AE, schema=BINARY_AE, plan=META)
+    ex = _exec(plans=[lambda inputs: _group(s["item_id"] for s in inputs["studies"])], votes=_votes_pool())
+    w = SynthesizeWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    # the frozen protocol's projection now maps tuberculosis to other fields: the pooled group no longer matches
+    remapped = META.model_copy(update={"outcomes": [OutcomeSpec(name="tuberculosis", fields=AE.fields)]})
+    body = store.frozen_protocol(ps)["body"] | {"synthesis_plan": remapped.model_dump()}
+    ps.db.execute("UPDATE protocols SET body=? WHERE status='frozen'", (json.dumps(body),))
+    assert ("group 0 'tuberculosis' (RR) was pooled from other fields than the frozen protocol maps to it "
+            "(events_treatment = events_treatment, n_treatment = n_treatment, events_control = events_control, "
+            "n_control = n_control; the protocol: events_treatment = ae_events_treatment, "
+            "n_treatment = ae_n_treatment, events_control = ae_events_control, n_control = ae_n_control)"
+            in w.gate(ps, 1).failures), w.gate(ps, 1).failures
+
+
+
 def _two(item_ids, outcomes: list[str]) -> dict:
     groups = [_group(item_ids, )["groups"][0] | {"outcome": o} for o in outcomes]
     return {"groups": groups}
