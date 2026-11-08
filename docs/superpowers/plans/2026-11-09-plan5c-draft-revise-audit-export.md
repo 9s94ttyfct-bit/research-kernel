@@ -80,8 +80,8 @@ No new Python dependency. The CSL style is pandoc's built-in default (Chicago au
   - `[[plan:]]` only in `research_proposal`;
   - `[[inf]]` sentences have hedge level ≤1 (inferential wording, §9.1 "[[inf]] 转为推断性措辞");
   - a sentence's hedge level is ≤ the highest level among its `clm` targets' texts;
-  - text in quotation marks in a sentence with a `clm` marker must be a verified quote note of that claim's evidence (V-QUOTE);
-  - every `clm` target is supported (G-SUPPORT), never by vote.
+  - text in quotation marks (“…”, "…", „…“, «…», ‘…’, '…'; not apostrophes) and a block quote's text, in a sentence with a `clm` or a `run:prt_` marker, must be a verified quote note of a cited claim's evidence or a text of the cited protocol (e.g. a search string) (V-QUOTE); V-HEDGE leaves the quoted words it checks out;
+  - every `clm` target is supported (G-SUPPORT: it passes the claim gate, `rk.verify.support.claim_problems`), never by vote.
 - **Required sections (§7.3), with exact section ids as file stems:**
   - `systematic_review`: `abstract`, `introduction`, `methods`, `results`, `discussion`, `limitations`, `conclusion`, `disclosure`.
   - `scoping_review`: same as systematic_review, with `results` titled "Evidence map and thematic synthesis".
@@ -114,26 +114,28 @@ No new Python dependency. The CSL style is pandoc's built-in default (Chicago au
 
 **Interfaces (produces):**
 - `Marker{kind: Literal["clm","run","fig","stat","plan","inf","ck"], target: str | None, span: tuple[int,int]}`.
-- `Sentence{index: int, text: str, markers: list[Marker], span: tuple[int,int]}`. `span` is the sentence's place in the section's prose (its paragraphs joined by a blank line); `Marker.span` is the marker's place in the sentence's text.
+- `Sentence{index: int, text: str, prose: str, markers: list[Marker], span: tuple[int,int], quoted: bool}`. `span` and `Marker.span` are source offsets into the section markdown; `text` is the rendered prose (code spans kept), `prose` is `text` with code spans blanked (what every prose check reads: numbers, V-HEDGE and quotes in a code span do not count); `quoted`: the paragraph of a block quote, one sentence of quoted text.
+- `source_markers(markdown: str) -> list[Marker]`: the literal grammar in the source, outside code spans and code blocks, not backslash-escaped (escaped, entity-encoded and emphasis-split forms are no markers); `rk.ui.drafts.render_draft` substitutes exactly these.
 - `parse_section(markdown: str) -> list[Sentence]`:
   - markdown structure via markdown-it (`html=False`);
   - code spans and code blocks are not prose;
-  - sentence split on `.?!` followed by whitespace and a capital letter or end of block, keeping abbreviations (`e.g.`, `i.e.`, `et al.`, `vs.`, `Fig.`, `Eq.`, decimal numbers) intact;
+  - sentence split on `.?!` (with closing quotes or brackets, and the markers right after it, which belong to that sentence) followed by whitespace and anything but a marker, keeping abbreviations (`e.g.`, `i.e.`, `et al.`, `vs.`, `Fig.`, `Eq.`, decimal numbers) and initials before a capitalised name (`J. Smith`) intact;
   - headings and table captions are not sentences.
+- `section_problems(markdown: str) -> list[str]`: a markdown table or a pandoc caption line (`Table: …`, `: …`) fails the section (tables come from code artifacts at export).
 - `SentenceVerdict{index, ok: bool, problems: list[str]}`.
 - `verify_sentence(ps, s: Sentence, *, paper_type: str) -> SentenceVerdict`, implementing every sentence rule in Global Constraints.
 - `number_pool(ps, markers: list[Marker]) -> NumberPool` (`rk.verify.numbers.NumberPool{nums: list[Num], values: list[float]}`; `covers(n)`: `nums` match as written (value and unit), `values` exactly or rounded as written, `matches_value`):
   - `clm` → the claim's text and its evidence note texts;
-  - `stat`/`fig` → every number stored in the artifact's values;
-  - `run:evt_` → the event payload's numeric fields;
+  - `stat`/`fig` → the artifact's reported values (a pooled `stt`: its `display` values plus `k`; a map table: its counts);
+  - `run:evt_` → a per-event-type whitelist of named top-level numeric fields of the payload (`cover.EVENT_NUMBERS`, from each producer; never bookkeeping or nested payloads; a list field gives its length; an unknown type: nothing);
   - `run:prt_` → the frozen protocol's numeric fields;
   - `plan` → the design/hypothesis text.
-- `SectionVerdict{section, version, sentences: list[SentenceVerdict], ck_share: float, ok: bool, problems: list[str]}` (`problems`: section-level, e.g. the common-knowledge share or an empty section).
-- `verify_section(ps, section: str, markdown: str, *, paper_type, version=None) -> SectionVerdict`: rejects when `ck_share > 0.05`.
+- `SectionVerdict{section, version, sentences: list[SentenceVerdict], ck_share: float, ok: bool, problems: list[str]}` (`problems`: section-level: the common-knowledge share, a table or caption, an empty section).
+- `verify_section(ps, section: str, markdown: str, *, paper_type, version=None) -> SectionVerdict`: rejects when `ck_share > 0.05` or `section_problems` finds any.
 - Draft store (events and projection `drafts`):
   - `write_draft(ps, section, markdown, *, stage, attempt, round, by_task, actor) -> int`: the version number. It writes `artifacts/drafts/<section>.v<N>.md` and its sha256 (`draft.written`).
-  - `record_section_verdict(ps, section, version, verdict, *, actor)` (`draft.verified`).
-  - `latest_draft(ps, section) -> (version, markdown) | None`.
+  - `record_section_verdict(ps, section, version, verdict, *, actor)` (`draft.verified`; `verdict` validated as a `SectionVerdict` of that section).
+  - `latest_draft(ps, section) -> (version, markdown) | None`; `draft_text(ps, section, version)` (sha256-checked); `drafted_sections(ps)`. The Workbench preview lists and reads drafts only through these (a file without a row is no draft).
   - `draft_versions(ps, section)`.
 
 - [ ] **Step 1: Failing tests** in `tests/test_manuscript.py`:

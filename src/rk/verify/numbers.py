@@ -113,8 +113,9 @@ def numeric_leaves(obj) -> list[float]:
 
 class NumberPool(BaseModel):
     """The numbers a sentence's marker targets contain (spec §9.1 V-NUM for manuscripts): ``nums`` written in a
-    target's text (matched as written: value and unit), ``values`` stored by kernel code (artifact values, event and
-    protocol fields; matched exactly or rounded as the sentence writes them, ``matches_value``)."""
+    target's text (matched as written: value and unit), ``values`` stored by kernel code (an artifact's reported values,
+    an event's whitelisted fields, protocol fields; matched exactly or rounded as the sentence writes them,
+    ``matches_value``)."""
     nums: list[Num] = []
     values: list[float] = []
 
