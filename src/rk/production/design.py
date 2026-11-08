@@ -50,7 +50,7 @@ import json
 from dataclasses import dataclass
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
 from rk.argument import ArgumentService, ClaimDraft, ClaimIn, EvidenceIn
 from rk.checkpoints import answered_by_actor, create_checkpoint, opened_in_place_of
@@ -67,7 +67,13 @@ from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.orchestrator.graph import EDGE_LIMIT, edge_name
 from rk.orchestrator.state import edge_row, stage_row
 from rk.production.argue import ArgEvidence, argument_claims, main_claim
-from rk.production.claims import claim_limitations, failing_claims, narrow_or_withdraw
+from rk.production.claims import (
+    apply_claim_decisions,
+    claim_limitations,
+    failing_claims,
+    narrow_or_withdraw,
+)
+from rk.production.common import RoleOut, answer_comment, fold, stage_runner
 from rk.production.extraction import usable_evidence
 from rk.production.models import DesignBody, DesignIn
 from rk.production.store import design, freeze_design, set_design
@@ -76,7 +82,6 @@ from rk.production.vote import vote
 from rk.store.events import ActorKind, NewEvent
 from rk.store.project import ProjectStore
 from rk.store.query import query_rows
-from rk.verify.records import record_verification
 from rk.verify.support import check_claim_hedge, claim_problems, verify_support
 
 STAGE = "design"
@@ -118,24 +123,19 @@ UNTESTABLE_QUESTION = (
 
 
 # ---- the Ideator's output ----
-class _Out(BaseModel):
-    """A role output: unknown fields are refused, not silently dropped."""
-    model_config = ConfigDict(extra="forbid")
-
-
-class NewHypothesis(_Out):
+class NewHypothesis(RoleOut):
     statement: str = Field(min_length=1)
     falsification: str = Field(min_length=1)
     rival_of: str | None = None  # a hypothesis of the RQ, or the ref of an earlier new hypothesis
 
 
-class HypothesisPlan(_Out):
+class HypothesisPlan(RoleOut):
     """A hypothesis the design tests: one of the RQ's (``id``) or a new one (``new`` with its ``ref``)."""
     id: str | None = None
     new: NewHypothesis | None = None
     ref: str = ""
-    falsified_by: list[str] = []
-    tested_by: list[str] = []
+    falsified_by: list[str] = Field(default=[])  # Field: ruff cannot see RoleOut is a pydantic model (RUF012)
+    tested_by: list[str] = Field(default=[])
 
     @model_validator(mode="after")
     def _one(self) -> HypothesisPlan:
@@ -146,7 +146,7 @@ class HypothesisPlan(_Out):
         return self
 
 
-class DroppedHypothesis(_Out):
+class DroppedHypothesis(RoleOut):
     id: str
     reason: str = Field(min_length=1)
 
@@ -157,11 +157,11 @@ class FeasibilityClaim(ClaimDraft):
     evidence: list[ArgEvidence] = Field(default_factory=list)
 
 
-class DesignDraft(_Out):
-    hypotheses: list[HypothesisPlan] = []
+class DesignDraft(RoleOut):
+    hypotheses: list[HypothesisPlan] = Field(default=[])
     design: DesignBody | None = None
-    dropped: list[DroppedHypothesis] = []
-    feasibility_claims: list[FeasibilityClaim] = []
+    dropped: list[DroppedHypothesis] = Field(default=[])
+    feasibility_claims: list[FeasibilityClaim] = Field(default=[])
     needs_argument: str = ""
     rq_untestable: str = ""
 
@@ -219,10 +219,6 @@ def _previous(ps: ProjectStore) -> dict | None:
     return None if _approved(ps, d["attempt"]) else d
 
 
-def _fold(text: str) -> str:
-    return " ".join(text.split()).casefold()
-
-
 def _resolution(ps: ProjectStore, attempt: int, draft: dict) -> dict[str, str | None]:
     """Write-free: each design hypothesis's key -> its hypothesis id: an existing one's id; a new one's from the
     ``approved`` (else ``approving``) note; else the live hypothesis of the RQ with the same statement and
@@ -234,15 +230,15 @@ def _resolution(ps: ProjectStore, attempt: int, draft: dict) -> dict[str, str | 
         for n in design_notes(ps, attempt, kind=kind):
             known.update(n.get("ids") or n.get("hypothesis_ids") or {})
     rq = frozen_rq(ps)
-    live = {(_fold(h["statement"]), _fold(h["falsification"])): h["id"]
+    live = {(fold(h["statement"]), fold(h["falsification"])): h["id"]
             for h in (hypotheses(ps, rq["id"]) if rq else []) if h["status"] != "dropped"}
     out: dict[str, str | None] = {}
     for e in draft["hypotheses"]:
         if e["id"] is not None:
             out[e["key"]] = e["id"]
         else:
-            out[e["key"]] = known.get(e["key"]) or live.get((_fold(e["new"]["statement"]),
-                                                             _fold(e["new"]["falsification"])))
+            out[e["key"]] = known.get(e["key"]) or live.get((fold(e["new"]["statement"]),
+                                                             fold(e["new"]["falsification"])))
     return out
 
 
@@ -425,17 +421,6 @@ def render_design(ps: ProjectStore, attempt: int) -> list[str]:
     return lines
 
 
-def _comment(answer: dict) -> str:
-    return answer.get("comment").strip() if isinstance(answer.get("comment"), str) else ""
-
-
-def _runner(ctx: StageContext):
-    def run(*, role: str, instructions: str, inputs: dict, output_schema, **task):
-        return ctx.executor.run(role, instructions, inputs, output_schema, stage=ctx.stage, attempt=ctx.attempt,
-                                **task)
-    return run
-
-
 # ---- the worker ----
 class DesignWorker:
     # An interrupted attempt runs again in place (rk.orchestrator.engine): ``run`` goes on from the attempt's notes
@@ -541,10 +526,10 @@ class DesignWorker:
     def _restated(rows: dict[str, dict], d: DesignDraft) -> dict[str, str]:
         """ref -> the id of the live hypothesis of the RQ a new hypothesis restates (the same statement and
         falsification, whitespace and case aside): it is that hypothesis, not a new one."""
-        live = {(_fold(r["statement"]), _fold(r["falsification"])): h for h, r in rows.items()
+        live = {(fold(r["statement"]), fold(r["falsification"])): h for h, r in rows.items()
                 if r["status"] != "dropped"}
         return {hp.ref.strip(): hid for hp in d.hypotheses if hp.new is not None
-                and (hid := live.get((_fold(hp.new.statement), _fold(hp.new.falsification)))) is not None}
+                and (hid := live.get((fold(hp.new.statement), fold(hp.new.falsification)))) is not None}
 
     def _refusals(self, ps: ProjectStore, s: _Inputs, d: DesignDraft) -> list[str]:
         """Why the draft cannot be noted (nothing of it is then): no design or hypotheses, an unknown or dropped
@@ -577,7 +562,7 @@ class DesignWorker:
                            f"question nor an earlier new hypothesis")
             if ref in refs:
                 out.append(f"the ref {ref!r} is given twice")
-            text = (_fold(hp.new.statement), _fold(hp.new.falsification))
+            text = (fold(hp.new.statement), fold(hp.new.falsification))
             out += [f"the new hypotheses {other!r} and {ref!r} state the same hypothesis"
                     for other, t in news if t == text]
             news.append((ref, text))
@@ -648,7 +633,7 @@ class DesignWorker:
             if svc.get_claim(cid)["status"] != "draft":
                 continue
             verify_support(ctx.kernel, ctx.registry, ctx.ps, cid, actor=ctx.actor, checkpoint=False,
-                           run=_runner(ctx))
+                           run=stage_runner(ctx))
             check_claim_hedge(ctx.ps, cid, actor=ctx.actor)
 
     @staticmethod
@@ -837,7 +822,7 @@ class DesignWorker:
         if why := self._invalid(answer, listed, opts.get("choices") or list(CHOICES)):
             cid = self._open(ctx, replaces=checkpoint["id"], why=f"Your answer could not be applied: {why}.")
             return StageOutcome("waiting_human", checkpoint_id=cid, reason=why)
-        comment = _comment(answer)
+        comment = answer_comment(answer)
         if answer["decision"] == REVISE:
             return StageOutcome("rerun", reason=comment)
         if answer["decision"] == BACK:
@@ -849,16 +834,8 @@ class DesignWorker:
                 f"untestable ({opts.get('untestable') or 'no reason recorded'})" + (f": {comment}" if comment else "")))
         ps = ctx.ps
         by = answered_by_actor(ps, checkpoint["id"]) or ctx.actor
-        svc = ArgumentService(ps)
-        for cid in listed:
-            status = svc.get_claim(cid)["status"]
-            if answer["claims"][cid] == SUPPORTED and status not in ("supported", "withdrawn"):
-                vid = record_verification(ps, "claim", cid, "V-SUPPORT", "supported",
-                                          {"by": "human", "checkpoint": checkpoint["id"], "comment": comment}, actor=by)
-                svc.set_claim_status(cid, "supported", verification_id=vid, actor=by, actor_kind="human")
-            elif answer["claims"][cid] == WITHDRAW and status != "withdrawn":
-                svc.withdraw_claim(cid, reason=f"withdrawn by you (checkpoint {checkpoint['id']})"
-                                              + (f": {comment}" if comment else ""), actor=by, actor_kind="human")
+        apply_claim_decisions(ps, {cid: answer["claims"][cid] for cid in listed}, checkpoint_id=checkpoint["id"],
+                              by=by, comment=comment)
         if problems := design_problems(ps, ctx.attempt):
             return self._retry(ctx, "the design fails its structure: " + "; ".join(problems))
         h = self._approve(ctx, by="human", actor=by, actor_kind="human", checkpoint_id=checkpoint["id"])
@@ -871,7 +848,7 @@ class DesignWorker:
         decision = answer.get("decision")
         if decision not in choices:
             return f"decision {decision!r} is not one of {', '.join(choices)}"
-        if decision == REVISE and not _comment(answer):
+        if decision == REVISE and not answer_comment(answer):
             return "revise needs a comment saying what to change"
         if decision == APPROVE and listed:
             claims = answer.get("claims")

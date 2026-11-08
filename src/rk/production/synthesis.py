@@ -108,6 +108,7 @@ from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.orchestrator.state import record_degraded, stage_row
 from rk.production.artifacts import artifact, artifacts
 from rk.production.claims import (
+    apply_claim_decisions,
     claim_limitations,
     narrow_or_withdraw,
     review_answer_problem,
@@ -115,6 +116,7 @@ from rk.production.claims import (
     review_listing,
     review_options,
 )
+from rk.production.common import answer_comment, by_group, fold, stage_runner
 from rk.production.extraction import (
     NOT_REPORTED,
     extraction_limitations,
@@ -129,7 +131,6 @@ from rk.store.events import NewEvent
 from rk.store.project import ProjectStore
 from rk.verify.numbers import extract_numbers
 from rk.verify.prisma import check_selection_reasons, flow, prisma_counts
-from rk.verify.records import record_verification
 from rk.verify.stats import (
     PoolOptions,
     check_stats,
@@ -307,10 +308,6 @@ def _last(ps: ProjectStore, attempt: int, kind: str) -> dict | None:
     return notes[-1] if notes else None
 
 
-def _by_group(ps: ProjectStore, attempt: int, kind: str) -> dict[int, dict]:
-    return {n["group"]: n for n in synthesis_notes(ps, attempt, kind=kind) if n.get("group") is not None}
-
-
 def synthesis_claims(ps: ProjectStore, attempt: int) -> list[str]:
     """The attempt's synthesis claims: its findings and ``stat_result`` claims, then their narrower rewrites."""
     ids = [n["claim_id"] for n in synthesis_notes(ps, attempt) if n["kind"] in ("finding", "pooled")]
@@ -408,11 +405,6 @@ def study_label(ps: ProjectStore, item_id: str) -> str:
 
 def _usable_rows(study: dict) -> list[dict]:
     return [r for r in study["values"] if r["problem"] is None]
-
-
-def _norm(name: str) -> str:
-    """An outcome name for matching: whitespace collapsed, case folded."""
-    return " ".join(name.split()).casefold()
 
 
 def _effect_rows(study: dict, field_map: dict[str, str]) -> tuple[list[dict], list[str]]:
@@ -717,18 +709,18 @@ class SynthesizeWorker:
         if not r.ok or r.output is None:
             return f"the arguer gave no pooling plan ({r.error})"
         usable = [u["item_id"] for u in s.usable]
-        listed = {_norm(o): o for o in s.outcomes}
+        listed = {fold(o): o for o in s.outcomes}
         first: dict[tuple[str, str], int] = {}
         groups = []
         for i, g in enumerate(r.output.groups):
-            outcome = listed.get(_norm(g.outcome), g.outcome)
+            outcome = listed.get(fold(g.outcome), g.outcome)
             ids = [x for x in dict.fromkeys(g.item_ids) if x in usable]
             computable = _computable_ids(s, g.measure, s.field_map(outcome, g.measure))
             why_out = {e.item_id: e.reason.strip() for e in g.excluded
                        if e.reason.strip() and e.item_id in computable and e.item_id not in ids}
             added = [x for x in computable if x not in ids and x not in why_out]
             ids += added
-            key = (_norm(outcome), g.measure)
+            key = (fold(outcome), g.measure)
             comparable, reason = g.comparable, g.reason.strip()
             zero = [f"{c} scored 0 ({getattr(g.comparability, c).reason})" for c in COMPARABILITY
                     if getattr(g.comparability, c).score == 0]
@@ -838,8 +830,8 @@ class SynthesizeWorker:
             if not any(g["outcome"] == o and g["measure"] == s.measure for g in groups):
                 self._fallback(ctx, s, f"the pooling plan proposed no group for the pre-specified outcome {o!r} "
                                        f"(effect measure {s.measure})", outcome=o, measure=s.measure)
-        decided = _by_group(ps, ctx.attempt, "decision")
-        fell = _by_group(ps, ctx.attempt, "fallback")
+        decided = by_group(synthesis_notes(ps, ctx.attempt), "decision")
+        fell = by_group(synthesis_notes(ps, ctx.attempt), "fallback")
         pending = []
         for g in groups:
             i = g["group"]
@@ -1047,7 +1039,8 @@ class SynthesizeWorker:
     def _finish(self, ctx: StageContext, s: _Inputs) -> StageOutcome:
         ps = ctx.ps
         plan = _last(ps, ctx.attempt, "plan")
-        decided, pooled, fell = (_by_group(ps, ctx.attempt, k) for k in ("decision", "pooled", "fallback"))
+        notes = synthesis_notes(ps, ctx.attempt)
+        decided, pooled, fell = (by_group(notes, k) for k in ("decision", "pooled", "fallback"))
         for g in plan["groups"] if plan else []:
             if decided.get(g["group"], {}).get("decision") == POOL and g["group"] not in pooled | fell:
                 if stats_enabled(ctx.kernel.settings()):  # checked again: the validation may have gone stale
@@ -1108,7 +1101,7 @@ class SynthesizeWorker:
         nothing). Idempotent, so it runs again after a crash between a withdrawal and this."""
         ps = ctx.ps
         svc = ArgumentService(ps)
-        fell = _by_group(ps, ctx.attempt, "fallback")
+        fell = by_group(synthesis_notes(ps, ctx.attempt), "fallback")
         noted = {n["claim_id"] for n in synthesis_notes(ps, ctx.attempt, kind="narrowed")}
         for n in synthesis_notes(ps, ctx.attempt, kind="pooled"):
             c = svc.get_claim(n["claim_id"])
@@ -1181,15 +1174,11 @@ class SynthesizeWorker:
         """V-SUPPORT (with V-NUM; V-STATS for a ``stat_result``) of every claim not verified yet, then V-HEDGE."""
         ps = ctx.ps
         svc = ArgumentService(ps)
-
-        def run(*, role: str, instructions: str, inputs: dict, output_schema, **task):
-            return ctx.executor.run(role, instructions, inputs, output_schema, stage=ctx.stage, attempt=ctx.attempt,
-                                    **task)
-
         for cid in synthesis_claims(ps, ctx.attempt):
             if svc.get_claim(cid)["status"] != "draft":
                 continue
-            verify_support(ctx.kernel, ctx.registry, ps, cid, actor=ctx.actor, checkpoint=False, run=run)
+            verify_support(ctx.kernel, ctx.registry, ps, cid, actor=ctx.actor, checkpoint=False,
+                           run=stage_runner(ctx))
             check_claim_hedge(ps, cid, actor=ctx.actor)
 
     @staticmethod
@@ -1275,7 +1264,7 @@ class SynthesizeWorker:
         given = answer.get("fields") or []
         per = given if isinstance(given, dict) else {}
         fields = [] if isinstance(given, dict) else list(dict.fromkeys(given))
-        comment = answer.get("comment").strip() if isinstance(answer.get("comment"), str) else ""
+        comment = answer_comment(answer)
         if named:
             studies = [{"item_id": i, "label": study_label(ps, i), "fields": list(dict.fromkeys(per.get(i) or fields))}
                        for i in named]
@@ -1303,8 +1292,8 @@ class SynthesizeWorker:
                                      why=f"Your answer could not be applied: {why}.")
             return StageOutcome("waiting_human", checkpoint_id=cid, reason=why)
         decisions = {str(k): v for k, v in answer["decisions"].items()}
-        comment = answer.get("comment").strip() if isinstance(answer.get("comment"), str) else ""
-        decided = _by_group(ps, ctx.attempt, "decision")
+        comment = answer_comment(answer)
+        decided = by_group(synthesis_notes(ps, ctx.attempt), "decision")
         for i in listed:
             if i in decided:
                 continue
@@ -1323,7 +1312,7 @@ class SynthesizeWorker:
         opts = cp["options"]
         listed = opts["claim_ids"]
         allowed = review_options(opts)
-        comment = answer.get("comment").strip() if isinstance(answer.get("comment"), str) else ""
+        comment = answer_comment(answer)
         if answer.get("decision") == "rerun":
             if comment:
                 return StageOutcome("rerun", reason=comment)
@@ -1342,16 +1331,8 @@ class SynthesizeWorker:
                                        why=f"Your answer could not be applied: {why}.",
                                        missing=opts.get("narrative_missing"))
             return StageOutcome("waiting_human", checkpoint_id=cid, reason=why)
-        svc = ArgumentService(ps)
-        for cid in listed:
-            status = svc.get_claim(cid)["status"]
-            if answer["claims"][cid] == SUPPORTED and status not in ("supported", "withdrawn"):
-                vid = record_verification(ps, "claim", cid, "V-SUPPORT", "supported",
-                                          {"by": "human", "checkpoint": cp["id"], "comment": comment}, actor=by)
-                svc.set_claim_status(cid, "supported", verification_id=vid, actor=by, actor_kind="human")
-            elif answer["claims"][cid] == WITHDRAW and status != "withdrawn":
-                svc.withdraw_claim(cid, reason=f"withdrawn by you (checkpoint {cp['id']})"
-                                              + (f": {comment}" if comment else ""), actor=by, actor_kind="human")
+        apply_claim_decisions(ps, {cid: answer["claims"][cid] for cid in listed}, checkpoint_id=cp["id"], by=by,
+                              comment=comment)
         self._reconcile(ctx, s)
         return StageOutcome("done", reason=self._summary(ps, ctx.attempt))
 

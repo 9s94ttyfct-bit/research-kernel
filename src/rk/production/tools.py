@@ -31,6 +31,7 @@ from rk.production.argue import (
     soundness_ids,
 )
 from rk.production.artifacts import ARTIFACT_MEDIA_TYPES, artifacts
+from rk.production.common import by_group, entity_row
 from rk.production.design import design_notes, design_problems, feasibility_claims
 from rk.production.extraction import (
     extraction_limitations,
@@ -216,10 +217,6 @@ def _artifact_view(ps: ProjectStore, a: dict, now: StatsResult) -> dict:
                     "recorded": recorded["verdict"] if recorded else None}}
 
 
-def _by_group(notes: list[dict], kind: str) -> dict[int, dict]:
-    return {n["group"]: n for n in notes if n["kind"] == kind and n.get("group") is not None}
-
-
 def synthesis_view(ps: ProjectStore, attempt: int | None = None) -> dict:
     """The synthesis of a ``synthesize`` attempt (default: the one it shows): the protocol's method and pre-specified
     pool options (with ``min_studies``, the fewest studies with a computable effect a pool needs); each study's
@@ -248,7 +245,7 @@ def synthesis_view(ps: ProjectStore, attempt: int | None = None) -> dict:
         return {"item_id": item_id, "label": study_label(ps, item_id), "title": titles.get(item_id, "")}
 
     plans = [n for n in notes if n["kind"] == "plan"]
-    decided, fell, pooled = (_by_group(notes, k) for k in ("decision", "fallback", "pooled"))
+    decided, fell, pooled = (by_group(notes, k) for k in ("decision", "fallback", "pooled"))
     groups = []
     for g in plans[-1]["groups"] if plans else []:
         i = g["group"]
@@ -291,10 +288,6 @@ def _question(ps: ProjectStore) -> str | None:
     return RQBody.model_validate(rq["body"]).three_step.sentence() if rq else None
 
 
-def _row(ps: ProjectStore, table: str, id_: str) -> dict:
-    return json.loads(ps.db.execute(f"SELECT data FROM {table} WHERE id=?", (id_,)).fetchone()["data"])
-
-
 def argument_view(ps: ProjectStore, attempt: int | None = None, claim_id: str | None = None) -> dict:
     """The argument of an ``argue`` attempt (default: the one it shows), in argue's own terms: the frozen RQ's
     question, the main claim and the Arguer's self-check; the synthesize attempt it argued on
@@ -326,8 +319,8 @@ def argument_view(ps: ProjectStore, attempt: int | None = None, claim_id: str | 
     dropped = {n["edge_id"]: n["reason"] for n in notes if n["kind"] == "dropped_link"}
     counterparts = conflict_counterparts(ps, attempt)
     soundness = soundness_ids(ps, attempt)
-    edges = [_row(ps, "edges", e) for e in argument_edge_ids(ps, attempt)]
-    objections = [_row(ps, "objections", o) for o in argument_objection_ids(ps, attempt)]
+    edges = [entity_row(ps, "edges", e) for e in argument_edge_ids(ps, attempt)]
+    objections = [entity_row(ps, "objections", o) for o in argument_objection_ids(ps, attempt)]
     if claim_id is not None:
         if claim_id not in roles:
             raise ToolError("not_found", f"no claim {claim_id} in argue attempt {attempt}", status=404)
@@ -346,7 +339,7 @@ def argument_view(ps: ProjectStore, attempt: int | None = None, claim_id: str | 
         rc = o.get("response_claim_id")
         if not rc:
             return None
-        c = _row(ps, "claims", rc)
+        c = entity_row(ps, "claims", rc)
         return {"id": rc, "text": c["text"], "status": c["status"]}
 
     out.update(
@@ -356,7 +349,7 @@ def argument_view(ps: ProjectStore, attempt: int | None = None, claim_id: str | 
         edges=[{k: e.get(k) for k in ("id", "type", "from_id", "to_id", "warrant", "warrant_tests")}
                | {"out": link_gone(ps, e["id"]), "dropped": e["id"] in dropped, "dropped_reason": dropped.get(e["id"])}
                for e in edges],
-        warrants=[{"edge_id": e["id"], "claim_id": e["from_id"], "text": _row(ps, "claims", e["from_id"])["text"],
+        warrants=[{"edge_id": e["id"], "claim_id": e["from_id"], "text": entity_row(ps, "claims", e["from_id"])["text"],
                    "licenses": e["to_id"], "warrant": e["warrant"], "tests": e.get("warrant_tests"),
                    "dropped": e["to_id"] in dropped} for e in edges if e["type"] == "warrant_of"],
         objections=[{k: o.get(k) for k in ("id", "target_id", "category", "text", "priority", "source_id", "status",

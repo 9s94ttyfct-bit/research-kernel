@@ -25,6 +25,8 @@ from typing import Literal
 from rk.argument import AgentClaimKind, ArgumentService, ClaimDraft, ClaimIn, EvidenceIn
 from rk.llm.vendors import vendor_of
 from rk.orchestrator.engine import StageContext
+from rk.production.common import fold, stage_runner
+from rk.verify.records import record_verification
 from rk.verify.support import (
     ClaimProblem,
     check_claim_hedge,
@@ -56,10 +58,6 @@ class NarrowOutcome:
     status: Literal["narrowed", "withdrawn"]
     new_claim_id: str | None
     reason: str
-
-
-def _same(a: str, b: str) -> bool:
-    return " ".join(a.split()).casefold() == " ".join(b.split()).casefold()
 
 
 def failing_claims(ps, claim_ids: list[str]) -> list[str]:
@@ -114,7 +112,7 @@ def narrow_or_withdraw(ctx: StageContext, claim_id: str, *, kind: AgentClaimKind
             inputs["guidance"] = ctx.guidance
         r = ctx.executor.run(ROLE, NARROW_TASK, inputs, NarrowedClaim, stage=ctx.stage, attempt=ctx.attempt,
                              tools=[])
-        if not r.ok or r.output is None or _same(r.output.text, claim["text"]):
+        if not r.ok or r.output is None or fold(r.output.text) == fold(claim["text"]):
             gave = ("no narrower rewrite" + (f" ({r.error})" if r.error else "") if not r.ok or r.output is None
                     else "the same text again")
             return withdraw(f"{why}; the Arguer gave {gave}", f"conceded: the claim {claim_id} was withdrawn")
@@ -127,13 +125,9 @@ def narrow_or_withdraw(ctx: StageContext, claim_id: str, *, kind: AgentClaimKind
                                          interpretation=e.get("interpretation") or ""), actor=ctx.actor,
                               actor_kind="kernel")
 
-    def run(*, role: str, instructions: str, inputs: dict, output_schema, **task):
-        return ctx.executor.run(role, instructions, inputs, output_schema, stage=ctx.stage, attempt=ctx.attempt,
-                                **task)
-
     if (status := svc.get_claim(new)["status"]) == "draft":
-        status = verify_support(ctx.kernel, ctx.registry, ps, new, actor=ctx.actor, checkpoint=False, run=run,
-                                exclude_vendors={claim.get("generator_vendor")}).verdict
+        status = verify_support(ctx.kernel, ctx.registry, ps, new, actor=ctx.actor, checkpoint=False,
+                                run=stage_runner(ctx), exclude_vendors={claim.get("generator_vendor")}).verdict
     hedge = check_claim_hedge(ps, new, actor=ctx.actor)
     if status == "supported" and hedge.ok:
         svc.withdraw_claim(claim_id, reason=f"{why}; narrowed to {new}, which is supported", actor=ctx.actor)
@@ -156,6 +150,26 @@ def review_choices(problems: list[ClaimProblem], *, structural: bool = False) ->
     judges did not), never past V-HEDGE, V-STATS, an objection or a structural failure."""
     supportable = bool(problems) and all(p.kind == "status" for p in problems) and not structural
     return [SUPPORTED, WITHDRAW] if supportable else [WITHDRAW]
+
+
+def apply_claim_decisions(ps, decisions: dict[str, str], *, checkpoint_id: str, by: str, comment: str) -> list[str]:
+    """Apply your review's answer per claim (claim id -> ``supported`` or ``withdraw``) from the checkpoint
+    ``checkpoint_id``: ``supported`` records your V-SUPPORT and makes the claim supported (one already supported or
+    withdrawn is left), ``withdraw`` withdraws it with your ``comment`` (one already withdrawn is left), so applying an
+    answer again changes nothing. Returns the claims withdrawn now."""
+    svc = ArgumentService(ps)
+    withdrawn = []
+    for cid, decision in decisions.items():
+        status = svc.get_claim(cid)["status"]
+        if decision == SUPPORTED and status not in ("supported", "withdrawn"):
+            vid = record_verification(ps, "claim", cid, "V-SUPPORT", "supported",
+                                      {"by": "human", "checkpoint": checkpoint_id, "comment": comment}, actor=by)
+            svc.set_claim_status(cid, "supported", verification_id=vid, actor=by, actor_kind="human")
+        elif decision == WITHDRAW and status != "withdrawn":
+            svc.withdraw_claim(cid, reason=f"withdrawn by you (checkpoint {checkpoint_id})"
+                                           + (f": {comment}" if comment else ""), actor=by, actor_kind="human")
+            withdrawn.append(cid)
+    return withdrawn
 
 
 def review_listing(ps, claim_ids: list[str], extra: dict[str, list[str]] | None = None) -> dict[str, dict]:
