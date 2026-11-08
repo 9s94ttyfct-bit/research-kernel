@@ -7,7 +7,8 @@ declared synonym (``SYNONYMS``: none ↔ never) (``rk.verify.support.check_claim
 
 A categorical word or universal quantifier counts only where it is stated positively (``_stated``): not when a
 negator or hedge precedes it ("not all", "not proven", "almost every", "cannot always", "don't always":
-``_QUALIFIERS``), when a hyphen follows it ("all-cause", "never-smokers"), in "every other", or in the idiom "in all"
+``_QUALIFIERS``), also across up to two auxiliaries or adverbs ("has not been proven", "is not clearly established":
+``_BETWEEN``), when a hyphen follows it ("all-cause", "never-smokers"), in "every other", or in the idiom "in all"
 meaning "in total", before punctuation or the end of the text ("In all, 12 trials", "12 trials in all."; "in all
 patients" and "in all 12 trials" stay universal). ``hedge_level`` applies the same filter to the categorical
 (level-3) words."""
@@ -25,8 +26,10 @@ UNIVERSALS = ("all", "every", "never", "always", "none")
 # Quantifiers that state the same universal: a note saying "never" covers a claim saying "none", and back.
 SYNONYMS: dict[str, frozenset[str]] = {u: frozenset({u}) for u in UNIVERSALS} | {
     u: frozenset({"none", "never"}) for u in ("none", "never")}
-_QUALIFIERS = re.compile(r"(?:\bnot|\bcannot|n['’]t|\balmost|\bnearly|\bvirtually|\bhardly|\bpractically)\s+$",
-                         re.IGNORECASE)
+# Auxiliaries and adverbs that may stand between a negator and the word it negates (at most two of them).
+_BETWEEN = r"(?:\s+(?:been|be|being|yet|ever|always|fully|clearly|conclusively|definitively|firmly|entirely|completely))"
+_QUALIFIERS = re.compile(r"(?:\bnot|\bcannot|n['’]t|\balmost|\bnearly|\bvirtually|\bhardly|\bpractically)"
+                         + _BETWEEN + r"{0,2}\s+$", re.IGNORECASE)
 _IN_TOTAL = re.compile(r"\s*(?:[,.;:!?)]|$)")
 _UNIVERSAL = re.compile(r"\b(" + "|".join(UNIVERSALS) + r")\b", re.IGNORECASE)
 

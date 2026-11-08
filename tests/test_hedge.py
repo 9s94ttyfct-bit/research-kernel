@@ -70,6 +70,19 @@ def test_hedge_level_ignores_negated_hedged_and_idiomatic_categorical_words():
     assert hedge_level("Not all trials agreed, but this one proves it.") == 3  # one positive use is enough
 
 
+def test_negation_reaches_over_two_auxiliaries_or_adverbs():
+    """T3: "has not been proven" is negated as "was not proven" is; at most two auxiliaries/adverbs in between."""
+    for text in ("Aspirin has not been proven to prevent stroke.", "It is not clearly established that X.",
+                 "It has not yet been established.", "This has not been conclusively proven.",
+                 "The benefit is not fully established.", "It hasn't been proven.", "It cannot be proven."):
+        assert hedge_level(text) == 2, text
+    assert universal_terms("It has not been always safe.") == []
+    for text in ("Aspirin has been proven to prevent stroke.", "It was clearly established that X.",
+                 "Not only was it proven, it was replicated.", "It was not tested, but it is established.",
+                 "It has not yet been fully proven."):  # three words between: no longer the negator's scope
+        assert hedge_level(text) == 3, text
+
+
 def test_hedge_overstated_and_universal_rule(env):
     ps, svc = env
     plain = "Copper catalysts reduced CO2 in one cell."
