@@ -1,6 +1,11 @@
 import pytest
 
-from rk.verify.numbers import check_bound_numbers, check_numbers, extract_numbers
+from rk.verify.numbers import (
+    check_bound_numbers,
+    check_numbers,
+    extract_numbers,
+    matches_value,
+)
 
 
 def values(text):
@@ -56,30 +61,22 @@ def test_vnum_multiple_evidence_texts():
     assert check_numbers("no numbers here", []).ok
 
 
-ART = {"display": {"estimate": 0.6213, "ci_low": 0.4791, "ci_high": 0.8034, "k": 7, "i2_percent": 41.3,
-                   "ci_level_percent": 95.0},
-       "pooled": {"estimate": -0.4759, "tau2": 0.0123, "hksj": True}, "studies": [{"item_id": "itm_A", "yi": 1.25e-3}],
-       "measure": "RR"}
+def _matches(written: str, value: float) -> bool:
+    (n,) = extract_numbers(written)
+    return matches_value(n, value)
 
 
-def test_vnum_matches_rounded_artifact_value():
-    stat = "Pooled RR 0.62 (95% CI 0.48–0.80; 7 studies; I² 41%)."
-    assert check_numbers(stat, [], artifact_values=[ART]).ok
-    assert not check_numbers(stat, []).ok  # without the artifact nothing grounds them
-    assert not check_numbers(stat, ["RR 0.6213"]).ok  # evidence text still needs the value as written
-    # rounded as written in the claim: the claim's last digit decides
-    for ok in ("0.6", "0.621", "−0.48", "-0.476", "6.2e-1", "0.0123", "1.25 × 10^-3", "41.3%", "0.80"):
-        assert check_numbers(f"x {ok} y", [], artifact_values=[ART]).ok, ok
-    for bad in ("0.63", "0.622", "0.47", "8 studies", "2", "0.0124", "42%", "0.6213 1.0", "1", "0"):
-        r = check_numbers(f"x {bad} y", [], artifact_values=[ART])
-        assert not r.ok, bad
-    # several artifacts pool their values; a bool is not a number
-    assert check_numbers("k 7 and 3", [], artifact_values=[ART, {"n": [3]}]).ok
-    assert not check_numbers("x 1", [], artifact_values=[{"hksj": True}]).ok
-    # a written digit larger than the value is no rounding of it ("1" is not 0.62); an exact value still matches
-    assert not check_numbers("RR 1", [], artifact_values=[{"estimate": 0.62}]).ok
-    assert check_numbers("RR 1", [], artifact_values=[{"estimate": 1.0}]).ok
-    assert check_numbers("I² 0%", [], artifact_values=[{"i2_percent": 0.0}]).ok
+def test_vnum_bound_value_rounds_to_the_written_digit():
+    # exact, or rounded to the claim's last written digit
+    for written, value in (("0.62", 0.6213), ("0.6", 0.6213), ("0.621", 0.6213), ("−0.48", -0.4759),
+                           ("-0.476", -0.4759), ("6.2e-1", 0.6213), ("1.25 × 10^-3", 1.25e-3), ("41%", 41.3),
+                           ("0.80", 0.8034), ("7", 7), ("1", 1.0), ("0%", 0.0)):
+        assert _matches(written, value), (written, value)
+    for written, value in (("0.63", 0.6213), ("0.622", 0.6213), ("0.47", 0.4791), ("8", 7), ("0.0124", 0.0123),
+                           ("42%", 41.3), ("1.0", 0.8034), ("0.48", -0.4791)):
+        assert not _matches(written, value), (written, value)
+    # a written digit larger than the value is no rounding of it: "1" is not 0.62, "0" not 0.44
+    assert not _matches("1", 0.62) and not _matches("0", 0.44)
 
 
 def test_vnum_bound_numbers_follow_their_bindings():

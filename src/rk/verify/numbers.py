@@ -4,12 +4,10 @@ Format variants normalise to the same value: thousands separators (``,`` or thin
 minus, ``e``-notation and ``×10^n`` / superscript exponents, ``%`` / ``percent``. Digits glued to letters (``CO2``,
 ``COVID-19``), citation parentheticals and ``[[…]]`` source markers are not quantities and are ignored.
 
-A number may instead match a value of a kernel-made artifact (``artifact_values``: every number in the given dicts,
-at any depth; booleans are not numbers; V-SUPPORT passes a ``stat_result``'s artifacts' ``display`` values): exactly,
-or rounded as the claim writes it — to the claim's last digit, and only when that digit's step is no larger than the
-value — so "0.62" matches 0.6213 and "41%" matches 41.3, but "1" does not match 0.62. Artifact values carry no unit;
-the template that wrote the claim chose it. ``check_bound_numbers`` checks a templated claim number by number against
-the value each was bound to."""
+A kernel-templated claim (a ``stat_result``) is checked by ``check_bound_numbers`` instead: each printed number
+against the artifact value it was bound to, matched exactly or rounded as the claim writes it (``matches_value``) —
+to the claim's last digit, and only when that digit's step is no larger than the value — so "0.62" matches 0.6213
+and "41%" matches 41.3, but "1" does not match 0.62. Artifact values carry no unit; the template chose it."""
 
 from __future__ import annotations
 
@@ -110,25 +108,9 @@ def matches_value(n: Num, value: float) -> bool:
     return 0 < step <= abs(value) and abs(value - n.value) <= step / 2 * (1 + 1e-9) + 1e-12 * abs(value)
 
 
-def _leaves(obj) -> list[float]:
-    """Every number in a JSON value, at any depth (booleans are not numbers)."""
-    if isinstance(obj, bool):
-        return []
-    if isinstance(obj, int | float):
-        return [float(obj)]
-    if isinstance(obj, dict):
-        return [x for v in obj.values() for x in _leaves(v)]
-    if isinstance(obj, list | tuple):
-        return [x for v in obj for x in _leaves(v)]
-    return []
-
-
-def check_numbers(claim_text: str, evidence_texts: list[str], *,
-                  artifact_values: Sequence[dict] = ()) -> NumResult:
+def check_numbers(claim_text: str, evidence_texts: list[str]) -> NumResult:
     pool = [n for t in evidence_texts for n in extract_numbers(t)]
-    computed = [x for v in artifact_values for x in _leaves(v)]
-    ungrounded = [n for n in extract_numbers(claim_text)
-                  if not any(_same(n, e) for e in pool) and not any(matches_value(n, x) for x in computed)]
+    ungrounded = [n for n in extract_numbers(claim_text) if not any(_same(n, e) for e in pool)]
     return NumResult(ok=not ungrounded, ungrounded=ungrounded)
 
 
