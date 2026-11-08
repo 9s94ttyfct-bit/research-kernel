@@ -400,6 +400,21 @@ CREATE TABLE IF NOT EXISTS artifacts (
 );
 CREATE INDEX IF NOT EXISTS artifacts_stage ON artifacts(stage, attempt);
 
+-- Plan 5c: draft sections, one row per version; the file is artifacts/drafts/<section>.v<version>.md
+CREATE TABLE IF NOT EXISTS drafts (
+    section     TEXT NOT NULL,
+    version     INTEGER NOT NULL,
+    stage       TEXT NOT NULL,
+    attempt     INTEGER NOT NULL,
+    round       INTEGER NOT NULL,              -- revise round (0: the draft stage)
+    path        TEXT NOT NULL,                 -- relative to the project
+    sha256      TEXT NOT NULL,                 -- of the file
+    by_task     TEXT,                          -- the Writer task, else NULL (kernel-written)
+    verdict     TEXT,                          -- JSON SectionVerdict, NULL until verified
+    created     TEXT NOT NULL,
+    PRIMARY KEY (section, version)
+);
+
 CREATE TABLE IF NOT EXISTS designs (
     id          TEXT PRIMARY KEY,
     stage       TEXT NOT NULL,

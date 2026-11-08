@@ -95,8 +95,31 @@ def extract_numbers(text: str) -> list[Num]:
     return out
 
 
-def _same(a: Num, b: Num) -> bool:
+def same_number(a: Num, b: Num) -> bool:
+    """Whether two written numbers are the same quantity: equal value (to 1e-9) and unit."""
     return a.unit == b.unit and abs(a.value - b.value) <= 1e-9 * max(1.0, abs(a.value))
+
+
+def numeric_leaves(obj) -> list[float]:
+    """Every number in a JSON-like value (dict values, list items, nested), booleans excluded."""
+    if isinstance(obj, dict):
+        return [v for x in obj.values() for v in numeric_leaves(x)]
+    if isinstance(obj, list | tuple):
+        return [v for x in obj for v in numeric_leaves(x)]
+    if isinstance(obj, int | float) and not isinstance(obj, bool):
+        return [float(obj)]
+    return []
+
+
+class NumberPool(BaseModel):
+    """The numbers a sentence's marker targets contain (spec §9.1 V-NUM for manuscripts): ``nums`` written in a
+    target's text (matched as written: value and unit), ``values`` stored by kernel code (artifact values, event and
+    protocol fields; matched exactly or rounded as the sentence writes them, ``matches_value``)."""
+    nums: list[Num] = []
+    values: list[float] = []
+
+    def covers(self, n: Num) -> bool:
+        return any(same_number(n, e) for e in self.nums) or any(matches_value(n, v) for v in self.values)
 
 
 def matches_value(n: Num, value: float) -> bool:
@@ -110,7 +133,7 @@ def matches_value(n: Num, value: float) -> bool:
 
 def check_numbers(claim_text: str, evidence_texts: list[str]) -> NumResult:
     pool = [n for t in evidence_texts for n in extract_numbers(t)]
-    ungrounded = [n for n in extract_numbers(claim_text) if not any(_same(n, e) for e in pool)]
+    ungrounded = [n for n in extract_numbers(claim_text) if not any(same_number(n, e) for e in pool)]
     return NumResult(ok=not ungrounded, ungrounded=ungrounded)
 
 

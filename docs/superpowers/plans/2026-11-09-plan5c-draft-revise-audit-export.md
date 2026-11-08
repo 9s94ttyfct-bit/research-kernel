@@ -114,7 +114,7 @@ No new Python dependency. The CSL style is pandoc's built-in default (Chicago au
 
 **Interfaces (produces):**
 - `Marker{kind: Literal["clm","run","fig","stat","plan","inf","ck"], target: str | None, span: tuple[int,int]}`.
-- `Sentence{index: int, text: str, markers: list[Marker], span: tuple[int,int]}`.
+- `Sentence{index: int, text: str, markers: list[Marker], span: tuple[int,int]}`. `span` is the sentence's place in the section's prose (its paragraphs joined by a blank line); `Marker.span` is the marker's place in the sentence's text.
 - `parse_section(markdown: str) -> list[Sentence]`:
   - markdown structure via markdown-it (`html=False`);
   - code spans and code blocks are not prose;
@@ -122,14 +122,14 @@ No new Python dependency. The CSL style is pandoc's built-in default (Chicago au
   - headings and table captions are not sentences.
 - `SentenceVerdict{index, ok: bool, problems: list[str]}`.
 - `verify_sentence(ps, s: Sentence, *, paper_type: str) -> SentenceVerdict`, implementing every sentence rule in Global Constraints.
-- `number_pool(ps, markers: list[Marker]) -> list[Num]`:
-  - `clm` → its evidence note texts;
-  - `stat`/`fig` → the artifact's bound values (as `check_bound_numbers` pools them);
+- `number_pool(ps, markers: list[Marker]) -> NumberPool` (`rk.verify.numbers.NumberPool{nums: list[Num], values: list[float]}`; `covers(n)`: `nums` match as written (value and unit), `values` exactly or rounded as written, `matches_value`):
+  - `clm` → the claim's text and its evidence note texts;
+  - `stat`/`fig` → every number stored in the artifact's values;
   - `run:evt_` → the event payload's numeric fields;
   - `run:prt_` → the frozen protocol's numeric fields;
   - `plan` → the design/hypothesis text.
-- `SectionVerdict{section, version, sentences: list[SentenceVerdict], ck_share: float, ok: bool}`.
-- `verify_section(ps, section: str, markdown: str, *, paper_type) -> SectionVerdict`: rejects when `ck_share > 0.05`.
+- `SectionVerdict{section, version, sentences: list[SentenceVerdict], ck_share: float, ok: bool, problems: list[str]}` (`problems`: section-level, e.g. the common-knowledge share or an empty section).
+- `verify_section(ps, section: str, markdown: str, *, paper_type, version=None) -> SectionVerdict`: rejects when `ck_share > 0.05`.
 - Draft store (events and projection `drafts`):
   - `write_draft(ps, section, markdown, *, stage, attempt, round, by_task, actor) -> int`: the version number. It writes `artifacts/drafts/<section>.v<N>.md` and its sha256 (`draft.written`).
   - `record_section_verdict(ps, section, version, verdict, *, actor)` (`draft.verified`).

@@ -126,6 +126,21 @@ def test_render_draft_markers(ui, project, kernel):
     assert ui.get("/ui/api/drafts/intro", params={"project": "demo", "version": 1}).json()["result"]["version"] == 1
 
 
+def test_render_draft_resolves_statistics_figures_and_missing_plans(ui, project):
+    """The preview names a statistic's or figure's code; an unknown ``plan`` target is marked missing."""
+    from rk.production.artifacts import ArtifactIn, add_artifact
+    from rk.ui.drafts import render_draft
+
+    ps, lib = project
+    sid = add_artifact(ps, ArtifactIn(kind="stt", code_path="rk.stats.meta:pool", code_version="v", input_hashes=[],
+                                      values={"estimate": 0.62}, output_path=None),
+                       stage="synthesize", attempt=1, actor="k")
+    d = render_draft(ps, lib, f"Pooled 0.62 [[stat:{sid}]]. Planned [[plan:hyp_01HXXXXXXXXXXXXXXXXXXXXXXX]].")
+    m = {x["kind"]: x for x in d["markers"]}
+    assert m["stat"]["label"] == "statistic from rk.stats.meta:pool" and not m["stat"].get("missing")
+    assert m["plan"]["missing"] is True
+
+
 def test_browser_status_without_browser(ui, project):
     assert ui.get("/ui/api/browser/status").json()["result"] == {"running": False}
 

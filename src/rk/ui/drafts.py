@@ -1,5 +1,6 @@
 """Draft preview (spec §8.7): ``artifacts/drafts/<section>.v<N>.md`` rendered to HTML with every source marker
-(``[[kind:id]]``, spec §9.1 V-COVER) turned into a hover card that names its target and links to the evidence.
+(``[[kind:id]]``, spec §9.1 V-COVER; the grammar is ``rk.production.manuscript.MARKER``) turned into a hover card that
+names its target and links to the evidence.
 
 Raw HTML in a draft is escaped (markdown-it with ``html=False``); markers are swapped for placeholders before rendering
 and for ``<span class="mk mk-<kind>">`` elements after it, so no draft text can inject markup."""
@@ -14,9 +15,11 @@ from markdown_it import MarkdownIt
 
 from rk.argument import ArgumentService
 from rk.library.service import Library
+from rk.production.artifacts import artifact
+from rk.production.manuscript import MARKER
+from rk.production.store import design, protocol_row
 from rk.store.project import ProjectStore
 
-MARKER = re.compile(r"\[\[(clm|run|fig|stat|plan|inf|ck)(?::([A-Za-z0-9_]+))?\]\]")
 _DRAFT = re.compile(r"^(?P<section>[a-z0-9][a-z0-9_-]*)\.v(?P<n>\d+)\.md$")
 _LABELS = {"inf": "author's inference", "ck": "common knowledge"}
 
@@ -65,10 +68,21 @@ def _resolve(ps: ProjectStore, lib: Library, kind: str, target: str | None) -> d
                 evidence.append({"note_id": n["id"], "item_id": n["item_id"], "item_title": title,
                                  "kind": n["kind"], "text": n["text"], "locator": n.get("locator")})
         return {**info, "label": c.get("text"), "status": c.get("status"), "evidence": evidence}
-    if kind == "run" and target:
+    if kind == "run" and target and target.startswith("prt_"):
+        if (p := protocol_row(ps, target)) is not None:
+            return {**info, "label": f"protocol version {p['version']} ({p['status']})"}
+    elif kind == "run" and target:
         row = ps.db.execute("SELECT type, ts FROM events WHERE evt_id=?", (target,)).fetchone()
         if row:
             return {**info, "label": f"{row['type']} at {row['ts']}"}
+    elif kind in ("stat", "fig") and target and (a := artifact(ps, target)) is not None:
+        return {**info, "label": f"{'statistic' if a['kind'] == 'stt' else 'figure'} from {a['code_path']}"}
+    elif kind == "plan" and target and target.startswith("dsg_") and (d := design(ps, target)) is not None:
+        return {**info, "label": f"method design ({d['status']})"}
+    elif kind == "plan" and target:
+        r = ps.db.execute("SELECT statement FROM hypotheses WHERE id=?", (target,)).fetchone()
+        if r:
+            return {**info, "label": r["statement"]}
     return {**info, "missing": True, "label": f"no {kind} target {target or ''}".strip()}
 
 
