@@ -264,6 +264,8 @@ two uses per project.
   claims and asks for your `design_approval` (P1: a vote). The approved design is frozen and pre-registers the
   hypotheses it tests. When the Ideator says the research question is untestable, that is only its input: your
   `design_approval` shows its reason and offers back to the question (P1: the judges vote testable or untestable).
+  A draft whose hypothesis references cannot be kept is refused and the design reruns; refusals stay on
+  design→design, so at its limit you are asked (`stage_blocked`; P1 degrades) instead of reopening argue.
 
 ```bash
 uv run rk run melatonin --until argue           # or --until synthesize / design (research proposals)

@@ -14,7 +14,9 @@ which pre-registers the hypotheses it tests.
    methods) is an input only (I5): P2 asks you in a ``design_approval`` that offers back to question
    (``design->question``), a revision and, when the draft that came with it passes its structure, the approval; P1's
    judges vote ``testable`` or ``untestable`` (conservative: ``untestable``, back to question). A draft whose
-   references cannot be kept (an unknown or dropped hypothesis, a bad ref, a hypothesis named twice) is refused whole.
+   references cannot be kept (an unknown or dropped hypothesis, a bad ref, a hypothesis named twice) is refused whole
+   and reruns the stage (M11: an output-format failure stays on ``design->design``; at its limit the engine's path
+   applies, P2 ``stage_blocked``, P1 ``degrade``; it never goes back to argue).
    The kernel notes the draft as the attempt's (``design_notes``): nothing is
    added to the RQ and no design is stored before the approval, so an attempt that is interrupted or not approved
    leaves no orphan hypothesis; a new hypothesis restating a live one of the RQ (whitespace and case aside) is that
@@ -436,8 +438,9 @@ class DesignWorker:
             return StageOutcome("failed", reason=s)
         if sent := design_notes(ps, ctx.attempt, kind="back_edge"):  # resumed after the back-edge was noted
             return StageOutcome("back_edge", to=sent[-1]["to"], reason=sent[-1]["reason"])
-        if refused := design_notes(ps, ctx.attempt, kind="refused"):
-            return self._retry(ctx, "the design draft cannot be stored: " + "; ".join(refused[-1]["problems"]))
+        if refused := design_notes(ps, ctx.attempt, kind="refused"):  # M11: an output-format failure stays on design
+            return StageOutcome("rerun",
+                                reason="the design draft cannot be stored: " + "; ".join(refused[-1]["problems"]))
         if _draft(ps, ctx.attempt) is None and not design_notes(ps, ctx.attempt, kind="untestable"):
             res = ctx.executor.run(ROLE, DESIGN_TASK, self._inputs(ps, s, ctx.guidance), DesignDraft,
                                    stage=ctx.stage, attempt=ctx.attempt, tools=[])
@@ -455,7 +458,7 @@ class DesignWorker:
                     self._store(ctx, s, d, vendor)
             elif problems:
                 _note(ps, ctx.attempt, "refused", actor=ctx.actor, problems=problems)
-                return self._retry(ctx, "the design draft cannot be stored: " + "; ".join(problems))
+                return StageOutcome("rerun", reason="the design draft cannot be stored: " + "; ".join(problems))
             else:
                 self._store(ctx, s, d, vendor)
         if (untestable := design_notes(ps, ctx.attempt, kind="untestable")) and (
@@ -500,8 +503,11 @@ class DesignWorker:
             _note(ps, ctx.attempt, "back_edge", actor=ctx.actor, to="question", reason=why)
             return StageOutcome("back_edge", to="question", reason=why)
         if draft is None:
-            kept = f"; its draft could not be kept: {'; '.join(u['draft_problems'])}" if u.get("draft_problems") else ""
-            return self._retry(ctx, f"{head}; the judges found it testable ({NOT_HUMAN}){judges}{kept}; give a design")
+            why = f"{head}; the judges found it testable ({NOT_HUMAN}){judges}"
+            if u.get("draft_problems"):  # its draft was refused (M11: an output-format failure stays on design)
+                return StageOutcome("rerun", reason=f"{why}; its draft could not be kept: "
+                                                    f"{'; '.join(u['draft_problems'])}; give a design")
+            return self._retry(ctx, f"{why}; give a design")
         return None
 
     @staticmethod
@@ -656,7 +662,8 @@ class DesignWorker:
 
     @staticmethod
     def _retry(ctx: StageContext, reason: str) -> StageOutcome:
-        """Rerun with ``reason`` as guidance while ``design->design`` has uses left; then back to argue with it."""
+        """Rerun with ``reason`` as guidance while ``design->design`` has uses left; then back to argue with it (a
+        failure the argument may cause; a refused draft reruns instead, see ``run``)."""
         edge = edge_name(STAGE, STAGE)
         uses = edge_row(ctx.ps, edge)
         if uses["count"] < EDGE_LIMIT + uses["allowed"]:

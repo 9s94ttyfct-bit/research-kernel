@@ -464,6 +464,53 @@ def test_rq_text_hash_recomputes_after_an_approval_added_hypotheses(env):
         rebuild(ps.db)
 
 
+BAD_REFS = plan(hypotheses=lambda i, h0: [{"id": "hyp_unknown", "falsified_by": ["M1"], "tested_by": ["D1"]}],
+                design=lambda i, h0: {"items": [item("D1", ["M1"], ["hyp_unknown"])], "expected_results": "E.",
+                                      "alternative_explanations": []})
+
+
+def test_refused_draft_stays_on_design_rerun_at_its_limit(env):
+    """M11: a draft refused for malformed references (an output-format failure) reruns the design, also once
+    ``design->design`` is spent: it never goes back to argue (the engine's path applies at the limit)."""
+    _, ps, _ = env
+    _argued(env)
+    w = DesignWorker()
+    record_edge_taken(ps, "design->design", 2, actor="tester")
+    record_edge_taken(ps, "design->design", 3, actor="tester")
+    out = w.run(_ctx(env, _exec([BAD_REFS]), attempt=3))
+    assert out.status == "rerun", (out.status, out.to, out.reason)
+    assert "hyp_unknown is not a hypothesis of the research question" in out.reason
+    assert not design_notes(ps, 3, kind="back_edge")
+    assert w.run(_ctx(env, _exec([]), attempt=3)).status == "rerun"  # resumed: the noted refusal, no Ideator again
+    # P1: a draft refused with an rq_untestable the judges find testable reruns as well
+    out = w.run(_ctx(env, _exec([lambda i: {**BAD_REFS(i), "rq_untestable": UNTESTABLE}],
+                                votes=_votes(["testable"], ["testable"])), attempt=4))
+    assert out.status == "rerun", (out.status, out.to, out.reason)
+    assert "hyp_unknown is not a hypothesis of the research question" in out.reason and UNTESTABLE in out.reason
+    assert not design_notes(ps, 4, kind="back_edge")
+
+
+@pytest.mark.parametrize("env", [{}, {"production_mode": "collab"}], indirect=True)
+def test_refused_drafts_end_at_design_design_not_argue(env):
+    """M11 through the engine: refused drafts use ``design->design`` up to its limit, then P2 asks (``stage_blocked``)
+    and P1 degrades (the run fails); argue is never reopened."""
+    from rk.discovery.store import intake_of
+    from rk.orchestrator.state import edge_row, stage_row
+
+    k, ps, lib = env
+    _argued(env)
+    o, run_id = stage_run(k, ps, lib, "design", _exec([BAD_REFS] * 3))
+    results = [o.step("demo", run_id, actor="tester") for _ in range(3)]
+    assert edge_row(ps, "design->design")["count"] == 2 and edge_row(ps, "design->argue")["count"] == 0
+    assert stage_row(ps, "argue")["status"] == "passed"
+    if intake_of(ps).production_mode == "collab":
+        (cp,) = [c for c in list_checkpoints(ps) if c["kind"] == "stage_blocked"]
+        assert "design->design" in cp["prompt"] and results[-1] == "paused_waiting_human"
+    else:
+        assert results[-1] == "failed" and not [c for c in list_checkpoints(ps) if c["kind"] == "stage_blocked"]
+
+
+
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
 def test_design_back_edges(env):
     _, ps, _ = env
