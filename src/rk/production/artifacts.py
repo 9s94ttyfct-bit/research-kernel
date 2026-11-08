@@ -38,8 +38,9 @@ class ArtifactIn(BaseModel):
 
 def add_artifact(ps: ProjectStore, a: ArtifactIn, *, stage: str, attempt: int, created_by_task: str | None = None,
                  actor: str, actor_kind: ActorKind = "kernel") -> str:
-    """Record the artifact and store its file under the project; returns its ``stt_``/``fig_`` id. The file is
-    written aside first and put in place only once the event is recorded, so a refused event leaves no file."""
+    """Store the artifact's file under the project, then record it; returns its ``stt_``/``fig_`` id. The file is put
+    in place (written aside, then renamed) before the event, so a crash in between leaves an unrecorded file, never a
+    recorded artifact without its file; a refused event removes the file again."""
     if a.output_path is None:
         if a.kind == "fig":
             raise ValueError("a figure needs its output file (output_path)")
@@ -53,6 +54,7 @@ def add_artifact(ps: ProjectStore, a: ArtifactIn, *, stage: str, attempt: int, c
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_name(dest.name + ".tmp")
     tmp.write_bytes(data)
+    os.replace(tmp, dest)
     try:
         ps.apply(NewEvent(type="artifact.added", entity_id=aid, actor_kind=actor_kind, actor=actor,
                           payload={"kind": a.kind, "stage": stage, "attempt": attempt, "code_path": a.code_path,
@@ -60,9 +62,8 @@ def add_artifact(ps: ProjectStore, a: ArtifactIn, *, stage: str, attempt: int, c
                                    "values": a.values, "path": rel, "sha256": sha256_hex(data),
                                    "created_by_task": created_by_task}))
     except BaseException:
-        tmp.unlink(missing_ok=True)
+        dest.unlink(missing_ok=True)
         raise
-    os.replace(tmp, dest)
     return aid
 
 

@@ -85,6 +85,26 @@ def test_artifact_file_is_kept_only_once_recorded(ps, tmp_path, monkeypatch):
     assert artifacts(ps, "synthesize", 1) == []
 
 
+def test_artifact_file_is_in_place_before_it_is_recorded(ps, monkeypatch):
+    """The file is written first and the event recorded last: a crash between the two leaves an unrecorded file,
+    never a recorded artifact without its file (which V-STATS would fail)."""
+    real, seen = ps.apply, {}
+
+    def check(e):
+        if e.type == "artifact.added":
+            path = ps.root / e.payload["path"]
+            seen["file"] = path.read_bytes() if path.exists() else None
+        return real(e)
+
+    monkeypatch.setattr(ps, "apply", check)
+    sid = add_artifact(ps, ArtifactIn(kind="stt", code_path="rk.stats.pool:pool", code_version="c0de",
+                                      input_hashes=[], values={"k": 1}, output_path=None),
+                       stage="synthesize", attempt=1, actor="kernel")
+    assert seen["file"] == canonical_json({"k": 1}).encode("utf-8")
+    assert artifact(ps, sid)["sha256"] == sha256_hex(seen["file"])
+    assert [p.name for p in (ps.root / "artifacts").iterdir()] == [f"{sid}.json"]
+
+
 def _design(hyp_id: str) -> dict:
     return {
         "items": [{"id": "D1", "kind": "experiment", "sample": "40 cells per arm", "controls": ["bare carbon"],
