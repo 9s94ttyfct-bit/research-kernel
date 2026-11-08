@@ -157,6 +157,18 @@ def test_novelty_claims_and_a_thin_strategy_are_rerun_reasons(env):
     assert "source 'scopus' is not available" in out.reason and "1 usable sources (need at least 2)" in out.reason
 
 
+def test_a_novelty_refusal_names_the_matched_words(env):
+    # live run 2026-11-08: the rerun reason did not say which words were refused, so the Ideator added "it is not a
+    # claim that the review is novel" to its rationale on every rerun and the stage looped on the same failure
+    rationale = ("Within the searched scope no review pairs non-ICU settings with these agents. This is a statement "
+                 "about what was not found; it is not a claim that the review is novel or the first study to ask.")
+    ex = _executor([_draft(prisma_p={**SR_ITEMS, "rationale": rationale})], [_strategy()])
+    out = ProtocolWorker().run(_ctx(env, ex))
+    assert out.status == "rerun"
+    assert out.reason == ('prisma_p.rationale claims novelty ("novel", "first study"): do not use these words, not '
+                          "even negated or in a disclaimer; say what was not found within the searched scope")
+
+
 def test_agents_cannot_set_the_record_cap(env):
     _, ps, _ = env
     ex = _executor([{**_draft(), "record_cap": 100_000}], [{**_strategy(), "record_cap": 100_000}],

@@ -206,23 +206,30 @@ def test_check_rq_names_every_failure():
     same = [HypothesisIn(statement="Aspirin lowers  the rate.", falsification="HR > 1."),
             HypothesisIn(statement="aspirin lowers the rate", falsification="")]
     assert check_rq(bad, same) == ["three_step.x is empty", "three_step.z is empty", "finer.ethical is empty",
-                                   "finer.novel claims novelty; say what was not found within the searched scope",
+                                   ('finer.novel claims novelty ("novel"): do not use this word, not even negated or '
+                                    "in a disclaimer; say what was not found within the searched scope"),
                                    "a clinical RQ needs a PICO", "1 distinct hypotheses (need at least 2)",
                                    "hypothesis 2 has no falsification condition"]
     half_pico = RQBody(**{**good["body"], "pico": {**good["body"]["pico"], "comparison": ""}})
     assert check_rq(half_pico, hyps) == ["pico.comparison is empty"]
 
 
-@pytest.mark.parametrize("novel", [
-    "This is the first study to measure X.", "X has never been studied.", "The first time anyone asks it.",
-    "It was never investigated in adults over 80.", "No prior studies exist.", "No previous research addressed it.",
-    "An unprecedented question.", "An unexplored area.", "It has not yet been studied.", "Not yet explored.",
-    "A NOVEL question.", "Its novelty: nobody asked it."])
-def test_check_rq_rejects_common_novelty_claims(novel):
+def _refusal(name: str, word: str) -> str:
+    return (f'{name} claims novelty ("{word}"): do not use this word, not even negated or in a disclaimer; say what '
+            "was not found within the searched scope")
+
+
+@pytest.mark.parametrize("novel, word", [
+    ("This is the first study to measure X.", "first study"), ("X has never been studied.", "never been studied"),
+    ("The first time anyone asks it.", "first time"),
+    ("It was never investigated in adults over 80.", "never investigated"), ("No prior studies exist.", "No prior studies"),
+    ("No previous research addressed it.", "No previous research"), ("An unprecedented question.", "unprecedented"),
+    ("An unexplored area.", "unexplored"), ("It has not yet been studied.", "not yet been studied"),
+    ("Not yet explored.", "Not yet explored"), ("A NOVEL question.", "NOVEL"), ("Its novelty: nobody asked it.", "novel")])
+def test_check_rq_rejects_common_novelty_claims(novel, word):
     rq = _rq()
     body = RQBody(**{**rq["body"], "finer": {**rq["body"]["finer"], "novel": novel}})
-    assert check_rq(body, [HypothesisIn(**h) for h in rq["hypotheses"]]) == [
-        "finer.novel claims novelty; say what was not found within the searched scope"]
+    assert check_rq(body, [HypothesisIn(**h) for h in rq["hypotheses"]]) == [_refusal("finer.novel", word)]
 
 
 @pytest.mark.parametrize("novel", [
@@ -235,27 +242,27 @@ def test_check_rq_accepts_scoped_not_found_wording(novel):
     assert check_rq(body, [HypothesisIn(**h) for h in rq["hypotheses"]]) == []
 
 
-@pytest.mark.parametrize("path, text", [
-    (("three_step", "x"), "a novel aspirin dose"), (("three_step", "y"), "what was never studied"),
-    (("three_step", "z"), "the first time aspirin is dosed so"), (("problem", "condition"), "It is unexplored."),
-    (("problem", "consequences"), ["No previous research exists.", "Consequence 2."]),
-    (("finer", "interesting"), "It is unprecedented.")])
-def test_check_rq_rejects_novelty_claims_in_every_field(path, text):
+@pytest.mark.parametrize("path, text, word", [
+    (("three_step", "x"), "a novel aspirin dose", "novel"), (("three_step", "y"), "what was never studied", "never studied"),
+    (("three_step", "z"), "the first time aspirin is dosed so", "first time"),
+    (("problem", "condition"), "It is unexplored.", "unexplored"),
+    (("problem", "consequences"), ["No previous research exists.", "Consequence 2."], "No previous research"),
+    (("finer", "interesting"), "It is unprecedented.", "unprecedented")])
+def test_check_rq_rejects_novelty_claims_in_every_field(path, text, word):
     rq = _rq()
     body = json.loads(json.dumps(rq["body"]))
     body[path[0]][path[1]] = text
     out = check_rq(RQBody(**body), [HypothesisIn(**h) for h in rq["hypotheses"]])
     name = ".".join(path) + (".1" if isinstance(text, list) else "")
-    assert out == [f"{name} claims novelty; say what was not found within the searched scope"]
+    assert out == [_refusal(name, word)]
 
 
 def test_check_rq_rejects_novelty_claims_in_hypotheses():
     rq = _rq()
     hyps = [HypothesisIn(statement="A novel dose lowers the rate.", falsification="HR > 1."),
             HypothesisIn(statement="Aspirin does not lower it.", falsification="Never been studied, so none.")]
-    assert check_rq(RQBody(**rq["body"]), hyps) == [
-        "hypothesis 1.statement claims novelty; say what was not found within the searched scope",
-        "hypothesis 2.falsification claims novelty; say what was not found within the searched scope"]
+    assert check_rq(RQBody(**rq["body"]), hyps) == [_refusal("hypothesis 1.statement", "novel"),
+                                                    _refusal("hypothesis 2.falsification", "Never been studied")]
 
 
 

@@ -45,9 +45,18 @@ NOVEL = re.compile(
 
 def novelty_claims(texts: list[tuple[str, str]]) -> list[str]:
     """One failure per named text (``(name, text)``) that claims novelty; ``[]`` when none does. Every generated
-    text of a topic or an RQ goes through it: the result is a rerun reason."""
-    return [f"{name} claims novelty; say what was not found within the searched scope"
-            for name, text in texts if NOVEL.search(text or "")]
+    text of a topic, an RQ or a protocol goes through it: the result is a rerun reason. It names the words matched
+    (each once, as written) and says they are refused even negated: a reason without them made a model disclaim
+    ("this is not a claim that the review is novel") on every rerun, which the rule refuses again."""
+    out = []
+    for name, text in texts:
+        words = list(dict.fromkeys(m.group(0) for m in NOVEL.finditer(text or "")))
+        if words:
+            quoted = ", ".join(f'"{w}"' for w in words)
+            these = "these words" if len(words) > 1 else "this word"
+            out.append(f"{name} claims novelty ({quoted}): do not use {these}, not even negated or in a disclaimer; "
+                       "say what was not found within the searched scope")
+    return out
 
 QUERIES_TASK = (
     "Write 2 or 3 search queries in English that retrieve the published works closest to this text (same question, "
