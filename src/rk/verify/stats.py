@@ -19,7 +19,8 @@ one with no usable row: "missing: <fields>"), pooled: Pooled.as_dict() | None, d
 level in percent: the numbers a claim states), and for the figure ``labels``: ``{item_id: label}``. The pool needs at
 least two computable studies (the figure draws no pooled row without them). ``values`` of
 ``rk.stats.plots:map_table`` (``stt``) and ``rk.verify.stats:map_markdown`` (``fig``, a Markdown table): ``{fields,
-row_ids, extraction_attempt, table: map_table(...)}``.
+item_ids, row_ids, extraction_attempt, table: map_table(...)}`` (every group study counts; a study without a usable
+row for a field is "not reported" there).
 
 A row with a ``problem`` (e.g. marked missing) gives no value, and two usable values for one field of a study are
 refused. Pass only the rows the analysis uses (for a pool: the measure's fields of the group's studies): every input
@@ -98,16 +99,16 @@ def row_hash(row: dict) -> str:
 
 
 # ---- the code each code path runs ----
-def _studies(rows: list[dict], item_ids: list[str] | None = None) -> dict[str, dict]:
-    """item id -> {field: value} from the rows without a problem: the group's ``item_ids`` in order (a study without
-    a usable row has no field), else the rows' studies in order of first appearance."""
-    if item_ids is not None and len(set(item_ids)) != len(item_ids):
+def _studies(rows: list[dict], item_ids: list[str]) -> dict[str, dict]:
+    """item id -> {field: value} from the rows without a problem, for the group's ``item_ids`` in order (a study
+    without a usable row has no field)."""
+    if len(set(item_ids)) != len(item_ids):
         raise ValueError("a study is listed twice in the group (item_ids)")
-    out: dict[str, dict] = {i: {} for i in item_ids or ()}
+    out: dict[str, dict] = {i: {} for i in item_ids}
     for r in rows:
-        if item_ids is not None and r["item_id"] not in out:
+        if r["item_id"] not in out:
             raise ValueError(f"extraction row {r['id']} is of study {r['item_id']}, not in the group (item_ids)")
-        data = out.setdefault(r["item_id"], {})
+        data = out[r["item_id"]]
         if r["problem"] is not None:
             continue
         if r["field"] in data:
@@ -160,8 +161,8 @@ def _forest(rows: list[dict], *, measure: str, options: dict, item_ids: list[str
     return _Made(values, svg.encode("utf-8"), ".svg")
 
 
-def _map(rows: list[dict], *, fields: list) -> _Made:
-    return _Made({"table": map_table(list(_studies(rows).values()), list(fields))})
+def _map(rows: list[dict], *, fields: list, item_ids: list[str]) -> _Made:
+    return _Made({"table": map_table(list(_studies(rows, list(item_ids)).values()), list(fields))})
 
 
 def _cell(x) -> str:
@@ -185,16 +186,16 @@ def map_markdown(table: dict) -> str:
     return "\n".join(out) + "\n"
 
 
-def _map_table(rows: list[dict], *, fields: list) -> _Made:
-    made = _map(rows, fields=fields)
+def _map_table(rows: list[dict], *, fields: list, item_ids: list[str]) -> _Made:
+    made = _map(rows, fields=fields, item_ids=item_ids)
     return _Made(made.values, map_markdown(made.values["table"]).encode("utf-8"), ".md")
 
 
 CODE_PATHS: dict[str, _Code] = {
     POOL: _Code("stt", ("measure", "options", "item_ids"), _pool),
     "rk.stats.plots:forest_svg": _Code("fig", ("measure", "options", "item_ids", "labels"), _forest),
-    "rk.stats.plots:map_table": _Code("stt", ("fields",), _map),
-    "rk.verify.stats:map_markdown": _Code("fig", ("fields",), _map_table),
+    "rk.stats.plots:map_table": _Code("stt", ("fields", "item_ids"), _map),
+    "rk.verify.stats:map_markdown": _Code("fig", ("fields", "item_ids"), _map_table),
 }
 
 
@@ -262,18 +263,19 @@ def make_forest_artifact(ps: ProjectStore, rows: list[dict], measure: str, optio
                  created_by_task=created_by_task)
 
 
-def make_map_artifact(ps: ProjectStore, rows: list[dict], fields: list[str], *, stage: str, attempt: int, actor: str,
-                      created_by_task: str | None = None) -> str:
-    """The evidence map's category counts (``rk.stats.plots.map_table``) over the studies of ``rows``; ``stt_``."""
-    return _make(ps, "rk.stats.plots:map_table", rows, {"fields": list(fields)}, stage=stage, attempt=attempt,
-                 actor=actor, created_by_task=created_by_task)
+def make_map_artifact(ps: ProjectStore, rows: list[dict], fields: list[str], *, item_ids: list[str], stage: str,
+                      attempt: int, actor: str, created_by_task: str | None = None) -> str:
+    """The evidence map's category counts (``rk.stats.plots.map_table``) over the group ``item_ids`` from its
+    extraction ``rows``; ``stt_``."""
+    return _make(ps, "rk.stats.plots:map_table", rows, {"fields": list(fields), "item_ids": list(item_ids)},
+                 stage=stage, attempt=attempt, actor=actor, created_by_task=created_by_task)
 
 
-def make_map_table_artifact(ps: ProjectStore, rows: list[dict], fields: list[str], *, stage: str, attempt: int,
-                            actor: str, created_by_task: str | None = None) -> str:
+def make_map_table_artifact(ps: ProjectStore, rows: list[dict], fields: list[str], *, item_ids: list[str],
+                            stage: str, attempt: int, actor: str, created_by_task: str | None = None) -> str:
     """The same evidence map as a Markdown table (``map_markdown``); ``fig_``."""
-    return _make(ps, "rk.verify.stats:map_markdown", rows, {"fields": list(fields)}, stage=stage, attempt=attempt,
-                 actor=actor, created_by_task=created_by_task)
+    return _make(ps, "rk.verify.stats:map_markdown", rows, {"fields": list(fields), "item_ids": list(item_ids)},
+                 stage=stage, attempt=attempt, actor=actor, created_by_task=created_by_task)
 
 
 # ---- the stat_result claim template ----

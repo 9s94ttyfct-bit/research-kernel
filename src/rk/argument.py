@@ -216,13 +216,17 @@ class ArgumentService:
     def add_claim(self, c: ClaimIn, *, generator_vendor: str | None, actor: str, actor_kind: str = "agent",
                   origin: ClaimOrigin = "argument") -> str:
         """A draft claim. The claim it narrows (``narrowed_from``) and the artifacts it reports must exist; only the
-        kernel writes a ``stat_result``, links artifacts or binds numbers, a ``stat_result`` reports at least one
-        artifact, and a number binding names one of the claim's artifacts."""
+        kernel writes a ``stat_result``, links artifacts or binds numbers; a ``stat_result`` reports at least one
+        artifact and binds its numbers (``rk.verify.stats.stat_claim_text``); a number binding names one of the
+        claim's artifacts."""
         if actor_kind != "kernel" and (c.kind == "stat_result" or c.artifact_ids or c.number_bindings):
             raise ValueError("only the kernel writes a stat_result claim, links a claim to artifacts or binds its "
                              "numbers")
         if c.kind == "stat_result" and not c.artifact_ids:
             raise ValueError("a stat_result claim reports at least one artifact (artifact_ids)")
+        if c.kind == "stat_result" and not c.number_bindings:
+            raise ValueError("a stat_result claim binds each number it prints to its artifact value "
+                             "(number_bindings, from rk.verify.stats.stat_claim_text)")
         unlinked = sorted({b.artifact_id for b in c.number_bindings} - set(c.artifact_ids))
         if unlinked:
             raise ValueError(f"number bindings name artifacts the claim does not report: {unlinked}")

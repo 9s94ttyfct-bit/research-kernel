@@ -35,7 +35,7 @@ from rk.verify.hedge import (
     universal_terms,
 )
 from rk.verify.judge import JudgeOpinion, JudgeRunner, run_judges
-from rk.verify.numbers import Num, check_bound_numbers, check_numbers
+from rk.verify.numbers import Num, NumResult, check_bound_numbers, check_numbers
 from rk.verify.records import record_verification
 from rk.verify.stats import check_stats
 
@@ -126,12 +126,13 @@ def verify_support(kernel, registry, ps, claim_id: str, *, actor: str,
 
 
 def _stat_numbers(ps, claim: dict, ids: list[str]):
-    """V-NUM of a ``stat_result``: against its artifacts' ``display`` values only; with number bindings (the kernel
-    template's), each printed number against the display value it is bound to."""
+    """V-NUM of a ``stat_result``: each printed number against the artifact ``display`` value its number binding (the
+    kernel template's, ``rk.verify.stats.stat_claim_text``) names. A claim without bindings (stored before they were
+    required) grounds nothing."""
     displays = {a: (artifact(ps, a)["values"].get("display") or {}) for a in ids}
     bindings = claim.get("number_bindings") or []
     if not bindings:
-        return check_numbers(claim["text"], evidence_texts(claim), artifact_values=list(displays.values()))
+        return NumResult(ok=False, ungrounded=[], problems=["the stat_result claim has no number bindings"])
 
     def bound(b: dict) -> float | None:
         v = displays.get(b["artifact_id"], {}).get(b["key"])
@@ -195,7 +196,7 @@ def check_claim_hedge(ps, claim_id: str, *, actor: str = "kernel", record: bool 
         sources = {item for item, _ in notes.values()}
         if len(sources) < 2:
             problems.append(f"the universal {said} needs evidence from at least two sources (it has {len(sources)})")
-        stated = {t for _, text in notes.values() for t in universal_terms(text, extra=("no",))}
+        stated = {t for _, text in notes.values() for t in universal_terms(text)}
         problems += [f'the universal "{u}" is not stated by any evidence note' for u in universal
                      if not SYNONYMS[u] & stated]
     result = r.model_copy(update={"ok": not problems, "universal": universal, "problems": problems})

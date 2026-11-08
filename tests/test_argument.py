@@ -153,12 +153,14 @@ def test_withdraw_and_narrow_claims(env):
     with pytest.raises(KeyError):
         svc.add_claim(ClaimIn(text="x", narrowed_from="clm_missing"), generator_vendor=None, actor="a")
     with pytest.raises(KeyError):  # an artifact a claim cites must exist
-        svc.add_claim(ClaimIn(text="x", kind="stat_result", artifact_ids=["stt_missing"]), generator_vendor=None,
-                      actor="kernel", actor_kind="kernel", origin="synthesis")
+        svc.add_claim(ClaimIn(text="x", kind="stat_result", artifact_ids=["stt_missing"],
+                              number_bindings=[{"artifact_id": "stt_missing", "key": "k", "text": "2"}]),
+                      generator_vendor=None, actor="kernel", actor_kind="kernel", origin="synthesis")
     sid = add_artifact(ps, ArtifactIn(kind="stt", code_path="rk.stats.meta:pool", code_version="c0de",
                                       input_hashes=[], values={"k": 2}, output_path=None),
                        stage="synthesize", attempt=1, actor="kernel")
-    stat = svc.add_claim(ClaimIn(text="Pooled RR 0.62.", kind="stat_result", artifact_ids=[sid]),
+    stat = svc.add_claim(ClaimIn(text="Pooled RR 0.62.", kind="stat_result", artifact_ids=[sid],
+                                 number_bindings=[{"artifact_id": sid, "key": "estimate", "text": "0.62"}]),
                          generator_vendor=None, actor="kernel", actor_kind="kernel", origin="synthesis")
     feas = svc.add_claim(ClaimIn(text="The cells can be built in a month.", kind="feasibility"),
                          generator_vendor="openai", actor="arguer")
@@ -205,8 +207,9 @@ def test_stat_claims_and_artifact_links_are_kernel_only(env):
         for kind in ("agent", "human"):
             with pytest.raises(ValueError, match="only the kernel"):
                 svc.add_claim(c, generator_vendor=None, actor="a", actor_kind=kind, origin="synthesis")
-    k = svc.add_claim(ClaimIn(text="Pooled RR 0.62.", kind="stat_result", artifact_ids=[sid]), generator_vendor=None,
-                      actor="kernel", actor_kind="kernel", origin="synthesis")
+    k = svc.add_claim(ClaimIn(text="Pooled RR 0.62.", kind="stat_result", artifact_ids=[sid],
+                              number_bindings=[{"artifact_id": sid, "key": "estimate", "text": "0.62"}]),
+                      generator_vendor=None, actor="kernel", actor_kind="kernel", origin="synthesis")
     assert svc.get_claim(k)["artifact_ids"] == [sid]
     assert [x["id"] for x in svc.list_claims(origin="synthesis")] == [k]
 

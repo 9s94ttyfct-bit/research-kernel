@@ -254,23 +254,36 @@ def test_map_artifacts_recompute(env):
         add_extraction(ps, 1, iid, "design", design, None, True, actor="reader")
         add_extraction(ps, 1, iid, "region", region, None, True, actor="reader")
     rows = [r for r in extractions(ps, 1) if r["field"] in ("design", "region")]
-    sid = make_map_artifact(ps, rows, ["design", "region"], stage="synthesize", attempt=1, actor="kernel")
-    tid = make_map_table_artifact(ps, rows, ["design", "region"], stage="synthesize", attempt=1, actor="kernel")
+    sid = make_map_artifact(ps, rows, ["design", "region"], item_ids=list(GROUP), stage="synthesize", attempt=1,
+                            actor="kernel")
+    tid = make_map_table_artifact(ps, rows, ["design", "region"], item_ids=list(GROUP), stage="synthesize",
+                                  attempt=1, actor="kernel")
     s, t = artifact(ps, sid), artifact(ps, tid)
-    per_study = [{"design": d, "region": r} for d, r in WHERE.values()]
+    # itm_D has no design or region row: "not reported" in both
+    per_study = [{"design": d, "region": r} for d, r in WHERE.values()] + [{}]
     assert s["code_path"] == "rk.stats.plots:map_table" and s["values"]["fields"] == ["design", "region"]
+    assert s["values"]["item_ids"] == list(GROUP) and s["values"]["table"]["n"] == 4
     assert s["values"]["table"] == map_table(per_study, ["design", "region"])
+    assert s["values"]["table"]["fields"]["region"]["not reported"] == 2
     assert t["kind"] == "fig" and t["path"].endswith(".md")
     md = (ps.root / t["path"]).read_text(encoding="utf-8")
-    assert "| RCT | 2 |" in md and "| not reported | 1 |" in md
+    assert "| RCT | 2 |" in md and "| not reported | 2 |" in md
+    with pytest.raises(ValueError, match="not in the group"):
+        make_map_artifact(ps, rows, ["design"], item_ids=["itm_A"], stage="synthesize", attempt=1, actor="kernel")
     assert check_stats(ps, sid, actor="kernel").ok and check_stats(ps, tid, actor="kernel").ok
     mark_extraction(ps, rows[0]["id"], "missing: x", actor="kernel")
     assert not check_stats(ps, sid, actor="kernel").ok and not check_stats(ps, tid, actor="kernel").ok
 
 
-def _stat(svc, sid: str, text: str, bindings=()) -> str:
+def _stat(svc, sid: str, text: str, bindings) -> str:
     return svc.add_claim(ClaimIn(text=text, kind="stat_result", artifact_ids=[sid], number_bindings=list(bindings)),
                          generator_vendor=None, actor="kernel", actor_kind="kernel", origin="synthesis")
+
+
+def _bind(sid: str, text: str, *keys: str) -> list[dict]:
+    """Bind the numbers of ``text``, in order, to ``keys``."""
+    return [{"artifact_id": sid, "key": key, "text": n.text}
+            for key, n in zip(keys, extract_numbers(text), strict=True)]
 
 
 def test_stat_result_claim_needs_an_artifact_and_never_calls_judges(env, monkeypatch):
@@ -280,6 +293,9 @@ def test_stat_result_claim_needs_an_artifact_and_never_calls_judges(env, monkeyp
     with pytest.raises(ValueError, match="artifact"):
         svc.add_claim(ClaimIn(text="Pooled RR 0.62.", kind="stat_result"), generator_vendor=None, actor="kernel",
                       actor_kind="kernel", origin="synthesis")
+    with pytest.raises(ValueError, match="number_bindings"):
+        svc.add_claim(ClaimIn(text="Pooled RR 0.62.", kind="stat_result", artifact_ids=[_stt(ps, _rows(ps))]),
+                      generator_vendor=None, actor="kernel", actor_kind="kernel", origin="synthesis")
 
     def no_judges(*a, **kw):
         raise AssertionError("a stat_result claim is never judged")
@@ -299,7 +315,8 @@ def test_stat_result_claim_needs_an_artifact_and_never_calls_judges(env, monkeyp
     assert '"by":"V-STATS"' in details
 
     d = artifact(ps, sid)["values"]["display"]
-    wrong = _stat(svc, sid, f"Pooled RR 0.99 ({d['k']} studies).")
+    wrong_text = f"Pooled RR 0.99 ({d['k']} studies)."
+    wrong = _stat(svc, sid, wrong_text, _bind(sid, wrong_text, "estimate", "k"))
     r = verify_support(k, reg, ps, wrong, actor="kernel")
     assert r.verdict == "unsupported" and [n.text for n in r.ungrounded_numbers] == ["0.99"]
 
@@ -340,12 +357,12 @@ def test_stat_claim_template_binds_each_number(env):
     swapped = [*bindings[:2], {**bindings[2], "key": "ci_high"}, {**bindings[3], "key": "ci_low"}, *bindings[4:]]
     assert verdict(text, swapped) == "unsupported"
     assert verdict(text, bindings[:-1]) == "unsupported"
-    # unbound: grounded only against the display values, rounded to the written digit only where that digit is no
-    # larger than the value ("0" is not 0.44, "1" not 0.12 or 1.66)
-    assert verdict(f"Pooled RR {bindings[0]['text']} ({d['k']} studies).", ()) == "supported"
-    assert verdict(f"Pooled RR 0 ({d['k']} studies).", ()) == "unsupported"
-    assert verdict(f"Pooled RR 1 ({d['k']} studies).", ()) == "unsupported"
-    assert verdict(f"Pooled RR {math.log(d['estimate']):.2f}.", ()) == "unsupported"  # pooled.estimate: not display
+    # rounded to the written digit only where that digit is no larger than the value ("0" is not 0.44, "1" not 0.12
+    # or 1.66), and only display values count (the log-scale pooled estimate is not one)
+    for est, expected in ((bindings[0]["text"], "supported"), ("0", "unsupported"), ("1", "unsupported"),
+                          (f"{math.log(d['estimate']):.2f}", "unsupported")):
+        t = f"Pooled RR {est} ({d['k']} studies)."
+        assert verdict(t, _bind(sid, t, "estimate", "k")) == expected, est
 
     with pytest.raises(ValueError, match="only the kernel"):
         svc.add_claim(ClaimIn(text=text, number_bindings=bindings), generator_vendor=None, actor="a")

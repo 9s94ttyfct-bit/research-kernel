@@ -9,6 +9,7 @@ from rk.ids import new_id
 from rk.production.artifacts import ArtifactIn, add_artifact
 from rk.store.events import NewEvent
 from rk.verify.hedge import hedge_level, universal_terms
+from rk.verify.numbers import extract_numbers
 from rk.verify.support import check_claim_hedge, gate_claims
 
 from .discovery_fakes import make_project
@@ -53,12 +54,20 @@ def test_universal_terms_skip_negated_hedged_and_idiomatic_uses():
     assert universal_terms("Overall, the allowed catalysts were nonetheless tested by everyone.") == []
     for text in ("Not all catalysts worked.", "Almost every trial agreed.", "It nearly always works.",
                  "Virtually none failed.", "It hardly ever fails, which is practically never.",
-                 "It doesn't always work.", "All-cause mortality fell.", "Never-smokers were excluded.",
-                 "In all, 12 trials were found.", "We found 12 trials in all.", "Doses were given every other day."):
+                 "It doesn't always work.", "It cannot always work.", "It can't always work.",
+                 "All-cause mortality fell.", "Never-smokers were excluded.", "In all, 12 trials were found.",
+                 "We found 12 trials in all.", "Doses were given every other day.", "No trial reported harm."):
         assert universal_terms(text) == [], text
     assert universal_terms("In all patients the dose was safe.") == ["all"]
-    assert universal_terms("No trial reported harm.", extra=("no",)) == ["no"]
-    assert universal_terms("No trial reported harm.") == []
+    assert universal_terms("In all 12 trials the dose was safe.") == ["all"]
+
+
+def test_hedge_level_ignores_negated_hedged_and_idiomatic_categorical_words():
+    assert hedge_level("All catalysts worked.") == 3 and hedge_level("This proves it.") == 3
+    for text in ("Not all catalysts worked.", "All-cause mortality fell.", "This is not proven.",
+                 "It cannot always work.", "In all, 12 trials were found.", "Nearly all trials agreed."):
+        assert hedge_level(text) == 2, text
+    assert hedge_level("Not all trials agreed, but this one proves it.") == 3  # one positive use is enough
 
 
 def test_hedge_overstated_and_universal_rule(env):
@@ -91,17 +100,17 @@ def test_hedge_overstated_and_universal_rule(env):
     negated = _claim(ps, svc, "All copper catalysts reduced CO2.", "Copper catalyst A reduced CO2.",
                      "Not all copper catalysts reduced CO2.")
     assert not check_claim_hedge(ps, negated, actor="kernel").ok
-    # none / never / no are one declared synonym group; a paraphrase counts by its source span
-    none = _claim(ps, svc, "None of the catalysts failed.", "No catalyst failed in trial B.")
+    # none and never are one declared synonym group; a paraphrase counts by its source span
+    none = _claim(ps, svc, "None of the catalysts failed.", "Catalyst B did not fail.")
     svc.link_evidence(EvidenceIn(claim_id=none, note_ids=[_note(ps, "Catalysts never failed in the trials.",
                                                                  kind="paraphrase")]), actor="arguer")
     assert check_claim_hedge(ps, none, actor="kernel").ok
-    # a claim whose quantifier is negated or idiomatic states no universal (one note; the lexicon still scores the
-    # word "all" as categorical, so the note carries it too)
-    assert check_claim_hedge(ps, _claim(ps, svc, "Not all copper catalysts reduced CO2.",
-                                        "Not all copper catalysts reduced CO2 in the trials."), actor="k").ok
-    assert check_claim_hedge(ps, _claim(ps, svc, "All-cause mortality was reported.",
-                                        "All-cause mortality fell in the trial."), actor="k").ok
+    # "no" is not in the group
+    assert not check_claim_hedge(ps, _claim(ps, svc, "None of the catalysts failed.", "Catalyst B did not fail.",
+                                            "No catalyst failed in trial C."), actor="k").ok
+    # a claim whose quantifier is negated or idiomatic states no universal, nor a categorical level
+    assert check_claim_hedge(ps, _claim(ps, svc, "Not all copper catalysts reduced CO2.", plain), actor="k").ok
+    assert check_claim_hedge(ps, _claim(ps, svc, "All-cause mortality was reported.", plain), actor="k").ok
 
     bare = _claim(ps, svc, "Copper catalysts reduce CO2.")
     r = check_claim_hedge(ps, bare, actor="kernel")
@@ -115,8 +124,9 @@ def test_hedge_overstated_and_universal_rule(env):
                                       values={"k": 3}, output_path=None), stage="synthesize", attempt=1, actor="kernel")
 
     def stat(text: str) -> str:
-        return svc.add_claim(ClaimIn(text=text, kind="stat_result", artifact_ids=[sid]), generator_vendor=None,
-                             actor="kernel", actor_kind="kernel", origin="synthesis")
+        bindings = [{"artifact_id": sid, "key": "k", "text": n.text} for n in extract_numbers(text)]
+        return svc.add_claim(ClaimIn(text=text, kind="stat_result", artifact_ids=[sid], number_bindings=bindings),
+                             generator_vendor=None, actor="kernel", actor_kind="kernel", origin="synthesis")
 
     assert check_claim_hedge(ps, stat("Pooled RR 0.62 (3 studies)."), actor="kernel").ok
     assert not check_claim_hedge(ps, stat("All 3 studies favoured treatment."), actor="kernel").ok
@@ -171,7 +181,9 @@ def test_gate_claims_lists_each_problem(env):
     # a supported stat_result whose artifact no longer recomputes (here: made by no known code)
     sid = add_artifact(ps, ArtifactIn(kind="stt", code_path="rk.stats.pool:pool", code_version="v", input_hashes=[],
                                       values={"k": 3}, output_path=None), stage="synthesize", attempt=1, actor="kernel")
-    stat = svc.add_claim(ClaimIn(text="Pooled RR 0.62 (3 studies).", kind="stat_result", artifact_ids=[sid]),
+    stat = svc.add_claim(ClaimIn(text="Pooled RR 0.62 (3 studies).", kind="stat_result", artifact_ids=[sid],
+                                 number_bindings=[{"artifact_id": sid, "key": "estimate", "text": "0.62"},
+                                                  {"artifact_id": sid, "key": "k", "text": "3"}]),
                          generator_vendor=None, actor="kernel", actor_kind="kernel", origin="synthesis")
     svc.set_claim_status(stat, "supported", verification_id="ver_X")
 
