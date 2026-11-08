@@ -11,7 +11,7 @@ from rk.canon import canonical_json, sha256_hex
 from rk.discovery.store import hypotheses
 from rk.production.artifacts import ArtifactIn, add_artifact, artifact, artifacts
 from rk.production.models import DesignIn
-from rk.production.store import design, freeze_design, latest_design, set_design
+from rk.production.store import design, freeze_design, set_design
 from rk.store.projections import rebuild
 
 from .discovery_fakes import add_an_rq, freeze_an_rq, make_project
@@ -103,7 +103,7 @@ def test_design_freeze_hash_is_canonical(ps):
     (h,) = hypotheses(ps, rq_id)
     raw = _design(h["id"])
     did = set_design(ps, DesignIn.model_validate(raw), stage="design", attempt=1, actor="ideator")
-    assert did.startswith("dsg_") and latest_design(ps)["id"] == did
+    assert did.startswith("dsg_")
     d = design(ps, did)
     assert (d["status"], d["frozen_hash"], d["stage"], d["attempt"]) == ("draft", None, "design", 1)
     assert d["body"]["items"][0]["measurements"][1]["unit"] is None
@@ -112,7 +112,7 @@ def test_design_freeze_hash_is_canonical(ps):
     reordered = json.loads(json.dumps(raw, sort_keys=True))
     reordered = {k: reordered[k] for k in reversed(list(reordered))}
     other = set_design(ps, DesignIn.model_validate(reordered), stage="design", attempt=2, actor="ideator")
-    assert latest_design(ps)["id"] == other
+    assert other != did and design(ps, other)["attempt"] == 2
     h1 = freeze_design(ps, did, actor="kernel")
     assert h1 == sha256_hex(canonical_json(DesignIn.model_validate(raw).model_dump(mode="json")))
     assert freeze_design(ps, other, actor="kernel") == h1

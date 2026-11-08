@@ -122,7 +122,7 @@ P2 asks you at the weak spots; P1 votes and records "not reviewed by a human".
 - `designs` table (`dsg_`), with only the store in this task (worker in Task 6):
   - `DesignIn{items: list[DesignItem], expected_results: str, alternative_explanations: list[str]}`;
   - `DesignItem{id: str, kind: Literal["experiment","computation","observation"], sample: str, controls: list[str], measurements: list[Measurement{id, what, instrument, unit?}], analysis: str, data_source: str, hypothesis_ids: list[str]}`;
-  - `set_design(ps, d, *, stage, attempt, actor) -> dsg_`, `freeze_design(ps, dsg_id, *, actor) -> frozen_hash` (sha256 of the canonical JSON), `design(ps, dsg_id)`, `latest_design(ps)`.
+  - `set_design(ps, d, *, stage, attempt, actor) -> dsg_`, `freeze_design(ps, dsg_id, *, actor) -> frozen_hash` (sha256 of the canonical JSON), `design(ps, dsg_id)`; `rk.production.design.approved_design(ps)` (the design the passed design attempt approved; fix wave 1 replaced `latest_design`, which returned any design row, an orphan one included).
 
 - [ ] **Step 1: Failing tests:**
   - `test_new_back_edges_and_argue_is_open`;

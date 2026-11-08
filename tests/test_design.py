@@ -34,6 +34,7 @@ from rk.production.argue import ArgueWorker
 from rk.production.design import (
     DesignDraft,
     DesignWorker,
+    approved_design,
     design_limitations,
     design_notes,
     feasibility_claims,
@@ -585,3 +586,17 @@ def test_interrupted_narrowing_resumes_with_its_rewrite(env):
     svc = ArgumentService(ps)
     assert (svc.get_claim(original)["status"], svc.get_claim(rewrite)["status"]) == ("withdrawn", "supported")
     assert _feasibility_ids(ps) == sorted([original, rewrite])
+
+
+def test_approved_design_is_the_one_the_passed_attempt_approved(env):
+    """``approved_design``: the design the passed attempt approved (its ``approved`` note), not merely the latest
+    design row (e.g. one an interrupted approval left)."""
+    k, ps, lib = env
+    _argued(env)
+    o, run_id = stage_run(k, ps, lib, "design", _exec([plan()]))
+    assert approved_design(ps) is None
+    assert o.step("demo", run_id, actor="tester") == "done"
+    approved = approved_design(ps)
+    assert approved["id"] == _approved(ps, 1)["design_id"] and approved["status"] == "frozen"
+    later = set_design(ps, DesignIn.model_validate(approved["body"]), stage="design", attempt=2, actor="ideator")
+    assert later != approved["id"] and approved_design(ps)["id"] == approved["id"]

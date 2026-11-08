@@ -184,6 +184,17 @@ def _approved(ps: ProjectStore, attempt: int) -> dict | None:
     return done[-1] if done else None
 
 
+def approved_design(ps: ProjectStore) -> dict | None:
+    """The design the stage approved: the ``approved`` note of design's passed attempt -> its design row (frozen);
+    ``None`` while design has not passed (or was reopened). Never just the latest design row, which may be one an
+    interrupted approval left."""
+    row = stage_row(ps, STAGE)
+    if row is None or row["status"] != "passed":
+        return None
+    done = _approved(ps, row["passed_attempt"])
+    return design(ps, done["design_id"]) if done else None
+
+
 def _previous(ps: ProjectStore) -> dict | None:
     """The latest draft of the stage when it was not approved (the design a rerun revises), else ``None``."""
     r = ps.db.execute("SELECT payload FROM events WHERE type='design.noted' AND json_extract(payload, '$.kind')='draft' "

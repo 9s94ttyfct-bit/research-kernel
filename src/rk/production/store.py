@@ -271,12 +271,6 @@ def design(ps: ProjectStore, design_id: str) -> dict | None:
     return rows[0] if rows else None
 
 
-def latest_design(ps: ProjectStore) -> dict | None:
-    """The latest design set, whatever its attempt, else ``None``."""
-    rows = query_rows(ps, "SELECT * FROM designs ORDER BY rowid DESC LIMIT 1", (), ("body",))
-    return rows[0] if rows else None
-
-
 def records(ps: ProjectStore, attempt: int) -> list[dict]:
     return query_rows(ps, "SELECT * FROM records WHERE attempt=? ORDER BY rowid", (attempt,))
 
