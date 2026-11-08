@@ -763,9 +763,10 @@ async function poolingCard(c, answer) {
 }
 
 // uncertain_support of synthesize (its claims that fail the gate) and of argue's final review (the claims of the
-// argument and the findings it rests on that fail its gate, and whether the main claim answers the research question).
-// Each claim offers the answers the checkpoint allows it (`claim_choices`: withdraw always, supported only when its
-// only problem is its V-SUPPORT status). An older uncertain_support without listed claims gets the plain card.
+// argument and the findings it rests on that fail its gate, and whether the main claim answers the research question,
+// with the Arguer's failed self-check shown as an input of that answer). Each claim offers the answers the checkpoint
+// allows it (`claim_choices`: withdraw always, supported only when its only problem is its V-SUPPORT status). An older
+// uncertain_support without listed claims gets the plain card.
 const REVIEW_CHOICES = { supported: "Supported", withdraw: "Withdraw" };
 async function uncertainCard(c, answer) {
   const o = c.options;
@@ -805,6 +806,7 @@ async function uncertainCard(c, answer) {
     rqAsked ? [el("h4", {}, "Research question"), el("p", { class: "rq-sentence" }, d.question || ""),
       el("h4", {}, "Main claim"), main ? claimBlock(main) : el("p", { class: "error" }, "The main claim was not found."),
       (o.main_problems || []).length ? el("p", { class: "hint warn" }, "No answer here mends the main claim's own problems above: say whether it answers the research question, and argue again with your comment so the Arguer revises it.") : null,
+      o.arguer_self_check && o.arguer_self_check.ok === false ? el("p", { class: "hint warn self-check" }, "The Arguer's own check says the main claim does not answer the research question: ", o.arguer_self_check.reason || "no reason given") : null,
       el("h4", {}, "Does the main claim answer the research question?"),
       choices(`rq-${c.id}`, "Does the main claim answer the research question?",
         [["yes", "Yes, it answers the research question", "Yes, it answers the research question"],

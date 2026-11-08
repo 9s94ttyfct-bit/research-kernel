@@ -600,6 +600,23 @@ def test_final_review_card_answers_reach_the_worker(page, served):
 
 @pytest.mark.browser
 @pytest.mark.parametrize("served", [{"paper_type": "critical_review"}], indirect=True)
+def test_final_review_card_shows_the_arguers_failed_self_check(page, served):
+    """I5: the Arguer's failed self-check is an input of your final review: the card shows it (as text) next to the
+    research question choice, not only in the checkpoint's full text."""
+    ps = served.ps
+    _synthesize(served.env)
+    check = {"ok": False, "reason": "It says <b>who</b> was studied, not whether aspirin helps."}
+    _start(served, "argue", argue_exec([draft(answers=check)], [critique()]))
+    cp, card = _show(page, ps, "uncertain_support")
+    assert cp["options"]["arguer_self_check"] == check
+    shown = card.locator(".self-check")
+    assert shown.count() == 1 and check["reason"] in shown.inner_text()
+    assert shown.locator("b").count() == 0
+    assert page.errors == []
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("served", [{"paper_type": "critical_review"}], indirect=True)
 @pytest.mark.parametrize(("button", "decision"), [("Claim a holds", "a_holds"), ("Claim b holds", "b_holds"),
                                                   ("Both stand, contested", "both_contested")])
 def test_conflict_card_answers_reach_the_worker(page, served, button, decision):
