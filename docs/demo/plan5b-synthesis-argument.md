@@ -55,8 +55,10 @@ PRISMA (`rk prisma`, attempt 2): identified 1,468, duplicates removed 753, scree
 fetched again with `rk fetch <item>` (same Europe PMC JATS snapshots). RESTORE's layer, built in Plan 5a before the
 table fix, went from 32,380 characters without `body_chars` to 39,520 with `body_chars` 32,380 and its tables
 appended. Khaled 2025's layer had been built during this search_screen with the fixed code: 35,884 characters,
-`body_chars` 30,785, "Table 3" present, and the table row "Melatonin group (n = 43) | Placebo group (n = 42)" at
-p1 [30865:30889], after the body. Then `rk run melatonin --until argue` started read_extract (21:31 UTC).
+`body_chars` 30,785, and "Table 3. Incidence of postoperative delirium." with "Melatonin Group (n = 43) | Placebo
+Group (n = 42)" (the JATS spaces around "=" are U+2005) and "Incidence of POD, n (%) | 7 (16.3) | 2 (4.9)" at
+character 33,617, after the body (Table 1's baseline row "Melatonin group (n = 43) | Placebo group (n = 42)" is at
+p1 [30865:30889]). Then `rk run melatonin --until argue` started read_extract (21:31 UTC).
 
 read_extract: 50 values with a verified quote on the full texts (45 values, 5 `not_reported`), 0 values with a
 problem; 18 Reader notes were rejected as "not a note of this study" (prose where note ids belong). **Khaled 2025's
@@ -66,29 +68,34 @@ and 1). So both studies have computable counts.
 ### Synthesize (attempts 1–4)
 
 **Method: narrative, not meta-analysis.** Attempt 2 (after `stats_validated`) put both trials in one group (incident
-delirium, RR) and did not pool it: "Only two studies report the outcome, below the pre-specified minimum of three, so
-no pooled estimate is produced and the synthesis stays narrative (SWiM). The protocol also pre-specifies pooling
-separately by setting …". The fallback is recorded as an **analysis deviation** (version 12 → 12), again in
+delirium, RR), and the Arguer's pooling plan called the group not comparable, citing the protocol minimum: "Only two
+studies report the outcome, below the pre-specified minimum of three, so no pooled estimate is produced and the
+synthesis stays narrative (SWiM). The protocol also pre-specifies pooling separately by setting …". So the kernel
+did not pool for that reason (not comparable), before its own typed `min_studies` check was reached; the outcome is
+the one the frozen protocol calls for. The fallback is recorded as an **analysis deviation** (version 12 → 12), again in
 attempts 3 and 4. No `pooling_approval` opened, no `stt_`/`fig_` artifact was made (0 artifacts), so **V-STATS had
 nothing to check**.
 
 Assessment (attempt 2): Al Alawi 2026 accurate 2, authoritative 1, clear 2, precise 0, relevant 2, representative 1,
 sufficient 1; Khaled 2025 accurate 1, authoritative 1, clear 2, precise 0, relevant 2, representative 1, sufficient 1.
 
-**Findings and verdicts.** Judged by `judge` and `judge_2`; no finding was judged supported by both, so every finding
-went to the stand-in in `uncertain_support` (the P2 review now lists unsupported findings too, and withdraws them):
+**Findings and verdicts.** Judged by `judge` and `judge_2`. Only one finding was supported by both (attempt 4: "In
+the perioperative pilot, incident delirium was recorded in 7 participants on melatonin and 2 on placebo …"); every
+other finding went to the stand-in in `uncertain_support` (the P2 review now lists unsupported findings too and
+offers withdrawal for them; the stand-in chose it):
 
 | Attempt | Findings | V-SUPPORT | V-HEDGE | Stand-in |
 |---|---|---|---|---|
 | 1 | 5 | 4 uncertain, 1 unsupported | pass | rerun (statistics not validated in this home) |
 | 2 | 8 | 7 uncertain, 1 unsupported | 1 overstated ("too small … to establish whether") | 7 supported, 1 withdrawn |
 | 3 | 7 | 7 uncertain | pass | 7 supported |
-| 4 | 8 | 6 uncertain, 2 unsupported | pass | 6 supported, 2 withdrawn |
+| 4 | 9 | 1 supported, 6 uncertain, 2 unsupported | pass | 6 supported, 2 withdrawn |
 
 The supported findings say what the two trials show: oral melatonin, not ramelteon; 2/55 vs 1/54 and 7/43 vs 2/42
 delirium; no serious adverse events, no sedation; no ICU or community-dwelling population; the evidence cannot show
 whether the ICU benefit carries over, nor answer the question for ramelteon or community-dwelling adults.
-**Withdrawn: 3** (the overstated one and two the judges found unsupported). **Narrowed: none.**
+**Withdrawn: 3** (the overstated one and two the judges found unsupported; the review offered withdrawal and the
+stand-in chose it). **Narrowed: none.**
 
 ### Argue: three attempts, no round
 
@@ -98,11 +105,13 @@ Each argue attempt ended within about a minute, before its first round was store
 1. 22:25: "no synthesis finding says whether [the 2019 ramelteon RCT named in eligibility I6] meets eligibility or
    what it found … No finding covers community-dwelling populations, and none covers the ICU trials for contrast."
 2. 22:30: the same, plus "any pooled non-ICU estimate".
-3. 22:39: the same four items; the edge argue→synthesize was used 2 of 2, so P2 opened `stage_blocked`.
+3. 22:39: four items: the 2019 ramelteon trial (eligibility and data), whether any community-dwelling trial exists,
+   the ICU trial results for contrast, and whether exogenous melatonin counts as a melatonin receptor agonist; the
+   edge argue→synthesize was used 2 of 2, so P2 opened `stage_blocked`.
 
 The 2019 trial is outside the frozen 2024-to-now window (I6 is a leftover of the earlier protocol), the included
-evidence has no ramelteon or community-dwelling trial, and pooling two studies is ruled out by `min_studies` 3; the
-stand-in said so in each synthesize answer, and attempt 4 added a finding saying exactly that. The Arguer asked
+evidence has no ramelteon or community-dwelling trial, and a pool of two studies is below the protocol's minimum of
+three; the stand-in said so in each synthesize answer, and attempt 4 added a finding saying exactly that. The Arguer asked
 again. So **no argument rounds, objections, warrant tests, conflicts or P2 final review were produced**; the
 `stage_blocked` checkpoint was left open (the run can resume from it).
 
@@ -129,14 +138,15 @@ past argue.
 ### Wall time
 
 Session 1 of run `run_01M6YH4TG4B8V42G81Q6W4W7WD` and the run before it (`--until search_screen`): 19:20:34 –
-22:39:45 UTC (3 h 19 min). protocol 3 min including three answers; search_screen 2 h 7 min (19:23–21:30), mostly
+22:39:09 UTC (3 h 19 min). protocol 3 min including three answers; search_screen 2 h 7 min (19:23–21:30), mostly
 the Haiku (about 19:35–20:21) and codex (about 20:35–21:25) hourly caps; read_extract 2 min (21:31–21:33); synthesize
 attempt 2 49 min (21:36–22:25, mostly the judge's codex cap); argue attempts under 1 min each.
 
 ### What was met, and what was not
 
-- **Met: re-extraction with Khaled 2025's arm sizes** (43 and 42 from the rebuilt layer's table) **and the synthesis
-  the frozen protocol calls for** (narrative, k=2 below `min_studies` 3, analysis deviation recorded).
+- **Met: re-extraction with Khaled 2025's arm sizes** (43 and 42 from the rebuilt layer's tables) **and the synthesis
+  the frozen protocol calls for** (narrative for k=2, below the protocol minimum of 3, which the Arguer cited when it
+  called the group not comparable; analysis deviation recorded).
 - **Not met: argue live with rounds.** argue ran live three times, but produced no rounds, objections, warrant tests,
   conflicts or final review (above).
 - **Not met: design live** (shown by tests only).
@@ -146,13 +156,14 @@ attempt 2 49 min (21:36–22:25, mostly the judge's codex cap); argue attempts u
 
 1. **A resumed search_screen stored its records again** (first rerun home; fixed, above).
 2. **The Arguer's `needs_synthesis` request loops**: it asked three times for findings the included evidence cannot
-   give (a trial outside the date window, absent populations, a pool the protocol forbids). Nothing checks whether
+   give (a trial outside the date window, absent populations, ICU results, and in attempt 2 a pool below the protocol
+   minimum). Nothing checks whether
    synthesize can supply what is asked, and the stand-in's comments did not reach the Arguer's decision; the edge
    limit stopped it.
 3. **Protocol leftovers**: eligibility I6 still names the 2019 trial the 2024-to-now window excludes; this is what the
    Arguer kept asking about.
-4. **Judges again answered "partial"**: no finding was supported by both judges in any attempt, so every finding went
-   to the stand-in (23 decisions over the three reviews after attempt 1).
+4. **Judges again answered "partial"**: one finding in four attempts was supported by both judges, so nearly every
+   finding went to the stand-in (23 decisions over the three reviews after attempt 1).
 5. **`stats_validated` lives in the home's config**: a copied home without it falls back to narrative; the first
    synthesize attempt was spent on that.
 6. **Hourly caps dominate** again: 38 `rate_capped` failures; most of the 3 h 19 min was waiting.

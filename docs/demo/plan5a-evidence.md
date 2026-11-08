@@ -466,4 +466,5 @@ the fix waves"). Only these numbers changed:
 - **Extraction** (`rk extraction show`, read on text layers rebuilt with `rk fetch` before read_extract): 50 values
   with a verified quote (5 of them `not_reported`), 0 values with a problem. Khaled 2025's `n_intervention` 43 and
   `n_control` 42 are now extracted (the quote "Melatonin group (n = 43) | Placebo group (n = 42)" comes from the
-  appended table); 18 Reader notes were rejected as "not a note of this study" (prose where note ids belong).
+  appended Table 1; Table 3's "Melatonin Group (n = 43)" row with the event counts is appended too); 18 Reader notes
+  were rejected as "not a note of this study" (prose where note ids belong).
