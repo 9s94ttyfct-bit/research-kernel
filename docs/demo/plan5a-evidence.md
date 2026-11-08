@@ -1,6 +1,6 @@
 # Plan 5a demo: from a field to a frozen protocol and the record cap, cloud models only (2026-11-07/08)
 
-Recorded on macOS arm64 with a scratch `RK_HOME` (`<scratch>` below), `rk serve` started by hand in the background
+Recorded on macOS arm64 with a scratch `RK_HOME`, `rk serve` started by hand in the background
 (`RK_BROWSER_HEADLESS=1`), and the live APIs (OpenAlex, Europe PMC, PubMed, Crossref). Everything below comes from this
 run's event log, its database and CLI output. Item, gap, topic and checkpoint ids are the run's own.
 
@@ -10,7 +10,11 @@ recorded below with its reason. In real use only you answer them.
 **How far it got.** One D2 run went from intake through discovery (RQ frozen), the protocol (frozen, record cap 300)
 and the first search of search_screen. That search passed the record cap, so the stage went back to protocol, as
 designed. The demo stopped there: no title/abstract screening, no full text and no extraction ran. Why, and what
-would have to change, is under "What failed or was weak". The record cap was 150 at first, then 300 (see Protocol).
+would have to change, is under "What failed or was weak". The stand-in first asked for a 150-record budget, then 300;
+the cap was set to 300 at approval (the default is 3000 until then; see Protocol).
+
+**Screening, full text and extraction were not demonstrated here.** They are run live in the Plan 5b demo, which
+reruns this project from protocol with a larger cap.
 
 ## Setup: models, and no local model
 
@@ -190,8 +194,8 @@ it does not answer. The RQ was frozen at 02:41 UTC (`rq.frozen`, text hash `425f
 
 | Attempt | Outcome |
 |---|---|
-| 1–5 | rerun: "prisma_p.rationale claims novelty" (attempts 3–5 each after a `stage_blocked` answered `allow_one_more`) |
-| 6 | passed the checks → `protocol_approval`; answer: revise (record budget) |
+| 1–5 | rerun: "prisma_p.rationale claims novelty" (attempts 2 and 3 were the two free reruns; attempts 4 and 5 each ran after a `stage_blocked` answered `allow_one_more`) |
+| 6 | ran after a third `allow_one_more`; passed the checks → `protocol_approval`; answer: revise (record budget) |
 | 7 | passed → `protocol_approval`; answer: revise (record budget) |
 | 8 | passed → `protocol_approval`; answer: approve with `record_cap` 300 → frozen as version 9 |
 
@@ -257,7 +261,9 @@ stage.reopened  protocol (by search_screen->protocol, 1 of 2)
 ```
 
 The search stopped after the first query, as soon as the deduplicated works passed the cap: 356 records, 40
-duplicates, 316 distinct. No screening ran. The search_screen→protocol back-edge reopened protocol (attempt 9); its
+duplicates, 316 distinct. The search lines list 155 + 199 = 354 works; one work was stored as 4 records although only
+2 sources ran, which accounts for the 2 extra rows (cause not investigated; listed under weak points). No screening ran.
+The search_screen→protocol back-edge reopened protocol (attempt 9); its
 Ideator task ran, and its Scout task came back `rate_capped` (Haiku's 30 calls an hour were used). The run was then
 cancelled (03:02 UTC), which ended the demo.
 
@@ -323,6 +329,9 @@ source would be needed to run a narrow, affordable systematic review end to end.
 
 **The record-cap probe leaves out PubMed** and overestimates the others (no date range, duplicates count again). The
 stand-in needed its own hit counts to see that 300 would not hold.
+
+**One work was stored as 4 records from 2 sources** (`records` has 356 rows for the 354 works the two searches listed).
+The cause was not investigated; it needs a look at record creation per source.
 
 **A revise uses up the protocol's reruns.** In P2 each `protocol_approval` revise counted on protocol→protocol, which
 the novelty loop had already used up, so each revise also needed a `stage_blocked` answer (11 checkpoints in all).

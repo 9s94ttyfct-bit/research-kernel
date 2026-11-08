@@ -50,7 +50,7 @@ def novelty_claims(texts: list[tuple[str, str]]) -> list[str]:
     ("this is not a claim that the review is novel") on every rerun, which the rule refuses again."""
     out = []
     for name, text in texts:
-        words = list(dict.fromkeys(m.group(0) for m in NOVEL.finditer(text or "")))
+        words = list(dict.fromkeys(" ".join(m.group(0).split()) for m in NOVEL.finditer(text or "")))
         if words:
             quoted = ", ".join(f'"{w}"' for w in words)
             these = "these words" if len(words) > 1 else "this word"

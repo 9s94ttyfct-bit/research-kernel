@@ -19,7 +19,9 @@ RK_HOME_AT_START = os.environ.get("RK_HOME")
 def _temp_rk_home(tmp_path_factory, monkeypatch):
     """Every test runs with RK_HOME on a temp directory of its own, so nothing a test saves (config.toml, the
     kernel database, eval caches) reaches the real ``$RK_HOME`` or ``~/ResearchKernel``. ``tmp_home`` and tests
-    that set RK_HOME themselves override it. The directory sits outside ``tmp_path``, which stays empty."""
+    that set RK_HOME themselves override it. The directory sits outside ``tmp_path``, which stays empty.
+    Fixtures of a broader scope run before this one, so a session- or module-scoped fixture, or a subprocess started
+    with an explicit ``env``, must set RK_HOME itself."""
     monkeypatch.setenv("RK_HOME", str(tmp_path_factory.mktemp("rk-home")))
 
 
