@@ -97,7 +97,8 @@ DRAFT_TASK = (
     "Draft the review protocol for the frozen research question, its hypotheses and topic, for the intake's paper type "
     "and audience: eligibility (include and exclude criteria, each with a short id and its text), the extraction "
     "schema (each field named, described and typed: text, number or category with its categories, and a unit where "
-    "there is one), the synthesis plan (a meta-analysis with its typed effect_measure, pool_model, hksj and pi_df) "
+    "there is one), the synthesis plan (a meta-analysis with its typed outcomes, effect_measure, pool_model, hksj and "
+    "pi_df) "
     "and, for a systematic review, the PRISMA-P items (rationale, objectives, "
     "selection process, data collection process, risk of bias). Never claim that the question or the review is novel. "
     "When a previous draft is given, revise it: change only what the guidance asks for and keep the rest. When a frozen "
@@ -159,6 +160,7 @@ def _free_texts(body: Protocol) -> list[tuple[str, str]]:
     if body.synthesis_plan is not None:
         out += [(f"synthesis_plan.{k}", v) for k, v in body.synthesis_plan.model_dump().items()
                 if isinstance(v, str)]
+        out += [(f"synthesis_plan.outcomes[{i}]", o) for i, o in enumerate(body.synthesis_plan.outcomes)]
     out += [(f"prisma_p.{k}", v) for k, v in (body.prisma_p or {}).items()]
     return out
 
@@ -174,7 +176,8 @@ def check_protocol(body: Protocol, paper_type: str) -> list[str]:
     Every type: the question, a query and a source, an include criterion (the selection principles), named and
     distinct extraction fields, no novelty claim in the Ideator's texts. The systematic and scoping reviews also need
     an extraction schema and a synthesis plan; the systematic review also the PRISMA-P items. A meta-analysis plan
-    needs its typed ``pool_model`` and an ``effect_measure`` the statistics module computes (``MEASURES``)."""
+    needs its typed ``pool_model``, an ``effect_measure`` the statistics module computes (``MEASURES``) and its
+    pre-specified ``outcomes`` (named, each once)."""
     if paper_type not in PAPER_TYPES:
         raise ValueError(f"unknown paper type {paper_type!r}")
     out = [] if body.question.strip() else ["question is empty"]
@@ -207,6 +210,13 @@ def check_protocol(body: Protocol, paper_type: str) -> list[str]:
         if plan.effect_measure not in MEASURES:
             out.append(f"synthesis_plan.effect_measure must be one of {', '.join(list(MEASURES)[:-1])} or "
                        f"{list(MEASURES)[-1]} for a meta-analysis (got {plan.effect_measure!r})")
+        if not plan.outcomes:
+            out.append("synthesis_plan.outcomes is required for a meta-analysis (the pre-specified outcome names)")
+        names = [o.strip() for o in plan.outcomes]
+        if any(not n for n in names):
+            out.append("synthesis_plan.outcomes: an outcome name is empty")
+        out += [f"synthesis_plan.outcomes: outcome {n!r} is given twice" for n in dict.fromkeys(names)
+                if n and names.count(n) > 1]
     if paper_type == "systematic_review":
         out += [f"PRISMA-P item {i!r} is missing" for i in _prisma_p_missing(body)]
     out += novelty_claims(_free_texts(body))
@@ -316,6 +326,19 @@ def _field_line(f: dict) -> str:
     return f"- {f['name']} ({kind}): {f['description']}"
 
 
+HKSJ_WORDS = {"auto": "auto (the Cochrane Handbook rule)", True: "always", False: "never (Wald intervals)"}
+
+
+def plan_value(key: str, value) -> str | None:
+    """A synthesis plan value as a review shows it (``None``: not shown): ``hksj`` in words, lists joined."""
+    if key == "hksj":
+        return HKSJ_WORDS.get(value, str(value))
+    if isinstance(value, list):
+        return ", ".join(map(str, value)) or None
+    return None if value is None else str(value)
+
+
+
 def probe_lines(probe: dict | None, cap: int) -> list[str]:
     """The record-cap probe, as the protocol's review shows it."""
     if probe is None:
@@ -356,8 +379,8 @@ def render_protocol(ps: ProjectStore, row: dict) -> list[str]:
     lines += ["Exclude:"] + ([f"- {c['id']}: {c['text']}" for c in b["eligibility"]["exclude"]] or ["- none"])
     lines += ["", "Extraction schema:"] + ([_field_line(f) for f in b["extraction_schema"]] or ["- none"])
     plan = b["synthesis_plan"]
-    lines += ["", "Synthesis plan:"] + ([f"- {k}: {v}" for k, v in plan.items() if v is not None] if plan
-                                       else ["- none"])
+    shown = [(k, plan_value(k, v)) for k, v in plan.items()] if plan else []
+    lines += ["", "Synthesis plan:"] + ([f"- {k}: {v}" for k, v in shown if v is not None] or ["- none"])
     if b["prisma_p"]:
         lines += ["", "PRISMA-P:"] + [f"- {k}: {v}" for k, v in b["prisma_p"].items()]
     return lines

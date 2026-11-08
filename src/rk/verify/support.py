@@ -19,6 +19,9 @@ Also here: V-HEDGE of a stored claim (``check_claim_hedge``) and the claim gate 
 
 from __future__ import annotations
 
+import json
+from collections.abc import Collection
+from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel
@@ -85,13 +88,15 @@ def evidence_texts(claim: dict) -> list[str]:
 def verify_support(kernel, registry, ps, claim_id: str, *, actor: str,
                    judge_drivers: list[DriverSpec] | None = None, judge_providers: dict | None = None,
                    min_judges: int | None = None, checkpoint: bool = True,
-                   run: JudgeRunner | None = None) -> SupportResult:
+                   run: JudgeRunner | None = None,
+                   exclude_vendors: Collection[str | None] = ()) -> SupportResult:
     """Check the claim against its linked evidence and record V-NUM, V-SUPPORT and the claim status. In collab mode an
     ``uncertain`` verdict opens an ``uncertain_support`` checkpoint unless ``checkpoint`` is false (the gap miners:
     their claims are evidence checks of a candidate gap, not claims of the argument). ``run`` replaces ``run_task`` for
     the judge tasks (``run_judges``), e.g. a stage's task executor; its exceptions propagate, and no verification of
-    the claim is recorded then. A ``stat_result`` claim is decided by V-STATS and V-NUM (``_verify_stat``). A
-    withdrawn claim is refused (``ValueError``) before any judge runs or anything is recorded."""
+    the claim is recorded then. The judges exclude the claim's generator vendor and ``exclude_vendors`` (e.g. the
+    vendor of the claim a rewrite narrows). A ``stat_result`` claim is decided by V-STATS and V-NUM
+    (``_verify_stat``). A withdrawn claim is refused (``ValueError``) before any judge runs or anything is recorded."""
     svc = ArgumentService(ps)
     claim = svc.get_claim(claim_id)
     if claim["status"] == "withdrawn":
@@ -106,7 +111,7 @@ def verify_support(kernel, registry, ps, claim_id: str, *, actor: str,
         doc = "\n\n".join(texts)
         opinions = run_judges(kernel, registry, project=_slug(ps), claim_text=claim["text"], evidence_text=doc,
                               generator_vendor=claim.get("generator_vendor"), drivers=judge_drivers,
-                              providers=judge_providers, run=run)
+                              providers=judge_providers, run=run, exclude_vendors=exclude_vendors)
         verdict = combine(opinions, min_judges=k)
         nums = check_numbers(claim["text"], texts)
         if verdict == "supported" and not nums.ok:
@@ -206,34 +211,61 @@ def check_claim_hedge(ps, claim_id: str, *, actor: str = "kernel", record: bool 
     return result
 
 
-def gate_claims(ps, claim_ids: list[str]) -> list[str]:
-    """One line per claim that fails the claim gate, naming each of its problems: its status is not ``supported``;
-    V-HEDGE, rerun now, is not ``pass``; for a ``stat_result``, V-STATS, rerun now on each of its artifacts, finds a
-    mismatch; or a priority-1 objection is still open against it, its evidence or an edge into it. The reruns record
-    nothing and call no model. Withdrawn claims are out of the argument and skipped; an unknown id is a
-    ``KeyError``. Edges and objections are read with their legacy shapes tolerated (no typed warrant, hand-added
-    ``response_to`` edges, objections without a priority: priority 1)."""
+@dataclass(frozen=True)
+class ClaimProblem:
+    """Why a claim fails the claim gate: ``kind``, the gate's short ``line`` and the full ``detail`` (for a narrowing
+    task and a withdrawal reason); ``ids``: the artifacts or objections it concerns."""
+    kind: Literal["status", "hedge", "stats", "objection"]
+    line: str
+    detail: str
+    ids: tuple[str, ...] = ()
+
+
+def _support_reason(ps, claim_id: str) -> str:
+    r = ps.db.execute("SELECT details FROM verifications WHERE target_id=? AND verifier='V-SUPPORT' "
+                      "ORDER BY rowid DESC LIMIT 1", (claim_id,)).fetchone()
+    reason = json.loads(r["details"]).get("reason") if r else None
+    return f" ({reason})" if reason else ""
+
+
+def claim_problems(ps, claim_id: str) -> list[ClaimProblem]:
+    """Why the claim fails the claim gate, the one definition ``gate_claims`` formats: its status is not
+    ``supported`` (with V-SUPPORT's recorded reason); V-HEDGE, rerun now, is not ``pass``; for a ``stat_result``,
+    V-STATS, rerun now on each of its artifacts, finds a mismatch; or a priority-1 objection is still open against it,
+    its evidence or an edge into it. The reruns record nothing and call no model. ``[]`` for a withdrawn claim (out of
+    the argument); an unknown id is a ``KeyError``. Edges and objections are read with their legacy shapes tolerated
+    (no typed warrant, hand-added ``response_to`` edges, objections without a priority: priority 1)."""
     svc = ArgumentService(ps)
+    claim = svc.get_claim(claim_id)
+    if claim["status"] == "withdrawn":
+        return []
+    out = []
+    if claim["status"] != "supported":
+        out.append(ClaimProblem("status", f"status {claim['status']} (not supported)",
+                                f"V-SUPPORT {claim['status']}{_support_reason(ps, claim_id)}"))
+    hedge = check_claim_hedge(ps, claim_id, record=False)
+    if not hedge.ok:
+        out.append(ClaimProblem("hedge", "V-HEDGE overstated",
+                                "V-HEDGE overstated: " + "; ".join(hedge.problems or [hedge.reason or "overstated"])))
+    if claim.get("kind") == "stat_result":
+        out += [ClaimProblem("stats", f"V-STATS mismatch {a}", f"V-STATS mismatch {a}", (a,))
+                for a in claim.get("artifact_ids") or [] if not check_stats(ps, a, record=False).ok]
+    targets = [claim_id, *(e["id"] for e in claim["evidence"]), *(e.get("id") for e in svc.list_edges(to_id=claim_id))]
+    open_p1 = [o for t in targets if t for o in svc.list_objections(target_id=t)
+               if o.get("status", "open") == "open" and o.get("priority", 1) == 1]
+    if open_p1:
+        out.append(ClaimProblem("objection", "open priority-1 objection " + ", ".join(o["id"] for o in open_p1),
+                                "; ".join(f"open priority-1 objection {o['id']}: {o['text']}" for o in open_p1),
+                                tuple(o["id"] for o in open_p1)))
+    return out
+
+
+def gate_claims(ps, claim_ids: list[str]) -> list[str]:
+    """One line per claim that fails the claim gate, naming each of its problems (``claim_problems``)."""
     out = []
     for cid in claim_ids:
-        claim = svc.get_claim(cid)
-        if claim["status"] == "withdrawn":
-            continue
-        problems = []
-        if claim["status"] != "supported":
-            problems.append(f"status {claim['status']} (not supported)")
-        if not check_claim_hedge(ps, cid, record=False).ok:
-            problems.append("V-HEDGE overstated")
-        if claim.get("kind") == "stat_result":
-            problems += [f"V-STATS mismatch {a}" for a in claim.get("artifact_ids") or []
-                         if not check_stats(ps, a, record=False).ok]
-        targets = [cid, *(e["id"] for e in claim["evidence"]), *(e.get("id") for e in svc.list_edges(to_id=cid))]
-        open_p1 = [o["id"] for t in targets if t for o in svc.list_objections(target_id=t)
-                   if o.get("status", "open") == "open" and o.get("priority", 1) == 1]
-        if open_p1:
-            problems.append("open priority-1 objection " + ", ".join(open_p1))
-        if problems:
-            out.append(f"{cid}: " + "; ".join(problems))
+        if problems := claim_problems(ps, cid):
+            out.append(f"{cid}: " + "; ".join(p.line for p in problems))
     return out
 
 

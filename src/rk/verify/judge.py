@@ -152,16 +152,18 @@ def ask_judge(run: JudgeRunner, role: str, spec: DriverSpec, *, claim_text: str,
 
 def run_judges(kernel, registry, *, project: str, claim_text: str, evidence_text: str,
                generator_vendor: str | None, drivers: list[DriverSpec] | None = None,
-               providers: dict[str, object] | None = None, run: JudgeRunner | None = None) -> list[JudgeOpinion]:
+               providers: dict[str, object] | None = None, run: JudgeRunner | None = None,
+               exclude_vendors: Collection[str | None] = ()) -> list[JudgeOpinion]:
     """``providers`` (driver string → Provider) replaces the configured driver; used by tests and evaluations. ``run``
     replaces ``run_task`` (called with ``role``, ``instructions``, ``inputs``, ``output_schema``, ``driver``,
     ``provider``, ``tools``, ``max_turns``, ``timeout_s``), e.g. a stage's task executor, whose budget and rate-cap
-    exceptions then propagate."""
+    exceptions then propagate. The judges admitted exclude ``generator_vendor`` and every one of ``exclude_vendors``
+    (the other vendors that wrote the claim's subject)."""
     if run is None:
         def run(**task):
             return run_task(kernel, registry, project=project, **task)
     judges = role_judges(kernel.settings(), drivers)
-    _, skipped = admit(judges, {generator_vendor})
+    _, skipped = admit(judges, {generator_vendor, *exclude_vendors})
     return [JudgeOpinion(driver=str(spec), vendor=vendor_of(spec.provider, spec.model), label="uncertain",
                          error=skipped[role]) if role in skipped else
             ask_judge(run, role, spec, claim_text=claim_text, evidence_text=evidence_text,

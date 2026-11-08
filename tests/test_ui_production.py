@@ -72,7 +72,8 @@ DRAFT = {"eligibility": {"include": [{"id": "I1", "text": "People over 80"}],
          "extraction_schema": [{"name": "n", "description": "Participants", "type": "number", "unit": "people"},
                                {"name": "design", "description": "Study design", "type": "category",
                                 "categories": ["rct", "cohort", "other"]}],
-         "synthesis_plan": {"method": "narrative_swim"}, "prisma_p": dict(SR_ITEMS)}
+         "synthesis_plan": {"method": "narrative_swim", "hksj": False, "outcomes": ["stroke", "bleeding"]},
+         "prisma_p": dict(SR_ITEMS)}
 STRATEGY = {"queries": ["aspirin stroke elderly", "antiplatelet therapy octogenarians", "stroke prevention over 80"],
             "sources": ["openalex", "europepmc"], "date_from": 2000, "date_to": None}
 READS = {A: {"values": [{"field": "n", "value": 100, "quote": METHODS},
@@ -431,7 +432,8 @@ def test_protocol_card_answers_reach_the_worker(page, served):
     run_id = served.runs.start("demo", "protocol", actor="tester")
     cp, card = _show(page, ps, "protocol_approval")
     for text in ("aspirin stroke elderly", "People over 80", "Animal studies <script>", "Participants",
-                 "narrative swim", "Two screeners, title/abstract then full text.", "Record-cap probe"):
+                 "narrative swim", "Two screeners, title/abstract then full text.", "Record-cap probe",
+                 "never (Wald intervals)", "stroke, bleeding"):
         assert card.get_by_text(text, exact=False).count() >= 1, text
     assert card.locator("script").count() == 0  # the protocol's text is shown as text
     card.get_by_label("What should change in the protocol").fill("Add PubMed and narrow to trials.")

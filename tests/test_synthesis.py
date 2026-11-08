@@ -5,6 +5,7 @@ on what it stored."""
 
 from __future__ import annotations
 
+import json
 import math
 
 import pytest
@@ -47,7 +48,8 @@ BINARY = [ExtractionField(name=f, description=f, type="number") for f in BINARY_
 DESIGN = ExtractionField(name="design", description="Study design", type="category", categories=["rct", "cohort"])
 # the free-text model and heterogeneity fields are descriptive only: the typed fields set the pool options
 META = SynthesisPlan(method="meta_analysis", effect_measure="RR", model="random effects (REML would be the default)",
-                     heterogeneity="I2 and tau2; no HKSJ", pool_model="DL", pi_df="k-2")
+                     heterogeneity="I2 and tau2; no HKSJ", pool_model="DL", pi_df="k-2", outcomes=["tuberculosis"])
+META2 = META.model_copy(update={"outcomes": ["tuberculosis", "adverse events"]})
 # BCG trials 1-4 (Viechtbauer 2010)
 BCG = {"Aronson": {"events_treatment": 4, "n_treatment": 123, "events_control": 11, "n_control": 139},
        "Ferguson": {"events_treatment": 6, "n_treatment": 306, "events_control": 29, "n_control": 303},
@@ -264,10 +266,9 @@ def test_meta_analysis_pools_approved_group_with_kernel_claims(env):
     assert claim["text"] == text and claim["number_bindings"] == bindings
     assert claim["origin"] == "synthesis" and claim["status"] == "supported"
     assert set(claim["artifact_ids"]) == {stt["id"], fig["id"]}
-    # the scope names the protocol's extraction fields, never model-written text
-    assert claim["scope_limits"][:2] == ["effect measure: RR",
+    # the scope names the protocol's outcome and extraction fields, never model-written text
+    assert claim["scope_limits"][:3] == ["outcome: tuberculosis", "effect measure: RR",
                                          "extraction fields: events_treatment, n_treatment, events_control, n_control"]
-    assert "tuberculosis" not in " ".join(claim["scope_limits"])
     for a in (stt, fig):
         assert ("V-STATS", "pass") in [tuple(r) for r in ps.db.execute(
             "SELECT verifier, verdict FROM verifications WHERE target_id=?", (a["id"],))]
@@ -551,7 +552,7 @@ def test_missing_outcome_fields_go_back_to_read_extract(env):
     out = w.run(_ctx(env, _exec(plans=list(plan)), 2))
     assert out.status == "done", out.reason
     (fb,) = synthesis_notes(ps, 2, kind="fallback")
-    assert "events_control" in fb["reason"] and "already went back to read_extract" in fb["reason"]
+    assert "events_control" in fb["reason"] and "already asked to go back to read_extract" in fb["reason"]
     assert w.gate(ps, 2).ok, w.gate(ps, 2).failures
 
 
@@ -585,7 +586,7 @@ def test_empty_pooling_plan_falls_back_with_deviation(env):
     w = SynthesizeWorker()
     assert w.run(_ctx(env, _exec(plans=[{"groups": []}]))).status == "done"
     (reason,) = _analysis_deviations(ps)
-    assert reason == "the pooling plan proposed no group for the pre-specified meta-analysis (effect measure RR)"
+    assert reason == "the pooling plan proposed no group for the pre-specified outcome 'tuberculosis' (effect measure RR)"
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
     # a fallback that is not recorded fails the gate
     ps.db.execute("DELETE FROM protocol_deviations")
@@ -604,7 +605,7 @@ def test_measure_other_than_pre_specified_falls_back_with_deviation(env):
     assert not [c for c in ex.calls if c["schema"] == "VoteOut"] and artifacts(ps, "synthesize", 1) == []
     reasons = _analysis_deviations(ps)
     assert any("pre-specifies the effect measure RR" in r and "OR" in r for r in reasons)
-    assert "the pooling plan proposed no group for the pre-specified meta-analysis (effect measure RR)" in reasons
+    assert "the pooling plan proposed no group for the pre-specified outcome 'tuberculosis' (effect measure RR)" in reasons
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
 
 
@@ -617,13 +618,79 @@ def test_meta_analysis_protocol_needs_typed_pool_options():
                       prisma_p=SR_ITEMS)
     failures = check_protocol(bare, "systematic_review")
     assert "synthesis_plan.pool_model is required for a meta-analysis (REML, DL or FE)" in failures
+    assert "synthesis_plan.outcomes is required for a meta-analysis (the pre-specified outcome names)" in failures
     assert any("synthesis_plan.effect_measure" in f and "RR, OR, RD, MD or SMD" in f for f in failures)
     assert check_protocol(a_protocol(synthesis_plan=META, prisma_p=SR_ITEMS), "systematic_review") == []
     assert (META.pool_model, META.hksj, META.pi_df) == ("DL", "auto", "k-2")
+    twice = META.model_copy(update={"outcomes": ["tuberculosis", " tuberculosis", ""]})
+    failures = check_protocol(a_protocol(synthesis_plan=twice, prisma_p=SR_ITEMS), "systematic_review")
+    assert "synthesis_plan.outcomes: outcome 'tuberculosis' is given twice" in failures
+    assert "synthesis_plan.outcomes: an outcome name is empty" in failures
     with pytest.raises(ValidationError):
         SynthesisPlan(method="meta_analysis", hksj="yes")
     with pytest.raises(ValidationError):
         SynthesisPlan(method="meta_analysis", pool_model="ML")
+
+
+def _two(item_ids, outcomes: list[str]) -> dict:
+    groups = [_group(item_ids, )["groups"][0] | {"outcome": o} for o in outcomes]
+    return {"groups": groups}
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_plan_for_a_secondary_outcome_only_falls_back_for_the_primary(env):
+    _, ps, _ = env
+    _enable_stats()
+    _setup(env, dict(list(BCG.items())[:3]), schema=BINARY, plan=META2)
+    ex = _exec(plans=[lambda inputs: _two([s["item_id"] for s in inputs["studies"]], ["adverse events"])],
+               votes=_votes_pool())
+    w = SynthesizeWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    (claim,) = [c for c in _claims(ps) if c["kind"] == "stat_result"]
+    assert claim["scope_limits"][0] == "outcome: adverse events"
+    assert _analysis_deviations(ps) == [
+        "the pooling plan proposed no group for the pre-specified outcome 'tuberculosis' (effect measure RR)"]
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_group_of_an_unlisted_outcome_is_not_pooled(env):
+    _, ps, _ = env
+    _enable_stats()
+    _setup(env, dict(list(BCG.items())[:3]), schema=BINARY, plan=META)
+    ex = _exec(plans=[lambda inputs: _two([s["item_id"] for s in inputs["studies"]], ["Tuberculosis cases"])],
+               votes=_votes_pool())
+    w = SynthesizeWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    assert not [c for c in ex.calls if c["schema"] == "VoteOut"] and artifacts(ps, "synthesize", 1) == []
+    reasons = _analysis_deviations(ps)
+    assert ("pooling of 'Tuberculosis cases' (RR) not done: 'Tuberculosis cases' is not a pre-specified outcome "
+            "(pre-specified: 'tuberculosis')") in reasons
+    assert "the pooling plan proposed no group for the pre-specified outcome 'tuberculosis' (effect measure RR)" in reasons
+    assert ex.of("arguer", "PoolingPlan")[0]["inputs"]["outcomes"] == ["tuberculosis"]
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_every_pre_specified_outcome_pooled_or_the_gate_names_it(env):
+    _, ps, _ = env
+    _enable_stats()
+    _setup(env, dict(list(BCG.items())[:3]), schema=BINARY, plan=META2)
+    ex = _exec(plans=[lambda inputs: _two([s["item_id"] for s in inputs["studies"]], ["tuberculosis", "adverse events"])],
+               votes=_votes_pool(2))
+    w = SynthesizeWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    stats = [c for c in _claims(ps) if c["kind"] == "stat_result"]
+    assert [c["scope_limits"][0] for c in stats] == ["outcome: tuberculosis", "outcome: adverse events"]
+    assert _analysis_deviations(ps) == []
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    # the gate checks every pre-specified outcome: one neither pooled nor fallen back is named (here the frozen
+    # protocol's projection is edited behind the stage's back)
+    meta3 = META2.model_copy(update={"outcomes": ["tuberculosis", "adverse events", "mortality"]})
+    body = store.frozen_protocol(ps)["body"] | {"synthesis_plan": meta3.model_dump()}
+    ps.db.execute("UPDATE protocols SET body=? WHERE status='frozen'", (json.dumps(body),))
+    assert w.gate(ps, 1).failures == [
+        "the pre-specified outcome 'mortality' was neither pooled nor fell back with a deviation"]
 
 
 @pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
@@ -717,3 +784,57 @@ def test_stale_stats_or_unrecorded_fallback_fail_the_gate(env):
     failures = w.gate(ps, 1).failures
     assert any(f"V-STATS mismatch {stt['id']}" in f for f in failures)
     assert math.isfinite(stt["values"]["display"]["estimate"])
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "critical_review"}], indirect=True)
+def test_degrade_handles_an_open_priority_1_objection(env):
+    from rk.argument import ObjectionIn
+
+    _, ps, _ = env
+    _setup(env, {"A": {"design": "rct"}, "B": {"design": "cohort"}}, schema=[DESIGN],
+           plan=SynthesisPlan(method="thematic"))
+    narrower = "Aspirin was studied in some older people."
+    ex = _exec(narrowed=[{"text": narrower, "kind": "fact"}])
+    w = SynthesizeWorker()
+    ctx = _ctx(env, ex)
+    assert w.run(ctx).status == "done"
+    (claim,) = _claims(ps)
+    svc = ArgumentService(ps)
+    oid = svc.add_objection(ObjectionIn(target_id=claim["id"], category="counterexample", priority=1,
+                                        text="Study B enrolled people under 65."), actor="skeptic")
+    g = w.gate(ps, 1)
+    assert g.failures == [f"{claim['id']}: open priority-1 objection {oid}"]  # the only problem
+    out = w.degrade(ctx, g.failures)
+    assert out.status == "done" and f"{claim['id']} narrowed" in out.reason
+    why = ex.of("arguer", "NarrowedClaim")[0]["inputs"]["why"]
+    assert why == f"open priority-1 objection {oid}: Study B enrolled people under 65."
+    old, new = _claims(ps)
+    assert old["status"] == "withdrawn" and new["text"] == narrower and new["status"] == "supported"
+    (o,) = svc.list_objections(target_id=old["id"])
+    assert o["status"] == "conceded" and new["id"] in o["note"]
+    assert [c["objection_id"] for c in synthesis_limitations(ps, 1)["claims"]["conceded"]] == [oid]
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "critical_review"}], indirect=True)
+def test_judges_of_a_rewrite_exclude_the_original_and_the_rewrite_vendors(env):
+    from rk.argument import ClaimIn, EvidenceIn
+    from rk.config import DEFAULT_DRIVERS
+    from rk.llm.drivers import DriverSpec
+    from rk.llm.vendors import vendor_of
+
+    _, ps, _ = env
+    ids = _setup(env, {"A": {"design": "rct"}, "B": {"design": "cohort"}}, schema=[DESIGN],
+                 plan=SynthesisPlan(method="thematic"))
+    spec = DriverSpec.parse(DEFAULT_DRIVERS["judge_2"])
+    judge_2_vendor = vendor_of(spec.provider, spec.model)
+    svc = ArgumentService(ps)
+    cid = svc.add_claim(ClaimIn(text=FINDING), generator_vendor=judge_2_vendor, actor="t", origin="synthesis")
+    (note,) = [r["note_id"] for r in store.extractions(ps, 1, item_id=ids["A"])]
+    svc.link_evidence(EvidenceIn(claim_id=cid, note_ids=[note]), actor="t")
+    svc.set_claim_status(cid, "uncertain", verification_id=None)
+    ex = _exec(narrowed=[{"text": "Aspirin was studied in some older people.", "kind": "fact"}])
+    res = narrow_or_withdraw(_ctx(env, ex), cid)
+    # judge_2 shares the original claim's vendor and judge_3 the Arguer's: one judge is left, too few to support
+    assert [c["role"] for c in ex.calls if c["schema"] == "JudgeVerdict"] == ["judge"]
+    assert res.status == "withdrawn" and res.new_claim_id

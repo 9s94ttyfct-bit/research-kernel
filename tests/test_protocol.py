@@ -26,6 +26,7 @@ from rk.production.protocol import (
     counts_as_preregistration,
     probe_of,
     protocol_prereg_ok,
+    render_protocol,
 )
 from rk.store.projections import rebuild
 from rk.workspace import Kernel
@@ -115,6 +116,29 @@ def test_sr_draft_without_prisma_p_items_is_rerun(env):
     assert out.status == "rerun" and "PRISMA-P item 'rationale' is missing" in out.reason
     assert [c["role"] for c in ex.calls] == ["ideator", "scout"]  # no probe, no vote
     assert store.frozen_protocol(ps) is None
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_meta_analysis_draft_without_typed_fields_fails_the_gate_and_is_redrafted(env):
+    """A Plan-5a-shaped meta-analysis plan (free-text model only) cannot be frozen: the stage reruns with the missing
+    typed fields as its reason, and the redraft that fills them is frozen."""
+    _, ps, _ = env
+    old = _draft(synthesis_plan={"method": "meta_analysis", "effect_measure": "RR", "model": "random effects (DL)"})
+    typed = _draft(synthesis_plan={"method": "meta_analysis", "effect_measure": "RR", "model": "random effects",
+                                   "pool_model": "DL", "hksj": False, "outcomes": ["stroke"]})
+    ex = _executor([old, typed], votes=_votes(("approve", "approve")))
+    w = ProtocolWorker()
+    out = w.run(_ctx(env, ex))
+    assert out.status == "rerun"
+    assert "synthesis_plan.pool_model is required for a meta-analysis (REML, DL or FE)" in out.reason
+    assert "synthesis_plan.outcomes is required for a meta-analysis" in out.reason
+    g = w.gate(ps, 1)
+    assert not g.ok and any("pool_model" in f for f in g.failures)
+    assert w.run(_ctx(env, ex, attempt=2)).status == "done" and w.gate(ps, 2).ok
+    plan = store.frozen_protocol(ps)["body"]["synthesis_plan"]
+    assert (plan["pool_model"], plan["hksj"], plan["pi_df"], plan["outcomes"]) == ("DL", False, "ci", ["stroke"])
+    text = "\n".join(render_protocol(ps, store.frozen_protocol(ps)))
+    assert "- hksj: never (Wald intervals)" in text and "- outcomes: stroke" in text
 
 
 def test_light_protocol_for_critical_review(env):

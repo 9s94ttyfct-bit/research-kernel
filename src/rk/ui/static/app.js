@@ -525,7 +525,12 @@ async function protocolCard(c, answer) {
   const back = el("form", { class: "revise" }, el("label", { class: "field" }, "Why go back (optional)", why),
     el("button", { type: "submit", class: "secondary" }, "Back to the research question"));
   back.addEventListener("submit", (e) => { e.preventDefault(); const comment = why.value.trim(); answer(comment ? { decision: "back", comment } : { decision: "back" }); });
-  const plan = Object.entries(b.synthesis_plan || {}).filter(([, v]) => v !== null && v !== undefined);
+  const HKSJ = { auto: "auto (the Cochrane Handbook rule)", true: "always", false: "never (Wald intervals)" };
+  // every plan value as text: el() skips false, so hksj is shown in words; lists are joined
+  const planValue = (k, v) => (k === "method" ? words(v) : k === "hksj" ? HKSJ[String(v)] ?? String(v)
+    : Array.isArray(v) ? v.join(", ") : String(v));
+  const plan = Object.entries(b.synthesis_plan || {})
+    .filter(([, v]) => v !== null && v !== undefined && !(Array.isArray(v) && v.length === 0));
   const prismaP = Object.entries(b.prisma_p || {});
   return [
     el("p", { class: "hint" }, `Version ${p.version} · ${words(d.paper_type)} · `,
@@ -547,7 +552,7 @@ async function protocolCard(c, answer) {
             el("td", {}, f.type, f.categories ? `: ${f.categories.join(" | ")}` : "", f.unit ? ` (${f.unit})` : ""), el("td", {}, f.description)))))
       : el("p", { class: "empty" }, "No extraction field."),
     el("h4", {}, "Synthesis plan"),
-    plan.length ? facts(plan.map(([k, v]) => [label(k), k === "method" ? words(v) : v])) : el("p", { class: "empty" }, "None."),
+    plan.length ? facts(plan.map(([k, v]) => [label(k), planValue(k, v)])) : el("p", { class: "empty" }, "None."),
     prismaP.length ? [el("h4", {}, "PRISMA-P"), facts(prismaP.map(([k, v]) => [label(k), v]))] : null,
     el("div", { class: "other-answers" }, approve,
       reviseForm("What should change in the protocol", (comment) => answer({ decision: "revise", comment })), back),
