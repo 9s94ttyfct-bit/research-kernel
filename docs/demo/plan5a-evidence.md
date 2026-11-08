@@ -439,3 +439,31 @@ of screener_b's 29; screener_b never started while screener_a waited. Each wait 
 every 5 minutes (attempts 3–27): 25 `rate_capped` task failures (14 screener_a, 11 screener_b), and every retry ran
 the whole search again and stored all 1,468 records again (38,168 record rows over 26 attempts; 1,263 decisions
 carried over). search_screen took 2 h 5 min (09:24–11:29 UTC), most of it waiting for the caps.
+
+**Rerun after the Plan 5b fix waves** (a fresh copy of this run's home; details in the 5b demo, section "Rerun after
+the fix waves"). Only these numbers changed:
+
+- **Protocol:** attempt 10 already typed the synthesis plan (and `min_studies` 3) but changed the queries; the
+  stand-in asked for the same four short queries, 2024 to now and REML with HKSJ "auto"; attempt 11 did that and was
+  approved with `record_cap` 800 (counts by the stand-in at 19:23 UTC: Europe PMC 488, 161, 426, 244, union 715;
+  PubMed 43, 29, 45, 32, union 84). PRISMA came out the same as above (1,468 identified, 753 duplicates, 715
+  screened, 707 excluded, 8 sought, 5 not retrieved, 3 assessed, 1 excluded, 2 included; V-PRISMA ok), now from one
+  search: no attempt was carried over.
+- **Agreement** (the same convention, 713 records):
+
+  | screener_a \ screener_b | yes | no | unclear |
+  |---|---|---|---|
+  | yes | 1 | 0 | 0 |
+  | no | 0 | 668 | 27 |
+  | unclear | 0 | 5 | 12 |
+
+  Raw agreement 95.5%, Cohen's κ 0.43. 44 records went to the stand-in (25 + 19): include 7 (the same seven as
+  above), exclude 37. At full text the screeners again disagreed on two: the stand-in included Khaled 2025 (`rk find`:
+  3D-CAM) and excluded the trial of patients aged 40–80 (I2).
+- **Hourly caps:** search_screen took 2 h 7 min (19:23–21:30 UTC), again mostly waiting (12 `rate_capped` screener_a
+  and 11 screener_b failures), but the search ran once and every resume kept its 1,468 records. The first rerun home
+  did not: see "What failed or was weak" in the 5b demo (fixed by `fix(search): replay logged pages hit by hit`).
+- **Extraction** (`rk extraction show`, read on text layers rebuilt with `rk fetch` before read_extract): 50 values
+  with a verified quote (5 of them `not_reported`), 0 values with a problem. Khaled 2025's `n_intervention` 43 and
+  `n_control` 42 are now extracted (the quote "Melatonin group (n = 43) | Placebo group (n = 42)" comes from the
+  appended table); 18 Reader notes were rejected as "not a note of this study" (prose where note ids belong).
