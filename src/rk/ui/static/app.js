@@ -509,6 +509,7 @@ const screener = (role) => String(role).replace(/^screener_(\w)$/, (_, x) => `Sc
 const HKSJ = { auto: "auto (the Cochrane Handbook rule)", true: "always", false: "never (Wald intervals)" };
 const POOL_MODELS = { DL: "DerSimonian–Laird random effects", REML: "REML random effects", FE: "fixed effect (inverse variance)" };
 const PI_DF = { ci: "the confidence interval's (RevMan)", "k-2": "t with k−2 degrees of freedom (Higgins 2009)" };
+const minStudies = (n) => `at least ${n} studies with a computable effect (fewer: narrative synthesis)`;
 
 async function protocolCard(c, answer) {
   const d = await api("/ui/api/protocol", { query: { project: state.project, protocol_id: c.options?.protocol_id } });
@@ -536,9 +537,10 @@ async function protocolCard(c, answer) {
     return fields ? `${o.name} (${fields})` : o.name;
   };
   const planValue = (k, v) => (k === "method" ? words(v) : k === "hksj" ? HKSJ[String(v)] ?? String(v)
+    : k === "min_studies" ? minStudies(v)
     : k === "outcomes" ? v.map(outcome).join("; ") : Array.isArray(v) ? v.join(", ") : String(v));
   // the pool options and outcomes are the meta-analysis's: shown only for that method
-  const POOL_KEYS = new Set(["pool_model", "hksj", "pi_df", "outcomes"]);
+  const POOL_KEYS = new Set(["pool_model", "hksj", "pi_df", "min_studies", "outcomes"]);
   const isMeta = (b.synthesis_plan || {}).method === "meta_analysis";
   const plan = Object.entries(b.synthesis_plan || {})
     .filter(([k, v]) => v !== null && v !== undefined && !(Array.isArray(v) && v.length === 0)
@@ -751,7 +753,8 @@ async function poolingCard(c, answer) {
     el("p", { class: "hint" }, "The kernel computes every number from the extraction rows. A group you do not pool is synthesized narratively, recorded as a deviation from the protocol."),
     el("h4", {}, "Pool options the protocol pre-specifies"),
     facts([["Model", POOL_MODELS[p.model] || p.model], ["HKSJ intervals", HKSJ[String(p.hksj)] ?? String(p.hksj)],
-      ["Prediction interval", PI_DF[p.pi_df] || p.pi_df], ["Interval level", p.level ? `${Math.round(p.level * 100)}%` : ""]]),
+      ["Prediction interval", PI_DF[p.pi_df] || p.pi_df], ["Interval level", p.level ? `${Math.round(p.level * 100)}%` : ""],
+      ["Minimum studies", p.min_studies ? minStudies(p.min_studies) : ""]]),
     listed.length ? el("ol", { class: "pool-groups" }, listed.map(group)) : el("p", { class: "empty" }, "The groups of this checkpoint were not found."),
     comment.field,
     el("div", { class: "toolbar" }, submit, status),

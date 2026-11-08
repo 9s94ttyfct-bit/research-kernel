@@ -20,24 +20,28 @@ artifact, as V-STATS requires) and the frozen protocol (``extraction_schema``, `
      group for the same outcome and measure. No cherry-picking: every usable study whose rows give a computable effect
      for the measure belongs in its outcome's group; the kernel adds the ones the plan leaves out, unless the plan
      excludes them with a reason, which is an analysis deviation and a limitation (``left_out``). A group the plan
-     or the kernel finds not comparable (said so, a comparability criterion scored 0, fewer than two studies), or
+     or the kernel finds not comparable (said so, a comparability criterion scored 0, fewer studies than the
+     protocol's ``min_studies``, 2 by default), or
      whose measure needs a field the extraction schema lacks or every study verifiably reports as ``not_reported``,
      falls back.
      When a study of such a group has no usable value for a field its measure needs (no row for it, or only rows with
      a problem; a verified ``not_reported`` is no gap), the stage goes back to ``read_extract``
      (``synthesize->read_extract``, the guidance naming each study and its fields; read_extract reads only those
      studies again), once per study and field set under the frozen protocol version (``_requested``: a new version
-     asks again): a second time, and at the edge limit in P1, the group goes on without it (fewer than two
-     computable studies fall back). The comparable
+     asks again): a second time, and at the edge limit in P1, the group goes on without it (fewer computable studies
+     than ``min_studies`` fall back). The comparable
      groups go to you in one ``pooling_approval`` checkpoint (P2) or to a P1 vote per group (conservative option
-     ``no_pool``), both shown the pre-specified pool options. An approved group is pooled by the kernel (when
-     ``stats_enabled`` still holds) from the extraction rows of its outcome's fields (``OutcomeSpec.fields``: each role
-     of the measure -> its extraction field, recorded in the artifacts' ``field_map``) with the protocol's
+     ``no_pool``), both shown the pre-specified pool options and ``min_studies``. An approved group is pooled by the
+     kernel (when ``stats_enabled`` still holds) from the extraction rows of its outcome's fields
+     (``OutcomeSpec.fields``: each role of the measure -> its extraction field, recorded in the artifacts'
+     ``field_map``) with the protocol's
      typed pool options (``pool_options``): the ``stt_`` pool and the ``fig_`` forest plot, and the kernel-written
      ``stat_result`` claim (``stat_claim_text``, origin ``synthesis``; its scope names the measure, the extraction
      fields and the studies, no model text). Studies without a computable effect are listed (and kept in the
-     narrative), as are studies with two values for one field (left out of the pool). Fewer than two computable
-     studies fall back. Without ``stats_enabled`` the whole meta-analysis falls back (``STATS_NOT_VALIDATED``).
+     narrative), as are studies with two values for one field (left out of the pool). Fewer computable studies than
+     ``min_studies`` fall back ("fewer than N studies with a computable effect (k; protocol minimum)"); the gate
+     checks every pool's k against it. Without ``stats_enabled`` the whole meta-analysis falls back
+     (``STATS_NOT_VALIDATED``).
    - A scoping review: the evidence map of the schema's category fields (``stt_`` counts and a ``fig_`` Markdown
      table); the Arguer writes the map findings.
    - Every paper type: one Arguer task writes the ``NarrativeSynthesis`` (groups, findings with their evidence, the
@@ -346,6 +350,12 @@ class _Inputs:
         """The pre-specified outcome names (``synthesis_plan.outcomes``)."""
         return [o["name"].strip() for o in (self.plan or {}).get("outcomes") or [] if o["name"].strip()]
 
+    @property
+    def min_studies(self) -> int:
+        """The fewest studies with a computable effect a pool needs (``synthesis_plan.min_studies``; 2 for a protocol
+        frozen before the field)."""
+        return min_studies(self.plan)
+
     def field_map(self, outcome: str, measure: str) -> dict[str, str] | None:
         """The extraction field of each role of the pre-specified measure for the listed ``outcome`` (its
         ``OutcomeSpec.fields``), or ``None``: an unlisted outcome, another measure, or an incomplete mapping."""
@@ -449,9 +459,17 @@ def pool_options(plan: dict | None) -> PoolOptions | None:
     return PoolOptions(model=plan["pool_model"], hksj=plan.get("hksj", "auto"), pi_df=plan.get("pi_df", "ci"))
 
 
-def options_text(o: PoolOptions) -> str:
+def min_studies(plan: dict | None) -> int:
+    """The fewest studies with a computable effect the protocol's ``synthesis_plan`` lets a group be pooled from
+    (``min_studies``; 2 for a plan frozen before the field)."""
+    return (plan or {}).get("min_studies") or 2
+
+
+def options_text(o: PoolOptions, least: int) -> str:
+    """The pool options and the protocol's minimum number of studies (``min_studies``), as the reviews show them."""
     hksj = o.hksj if isinstance(o.hksj, str) else str(o.hksj).lower()
-    return f"model {o.model}, HKSJ {hksj}, prediction interval df {o.pi_df}, {100 * o.level:g}% intervals"
+    return (f"model {o.model}, HKSJ {hksj}, prediction interval df {o.pi_df}, {100 * o.level:g}% intervals, "
+            f"at least {least} studies with a computable effect")
 
 
 def _unpoolable(s: _Inputs) -> str | None:
@@ -716,8 +734,8 @@ class SynthesizeWorker:
                     if getattr(g.comparability, c).score == 0]
             if comparable and zero:
                 comparable, reason = False, "; ".join(zero)
-            if comparable and len(ids) < 2:
-                comparable, reason = False, f"fewer than two included studies ({len(ids)})"
+            if comparable and len(ids) < s.min_studies:
+                comparable, reason = False, f"fewer than {s.min_studies} included studies ({len(ids)}; protocol minimum)"
             groups.append({"group": i, "outcome": outcome, "planned_outcome": g.outcome, "measure": g.measure,
                            "item_ids": ids, "added_by_kernel": added,
                            "left_out": [{"item_id": x, "reason": why} for x, why in why_out.items()],
@@ -873,7 +891,8 @@ class SynthesizeWorker:
                            "the plan left them out without a reason: they were not assessed for comparability by the "
                            "planner (its comparability scores do not cover them). The studies in left_out stay out "
                            "for the reasons given, recorded as a deviation from the protocol."),
-                  "pool_options": pool_options(s.plan).model_dump(), "synthesis_plan": s.plan}
+                  "pool_options": pool_options(s.plan).model_dump() | {"min_studies": s.min_studies},
+                  "synthesis_plan": s.plan}
         res = vote(ctx, "pooling_group", f"{STAGE}:{ctx.attempt}:{g['group']}", VOTE_QUESTION, [POOL, NO_POOL],
                    NO_POOL, inputs, generator_vendors={vendor}, reuse=True)
         _note(ctx.ps, ctx.attempt, "decision", actor=ctx.actor, group=g["group"], decision=res.decision, by="vote",
@@ -895,7 +914,7 @@ class SynthesizeWorker:
         lines.append("Pool these studies in a meta-analysis? The kernel computes every number from the extraction "
                      "rows; a group you do not approve is synthesized narratively, recorded as a deviation from the "
                      "protocol.")
-        lines.append(f"Pool options pre-specified by the protocol: {options_text(pool_options(s.plan))}.")
+        lines.append(f"Pool options pre-specified by the protocol: {options_text(pool_options(s.plan), s.min_studies)}.")
         for g in pending:
             lines += ["", f"Group {g['group']}: outcome {_group_label(g)}, {len(g['item_ids'])} studies: "
                           + ", ".join(study_label(ctx.ps, i) for i in g["item_ids"]),
@@ -940,7 +959,7 @@ class SynthesizeWorker:
 
     def _pool(self, ctx: StageContext, s: _Inputs, g: dict) -> None:
         """Pool an approved group: its ``stt_`` and ``fig_`` artifacts and the kernel-written ``stat_result`` claim;
-        or, with fewer than two computable studies, its fallback."""
+        or, with fewer computable studies than the protocol's ``min_studies``, its fallback."""
         ps = ctx.ps
         field_map = s.field_map(g["outcome"], g["measure"])
         fields = list(field_map.values())
@@ -955,12 +974,13 @@ class SynthesizeWorker:
             ids.append(iid)
             computable += not isinstance(_effect(g["measure"], field_map, mine), Uncomputable)
         common = {"group": g["group"], "outcome": g["outcome"], "measure": g["measure"], "excluded": excluded}
-        if computable < 2:
+        if computable < s.min_studies:
             uncomputable = [{"item_id": i, "reason": e.reason} for i in ids
                             if isinstance(e := _effect(g["measure"], field_map,
                                                        [r for r in rows if r["item_id"] == i]), Uncomputable)]
-            self._fallback(ctx, s, f"pooling of {_group_label(g)} not done: fewer than two studies with a computable "
-                                   f"effect ({computable})", **common, uncomputable=uncomputable)
+            self._fallback(ctx, s, f"pooling of {_group_label(g)} not done: fewer than {s.min_studies} studies with a "
+                                   f"computable effect ({computable}; protocol minimum)", **common,
+                           uncomputable=uncomputable)
             return
         options = pool_options(s.plan)
         kw = {"item_ids": ids, "stage": STAGE, "attempt": ctx.attempt, "actor": ctx.actor, "field_map": field_map}
@@ -1398,6 +1418,13 @@ class SynthesizeWorker:
                            f"{_map_text(expected, n['measure'])})")
                     if made != expected and why not in failures:
                         failures.append(why)
+            for i, n in pooled.items():
+                if n["stt"] in unpooled:  # a withdrawn statistical result took its pool out
+                    continue
+                k = len((artifact(ps, n["stt"]) or {}).get("values", {}).get("studies") or [])
+                if k < s.min_studies:
+                    failures.append(f"group {i} {_group_label(n)} was pooled from {k} studies, fewer than the "
+                                    f"protocol minimum of {s.min_studies}")
             whole = any(n["kind"] == "fallback" and n.get("group") is None and n.get("outcome") is None for n in notes)
             if plan is not None and not whole:
                 done = {n.get("outcome") for n in notes if n["kind"] in ("pooled", "fallback")}

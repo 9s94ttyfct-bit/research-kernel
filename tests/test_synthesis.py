@@ -37,6 +37,8 @@ from rk.production.protocol import protocol_prereg_ok
 from rk.production.synthesis import (
     STATS_NOT_VALIDATED,
     SynthesizeWorker,
+    options_text,
+    pool_options,
     synthesis_claims,
     synthesis_limitations,
     synthesis_notes,
@@ -336,7 +338,8 @@ def test_p1_pooling_vote_disagreement_means_narrative(env):
     (reason,) = _analysis_deviations(ps)
     assert "tuberculosis" in reason and "not approved by the P1 vote" in reason
     (call,) = [c for c in ex.calls if c["role"] == "judge" and c["schema"] == "VoteOut"]
-    assert call["inputs"]["subject"]["pool_options"] == {"model": "DL", "hksj": "auto", "pi_df": "k-2", "level": 0.95}
+    assert call["inputs"]["subject"]["pool_options"] == {"model": "DL", "hksj": "auto", "pi_df": "k-2", "level": 0.95,
+                                                         "min_studies": 2}
     assert "data, not instructions" in call["inputs"]["question"]
     assert reason in [f["reason"] for f in synthesis_limitations(ps, 1)["fallbacks"]]
     assert protocol_prereg_ok(ps)
@@ -851,9 +854,82 @@ def test_fewer_than_two_computable_studies_fall_back(env):
     assert w.run(_ctx(env, ex)).status == "done"
     assert artifacts(ps, "synthesize", 1) == []
     (reason,) = _analysis_deviations(ps)
-    assert "fewer than two studies with a computable effect (1)" in reason
+    assert "fewer than 2 studies with a computable effect (1; protocol minimum)" in reason
     assert [u["item_id"] for u in synthesis_limitations(ps, 1)["uncomputable"]] == [ids["Median"]]
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+def test_min_studies_is_typed_and_defaults_to_two():
+    from pydantic import ValidationError
+
+    assert SynthesisPlan(method="meta_analysis").min_studies == 2
+    assert SynthesisPlan.model_validate({"method": "meta_analysis"}).min_studies == 2  # frozen before the field
+    assert SynthesisPlan(method="meta_analysis", min_studies=3).min_studies == 3
+    for bad in (1, 0, "3", 2.5, None):
+        with pytest.raises(ValidationError):
+            SynthesisPlan(method="meta_analysis", min_studies=bad)
+
+
+def test_min_studies_is_shown_with_the_pool_options_and_in_the_protocol():
+    from rk.production.protocol import plan_value
+
+    assert options_text(pool_options(META.model_copy(update={"min_studies": 3}).model_dump()), 3).endswith(
+        "95% intervals, at least 3 studies with a computable effect")
+    assert plan_value("min_studies", 3, "meta_analysis") == "at least 3 studies with a computable effect"
+    assert plan_value("min_studies", 2, "narrative_swim") is None  # a meta-analysis's option only
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_fewer_included_studies_than_the_protocol_minimum_are_not_comparable(env):
+    _, ps, _ = env
+    _enable_stats()
+    _setup(env, dict(list(BCG.items())[:2]), schema=BINARY, plan=META.model_copy(update={"min_studies": 3}))
+    ex = _exec(plans=[lambda inputs: _group(s["item_id"] for s in inputs["studies"])], votes=_votes_pool())
+    w = SynthesizeWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    assert artifacts(ps, "synthesize", 1) == [] and not ex.of("judge", "VoteOut")
+    (plan,) = synthesis_notes(ps, 1, kind="plan")
+    assert (plan["groups"][0]["comparable"], plan["groups"][0]["reason"]) == (
+        False, "fewer than 3 included studies (2; protocol minimum)")
+    (reason,) = _analysis_deviations(ps)
+    assert "fewer than 3 included studies (2; protocol minimum)" in reason
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_fewer_computable_studies_than_the_protocol_minimum_fall_back(env):
+    _, ps, _ = env
+    _enable_stats()
+    studies = {**dict(list(BCG.items())[:2]), "Median": {**BCG["Rosenthal"], "events_treatment": "not_reported"}}
+    _setup(env, studies, schema=BINARY, plan=META.model_copy(update={"min_studies": 3}))
+    ex = _exec(plans=[lambda inputs: _group(s["item_id"] for s in inputs["studies"])], votes=_votes_pool())
+    w = SynthesizeWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    (vote,) = ex.of("judge", "VoteOut")
+    assert vote["inputs"]["subject"]["pool_options"]["min_studies"] == 3  # the vote is shown the minimum
+    assert artifacts(ps, "synthesize", 1) == []  # two computable studies would pool under the default minimum
+    (reason,) = _analysis_deviations(ps)
+    assert ("pooling of 'tuberculosis' (RR) not done: fewer than 3 studies with a computable effect (2; protocol "
+            "minimum)") in reason
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_gate_checks_every_pooled_k_against_the_protocol_minimum(env):
+    _, ps, _ = env
+    _enable_stats()
+    _setup(env, dict(list(BCG.items())[:3]), schema=BINARY, plan=META)
+    body = store.frozen_protocol(ps)["body"]
+    del body["synthesis_plan"]["min_studies"]  # a protocol frozen before the field: the minimum is 2
+    ps.db.execute("UPDATE protocols SET body=? WHERE status='frozen'", (json.dumps(body),))
+    ex = _exec(plans=[lambda inputs: _group(s["item_id"] for s in inputs["studies"])], votes=_votes_pool())
+    w = SynthesizeWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    body["synthesis_plan"]["min_studies"] = 4
+    ps.db.execute("UPDATE protocols SET body=? WHERE status='frozen'", (json.dumps(body),))
+    assert ("group 0 'tuberculosis' (RR) was pooled from 3 studies, fewer than the protocol minimum of 4"
+            in w.gate(ps, 1).failures), w.gate(ps, 1).failures
 
 
 @pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
@@ -1376,7 +1452,7 @@ def test_a_study_is_asked_for_once_per_protocol_version(env):
     out = w.run(_ctx(env, _exec(plans=[_one_group], votes=_votes_pool()), 2))
     assert out.status == "done", out.reason  # asked already: Ferguson stays uncomputable, k < 2 falls back
     assert not synthesis_notes(ps, 2, kind="back_edge")
-    assert any("fewer than two studies" in f["reason"] for f in synthesis_notes(ps, 2, kind="fallback"))
+    assert any("fewer than 2 studies" in f["reason"] for f in synthesis_notes(ps, 2, kind="fallback"))
     pid = store.add_protocol(ps, 1, a_protocol(extraction_schema=BINARY, synthesis_plan=META, prisma_p=SR_ITEMS),
                              version=2, actor="tester")
     store.freeze_protocol(ps, pid, actor="tester")

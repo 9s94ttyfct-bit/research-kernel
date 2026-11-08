@@ -60,6 +60,7 @@ from rk.production.store import (
     records,
 )
 from rk.production.synthesis import (
+    min_studies,
     pool_options,
     study_label,
     synthesis_claims,
@@ -223,7 +224,8 @@ def _by_group(notes: list[dict], kind: str) -> dict[int, dict]:
 
 def synthesis_view(ps: ProjectStore, attempt: int | None = None) -> dict:
     """The synthesis of a ``synthesize`` attempt (default: the one it shows): the protocol's method and pre-specified
-    pool options; each study's assessment (the seven criteria; ``capped``: sufficiency capped for abstract-only
+    pool options (with ``min_studies``, the fewest studies with a computable effect a pool needs); each study's
+    assessment (the seven criteria; ``capped``: sufficiency capped for abstract-only
     evidence); the pooling plan's groups with their comparability, the studies the kernel added or the plan left out,
     the decision (by you, the vote or the kernel), the fallback or the pooled artifacts; the artifacts with V-STATS;
     the findings (``claim_view``: the narrative findings and the kernel's ``stat_result`` claims, then their narrower
@@ -235,7 +237,8 @@ def synthesis_view(ps: ProjectStore, attempt: int | None = None) -> dict:
     if attempt is None:
         attempt = shown_attempt(ps, SYNTHESIZE)
     out = {"attempt": attempt, "paper_type": paper_type_of(ps), "method": (plan or {}).get("method"),
-           "pool_options": options.model_dump() if options else None, "assessments": [], "groups": [],
+           "pool_options": options.model_dump() | {"min_studies": min_studies(plan)} if options else None,
+           "assessments": [], "groups": [],
            "artifacts": [], "findings": [], "narrative": None, "map": None, "fallbacks": [], "limitations": None,
            "gate": None}
     if attempt is None:

@@ -97,8 +97,8 @@ DRAFT_TASK = (
     "Draft the review protocol for the frozen research question, its hypotheses and topic, for the intake's paper type "
     "and audience: eligibility (include and exclude criteria, each with a short id and its text), the extraction "
     "schema (each field named, described and typed: text, number or category with its categories, and a unit where "
-    "there is one), the synthesis plan (a meta-analysis with its typed outcomes, effect_measure, pool_model, hksj and "
-    "pi_df) "
+    "there is one), the synthesis plan (a meta-analysis with its typed outcomes, effect_measure, pool_model, hksj, "
+    "pi_df and min_studies, the fewest studies with a computable effect a pool needs, at least 2) "
     "and, for a systematic review, the PRISMA-P items (rationale, objectives, "
     "selection process, data collection process, risk of bias). Never claim that the question or the review is novel. "
     "When a previous draft is given, revise it: change only what the guidance asks for and keep the rest. When a frozen "
@@ -323,7 +323,7 @@ def _field_line(f: dict) -> str:
 
 
 HKSJ_WORDS = {"auto": "auto (the Cochrane Handbook rule)", True: "always", False: "never (Wald intervals)"}
-POOL_KEYS = frozenset({"pool_model", "hksj", "pi_df", "outcomes"})  # shown only for a meta-analysis
+POOL_KEYS = frozenset({"pool_model", "hksj", "pi_df", "min_studies", "outcomes"})  # shown only for a meta-analysis
 
 
 def _outcome_problems(plan: SynthesisPlan, schema: dict[str, ExtractionField]) -> list[str]:
@@ -379,12 +379,15 @@ def _outcome_text(o: dict) -> str:
 
 
 def plan_value(key: str, value, method: str | None = None) -> str | None:
-    """A synthesis plan value as a review shows it (``None``: not shown): ``hksj`` in words, the outcomes with their
-    fields, lists joined; the meta-analysis fields (``POOL_KEYS``) only when ``method`` is ``meta_analysis``."""
+    """A synthesis plan value as a review shows it (``None``: not shown): ``hksj`` and ``min_studies`` in words, the
+    outcomes with their fields, lists joined; the meta-analysis fields (``POOL_KEYS``) only when ``method`` is
+    ``meta_analysis``."""
     if key in POOL_KEYS and method != "meta_analysis":
         return None
     if key == "hksj":
         return HKSJ_WORDS.get(value, str(value))
+    if key == "min_studies":
+        return f"at least {value} studies with a computable effect"
     if key == "outcomes":
         return "; ".join(_outcome_text(o) for o in value) or None
     if isinstance(value, list):

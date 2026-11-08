@@ -206,7 +206,7 @@ def test_synthesis_tool_shows_artifacts_with_their_v_stats_verdict(api):
     assert (g["outcome"], g["measure"], g["decision"]["decision"], g["decision"]["by"]) == ("tuberculosis", "RR",
                                                                                           "pool", "vote")
     assert g["pooled"]["fig"].startswith("fig_") and g["pooled"]["stt"].startswith("stt_")
-    assert got["pool_options"] == {"model": "DL", "hksj": "auto", "pi_df": "k-2", "level": 0.95}
+    assert got["pool_options"] == {"model": "DL", "hksj": "auto", "pi_df": "k-2", "level": 0.95, "min_studies": 2}
     by_id = {a["id"]: a for a in got["artifacts"]}
     fig = by_id[g["pooled"]["fig"]]
     assert fig["kind"] == "fig" and fig["media_type"] == "image/svg+xml" and fig["v_stats"]["verdict"] == "pass"
@@ -518,7 +518,8 @@ def test_pooling_card_answers_reach_the_worker(page, served):
     run_id = _start(served, "synthesize", synth_exec(plans=[two]))
     cp, card = _show(page, ps, "pooling_approval")
     for text in ("tuberculosis", "adverse events", "Aronson 1950", "Ferguson 1951", "Rosenthal 1952",
-                 "Same <i>PICO</i>.", "DerSimonian", "k−2", "Population", "2/2"):
+                 "Same <i>PICO</i>.", "DerSimonian", "k−2", "Population", "2/2",
+                 "at least 2 studies with a computable effect"):
         assert card.get_by_text(text, exact=False).count() >= 1, text
     assert card.locator(".card-body i").count() == 0  # the planner's reason is shown as text
     submit = card.get_by_role("button", name="Submit pooling decisions")

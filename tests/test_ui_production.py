@@ -468,13 +468,13 @@ def test_protocol_card_shows_a_meta_analysis_plan_in_words(page, served):
     body = a_protocol(extraction_schema=[ExtractionField(name=f, description=f, type="number")
                                          for f in stroke.fields.values()],
                       synthesis_plan=SynthesisPlan(method="meta_analysis", effect_measure="RR", pool_model="DL",
-                                                   hksj=False, outcomes=[stroke]), prisma_p=SR_ITEMS)
+                                                   hksj=False, min_studies=3, outcomes=[stroke]), prisma_p=SR_ITEMS)
     pid = store.add_protocol(ps, 1, body, version=1, actor="tester")
     create_checkpoint(ps, "protocol_approval", "Review the protocol.",
                       {"protocol_id": pid, "version": 1, "attempt": 1, "choices": ["approve", "revise", "back"],
                        "replaces": None}, stage="protocol", actor="tester")
     _cp, card = _show(page, ps, "protocol_approval")
-    for text in ("meta analysis", "never (Wald intervals)", "DL",
+    for text in ("meta analysis", "never (Wald intervals)", "DL", "at least 3 studies with a computable effect",
                  "stroke (events_treatment = stroke_events_treatment, n_treatment = stroke_n_treatment"):
         assert card.get_by_text(text, exact=False).count() >= 1, text
     assert page.errors == []

@@ -1183,7 +1183,8 @@ def synthesis_show(attempt: int | None = typer.Option(None, "--attempt", help="D
             return
         typer.echo(f"synthesize attempt {d['attempt']} ({d['method'] or 'no synthesis plan'}; {_gate_text(d['gate'])})")
         if o := d["pool_options"]:
-            typer.echo(f"pool options: model {o['model']}, HKSJ {o['hksj']}, prediction interval df {o['pi_df']}")
+            typer.echo(f"pool options: model {o['model']}, HKSJ {o['hksj']}, prediction interval df {o['pi_df']}, "
+                       f"at least {o['min_studies']} studies with a computable effect")
         for a in d["assessments"]:
             typer.echo(f"  {a['label']}: " + ", ".join(f"{c} {v['score']}" for c, v in a["criteria"].items())
                        + (" (sufficiency capped: abstract only)" if a["capped"] else ""))
