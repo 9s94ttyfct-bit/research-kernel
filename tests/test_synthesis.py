@@ -1664,6 +1664,27 @@ def test_argue_conflict_decision_dropping_a_stat_result_takes_its_pool_out(env):
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
 
 
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_argue_going_back_with_no_finding_left_still_takes_withdrawn_pools_out(env):
+    """Round 3: every finding, the stat_result among them, was withdrawn in argue and the reconcile never ran (a
+    crash): argue goes back to synthesize (I4) and still takes the pool out of the attempt it argued on first."""
+    from rk.production.argue import ArgueWorker
+
+    k, ps, lib = env
+    w, _, _ = _pooled(env, _exec(plans=[_one_group], votes=_votes_pool()))
+    record_ran(ps, "synthesize", 1, "done", "", actor="tester")
+    record_passed(ps, "synthesize", 1, actor="tester")
+    svc = ArgumentService(ps)
+    for cid in synthesis_claims(ps, 1):
+        if svc.get_claim(cid)["status"] != "withdrawn":
+            svc.withdraw_claim(cid, reason="withdrawn in argue", actor="tester")
+    out = ArgueWorker().run(production_ctx(k, ps, lib, _exec(), stage="argue", attempt=1))
+    assert out.status == "back_edge" and out.to == "synthesize", out.reason
+    (fb,) = [n for n in synthesis_notes(ps, 1, kind="fallback") if "withdrawn" in n["reason"]]
+    assert fb["deviation_id"]
+    assert not any("has no fallback" in f for f in w.gate(ps, 1).failures), w.gate(ps, 1).failures
+
+
 def test_a_request_covers_the_same_study_read_for_its_fields_or_in_full():
     """Round 2 minor 2: your back naming a study (without fields: a full re-read) or the kernel's request for more
     fields covers a later gap of that study; another field does not."""

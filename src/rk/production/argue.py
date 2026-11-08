@@ -673,6 +673,8 @@ class ArgueWorker:
         s = _load(ctx.ps)
         if isinstance(s, str):
             if (why := _no_finding_left(ctx.ps)) is not None:  # nothing to argue on: synthesize again (I4)
+                # mends a crash after the last finding, a stat_result, was withdrawn before its pool was taken out
+                reconcile_withdrawn_pools(ctx, argued_synthesis_attempt(ctx.ps, ctx.attempt))
                 return StageOutcome("back_edge", to="synthesize", reason=why)
             return StageOutcome("failed", reason=s)
         if sent := argue_notes(ctx.ps, ctx.attempt, kind="back_edge"):  # resumed after the back-edge was noted
