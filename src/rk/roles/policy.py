@@ -68,6 +68,9 @@ TOOL_ROLES: dict[str, frozenset[str]] = {
     "rk_prisma_get": _r(*_FULL_READERS, "scout"),
     "rk_screening_list": _r(*_FULL_READERS),
     "rk_extraction_get": _r(*_FULL_READERS, "reader"),
+    # synthesis, argument and design (Plan 5b): the roles that reason over the whole project; the screeners, the Scout
+    # and the Reader work before them and read none
+    **{name: _r(*_FULL_READERS) for name in ("rk_synthesis_get", "rk_argument_get", "rk_design_get")},
 }
 
 # Spec §5.3/§7.2: the P1/P2 checkpoints and the discovery path depend on these intake fields. The intake cannot change

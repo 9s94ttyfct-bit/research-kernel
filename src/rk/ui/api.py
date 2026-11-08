@@ -50,10 +50,12 @@ from rk.orchestrator.state import (
     latest_run,
     orchestrator_drives,
 )
+from rk.production.artifacts import ARTIFACTS_DIR, artifact
 from rk.production.models import PHASE_WORDS
 from rk.production.screening import KIND as DISAGREEMENTS
 from rk.production.screening import disagreement_view
 from rk.production.store import frozen_protocol
+from rk.production.tools import ARTIFACT_MEDIA_TYPES
 from rk.roles.policy import ROLES
 from rk.tools.registry import CallContext, PermissionDenied, ToolError
 from rk.ui.auth import COOKIE, UiAuth
@@ -537,6 +539,52 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
         if item_id:
             args["item_id"] = item_id
         return ok(call("rk_extraction_get", args, ctx_dep(request)))
+
+    # ---- production: the synthesis, its artifact files, the argument and the design ---------------------------
+    @r.get("/ui/api/synthesis")
+    def synthesis_get(request: Request, attempt: int | None = None) -> JSONResponse:
+        """The synthesis of synthesize, of the attempt it shows or of ``attempt`` (``rk_synthesis_get``)."""
+        args: dict[str, Any] = {"project": request.query_params.get("project", "")}
+        if attempt is not None:
+            args["attempt"] = attempt
+        return ok(call("rk_synthesis_get", args, ctx_dep(request)))
+
+    @r.get("/ui/api/artifacts/{slug}/{artifact_id}", response_model=None)
+    def artifact_file(slug: str, artifact_id: str, request: Request) -> FileResponse:
+        """The file of one of the project's artifacts (a forest plot as ``image/svg+xml``, an evidence-map table, a
+        statistic's JSON), only from the project's artifacts directory. The Workbench shows a figure as an ``<img>``,
+        which runs no script; opened directly, the file is sandboxed."""
+        ctx_dep(request)
+        ps, _ = project(slug)
+        a = artifact(ps, artifact_id)
+        base = (ps.root / ARTIFACTS_DIR).resolve()
+        path = (ps.root / a["path"]).resolve() if a else None
+        if path is None or path.parent != base or not path.is_file():
+            raise HTTPException(status_code=404, detail=f"no artifact file {artifact_id} in {slug}")
+        media = ARTIFACT_MEDIA_TYPES.get(path.suffix, "application/octet-stream")
+        headers = {"X-Content-Type-Options": "nosniff", "Content-Security-Policy":
+                   "sandbox; default-src 'none'; style-src 'unsafe-inline'"}
+        return FileResponse(path, media_type=media, headers=headers, content_disposition_type="inline")
+
+    @r.get("/ui/api/argument")
+    def argument_get(request: Request, attempt: int | None = None, claim_id: str | None = None) -> JSONResponse:
+        """The argument of argue, of the attempt it shows or of ``attempt``; optionally one claim
+        (``rk_argument_get``)."""
+        args: dict[str, Any] = {"project": request.query_params.get("project", "")}
+        if attempt is not None:
+            args["attempt"] = attempt
+        if claim_id:
+            args["claim_id"] = claim_id
+        return ok(call("rk_argument_get", args, ctx_dep(request)))
+
+    @r.get("/ui/api/design")
+    def design_get(request: Request, attempt: int | None = None) -> JSONResponse:
+        """The design of design (research proposals), of the attempt it shows or of ``attempt``: its draft before the
+        approval, then the frozen design (``rk_design_get``)."""
+        args: dict[str, Any] = {"project": request.query_params.get("project", "")}
+        if attempt is not None:
+            args["attempt"] = attempt
+        return ok(call("rk_design_get", args, ctx_dep(request)))
 
     # ---- drafts -----------------------------------------------------------------------------------------------
     @r.get("/ui/api/drafts")

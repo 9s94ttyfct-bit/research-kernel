@@ -505,6 +505,11 @@ function criteria(list) {
 const label = (key) => { const w = words(key); return w ? w[0].toUpperCase() + w.slice(1) : w; };
 const screener = (role) => String(role).replace(/^screener_(\w)$/, (_, x) => `Screener ${x.toUpperCase()}`);
 
+// The pool options of a meta-analysis in words (the protocol's synthesis plan, the pooling approval).
+const HKSJ = { auto: "auto (the Cochrane Handbook rule)", true: "always", false: "never (Wald intervals)" };
+const POOL_MODELS = { DL: "DerSimonian–Laird random effects", REML: "REML random effects", FE: "fixed effect (inverse variance)" };
+const PI_DF = { ci: "the confidence interval's (RevMan)", "k-2": "t with k−2 degrees of freedom (Higgins 2009)" };
+
 async function protocolCard(c, answer) {
   const d = await api("/ui/api/protocol", { query: { project: state.project, protocol_id: c.options?.protocol_id } });
   const p = d.protocol, b = p.body, ss = b.search_strategy;
@@ -525,7 +530,6 @@ async function protocolCard(c, answer) {
   const back = el("form", { class: "revise" }, el("label", { class: "field" }, "Why go back (optional)", why),
     el("button", { type: "submit", class: "secondary" }, "Back to the research question"));
   back.addEventListener("submit", (e) => { e.preventDefault(); const comment = why.value.trim(); answer(comment ? { decision: "back", comment } : { decision: "back" }); });
-  const HKSJ = { auto: "auto (the Cochrane Handbook rule)", true: "always", false: "never (Wald intervals)" };
   // every plan value as text: el() skips false, so hksj is shown in words; outcomes with their fields; lists joined
   const outcome = (o) => {
     const fields = Object.entries(o.fields || {}).map(([r, f]) => `${r} = ${f}`).join(", ");
@@ -608,11 +612,260 @@ async function disagreementCard(c, answer) {
   ];
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// synthesis, argument and design: claims with their badges and evidence, the cards that decide on them
+
+const CRITERIA = ["accurate", "precise", "sufficient", "representative", "authoritative", "clear", "relevant"];
+const COMPARABILITY = ["population", "intervention", "comparator", "outcome", "design"];
+// An object's entries with the `order` keys first, in that order (stored JSON comes back with sorted keys).
+const inOrder = (obj, order) => Object.entries(obj).sort(([a], [b]) => {
+  const i = order.indexOf(a), j = order.indexOf(b);
+  return (i < 0 ? order.length : i) - (j < 0 ? order.length : j) || a.localeCompare(b);
+});
+const CLAIM_STATUS = { supported: "ok", uncertain: "warn", draft: "neutral", unsupported: "bad", contradicted: "bad", withdrawn: "neutral" };
+const TESTS = { true: "True", limited: "Limited as it should be", circumstance_fits: "Circumstance fits", consequence_fits: "Consequence fits", accepted: "Accepted in the field" };
+const ROLE_NAMES = { main: "Main claim", reason: "Reason", response: "Response", warrant: "Warrant", finding: "Synthesis finding" };
+const artifactUrl = (id) => `/ui/api/artifacts/${encodeURIComponent(state.project)}/${encodeURIComponent(id)}`;
+
+function claimBadges(c) {
+  const h = c.hedge || {};
+  return el("div", { class: "badges" },
+    el("span", { class: `badge ${CLAIM_STATUS[c.status] || "neutral"}` }, label(c.status)),
+    c.role ? el("span", { class: "badge neutral" }, ROLE_NAMES[c.role] || label(c.role)) : null,
+    c.contested ? el("span", { class: "badge warn" }, "Contested") : null,
+    c.status === "withdrawn" ? null : h.verdict
+      ? el("span", { class: `badge ${h.verdict === "pass" ? "ok" : "bad"}` }, h.verdict === "pass" ? `Hedge ok (level ${h.level})` : `Overstated (level ${h.level})`)
+      : el("span", { class: "badge neutral" }, "Hedge not checked"),
+    c.v_stats ? el("span", { class: `badge ${c.v_stats === "pass" ? "ok" : "bad"}` }, `V-STATS ${c.v_stats}`) : null);
+}
+
+function evidenceList(c) {
+  if (!c.evidence.length) return el("p", { class: "empty" }, c.kind === "stat_result" ? "Computed by the kernel from the extraction (its artifacts)." : "No evidence linked.");
+  return c.evidence.map((e) => el("div", { class: "evidence" },
+    e.notes.map((n) => n.missing ? el("p", { class: "hint bad" }, `Note ${n.id} is missing.`)
+      : el("blockquote", { class: `note${n.verified ? "" : " unverified"}` }, n.text,
+        el("div", { class: "hint" }, n.label || n.title || n.item_id, n.against === "abstract" ? " (abstract)" : ""))),
+    e.interpretation ? el("p", { class: "hint" }, "How it supports the claim: ", e.interpretation) : null,
+    Object.keys(e.criteria).length ? el("p", { class: "hint" }, CRITERIA.filter((k) => e.criteria[k]).map((k) => `${label(k)} ${e.criteria[k].score}/2`).join(" · ")) : null));
+}
+
+// A claim: its badges, text and scope; why it was withdrawn, is contested or fails the claim gate; its evidence
+// (folded unless `open`).
+function claimBlock(c, { open = false } = {}) {
+  return el("div", { class: `claim${c.status === "withdrawn" ? " withdrawn" : ""}`, "data-claim": c.id },
+    claimBadges(c),
+    el("p", { class: "claim-text" }, c.text),
+    c.scope_limits.length ? el("p", { class: "hint" }, "Scope: ", c.scope_limits.join("; ")) : null,
+    c.withdrawn_reason ? el("p", { class: "hint" }, "Withdrawn: ", c.withdrawn_reason) : null,
+    c.contested_reason ? el("p", { class: "hint" }, "Contested: ", c.contested_reason) : null,
+    c.narrowed_from ? el("p", { class: "hint" }, `Narrower rewrite of ${c.narrowed_from}.`) : null,
+    c.status !== "withdrawn" && c.problems.length ? el("ul", { class: "check bad" }, c.problems.map((p) => el("li", {}, p))) : null,
+    el("details", { class: "claim-evidence", open, "data-key": `evidence-${c.id}` }, el("summary", {}, `Evidence (${c.evidence.length})`), evidenceList(c)));
+}
+
+// Two radio buttons (or more) for one decision; `onpick(value)` on change.
+function choices(group, name, options, onpick) {
+  return el("div", { role: "radiogroup", class: "choices", "aria-label": name },
+    options.map(([value, text, aria]) => el("label", { class: "choice" },
+      el("input", { type: "radio", name: group, value, "aria-label": aria, onchange: () => onpick(value) }), text)));
+}
+
+function optionalComment() {
+  const box = el("textarea", { name: "comment" });
+  return { field: el("label", { class: "field" }, "Comment (optional)", box), value: () => box.value.trim() };
+}
+
+const groupName = (g) => `${g.outcome} (${g.measure})`;
+const studyNames = (list) => list.map((s) => s.label).join(", ");
+
+async function poolingCard(c, answer) {
+  const o = c.options || {};
+  const d = await api("/ui/api/synthesis", { query: { project: state.project, attempt: o.attempt } });
+  const listed = (o.groups || []).map((i) => d.groups.find((g) => g.group === i)).filter(Boolean);
+  const chosen = new Map();
+  const comment = optionalComment();
+  const status = el("p", { class: "hint", role: "status" });
+  const submit = el("button", { type: "button", disabled: true, onclick: () => {
+    const text = comment.value();
+    answer({ decisions: Object.fromEntries(chosen), ...(text ? { comment: text } : {}) });
+  } }, "Submit pooling decisions");
+  const update = () => {
+    status.textContent = `${chosen.size} of ${count(listed.length, "group")} decided`;
+    submit.disabled = chosen.size !== listed.length;  // every group needs your decision
+  };
+  update();
+  const p = d.pool_options || {};
+  const group = (g) => el("li", { class: "pool-group", "data-group": g.group },
+    el("h3", {}, `Group ${g.group}: ${groupName(g)}`),
+    facts([["Studies", `${g.studies.length}: ${studyNames(g.studies)}`],
+      ["Added by the kernel", g.added_by_kernel.length ? `${studyNames(g.added_by_kernel)} (the plan left them out without a reason; their effects are computable, so they are pooled too)` : ""],
+      ["The Arguer's reason", g.reason]]),
+    g.left_out.length ? [el("h4", {}, "Left out by the plan (recorded as a deviation)"),
+      el("ul", {}, g.left_out.map((x) => el("li", {}, `${x.label}: `, x.reason)))] : null,
+    el("h4", {}, "Comparability"),
+    el("table", { class: "comparability" }, el("thead", {}, el("tr", {}, ["Criterion", "Score", "Reason"].map((h) => el("th", {}, h)))),
+      el("tbody", {}, inOrder(g.comparability, COMPARABILITY).map(([k, v]) => el("tr", {}, el("td", {}, label(k)), el("td", {}, `${v.score}/2`), el("td", {}, v.reason))))),
+    el("div", { class: "decide" }, el("div", { class: "who" }, "Your decision"),
+      choices(`pool-${c.id}-${g.group}`, `Your decision: ${groupName(g)}`,
+        [["pool", "Pool", `Pool: ${groupName(g)}`], ["no_pool", "Do not pool", `Do not pool: ${groupName(g)}`]],
+        (v) => { chosen.set(String(g.group), v); update(); })));
+  return [
+    el("p", { class: "hint" }, "The kernel computes every number from the extraction rows. A group you do not pool is synthesized narratively, recorded as a deviation from the protocol."),
+    el("h4", {}, "Pool options the protocol pre-specifies"),
+    facts([["Model", POOL_MODELS[p.model] || p.model], ["HKSJ intervals", HKSJ[String(p.hksj)] ?? String(p.hksj)],
+      ["Prediction interval", PI_DF[p.pi_df] || p.pi_df], ["Interval level", p.level ? `${Math.round(p.level * 100)}%` : ""]]),
+    listed.length ? el("ol", { class: "pool-groups" }, listed.map(group)) : el("p", { class: "empty" }, "The groups of this checkpoint were not found."),
+    comment.field,
+    el("div", { class: "toolbar" }, submit, status),
+  ];
+}
+
+// uncertain_support of synthesize (its findings) and of argue's final review (its claims, and whether the main
+// claim answers the research question). An older uncertain_support without listed claims gets the plain card.
+async function uncertainCard(c, answer) {
+  const o = c.options;
+  const rqAsked = Array.isArray(o.answers_rq);
+  const d = await api(rqAsked ? "/ui/api/argument" : "/ui/api/synthesis", { query: { project: state.project, attempt: o.attempt } });
+  const byId = new Map((rqAsked ? d.claims : d.findings).map((x) => [x.id, x]));
+  const chosen = new Map();
+  let rq = null;
+  const comment = optionalComment();
+  const status = el("p", { class: "hint", role: "status" });
+  const submit = el("button", { type: "button", disabled: true, onclick: () => {
+    const text = comment.value();
+    answer({ claims: Object.fromEntries(chosen), ...(rqAsked ? { answers_rq: rq } : {}), ...(text ? { comment: text } : {}) });
+  } }, "Submit your review");
+  const update = () => {
+    status.textContent = `${chosen.size} of ${count(o.claim_ids.length, "claim")} decided${rqAsked ? (rq ? "; research question answered" : "; the research question is still open") : ""}`;
+    submit.disabled = chosen.size !== o.claim_ids.length || (rqAsked && !rq);
+  };
+  update();
+  const row = (cid) => {
+    const x = byId.get(cid);
+    if (!x) return el("li", {}, el("p", { class: "error" }, `Claim ${cid} was not found.`));
+    return el("li", { class: "review-claim" }, claimBlock(x, { open: true }),
+      x.support_reason ? el("p", { class: "hint" }, "The judges: ", x.support_reason) : null,
+      rqAsked ? objectionList(d.objections.filter((ob) => [cid, ...x.evidence.map((e) => e.id)].includes(ob.target_id))) : null,
+      choices(`claim-${c.id}-${cid}`, `Your decision: ${x.text}`,
+        [["supported", "Supported", `Supported: ${x.text}`], ["withdraw", "Withdraw", `Withdraw: ${x.text}`]],
+        (v) => { chosen.set(cid, v); update(); }));
+  };
+  const main = rqAsked ? byId.get(o.main_claim_id) : null;
+  return [
+    rqAsked ? [el("h4", {}, "Research question"), el("p", { class: "rq-sentence" }, d.question || ""),
+      el("h4", {}, "Main claim"), main ? claimBlock(main) : el("p", { class: "error" }, "The main claim was not found."),
+      el("h4", {}, "Does the main claim answer the research question?"),
+      choices(`rq-${c.id}`, "Does the main claim answer the research question?",
+        [["yes", "Yes, it answers the research question", "Yes, it answers the research question"],
+          ["no", "No: back to the question stage", "No: back to the question stage"]], (v) => { rq = v; update(); })] : null,
+    o.claim_ids.length ? [el("h4", {}, rqAsked ? "Claims not supported by V-SUPPORT" : "Findings the judges could not agree on"),
+      el("p", { class: "hint" }, "Is each supported by its evidence? Withdrawing a claim takes it out and lists it in the limitations."),
+      el("ol", { class: "review-claims" }, o.claim_ids.map(row))] : null,
+    comment.field,
+    el("div", { class: "toolbar" }, submit, status),
+    el("div", { class: "other-answers" }, el("h4", {}, `Or ${rqAsked ? "argue" : "synthesize"} again`),
+      reviseForm(`What should change (${rqAsked ? "argue" : "synthesize"} runs again with your comment)`, (text) => answer({ decision: "rerun", comment: text }))),
+  ];
+}
+
+async function conflictCard(c, answer) {
+  const o = c.options || {};
+  const d = await api("/ui/api/argument", { query: { project: state.project, attempt: o.attempt } });
+  const byId = new Map(d.claims.map((x) => [x.id, x]));
+  const conflict = d.conflicts.find((x) => x.index === o.index) || {};
+  const comment = optionalComment();
+  const decide = (decision) => { const text = comment.value(); answer({ decision, ...(text ? { comment: text } : {}) }); };
+  const side = (name, id) => el("div", { class: "finding" }, el("h3", {}, `Finding ${name}`),
+    byId.has(id) ? claimBlock(byId.get(id), { open: true }) : el("p", { class: "error" }, `Claim ${id} was not found.`));
+  return [
+    el("div", { class: "conflict-pair" }, side("a", o.claim_a), side("b", o.claim_b)),
+    el("h4", {}, "Why they contradict each other (the Skeptic)"), el("p", {}, conflict.why || ""),
+    el("p", { class: "hint" }, "A holds over B withdraws B from the argument (and B over A withdraws A). Both contested keeps both, marked contested, each with an objection the Arguer answers."),
+    comment.field,
+    el("div", { class: "toolbar" },
+      el("button", { type: "button", onclick: () => decide("a_holds") }, "Finding a holds"),
+      el("button", { type: "button", onclick: () => decide("b_holds") }, "Finding b holds"),
+      el("button", { type: "button", class: "secondary", onclick: () => decide("both_contested") }, "Both stand, contested")),
+  ];
+}
+
+// The design of a research proposal: its hypotheses with their falsification links, items with their measurements,
+// expected results and alternatives, the dropped hypotheses and the feasibility claims.
+function designDetails(d) {
+  const b = d.design;
+  const measure = new Map(b.items.flatMap((i) => i.measurements.map((m) => [m.id, m])));
+  const mName = (id) => (measure.has(id) ? `${id} (${measure.get(id).what})` : id);
+  // H1, H2, … by position, known by the design's key (an RQ hypothesis id, or a new one's ref) and by its id
+  const num = new Map();
+  d.hypotheses.forEach((h, i) => { num.set(h.key, `H${i + 1}`); if (h.id) num.set(h.id, `H${i + 1}`); });
+  const hName = (id) => num.get(id) || id;
+  return [
+    el("h4", {}, "Hypotheses"),
+    el("ol", { class: "hypotheses" }, d.hypotheses.map((h) => el("li", {},
+      el("div", { class: "badges" }, el("span", { class: "badge neutral" }, hName(h.key)),
+        h.new ? el("span", { class: "badge warn" }, d.frozen_hash ? "New hypothesis" : "New hypothesis (added when you approve)") : null,
+        h.status ? el("span", { class: "badge neutral" }, words(h.status)) : null),
+      el("p", {}, h.statement),
+      facts([["Falsified if", h.falsification], ["Rival of", h.rival_of ? hName(h.rival_of) : ""], ["Tested by", h.tested_by.join(", ") || "no design item"],
+        ["Falsified by", h.falsified_by.map(mName).join("; ") || "no measurement"], ["Hypothesis id", h.id || ""]])))),
+    el("h4", {}, "Design items"),
+    el("ol", { class: "design-items" }, b.items.map((i) => el("li", {},
+      el("strong", {}, `${i.id} (${i.kind})`),
+      facts([["Tests", i.hypothesis_ids.map(hName).join(", ")], ["Sample", i.sample], ["Controls", i.controls.join(", ") || "none"], ["Analysis", i.analysis], ["Data source", i.data_source]]),
+      el("ul", { class: "measurements" }, i.measurements.map((m) => el("li", {}, `${m.id}: ${m.what}, by ${m.instrument}`, m.unit ? ` (${m.unit})` : "")))))),
+    el("h4", {}, "Expected results"), el("p", {}, b.expected_results),
+    el("h4", {}, "Alternative explanations"),
+    b.alternative_explanations.length ? el("ul", {}, b.alternative_explanations.map((x) => el("li", {}, x))) : el("p", { class: "empty" }, "None given."),
+    d.dropped.length ? [el("h4", {}, "Dropped hypotheses (not tested)"), el("ul", {}, d.dropped.map((x) => el("li", {}, `${x.id}: `, x.statement || "", el("div", { class: "hint" }, "Reason: ", x.reason))))] : null,
+    el("h4", {}, "Feasibility claims"),
+    d.feasibility_claims.length ? el("ul", { class: "claims" }, d.feasibility_claims.map((x) => el("li", {}, claimBlock(x)))) : el("p", { class: "empty" }, "None."),
+  ];
+}
+
+async function designCard(c, answer) {
+  const o = c.options || {};
+  const d = await api("/ui/api/design", { query: { project: state.project, attempt: o.attempt } });
+  if (!d.design) return el("p", { class: "error" }, `The design ${o.draft_id} was not found.`);
+  const listed = o.claim_ids || [];
+  const byId = new Map(d.feasibility_claims.map((x) => [x.id, x]));
+  const chosen = new Map();
+  const approve = el("button", { type: "button", disabled: listed.length > 0, onclick: () => answer({ decision: "approve", ...(listed.length ? { claims: Object.fromEntries(chosen) } : {}) }) }, "Approve this design");
+  const status = el("p", { class: "hint", role: "status" });
+  const update = () => {
+    status.textContent = listed.length ? `${chosen.size} of ${count(listed.length, "feasibility claim")} decided` : "";
+    approve.disabled = chosen.size !== listed.length;
+  };
+  update();
+  const why = el("textarea", { name: "back_comment" });
+  const back = el("form", { class: "revise" }, el("label", { class: "field" }, "Why go back (optional)", why),
+    el("button", { type: "submit", class: "secondary" }, "Back to argue"));
+  back.addEventListener("submit", (e) => { e.preventDefault(); const comment = why.value.trim(); answer(comment ? { decision: "back", comment } : { decision: "back" }); });
+  return [
+    el("p", { class: "hint" }, `Design ${d.draft_id}. Approving freezes it and pre-registers the hypotheses it tests.`),
+    designDetails(d),
+    listed.length ? [el("h4", {}, "Feasibility claims the judges could not agree on"),
+      el("ol", {}, listed.map((cid) => {
+        const x = byId.get(cid);
+        return el("li", {}, x ? x.text : cid, choices(`feasible-${c.id}-${cid}`, `Your decision: ${x ? x.text : cid}`,
+          [["supported", "Supported", `Supported: ${x ? x.text : cid}`], ["withdraw", "Withdraw", `Withdraw: ${x ? x.text : cid}`]],
+          (v) => { chosen.set(cid, v); update(); }));
+      }))] : null,
+    el("div", { class: "other-answers" },
+      el("div", { class: "toolbar" }, approve, status),
+      reviseForm("What should change in the design", (comment) => answer({ decision: "revise", comment })), back),
+  ];
+}
+
 const CARDS = { topic_review: topicReviewCard, rq_approval: rqCard, significance_novelty: rqCard, stage_blocked: blockedCard,
-  protocol_approval: protocolCard, screening_disagreements: disagreementCard };
+  protocol_approval: protocolCard, screening_disagreements: disagreementCard, pooling_approval: poolingCard,
+  uncertain_support: uncertainCard, evidence_conflict: conflictCard, design_approval: designCard };
+// The card of a checkpoint, else null (the plain card): an uncertain_support without listed claims predates them.
+const cardFor = (c) => (c.kind === "uncertain_support" && !Array.isArray(c.options?.claim_ids) ? null : CARDS[c.kind] || null);
 const KINDS = { topic_review: "Topic review", rq_approval: "Research question approval",
   significance_novelty: "Already answered? The judges split", stage_blocked: "Stage blocked at its back-edge limit",
-  protocol_approval: "Protocol approval", screening_disagreements: "Screening disagreements" };
+  protocol_approval: "Protocol approval", screening_disagreements: "Screening disagreements",
+  pooling_approval: "Pooling approval", uncertain_support: "Supported? The judges split",
+  evidence_conflict: "Contradicting findings", design_approval: "Design approval" };
 
 const DECIDED_BY = { agreement: "both screeners", single: "one screener", human: "you", vote: "the P1 vote (not reviewed by a human)", rule: "the language rule" };
 const PHASE_NAMES = { title_abstract: "Title and abstract", full_text: "Full text" };
@@ -674,6 +927,63 @@ const prismaOrError = () => api("/ui/api/prisma", { query: { project: state.proj
   return { error: err.message };
 });
 
+// The synthesis of synthesize: how the studies were assessed, each pooling group with its decision and forest plot
+// (an <img> of the stored SVG, never inline), the evidence map, the findings, the narrative and the fallbacks.
+function synthesisPanel(d) {
+  if (d.error) return el("p", { class: "error" }, `Could not load the synthesis: ${d.error}`);
+  if (d.attempt === null) return el("p", { class: "empty" }, "Synthesis has not run yet.");
+  const arts = new Map(d.artifacts.map((a) => [a.id, a]));
+  const findings = new Map(d.findings.map((f) => [f.id, f]));
+  const vstats = (id) => {
+    const a = arts.get(id);
+    return a ? el("span", { class: `badge ${a.v_stats.verdict === "pass" ? "ok" : "bad"}` }, `V-STATS ${a.v_stats.verdict}`) : null;
+  };
+  const group = (g) => {
+    const result = g.pooled ? "Pooled" : g.fallback ? `Not pooled: ${g.fallback}` : g.decision ? `Decided ${words(g.decision.decision)}` : "Awaiting your decision";
+    const stat = g.pooled ? findings.get(g.pooled.claim_id) : null;
+    return el("li", { class: "synthesis-group", "data-group": g.group },
+      el("h3", {}, groupName(g)),
+      facts([["Studies", studyNames(g.studies)],
+        ["Decision", g.decision ? `${words(g.decision.decision)}, by ${DECIDED_BY[g.decision.by] || g.decision.by}${g.decision.reason ? `: ${g.decision.reason}` : ""}` : ""],
+        ["Result", result],
+        ["Not computable", g.pooled?.uncomputable.length ? g.pooled.uncomputable.map((u) => `${u.label} (${u.reason})`).join("; ") : ""],
+        ["Left out", g.pooled?.excluded.length ? g.pooled.excluded.map((u) => `${u.label} (${u.reason})`).join("; ") : ""]]),
+      g.pooled ? el("figure", { class: "forest" },
+        el("img", { src: artifactUrl(g.pooled.fig), alt: `Forest plot: ${groupName(g)}, ${g.pooled.studies.length} studies`, loading: "lazy" }),
+        el("figcaption", {}, stat ? stat.text : "", " ", vstats(g.pooled.fig))) : null);
+  };
+  const map = d.map ? [el("h3", {}, `Evidence map (${d.map.table.n} studies)`), vstats(d.map.stt),
+    Object.entries(d.map.table.fields).map(([field, counts]) => el("table", { class: "evidence-map" },
+      el("thead", {}, el("tr", {}, el("th", {}, label(field)), el("th", {}, "Studies"))),
+      el("tbody", {}, Object.entries(counts).map(([cat, n]) => el("tr", {}, el("td", {}, cat), el("td", {}, String(n)))))))] : null;
+  const n = d.narrative;
+  return [
+    el("p", { class: "hint" }, `Synthesis of synthesize attempt ${d.attempt}${d.method ? ` (${words(d.method)})` : ""}. Every number comes from kernel code; the findings are checked by V-SUPPORT and V-HEDGE, the statistics by V-STATS.`),
+    d.gate && !d.gate.passed && d.gate.failures.length ? el("ul", { class: "check bad" }, d.gate.failures.map((f) => el("li", {}, f))) : null,
+    d.groups.length ? [el("h3", {}, "Meta-analysis"), el("ol", { class: "synthesis-groups" }, d.groups.map(group))] : null,
+    map,
+    el("h3", {}, "Findings"),
+    d.findings.length ? el("ul", { class: "claims" }, d.findings.map((f) => el("li", {}, claimBlock(f)))) : el("p", { class: "empty" }, "No finding yet."),
+    n ? [el("h3", {}, "Representativeness"), el("p", {}, n.representativeness),
+      n.heterogeneity_note ? [el("h3", {}, "Heterogeneity"), el("p", {}, n.heterogeneity_note)] : null,
+      n.swim ? el("details", { class: "swim", "data-key": "swim" }, el("summary", {}, "SWiM reporting items"),
+        facts(Object.entries(n.swim).map(([k, v]) => [label(k), v]))) : null] : null,
+    el("h3", {}, "Each study's criteria"),
+    d.assessments.length ? el("ul", { class: "assessments" }, d.assessments.map((a) => el("li", {},
+      el("details", { "data-key": `assessment-${a.item_id}` },
+        el("summary", {}, el("span", { class: "study" }, a.label), " ", el("span", { class: "hint" },
+          CRITERIA.map((k) => `${label(k)} ${a.criteria[k]?.score ?? "–"}`).join(" · "), a.capped ? " (sufficiency capped: abstract only)" : "")),
+        facts(CRITERIA.filter((k) => a.criteria[k]).map((k) => [label(k), `${a.criteria[k].score}/2: ${a.criteria[k].reason}`]))))))
+      : el("p", { class: "empty" }, "No study assessed yet."),
+    d.fallbacks.length ? [el("h3", {}, "Deviations from the protocol"), el("ul", { class: "prisma-notes" }, d.fallbacks.map((f) => el("li", {}, f.reason)))] : null,
+  ];
+}
+
+const synthesisOrError = () => api("/ui/api/synthesis", { query: { project: state.project } }).catch((err) => {
+  if (err.message === "signed out") throw err;
+  return { error: err.message };
+});
+
 pages.checkpoints = async (root) => {
   if (needProject()) return;
   const [open, answered] = await Promise.all([
@@ -681,7 +991,7 @@ pages.checkpoints = async (root) => {
     api("/ui/api/checkpoints", { query: { project: state.project, status: "answered" } })]);
   setOpenCount(open.checkpoints.length);
   const card = async (c) => {
-    const special = CARDS[c.kind];
+    const special = cardFor(c);
     const long = special && c.kind !== "stage_blocked";  // its card shows everything the prompt says, laid out
     const li = el("li", { "data-kind": c.kind, "data-checkpoint": c.id, class: c.status === "answered" ? "answered" : "" },
       el("div", { class: "kind" }, KINDS[c.kind] || words(c.kind)),
@@ -812,37 +1122,45 @@ function restoreFocus(box, key) {
   (same || box.querySelector("button"))?.focus();
 }
 
-// Redraw `box` keeping what a keyboard user had: the focused control and the open disclosures.
+// Redraw `box` keeping what a keyboard user had: the focused control and the open disclosures (a disclosure is known
+// by its data-key, else by the stage chip it sits in).
 function redrawKeeping(box, redraw) {
   const had = box.contains(document.activeElement) ? focusKey(document.activeElement) : null;
-  const stageOf = (d) => d.closest("[data-stage]")?.dataset.stage;
-  const open = new Set([...box.querySelectorAll("details[open]")].map(stageOf));
+  const keyOf = (d) => d.dataset.key || d.closest("[data-stage]")?.dataset.stage;
+  const open = new Set([...box.querySelectorAll("details[open]")].map(keyOf));
   redraw();
-  box.querySelectorAll("details").forEach((d) => { if (open.has(stageOf(d))) d.open = true; });
+  box.querySelectorAll("details").forEach((d) => { if (open.has(keyOf(d))) d.open = true; });
   restoreFocus(box, had);
 }
 
 pages.progress = async (root) => {
   if (needProject()) return;
-  const [p, first, firstPrisma] = await Promise.all([api("/ui/api/progress", { query: { project: state.project } }),
-    api("/ui/api/stages", { query: { project: state.project } }), prismaOrError()]);
+  const [p, first, firstPrisma, firstSynthesis] = await Promise.all([api("/ui/api/progress", { query: { project: state.project } }),
+    api("/ui/api/stages", { query: { project: state.project } }), prismaOrError(), synthesisOrError()]);
   const graphBox = el("div", {});
   const runStatus = el("div", { "aria-live": "polite" });  // only the status line is announced
   const runButtons = el("div", {});
   const prismaBox = el("div", { class: "prisma" });
-  let asked = 0, timer = null, graphShown = null, runShown = null, prismaShown = null;
+  const synthesisBox = el("div", { class: "synthesis" });
+  let asked = 0, timer = null, graphShown = null, runShown = null, prismaShown = null, synthesisShown = null;
   const showPrisma = (d) => {
     const now = JSON.stringify(d);
     if (now === prismaShown) return;
     prismaShown = now;
     redrawKeeping(prismaBox, () => fill(prismaBox, prismaPanel(d)));
   };
+  const showSynthesis = (d) => {
+    const now = JSON.stringify(d);
+    if (now === synthesisShown) return;
+    synthesisShown = now;
+    redrawKeeping(synthesisBox, () => fill(synthesisBox, synthesisPanel(d)));
+  };
   const refresh = async () => {
     const n = ++asked;
     try {
-      const [g, d] = await Promise.all([api("/ui/api/stages", { query: { project: state.project } }),
-        prismaOrError()]);
-      if (n === asked) { draw(g); showPrisma(d); }  // a slower, older answer does not draw over a newer one
+      const [g, d, s] = await Promise.all([api("/ui/api/stages", { query: { project: state.project } }),
+        prismaOrError(), synthesisOrError()]);
+      if (n === asked) { draw(g); showPrisma(d); showSynthesis(s); }  // a slower, older answer does not draw over a newer one
     } catch (err) { toast(err.message, "error"); }
   };
   const act = async (action, until) => {
@@ -881,6 +1199,7 @@ pages.progress = async (root) => {
   };
   draw(first);
   showPrisma(firstPrisma);
+  showSynthesis(firstSynthesis);
   const feed = el("ul", { class: "feed", "aria-live": "polite" });
   const row = (e) => el("li", {}, el("time", { datetime: e.ts }, e.ts.replace("T", " ").slice(0, 19)), `${e.type} `, el("span", { class: "hint" }, `${e.actor}${e.entity_id ? ` · ${e.entity_id}` : ""}`));
   feed.append(...p.events.map(row));
@@ -889,7 +1208,7 @@ pages.progress = async (root) => {
   root.listen((msg) => {
     if (msg.type === "event") {
       feed.prepend(row(msg.event));
-      if (/^(stage|run|edge|screening)\./.test(msg.event.type)) later();
+      if (/^(stage|run|edge|screening|synthesis|artifact|claim)\./.test(msg.event.type)) later();
     } else if (msg.type === "run") later();
   });
   fill(root, el("h1", {}, "Progress"),
@@ -897,6 +1216,7 @@ pages.progress = async (root) => {
     el("h2", {}, "Stages"), graphBox,
     el("h2", {}, "Run"), el("div", { class: "run-controls" }, runStatus, runButtons),
     el("h2", {}, "Search and screening"), prismaBox,
+    el("h2", {}, "Synthesis"), synthesisBox,
     el("h2", {}, "Tasks"),
     p.tasks.length ? el("table", {}, el("thead", {}, el("tr", {}, ["Task", "Role", "Driver", "Status", "Tries", "Error"].map((h) => el("th", {}, h)))),
       el("tbody", {}, p.tasks.map((t) => el("tr", {}, el("td", {}, t.id), el("td", {}, t.role), el("td", {}, t.driver), el("td", {}, t.status), el("td", {}, t.attempts), el("td", {}, t.error || "")))))
@@ -904,6 +1224,117 @@ pages.progress = async (root) => {
     el("h2", {}, "Open checkpoints"),
     p.open_checkpoints.length ? el("p", {}, el("a", { href: "#/checkpoints" }, `${p.open_checkpoints.length} waiting for you`)) : el("p", { class: "empty" }, "None."),
     el("h2", {}, "Activity"), feed);
+};
+
+const TEST_OK = (t) => el("span", { class: `badge ${t.ok ? "ok" : "bad"}` }, t.ok ? "holds" : "fails");
+
+// A reason edge's warrant (a claim of origin warrant, shown under its edge) with the Skeptic's five tests.
+function warrantBlock(w) {
+  if (!w) return el("p", { class: "hint" }, "No warrant recorded for this link.");
+  return el("div", { class: "warrant" },
+    el("div", { class: "hint" }, `Warrant (${words(w.warrant?.type || "")})`, w.dropped ? ": its link was dropped from the argument" : ""),
+    el("p", { class: "warrant-text" }, w.text),
+    w.tests ? el("ul", { class: "warrant-tests" }, Object.entries(TESTS).filter(([k]) => w.tests[k]).map(([k, name]) =>
+      el("li", {}, TEST_OK(w.tests[k]), ` ${name}: `, w.tests[k].reason)))
+      : el("p", { class: "hint" }, "Not tested by the Skeptic yet."));
+}
+
+const OBJECTION_STATUS = { open: "warn", responded: "ok", conceded: "neutral", rejected_invalid: "neutral" };
+
+function objectionList(list) {
+  if (!list.length) return null;
+  return el("ul", { class: "objections" }, list.map((o) => el("li", { "data-objection": o.id },
+    el("div", { class: "badges" }, el("span", { class: `badge ${OBJECTION_STATUS[o.status] || "neutral"}` }, `Objection: ${words(o.status)}`),
+      el("span", { class: "badge neutral" }, `Priority ${o.priority}`), el("span", { class: "badge neutral" }, words(o.category)),
+      o.soundness ? el("span", { class: "badge bad" }, "Failed warrant test") : null,
+      o.conflict ? el("span", { class: "badge warn" }, "Contradiction") : null),
+    el("p", {}, o.text),
+    o.response ? el("div", { class: "response" }, el("span", { class: "hint" }, `Response (${words(o.response.status)}): `), o.response.text) : null,
+    o.note ? el("p", { class: "hint" }, "Note: ", o.note) : null)));
+}
+
+// The argument: the main claim with the reasons under it, each reason edge with its warrant, every claim, edge and
+// warrant with the objections on it; then the findings it rests on, the conflicts and what was conceded.
+function argumentPanel(d) {
+  if (d.attempt === null) return el("p", { class: "empty" }, "argue has not run yet.");
+  const claims = new Map(d.claims.map((c) => [c.id, c]));
+  const shown = new Set();
+  const on = (ids) => { ids.forEach((i) => shown.add(i)); return d.objections.filter((o) => ids.includes(o.target_id)); };
+  const node = (cid, seen) => {
+    const c = claims.get(cid);
+    if (!c || seen.has(cid)) return el("li", { class: "claim-node" }, el("p", { class: "hint" }, `See ${cid} above.`));
+    seen = new Set([...seen, cid]);
+    shown.add(cid);
+    const reasons = d.edges.filter((e) => e.type === "reason_of" && e.to_id === cid);
+    return el("li", { class: "claim-node", "data-claim": cid },
+      claimBlock(c),
+      objectionList(on([cid, ...c.evidence.map((e) => e.id)])),
+      reasons.length ? el("ul", { class: "reasons" }, reasons.map((e) => {
+        const w = d.warrants.find((x) => x.licenses === e.id);
+        return el("li", { class: `reason-link${e.out ? " out" : ""}` },
+          el("div", { class: "hint" }, e.dropped ? "Dropped link (its warrant failed): " : e.out ? "Link out of the argument: " : "Supported by:"),
+          el("ul", { class: "claim-tree-sub" }, node(e.from_id, seen)),
+          warrantBlock(w),
+          objectionList(on([e.id, ...(w ? [w.edge_id] : [])])));
+      })) : null);
+  };
+  const tree = d.main_claim_id ? el("ul", { class: "claim-tree" }, node(d.main_claim_id, new Set())) : el("p", { class: "empty" }, "No main claim yet.");
+  const findings = d.claims.filter((c) => c.role === "finding" && !shown.has(c.id));
+  const responses = new Set(d.objections.map((o) => o.response_claim_id).filter(Boolean));
+  const loose = d.claims.filter((c) => !shown.has(c.id) && !["finding", "warrant"].includes(c.role) && !responses.has(c.id));
+  const findingBlocks = findings.map((c) => el("li", {}, claimBlock(c), objectionList(on([c.id, ...c.evidence.map((e) => e.id)]))));
+  const looseBlocks = loose.map((c) => el("li", {}, claimBlock(c), objectionList(on([c.id, ...c.evidence.map((e) => e.id)]))));
+  const other = d.objections.filter((o) => !shown.has(o.target_id));
+  const lim = d.limitations || {};
+  const conceded = lim.conceded || [];
+  const name = (id) => claims.get(id)?.text || id;
+  return [
+    el("p", { class: "hint" }, `Argument of argue attempt ${d.attempt}`, d.end ? `; the rounds ended at ${words(d.end.reason)}` : "", d.gate?.passed ? "; it passed its gate." : "."),
+    d.gate && !d.gate.passed && d.gate.failures.length ? el("ul", { class: "check bad" }, d.gate.failures.map((f) => el("li", {}, f))) : null,
+    d.question ? [el("h3", {}, "Research question"), el("p", { class: "rq-sentence" }, d.question)] : null,
+    d.rq_checks.length ? el("p", { class: "hint" }, "Does the main claim answer it? ",
+      d.rq_checks.map((r) => `${r.decision === "answers" ? "yes" : "no"}, by ${DECIDED_BY[r.by] || r.by}${r.reason ? ` (${r.reason})` : ""}`).join("; ")) : null,
+    el("h3", {}, "Claims"), tree,
+    looseBlocks.length ? [el("h3", {}, "Other claims"), el("ul", { class: "claims" }, looseBlocks)] : null,
+    findingBlocks.length ? [el("h3", {}, "Synthesis findings it rests on"), el("ul", { class: "claims" }, findingBlocks)] : null,
+    d.conflicts.length ? [el("h3", {}, "Contradicting findings"), el("ul", { class: "conflicts" }, d.conflicts.map((c) => el("li", {},
+      el("p", {}, el("strong", {}, "a: "), name(c.claim_a)), el("p", {}, el("strong", {}, "b: "), name(c.claim_b)),
+      el("p", { class: "hint" }, "The Skeptic: ", c.why),
+      el("p", { class: "hint" }, c.decision ? `Decided: ${words(c.decision.decision)}, by ${DECIDED_BY[c.decision.by] || c.decision.by}` : "Awaiting your decision"))))] : null,
+    other.length ? [el("h3", {}, "Other objections"), objectionList(other)] : null,
+    conceded.length ? [el("h3", {}, "Conceded (in the limitations)"), el("ul", {}, conceded.map((o) => el("li", {}, o.text, o.note ? el("div", { class: "hint" }, o.note) : null)))] : null,
+  ];
+}
+
+function designPanel(d) {
+  return el("section", { class: "design-view" }, el("h2", {}, "Design"),
+    el("p", { class: "hint" }, `${d.draft_id}: ${d.status}`, d.frozen_hash ? "; frozen hash " : "", d.frozen_hash ? el("code", {}, d.frozen_hash) : null),
+    designDetails(d),
+    d.problems.length ? [el("h4", {}, "Problems"), el("ul", { class: "check bad" }, d.problems.map((p) => el("li", {}, p)))] : null);
+}
+
+pages.argument = async (root) => {
+  if (needProject()) return;
+  const box = el("div", {});
+  let shown = null, timer = null;
+  const load = async () => {
+    const [a, d] = await Promise.all([api("/ui/api/argument", { query: { project: state.project } }),
+      api("/ui/api/design", { query: { project: state.project } })]);
+    const now = JSON.stringify([a, d]);
+    if (now === shown) return;
+    shown = now;
+    redrawKeeping(box, () => fill(box, el("div", { class: "argument" }, argumentPanel(a)), d.draft_id ? designPanel(d) : null));
+  };
+  await load();
+  root.onLeave(() => clearTimeout(timer));
+  root.listen((msg) => {
+    if (msg.type !== "event" || !/^(argue|design|claim|objection|warrant|edge|stage)\./.test(msg.event.type)) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => load().catch((err) => toast(err.message, "error")), 300);
+  });
+  fill(root, el("h1", {}, "Argument"),
+    el("p", { class: "lead" }, "The argument the Arguer built on the synthesis and the Skeptic attacked: each claim with its status and hedge, the warrant of each reason with its tests, and every objection with its answer."),
+    box);
 };
 
 pages.drafts = async (root, params) => {

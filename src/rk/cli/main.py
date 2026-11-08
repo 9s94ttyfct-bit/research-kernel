@@ -39,6 +39,9 @@ topic_app = typer.Typer(help="Candidate topics of the discovery stages", no_args
 protocol_app = typer.Typer(help="The review protocol of the protocol stage", no_args_is_help=True)
 screening_app = typer.Typer(help="Screening decisions of the search_screen stage", no_args_is_help=True)
 extraction_app = typer.Typer(help="Extracted values of the read_extract stage", no_args_is_help=True)
+synthesis_app = typer.Typer(help="The synthesis of the synthesize stage", no_args_is_help=True)
+argument_app = typer.Typer(help="The argument of the argue stage", no_args_is_help=True)
+design_app = typer.Typer(help="The method design of the design stage (research proposals)", no_args_is_help=True)
 app.add_typer(project_app, name="project")
 app.add_typer(library_app, name="library")
 app.add_typer(note_app, name="note")
@@ -51,6 +54,9 @@ app.add_typer(topic_app, name="topic")
 app.add_typer(protocol_app, name="protocol")
 app.add_typer(screening_app, name="screening")
 app.add_typer(extraction_app, name="extraction")
+app.add_typer(synthesis_app, name="synthesis")
+app.add_typer(argument_app, name="argument")
+app.add_typer(design_app, name="design")
 
 JSON_OPT = typer.Option(False, "--json", help="Print raw JSON")
 KEYWORD_OPT = typer.Option(None, "--keyword", help="Repeatable")
@@ -1099,6 +1105,132 @@ def extraction_show(item_id: str | None = typer.Argument(None, help="One study (
                 typer.echo(f"  not evidence: {v['field']} = {v['value']}: {v['problem']}")
             for p in s["problems"]:
                 typer.echo(f"  problem: {p}")
+
+    _out(r, as_json, render)
+
+
+def _gate_text(gate: dict | None) -> str:
+    if not gate:
+        return "not gated"
+    if gate["passed"]:
+        return "passed its gate"
+    return "gate failed: " + "; ".join(gate["failures"]) if gate["failures"] else "not passed yet"
+
+
+def _claim_line(c: dict, indent: str = "") -> str:
+    flags = [c["status"], *(["contested"] if c["contested"] else []),
+             f"hedge {c['hedge']['verdict'] or 'not checked'}", *([f"V-STATS {c['v_stats']}"] if "v_stats" in c else [])]
+    role = f" {c['role']}" if c.get("role") else ""
+    return f"{indent}{c['id']}{role} [{', '.join(flags)}] {c['text']}"
+
+
+@synthesis_app.command("show")
+def synthesis_show(attempt: int | None = typer.Option(None, "--attempt", help="Default: the attempt synthesize shows"),
+                   project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
+    """The synthesis of synthesize: each study's assessment, the pooling groups and their decisions, the kernel's
+    statistics and figures with V-STATS, the findings with their status, and the fallbacks (recorded deviations)."""
+    args: dict = {"project": _project(project)}
+    if attempt is not None:
+        args["attempt"] = attempt
+    r = _call("rk_synthesis_get", args)
+
+    def render(d):
+        if d["attempt"] is None:
+            typer.echo(f"{d['project']}: synthesize has not run yet")
+            return
+        typer.echo(f"synthesize attempt {d['attempt']} ({d['method'] or 'no synthesis plan'}; {_gate_text(d['gate'])})")
+        if o := d["pool_options"]:
+            typer.echo(f"pool options: model {o['model']}, HKSJ {o['hksj']}, prediction interval df {o['pi_df']}")
+        for a in d["assessments"]:
+            typer.echo(f"  {a['label']}: " + ", ".join(f"{c} {v['score']}" for c, v in a["criteria"].items())
+                       + (" (sufficiency capped: abstract only)" if a["capped"] else ""))
+        for g in d["groups"]:
+            dec = g["decision"]
+            state = (f"pooled ({g['pooled']['stt']}, {g['pooled']['fig']})" if g["pooled"]
+                     else f"not pooled: {g['fallback']}" if g["fallback"]
+                     else f"decided {dec['decision']} by {dec['by']}" if dec else "awaiting a decision")
+            typer.echo(f"group {g['group']}: {g['outcome']} ({g['measure']}), {len(g['studies'])} studies; {state}")
+        for a in d["artifacts"]:
+            typer.echo(f"{a['id']} {a['code_path']}: V-STATS {a['v_stats']['verdict']}"
+                       + "".join(f"\n  mismatch: {m}" for m in a["v_stats"]["mismatches"]))
+        for c in d["findings"]:
+            typer.echo(_claim_line(c))
+        for f in d["fallbacks"]:
+            typer.echo(f"fallback ({f['deviation_id']}): {f['reason']}")
+
+    _out(r, as_json, render)
+
+
+@argument_app.command("show")
+def argument_show(claim: str | None = typer.Option(None, "--claim", help="Only this claim, its edges, warrants and "
+                                                                         "objections"),
+                  project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
+    """The argument of argue: its claims with their role, status and hedge, the warrants with the Skeptic's tests,
+    the objections with their answers, and the conflicts."""
+    args: dict = {"project": _project(project)}
+    if claim:
+        args["claim_id"] = claim
+    r = _call("rk_argument_get", args)
+
+    def render(d):
+        if d["attempt"] is None:
+            typer.echo(f"{d['project']}: argue has not run yet")
+            return
+        typer.echo(f"argue attempt {d['attempt']} ({_gate_text(d['gate'])}); main claim {d['main_claim_id']}")
+        if d["question"] and not claim:
+            typer.echo(f"research question: {d['question']}")
+        for c in d["claims"]:
+            if c["role"] != "warrant":
+                typer.echo(_claim_line(c))
+        for w in d["warrants"]:
+            tests = ", ".join(f"{k} {'ok' if t['ok'] else 'fails'}" for k, t in (w["tests"] or {}).items())
+            typer.echo(f"warrant {w['claim_id']} on {w['licenses']}: {w['text']} ({tests or 'not tested'})"
+                       + (" [link dropped]" if w["dropped"] else ""))
+        for o in d["objections"]:
+            answer = f"{o['status']}" + (f" by {o['response']['id']} [{o['response']['status']}]"
+                                         if o["response"] else "") + (f": {o['note']}" if o["note"] else "")
+            typer.echo(f"objection {o['id']} on {o['target_id']} (priority {o['priority']}, {o['category']}): "
+                       f"{o['text']} -> {answer}")
+        for c in d["conflicts"]:
+            dec = c["decision"]
+            typer.echo(f"conflict {c['claim_a']} / {c['claim_b']}: {c['why']} -> "
+                       + (f"{dec['decision']} (by {dec['by']})" if dec else "awaiting your decision"))
+
+    _out(r, as_json, render)
+
+
+@design_app.command("show")
+def design_show(attempt: int | None = typer.Option(None, "--attempt", help="Default: the attempt design shows"),
+                project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
+    """The method design of design: the draft awaiting your approval or the frozen design with its hash, the
+    hypotheses with their falsification links, the dropped hypotheses and the feasibility claims."""
+    args: dict = {"project": _project(project)}
+    if attempt is not None:
+        args["attempt"] = attempt
+    r = _call("rk_design_get", args)
+
+    def render(d):
+        if d["draft_id"] is None:
+            typer.echo(f"{d['project']}: no design yet")
+            return
+        typer.echo(f"{d['draft_id']}: {d['status']}" + (f", frozen hash {d['frozen_hash']}" if d["frozen_hash"] else "")
+                   + f" ({_gate_text(d['gate'])})")
+        for h in d["hypotheses"]:
+            typer.echo(f"hypothesis {h['id'] or h['key']}{' (new)' if h['new'] else ''}: {h['statement']}\n"
+                       f"  falsified if: {h['falsification']}\n"
+                       f"  tested by {', '.join(h['tested_by']) or 'no item'}; falsified by "
+                       f"{', '.join(h['falsified_by']) or 'no measurement'}")
+        for i in d["design"]["items"]:
+            typer.echo(f"item {i['id']} ({i['kind']}) testing {', '.join(i['hypothesis_ids'])}: {i['sample']}; "
+                       f"analysis {i['analysis']}")
+            for m in i["measurements"]:
+                typer.echo(f"  measurement {m['id']}: {m['what']} by {m['instrument']}")
+        for x in d["dropped"]:
+            typer.echo(f"dropped {x['id']}: {x['reason']}")
+        for c in d["feasibility_claims"]:
+            typer.echo(_claim_line(c))
+        for p in d["problems"]:
+            typer.echo(f"problem: {p}")
 
     _out(r, as_json, render)
 
