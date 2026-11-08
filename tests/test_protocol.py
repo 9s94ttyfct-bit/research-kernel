@@ -446,6 +446,14 @@ def test_change_after_screening_is_a_recorded_deviation(env):
     store.freeze_protocol(ps, v3, actor="tester")
     assert not protocol_prereg_ok(ps)
 
+    # an analysis deviation (a synthesis fallback: same version, protocol text unchanged) is no version deviation
+    store.add_analysis_deviation(ps, 3, "meta-analysis pre-specified but the statistics module is not validated",
+                                 "synthesize", actor="kernel")
+    assert [(d["kind"], d["from_version"], d["to_version"]) for d in store.deviations(ps)] == [
+        ("version", 1, 2), ("analysis", 3, 3)]
+    assert not protocol_prereg_ok(ps)
+    assert "frozen version 3 has no deviation from version 2" in ProtocolWorker().gate(ps, 2).failures
+
 
 def test_first_freeze_after_screening_began_is_not_preregistered(env):
     _, ps, _ = env

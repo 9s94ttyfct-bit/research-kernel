@@ -275,7 +275,7 @@ def _freeze(ctx: StageContext, protocol_id: str, *, actor: str, actor_kind: Acto
             return
         prev = frozen_protocol(ps)
         if prev is not None and prev["version"] < row["version"] and \
-                not any(d["to_version"] == row["version"] for d in deviations(ps)):
+                not any(d["to_version"] == row["version"] for d in deviations(ps, kind="version")):
             stage = _change_stage(ps)
             reason = ctx.guidance.strip() or f"protocol changed after {stage!r} reopened it"
             add_deviation(ps, prev["version"], row["version"], reason, stage, actor=actor, actor_kind=actor_kind)
@@ -284,8 +284,8 @@ def _freeze(ctx: StageContext, protocol_id: str, *, actor: str, actor_kind: Acto
 
 def protocol_prereg_ok(ps: ProjectStore) -> bool:
     """The G-PREREG input: the first frozen version was frozen before any ``search_screen`` attempt, and every later
-    frozen version has a deviation into it. Computed for every paper type; it is preregistration only where
-    ``counts_as_preregistration``."""
+    frozen version has a ``version`` deviation into it (an ``analysis`` deviation, a later stage's fallback, does not
+    count). Computed for every paper type; it is preregistration only where ``counts_as_preregistration``."""
     frozen = query_rows(ps, "SELECT id, version FROM protocols WHERE status='frozen' ORDER BY version", ())
     if not frozen:
         return False
@@ -295,7 +295,7 @@ def protocol_prereg_ok(ps: ProjectStore) -> bool:
                               "json_extract(payload, '$.stage')='search_screen'").fetchone()[0]
     if screening is not None and first > screening:
         return False
-    into = {d["to_version"] for d in deviations(ps)}
+    into = {d["to_version"] for d in deviations(ps, kind="version") if d["to_version"] > d["from_version"]}
     return all(r["version"] in into for r in frozen[1:])
 
 
@@ -542,7 +542,8 @@ class ProtocolWorker:
         if frozen:
             earlier = ps.db.execute("SELECT MAX(version) FROM protocols WHERE status='frozen' AND version<?",
                                     (row["version"],)).fetchone()[0]
-            if earlier is not None and not any(d["to_version"] == row["version"] for d in deviations(ps)):
+            if earlier is not None and not any(d["to_version"] == row["version"] and d["to_version"] > d["from_version"]
+                                               for d in deviations(ps, kind="version")):
                 failures.append(f"frozen version {row['version']} has no deviation from version {earlier}")
         return GateResult(not failures, failures)
 

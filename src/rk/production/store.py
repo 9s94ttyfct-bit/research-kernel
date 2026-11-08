@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Any, get_args
+from typing import Any, Literal, get_args
 
 from rk.canon import canonical_json, sha256_hex
 from rk.discovery.store import frozen_rq, hypotheses
@@ -52,17 +52,34 @@ def freeze_protocol(ps: ProjectStore, protocol_id: str, *, actor: str, actor_kin
     return h
 
 
+DeviationKind = Literal["version", "analysis"]
+
+
 def add_deviation(ps: ProjectStore, from_v: int, to_v: int, reason: str, stage: str, *, actor: str,
                   actor_kind: ActorKind = "agent") -> str:
-    """A deviation from protocol version ``from_v`` (a stored version) to a later ``to_v``; returns its id (the
-    event's ``evt_id``)."""
+    """A ``version`` deviation from protocol version ``from_v`` (a stored version) to a later ``to_v``; returns its id
+    (the event's ``evt_id``). Only these count for G-PREREG and the protocol gate."""
     if to_v <= from_v:
         raise ValueError(f"a deviation goes to a later version: {from_v} -> {to_v}")
+    return _deviation_event(ps, "version", from_v, to_v, reason, stage, actor=actor, actor_kind=actor_kind)
+
+
+def add_analysis_deviation(ps: ProjectStore, version: int, reason: str, stage: str, *, actor: str,
+                           actor_kind: ActorKind = "kernel") -> str:
+    """An ``analysis`` deviation: a later stage did not follow the stored protocol ``version`` (e.g. synthesize fell
+    back from a pre-specified meta-analysis to a narrative synthesis) without a new protocol version; recorded from
+    and to ``version``. It is shown with the protocol and in the limitations input, but never counts as the version
+    deviation G-PREREG needs. Returns its id."""
+    return _deviation_event(ps, "analysis", version, version, reason, stage, actor=actor, actor_kind=actor_kind)
+
+
+def _deviation_event(ps: ProjectStore, kind: DeviationKind, from_v: int, to_v: int, reason: str, stage: str, *,
+                     actor: str, actor_kind: ActorKind) -> str:
     with ps.lock:
         if ps.db.execute("SELECT 1 FROM protocols WHERE version=?", (from_v,)).fetchone() is None:
             raise ValueError(f"no protocol version {from_v} to deviate from")
         ev = ps.apply(NewEvent(type="protocol.deviation", entity_id=None, actor_kind=actor_kind, actor=actor,
-                               payload={"from_version": from_v, "to_version": to_v, "reason": reason,
+                               payload={"kind": kind, "from_version": from_v, "to_version": to_v, "reason": reason,
                                         "stage": stage}))
     return ev.evt_id
 
@@ -223,9 +240,13 @@ def frozen_protocol(ps: ProjectStore) -> dict | None:
     return rows[0] if rows else None
 
 
-def deviations(ps: ProjectStore) -> list[dict]:
-    """Every deviation, project-level: a deviation links protocol versions, which span attempts and stages."""
-    return query_rows(ps, "SELECT * FROM protocol_deviations ORDER BY rowid", ())
+def deviations(ps: ProjectStore, *, kind: DeviationKind | None = None) -> list[dict]:
+    """Every deviation (or those of one ``kind``), project-level: a deviation links protocol versions, which span
+    attempts and stages. ``version``: a new protocol version over an earlier one; ``analysis``: a later stage did not
+    follow the version in force (``add_analysis_deviation``)."""
+    if kind is None:
+        return query_rows(ps, "SELECT * FROM protocol_deviations ORDER BY rowid", ())
+    return query_rows(ps, "SELECT * FROM protocol_deviations WHERE kind=? ORDER BY rowid", (kind,))
 
 
 def design(ps: ProjectStore, design_id: str) -> dict | None:
@@ -320,8 +341,9 @@ def _protocol_frozen(conn: sqlite3.Connection, ev: Event) -> None:
 @projection("protocol.deviation")
 def _deviation(conn: sqlite3.Connection, ev: Event) -> None:
     p = ev.payload
-    conn.execute("INSERT OR REPLACE INTO protocol_deviations(id, from_version, to_version, reason, stage, ts) "
-                 "VALUES (?,?,?,?,?,?)", (ev.evt_id, p["from_version"], p["to_version"], p["reason"], p["stage"], ev.ts))
+    conn.execute("INSERT OR REPLACE INTO protocol_deviations(id, kind, from_version, to_version, reason, stage, ts) "
+                 "VALUES (?,?,?,?,?,?,?)", (ev.evt_id, p.get("kind", "version"), p["from_version"], p["to_version"],
+                                            p["reason"], p["stage"], ev.ts))
 
 
 @projection("record.added")

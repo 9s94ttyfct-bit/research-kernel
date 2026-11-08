@@ -312,6 +312,7 @@ CREATE TABLE IF NOT EXISTS protocols (
 
 CREATE TABLE IF NOT EXISTS protocol_deviations (
     id           TEXT PRIMARY KEY,             -- the evt_id of the deviation's event
+    kind         TEXT NOT NULL DEFAULT 'version', -- version (a new protocol version) | analysis (a stage's fallback)
     from_version INTEGER NOT NULL,
     to_version   INTEGER NOT NULL,
     reason       TEXT NOT NULL,

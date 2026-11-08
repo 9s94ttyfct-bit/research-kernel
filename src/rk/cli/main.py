@@ -1003,7 +1003,11 @@ def protocol_show(protocol_id: str | None = typer.Argument(None, help="Default: 
         typer.echo(d["text"])
         typer.echo("\nversions: " + ", ".join(f"v{v['version']} {v['status']}" for v in d["versions"]))
         for dev in d["deviations"]:
-            typer.echo(f"deviation v{dev['from_version']} -> v{dev['to_version']} ({dev['stage']}): {dev['reason']}")
+            if dev.get("kind") == "analysis":
+                typer.echo(f"analysis deviation from v{dev['from_version']} ({dev['stage']}): {dev['reason']}")
+            else:
+                typer.echo(f"deviation v{dev['from_version']} -> v{dev['to_version']} ({dev['stage']}): "
+                           f"{dev['reason']}")
         if d["preregistration"]:
             typer.echo(f"preregistration (G-PREREG): {'ok' if d['prereg_ok'] else 'not met'}")
 
