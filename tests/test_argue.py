@@ -1315,6 +1315,37 @@ def test_unanswered_priority1_objection_on_a_reason_link_drops_it_at_the_edge_li
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
 
 
+def test_degrade_drops_a_conceded_link_whose_drop_was_never_noted(env, monkeypatch):
+    """Fix round (degrade): the Arguer conceded a priority-1 objection on the reason link, but a crash came before the
+    ``dropped_link`` note; the attempt then ran on. The gate says the link was not dropped; at the edge limit the
+    degrade drops it (whatever the objection's status) instead of narrowing anything, and the gate passes."""
+    _, ps, _ = env
+    _synthesize(env)
+    ex = _exec([draft(), responses("conceded"), responses()],
+               [critique(objections=[_on_link(1, "The trial does not bear on the claim.")]), critique()])
+    w = ArgueWorker()
+    ctx = _ctx(env, ex)
+
+    def crash(self, *args, **kw):
+        raise RuntimeError("crash before the dropped_link note")
+
+    monkeypatch.setattr(ArgueWorker, "_drop_link", crash)
+    with pytest.raises(RuntimeError, match="dropped_link note"):
+        w.run(ctx)
+    monkeypatch.undo()
+    (o,) = _objections(ps)
+    assert o["status"] == "conceded" and not argue_notes(ps, 1, kind="dropped_link")
+    assert w.run(ctx).status == "done"  # resumed in place: the rounds end
+    main = main_claim(ps, 1)
+    g = w.gate(ps, 1)
+    assert any("its reason link was not dropped" in f for f in g.failures), g.failures
+    assert w.degrade(ctx, g.failures).status == "done"
+    (dropped,) = argue_notes(ps, 1, kind="dropped_link")
+    assert dropped["edge_id"] == o["target_id"] and o["id"] in dropped["objection_ids"]
+    assert main_claim(ps, 1) == main and ex.of("arguer", "NarrowedClaim") == []
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
 @pytest.mark.parametrize("skeptic_says", ["clear", "link_holds"])
 def test_degrade_keeps_a_dropped_link_out_of_the_narrowed_main_claim(env, skeptic_says):
     """Fix round (I6 edges, P1 degrade): an unanswered priority-1 objection on the reason link into the main claim and

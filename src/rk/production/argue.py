@@ -1767,9 +1767,13 @@ class ArgueWorker:
         answers = self._answers(ps, attempt, s)
         for oid in argument_objection_ids(ps, attempt):  # a failed warrant's link: dropped below (_drop_links)
             o = entity_row(ps, "objections", oid)
-            if (oid not in answers.soundness and _concedable(ps, o) and answers.why(o) is not None
-                    and (link := _link_dropped_by(ps, o, answers.soundness)) is not None):
-                why = f"the priority-1 objection {oid} on it was left unanswered at the edge limit (P1)"
+            # left unanswered, or conceded before an interruption kept its link from being dropped (``why``: "not
+            # dropped"): either way the link goes now, before any claim is narrowed for it
+            if (oid not in answers.soundness and (_concedable(ps, o) or o["status"] == "conceded")
+                    and answers.why(o) is not None and (link := _link_dropped_by(ps, o, answers.soundness)) is not None):
+                why = (f"the priority-1 objection {oid} on it was conceded, but the link was not dropped yet"
+                       if o["status"] == "conceded"
+                       else f"the priority-1 objection {oid} on it was left unanswered at the edge limit (P1)")
                 self._drop_link(ctx, link, [oid], why)
                 done.append(f"reason link {link} dropped: {why}")
         for cid in failing_claims(ps, [*argument_claims(ps, attempt), *s.synthesis]):
