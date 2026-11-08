@@ -1,9 +1,12 @@
 """Resuming an interrupted attempt of an enumerated stage (``search_screen``, ``read_extract``).
 
-A rate cap, a budget or a crash interrupts an attempt (it has no ``stage.ran``); the engine then runs the stage again
-as a new attempt. An enumerated stage's work grows with its records, so the hourly call caps would interrupt every
-attempt of a large one at about the same point and it would never finish. The new attempt therefore carries over the
-work of the interrupted attempts right before it, item by item, instead of doing it again:
+A rate cap, a budget or a crash interrupts an attempt (it has no ``stage.ran``). ``search_screen`` then runs that
+attempt again in place (``resumes_in_place``, ``rk.orchestrator.engine``): its search replays the pages it logged and
+keeps its records (``rk.production.search``), its screening keeps the attempt's decisions. ``read_extract`` runs it
+again as a new attempt; an enumerated stage's work grows with its records, so the hourly call caps would interrupt
+every attempt of a large one at about the same point and it would never finish. The new attempt therefore carries
+over the work of the interrupted attempts right before it, item by item, instead of doing it again (as does a
+``search_screen`` attempt that starts after interrupted ones, e.g. ones from before it resumed in place):
 
 - only the attempts immediately before it that were interrupted (``carry_attempts``): an attempt that ran to
   completion (a rerun after a gate failure, a back-edge) ends the chain, so its work is never carried over;

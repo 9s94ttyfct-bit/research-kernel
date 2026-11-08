@@ -193,6 +193,38 @@ def test_strategy_pages_through_a_source(env, monkeypatch):
         "at least 9 records (search stopped at the cap) > cap 8: narrow the search strategy"
 
 
+class FailsOnce(BySource):
+    """``BySource`` whose ``n``-th search fails (a source outage) once."""
+
+    def __init__(self, pages, *, n: int, **kw):
+        super().__init__(pages, **kw)
+        self.n = n
+
+    def search(self, query, source, limit=25, after_year=None, **kw):
+        if len(self.search_args) + 1 == self.n:
+            self.n = 0
+            raise httpx.ConnectError("source down")
+        return super().search(query, source, limit, after_year, **kw)
+
+
+def test_search_run_again_in_its_attempt_asks_and_stores_nothing_twice(env, monkeypatch):
+    """An attempt interrupted in the middle of its search (a source outage) runs again in place: the pages it logged
+    are not asked for again and no hit gets a second record; run once more, it searches and stores nothing."""
+    _, ps, _ = env
+    monkeypatch.setattr("rk.production.search.PAGE_LIMIT", 4)
+    many = [_w(f"Work {i}", 2015, doi=f"10.1000/w{i}") for i in range(14)]
+    protocol = a_protocol(search_strategy=_strategy(), record_cap=20)
+    src = FailsOnce({"openalex": many[:9], "europepmc": many[5:]}, n=5)
+    with pytest.raises(httpx.ConnectError):
+        run_strategy(_ctx(env, src), protocol)
+    assert len(src.search_args) == 4 and store.records(ps, 1) == []  # 4 pages logged, no record yet
+    res = run_strategy(_ctx(env, src), protocol)
+    assert [(a["source"], a["offset"]) for a in src.search_args[4:]] == [("europepmc", 4), ("europepmc", 8)]
+    assert len(res.record_ids) == 14 and len(store.records(ps, 1)) == 18 and len(_logged(ps)) == 6
+    again = run_strategy(_ctx(env, src), protocol)
+    assert len(src.search_args) == 6 and again.record_ids == res.record_ids and len(store.records(ps, 1)) == 18
+
+
 def test_a_source_ignoring_the_offset_is_an_incomplete_search(env, monkeypatch):
     _, ps, _ = env
     monkeypatch.setattr("rk.production.search.PAGE_LIMIT", 3)

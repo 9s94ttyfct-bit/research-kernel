@@ -105,7 +105,7 @@ from rk.production.models import (
     Include,
     Protocol,
 )
-from rk.production.resume import Carried, carried_screening, mark_protocol
+from rk.production.resume import Carried, carried_screening, mark_protocol, protocol_of
 from rk.production.search import (
     check_record_cap,
     deduplicated,
@@ -672,6 +672,11 @@ def _same_text(ps: ProjectStore, c: Carried, retrieved: int) -> Carried:
 
 # ---- the worker ----
 class SearchScreenWorker:
+    # An interrupted attempt (a rate cap while screening, a source failure, a crash) runs again in place
+    # (rk.orchestrator.engine): the search replays its logged pages and keeps its records, screening keeps the
+    # attempt's decisions, finals and checkpoints, so nothing is searched, stored or asked for twice.
+    resumes_in_place = True
+
     def run(self, ctx: StageContext) -> StageOutcome:
         ps = ctx.ps
         intake = intake_of(ps)
@@ -683,7 +688,8 @@ class SearchScreenWorker:
         problem = screeners_problem(ctx.kernel.settings(), intake.paper_type)
         if problem:
             return StageOutcome("failed", reason=problem)
-        mark_protocol(ps, ctx.stage, ctx.attempt, row["frozen_hash"], actor=ctx.actor)
+        if protocol_of(ps, ctx.stage, ctx.attempt) != row["frozen_hash"]:
+            mark_protocol(ps, ctx.stage, ctx.attempt, row["frozen_hash"], actor=ctx.actor)
         protocol = Protocol.model_validate(row["body"])
         result = run_strategy(ctx, protocol)
         cap = check_record_cap(ps, ctx.attempt, protocol)
@@ -697,8 +703,9 @@ class SearchScreenWorker:
                         record_ids: list[str], incomplete: list[str]) -> StageOutcome:
         ps, phase = ctx.ps, TITLE_ABSTRACT
         language = set(language_exclusions(ps, ctx.attempt, protocol))
+        settled = {f["record_id"] for f in finals(ps, ctx.attempt, phase=phase)}
         for rid in record_ids:
-            if rid in language:
+            if rid in language and rid not in settled:
                 set_final(ps, rid, ctx.attempt, phase, "no", "rule", "language", actor=ctx.actor)
         eligible = [r for r in record_ids if r not in language]
         recs = {r["id"]: r for r in deduplicated(ps, ctx.attempt)}

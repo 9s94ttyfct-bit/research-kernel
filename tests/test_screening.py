@@ -33,6 +33,7 @@ from tests.production_fakes import (
     a_protocol,
     make_frozen_project,
     production_ctx,
+    stage_run,
     votes_on,
 )
 
@@ -672,3 +673,27 @@ def test_one_blank_reason_exclusion_does_not_fail_the_stage_through_the_engine(e
             break
     assert status == "done"
     assert latest_attempt(ps, "search_screen") == 1 and SearchScreenWorker().gate(ps, 1).ok
+
+
+# ---- fix wave 1: an interrupted search_screen keeps its search ----
+def _record_count(ps) -> int:
+    return ps.db.execute("SELECT COUNT(*) FROM records").fetchone()[0]
+
+
+@pytest.mark.parametrize("env", [SR_P1], indirect=True)
+def test_rate_capped_search_screen_reuses_its_search_and_records(env):
+    """A rate cap while screening interrupts attempt 1 after its search; the next step resumes it: no new search
+    request and no record stored again (the demo stored every record again on each rate-capped attempt)."""
+    k, ps, lib = env
+    _freeze(ps)
+    src = FakeSources({"aspirin": _works("yes/yes", n=30) + [_work("Aspirin split [yes/no]", 99)]}, lib=lib)
+    ex = CappedAt("screener_b", 2, votes={"Aspirin split [yes/no]": ("include", "include")})
+    o, run_id = stage_run(k, ps, lib, "search_screen", ex, sources=src)
+    assert o.step("demo", run_id, actor="tester") == "waiting_rate"
+    searched, stored = len(src.search_args), _record_count(ps)
+    assert searched and stored >= 31 and len(deduplicated(ps, 1)) == 31
+    ex.cap_role = None  # the cap is lifted
+    assert o.step("demo", run_id, actor="tester") == "done"
+    assert latest_attempt(ps, "search_screen") == 1
+    assert len(src.search_args) == searched and _record_count(ps) == stored
+    assert SearchScreenWorker().gate(ps, 1).ok
