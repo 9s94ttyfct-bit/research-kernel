@@ -806,15 +806,57 @@ def test_budget_estimate_counts_the_pending_verifications(env):
 
 
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
-def test_p2_final_review_is_not_opened_when_the_gate_must_fail(env):
+def test_p2_final_review_shows_the_main_claims_own_problems_for_you_to_steer(env):
+    """Fix round 1 (minor 3): an unanswered priority-1 objection on the main claim is no answer's to mend, but the
+    review opens anyway: the main claim is not listed (no supported/withdraw), its problems are shown, and you say
+    whether it answers the RQ or argue again with your comment."""
     _, ps, _ = env
     _synthesize(env)
     ex = _exec([draft(), responses(), responses()], [critique(objections=[_o("main", 1, "Wrong.")]), critique()])
     w = ArgueWorker()
     out = w.run(_ctx(env, ex))
-    assert out.status == "done" and "Wrong" not in out.reason and "gate" in out.reason, out.reason
-    assert not [c for c in list_checkpoints(ps) if c["kind"] == "uncertain_support"]
-    assert not w.gate(ps, 1).ok
+    assert out.status == "waiting_human", out.reason
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    main = main_claim(ps, 1)
+    assert main not in cp["options"]["claim_ids"]
+    assert any("Wrong." in p for p in cp["options"]["main_problems"]) and "no answer here mends" in cp["prompt"]
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decision": "rerun", "comment": "Answer the objection."}))
+    assert (out.status, out.reason) == ("rerun", "Answer the objection.")
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_p2_review_of_an_overstated_main_claim_and_finding(env):
+    """Minor 3 and 8: an overstated (V-HEDGE) main claim opens the review with its problem shown; a finding that is
+    overstated is listed, withdraw-only."""
+    _, ps, _ = env
+    overstated = "Aspirin was proven safe in every older person studied."
+    k, _, lib = env
+    _setup(env, {"A": {"design": "rct"}, "B": {"design": "cohort"}}, schema=[DESIGN],
+           plan=SynthesisPlan(method="thematic"))
+    sx = Exec({("arguer", "AssessmentOut"): [assess()],
+               ("arguer", "NarrativeSynthesis"): [_synth_narrative((F1, overstated))], **_judges()})
+    record_attempt(ps, "synthesize", 1, run_id=None, guidance="", requested=None, actor="tester")
+    # P2 asks you about the overstated finding; a test passes the attempt as it is (the helpers' gate bypass)
+    SynthesizeWorker().run(production_ctx(k, ps, lib, sx, stage="synthesize"))
+    record_ran(ps, "synthesize", 1, "done", "", actor="tester")
+    record_passed(ps, "synthesize", 1, actor="tester")
+    _, finding = synthesis_claims(ps, 1)
+
+    def bold(inputs):
+        out = draft()(inputs)
+        out["main_claim"] = claim(inputs, "Aspirin was always studied in older people.", "rct", "cohort")
+        return out
+
+    ex = _exec([bold], [critique()])
+    w = ArgueWorker()
+    out = w.run(_ctx(env, ex))
+    assert out.status == "waiting_human", out.reason
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    main = main_claim(ps, 1)
+    assert main not in cp["options"]["claim_ids"]
+    assert any("V-HEDGE overstated" in p for p in cp["options"]["main_problems"])
+    assert cp["options"]["claim_choices"][finding] == ["withdraw"]
+    assert any("V-HEDGE overstated" in p for p in cp["options"]["problems"][finding])
 
 
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)

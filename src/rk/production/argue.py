@@ -1367,9 +1367,14 @@ class ArgueWorker:
         main = main_claim(ps, ctx.attempt)
         m = svc.get_claim(main)
         listing = self._review(ps, ctx.attempt, s)
+        own = self._main_problems(ps, ctx.attempt, s)
         lines = [why, ""] if why else []
         lines += ["The argument's red-team rounds ended. Does its main claim answer the research question?", "",
                   f"Research question: {s.question}", f"Main claim ({main}, {m['status']}): {m['text']}"]
+        if own:
+            lines += ["", ("The main claim fails the gate for reasons no answer here mends (withdrawing it leaves the "
+                           "argument without one). Say whether it answers the research question, and argue again with "
+                           "your comment so the Arguer revises it:"), *(f"- fails: {p}" for p in own)]
         if listing:
             lines += ["", ("These claims of the argument and the findings it rests on fail its gate: a claim problem "
                            "(V-SUPPORT: the judges did not agree or agreed the evidence does not support it, or it was "
@@ -1386,7 +1391,7 @@ class ArgueWorker:
                                  "problems": {c: e["problems"] for c, e in listing.items()},
                                  "claim_choices": {c: e["choices"] for c, e in listing.items()},
                                  "choices": [SUPPORTED, WITHDRAW], "answers_rq": [YES, NO], "decisions": ["rerun"],
-                                 "replaces": replaces},
+                                 "main_problems": own, "replaces": replaces},
                                 stage=ctx.stage, actor=ctx.actor)
         if replaces is None:
             _note(ps, ctx.attempt, "final", actor=ctx.actor, checkpoint_id=cid)
@@ -1407,38 +1412,67 @@ class ArgueWorker:
         the argument and every in-scope finding that fails the claim gate; and every other one but the main claim
         whose withdrawal takes out of the argument an objection left unanswered (that you could not mend by
         supporting its response claim), a failed or untested warrant, or an unanswered contest
-        (``_withdraw_target``). Those can only be withdrawn."""
+        (``_withdraw_target``). Those can only be withdrawn. Which response claims you could support depends on the
+        listing, so it is computed to its fixed point (a claim only ever loses ``supported``). The main claim is
+        listed only when its V-SUPPORT status is its only problem; its other problems are ``_main_problems``."""
         scope = list(dict.fromkeys([*argument_claims(ps, attempt), *s.synthesis]))
         main = main_claim(ps, attempt)
         gate = review_listing(ps, scope)
         supportable = {c for c, e in gate.items() if SUPPORTED in e["choices"]}
-        extra: dict[str, list[str]] = {}
+        answers = self._answers(ps, attempt, s)
+        while True:
+            extra: dict[str, list[str]] = {}
 
-        def add(cid: str | None, line: str) -> None:
-            if cid is not None and cid != main and cid in scope and not _withdrawn(ps, cid):
-                extra.setdefault(cid, []).append(line)
+            def add(cid: str | None, line: str, into: dict[str, list[str]] = extra) -> None:
+                if cid is not None and cid != main and cid in scope and not _withdrawn(ps, cid):
+                    into.setdefault(cid, []).append(line)
 
+            for oid in argument_objection_ids(ps, attempt):
+                o = _row(ps, "objections", oid)
+                if (why := answers.why(o)) is None or self._mendable(answers, o, supportable):
+                    continue
+                cid = _withdraw_target(ps, o["target_id"])
+                if cid in gate and any(oid in p for p in gate[cid]["problems"]):
+                    continue  # an open priority-1 objection: one of its claim problems already
+                add(cid, f"objection {oid} (priority {o.get('priority', 1)}) {why}: {o['text']}")
+            for link, why in self._failing_warrants(ps, attempt, s, supportable):
+                add(_withdraw_target(ps, link), why)
+            for cid, why in self._failing_contests(ps, attempt, s, supportable):
+                add(cid, why)
+            listing = review_listing(ps, scope, extra)
+            now = {c for c, e in listing.items() if SUPPORTED in e["choices"]}
+            if now == supportable:
+                break
+            supportable = now
+        if main in listing and SUPPORTED not in listing[main]["choices"]:
+            del listing[main]
+        return listing
+
+    def _main_problems(self, ps: ProjectStore, attempt: int, s: _Inputs) -> list[str]:
+        """The main claim's own problems no review answer mends: its claim problems other than its V-SUPPORT status
+        (V-HEDGE, an open priority-1 objection on it) and the objections on it (or its evidence) left unanswered that
+        supporting a listed claim would not answer. The review still opens, so you can steer the next attempt."""
+        main = main_claim(ps, attempt)
+        if main is None or _withdrawn(ps, main):
+            return []
+        out = [p.detail for p in claim_problems(ps, main) if p.kind != "status"]
+        listing = self._review(ps, attempt, s)
+        supportable = {c for c, e in listing.items() if SUPPORTED in e["choices"]}
         answers = self._answers(ps, attempt, s)
         for oid in argument_objection_ids(ps, attempt):
             o = _row(ps, "objections", oid)
-            if (why := answers.why(o)) is None or self._mendable(answers, o, supportable):
-                continue
-            cid = _withdraw_target(ps, o["target_id"])
-            if cid in gate and any(oid in p for p in gate[cid]["problems"]):
-                continue  # an open priority-1 objection: one of its claim problems already
-            add(cid, f"objection {oid} (priority {o.get('priority', 1)}) {why}: {o['text']}")
-        for link, why in self._failing_warrants(ps, attempt, s, supportable):
-            add(_withdraw_target(ps, link), why)
-        for cid, why in self._failing_contests(ps, attempt, s, supportable):
-            add(cid, why)
-        return review_listing(ps, scope, extra)
+            if (_target_claims(ps, o["target_id"]) == {main} and (why := answers.why(o)) is not None
+                    and not self._mendable(answers, o, supportable) and not any(oid in p for p in out)):
+                out.append(f"objection {oid} {why}: {o['text']}")
+        return out
 
     def _hopeless(self, ps: ProjectStore, attempt: int, s: _Inputs) -> list[str]:
-        """The gate failures no answer to the final P2 review can mend. The review supports or withdraws each listed
-        claim (``_review``) and says whether the main claim answers the RQ, so a failure is mendable when supporting a
-        listed claim answers it, or when it concerns a listed claim other than the main claim (withdrawn, its
-        objections are conceded with it and its links leave the argument). What is left: the main claim's own
-        problems other than its V-SUPPORT status, a main claim already withdrawn, an unreviewed argument."""
+        """The gate failures no answer to the final P2 review can mend, nor steer. The review supports or withdraws
+        each listed claim (``_review``) and says whether the main claim answers the RQ, so a failure is mendable when
+        supporting a listed claim answers it, or when it concerns a listed claim other than the main claim (withdrawn,
+        its objections are conceded with it and its links leave the argument). The main claim's own problems
+        (``_main_problems``) are shown on the review for you to steer with a rerun comment. What is left: a main claim
+        already withdrawn, an unreviewed argument, failures between claims none of which can be withdrawn."""
         listing = self._review(ps, attempt, s)
         supportable = {c for c, e in listing.items() if SUPPORTED in e["choices"]}
         main = main_claim(ps, attempt)
@@ -1448,12 +1482,13 @@ class ArgueWorker:
         if main is None or _withdrawn(ps, main):
             out.append("the main claim was withdrawn")
         for c in dict.fromkeys([*argument_claims(ps, attempt), *s.synthesis]):
-            if c not in withdrawable:
+            if c not in withdrawable and c != main:
                 out += [f"{c}: {p.line}" for p in claim_problems(ps, c) if p.kind not in ("status", "objection")]
         for oid in argument_objection_ids(ps, attempt):
             o = _row(ps, "objections", oid)
+            targets = _target_claims(ps, o["target_id"])
             if ((why := answers.why(o)) is not None and not self._mendable(answers, o, supportable)
-                    and not _target_claims(ps, o["target_id"]) & withdrawable):
+                    and not targets & withdrawable and targets != {main}):
                 out.append(f"objection {oid} {why}")
         out += self._warrant_failures(ps, attempt, s, mendable=supportable, withdrawable=withdrawable)
         out += self._contest_failures(ps, attempt, s, mendable=supportable, withdrawable=withdrawable)
