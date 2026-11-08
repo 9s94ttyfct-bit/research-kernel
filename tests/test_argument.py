@@ -391,7 +391,7 @@ def test_an_older_hypotheses_table_gets_the_new_columns(tmp_path):
     conn = open_project_db(db)
     row = dict(conn.execute("SELECT * FROM hypotheses").fetchone())
     assert row == {"id": "hyp_1", "rq_id": "rq_1", "statement": "H.", "falsification": "X.", "rival_of": None,
-                   "status": "proposed", "prereg_hash": None}
+                   "status": "proposed", "prereg_hash": None, "added_after_freeze": 0}
     conn.close()
     assert sqlite3.connect(db).execute("SELECT name FROM sqlite_master WHERE name IN ('artifacts', 'designs') "
                                        "ORDER BY name").fetchall() == [("artifacts",), ("designs",)]
