@@ -53,9 +53,10 @@ artifact, as V-STATS requires) and the frozen protocol (``extraction_schema``, `
 P2: every synthesis claim that fails the claim gate (``failing_claims``: not supported, V-HEDGE overstated, V-STATS
 mismatch, an open priority-1 objection) is listed with its problems on one ``uncertain_support`` checkpoint
 (``review_listing``): ``{"claims": {claim_id: "supported" | "withdraw"}}`` (``supported`` only when its only problem is
-its V-SUPPORT status: ``review_choices``; attributed to you), or ``{"decision": "rerun", "comment"}``. P1 never asks: at
-the edge limit ``degrade`` narrows or withdraws every finding that fails the claim gate (``failing_claims``,
-``narrow_or_withdraw``).
+its V-SUPPORT status: ``review_choices``; attributed to you), or ``{"decision": "rerun", "comment"}``. P1 never asks:
+the attempt narrows or withdraws every synthesis claim that fails the claim gate before it ends (``_narrow``:
+``failing_claims``, ``narrow_or_withdraw``, noted ``narrowed``), as design does, instead of failing its gate and
+running the whole stage again; at the edge limit ``degrade`` does the same for whatever still fails.
 
 Answers to ``pooling_approval``: ``{"decisions": {"<group>": "pool" | "no_pool"}, "comment"?}``, one decision per
 listed group. An answer that cannot be applied opens the checkpoint again, saying why. Handling an answer again pools
@@ -282,8 +283,9 @@ def _note(ps: ProjectStore, attempt: int, kind: str, *, actor: str, **fields) ->
 def synthesis_notes(ps: ProjectStore, attempt: int, *, kind: str | None = None) -> list[dict]:
     """What synthesize noted in the attempt, in order: ``assessment`` (per study), ``plan`` (the pooling plan),
     ``decision`` (pool or not, per group: by you, the vote or the kernel), ``fallback`` (with its deviation),
-    ``pooled`` (the artifacts and claim of a group), ``map``, ``limitation``, ``narrative`` (the Arguer's synthesis)
-    and ``finding`` (its stored claims)."""
+    ``pooled`` (the artifacts and claim of a group), ``map``, ``limitation``, ``narrative`` (the Arguer's synthesis),
+    ``finding`` (its stored claims), ``back_edge`` (studies to read again: the kernel's or yours, with the protocol
+    version) and ``narrowed`` (P1: a failing claim narrowed or withdrawn)."""
     rows = ps.db.execute("SELECT payload FROM events WHERE type='synthesis.noted' "
                          "AND json_extract(payload, '$.attempt')=? ORDER BY seq", (attempt,))
     notes = [json.loads(r["payload"]) for r in rows]
@@ -1015,7 +1017,22 @@ class SynthesizeWorker:
         if s.mode == "collab" and (listing := review_listing(ps, synthesis_claims(ps, ctx.attempt))):
             return StageOutcome("waiting_human", checkpoint_id=self._open_uncertain(ctx, s, listing),
                                 reason="synthesis claims that fail the claim gate await your decision")
+        if s.mode == "auto":
+            self._narrow(ctx)
         return StageOutcome("done", reason=self._summary(ps, ctx.attempt))
+
+    @staticmethod
+    def _narrow(ctx: StageContext) -> None:
+        """P1, as design does: narrow or withdraw every synthesis claim that fails the claim gate before the attempt
+        ends (``narrow_or_withdraw``; once each: a claim the attempt already narrowed is passed over), instead of
+        failing the gate and running the whole stage again; noted ``narrowed``."""
+        noted = {n["claim_id"] for n in synthesis_notes(ctx.ps, ctx.attempt, kind="narrowed")}
+        for cid in failing_claims(ctx.ps, synthesis_claims(ctx.ps, ctx.attempt)):
+            if cid in noted:
+                continue
+            r = narrow_or_withdraw(ctx, cid)
+            _note(ctx.ps, ctx.attempt, "narrowed", actor=ctx.actor, claim_id=cid, status=r.status,
+                  new_claim_id=r.new_claim_id, reason=r.reason)
 
     def _narrative(self, ctx: StageContext, s: _Inputs) -> str | None:
         ps = ctx.ps

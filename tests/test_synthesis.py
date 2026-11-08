@@ -448,15 +448,11 @@ def test_critical_review_thematic_synthesis_gate(env):
     assert out.status == "done", out.reason
     assert artifacts(ps, "synthesize", 1) == []  # a thematic synthesis has no statistics
     assert not list_checkpoints(ps, "open")  # P1 never asks
-    (claim,) = _claims(ps)
-    assert claim["status"] == "uncertain"
-    g = w.gate(ps, 1)
-    assert not g.ok and any(claim["id"] in f and "status uncertain" in f for f in g.failures)
-    # P1 at the edge limit: the uncertain finding is narrowed and verified again, never voted up
-    assert w.degrade(ctx, g.failures).status == "done"
+    # P1: the uncertain finding is narrowed and verified again before the attempt ends (M8), never voted up
     old, new = _claims(ps)
     assert old["status"] == "withdrawn" and new["narrowed_from"] == old["id"] and new["status"] == "supported"
     assert new["text"] == narrower and new["evidence"][0]["note_ids"] == old["evidence"][0]["note_ids"]
+    assert "V-SUPPORT uncertain" in old["withdrawn_reason"]
     assert not [c for c in ex.calls if c["schema"] == "VoteOut"]
     lim = synthesis_limitations(ps, 1)["claims"]
     assert [c["claim_id"] for c in lim["withdrawn"]] == [old["id"]]
@@ -471,15 +467,14 @@ def test_narrow_or_withdraw_withdraws_both_when_the_rewrite_fails(env):
            plan=SynthesisPlan(method="thematic"))
     ex = _exec(judges=_judges("partial"), narrowed=[{"text": "Aspirin may help some.", "kind": "fact"}])
     ctx = _ctx(env, ex)
-    assert SynthesizeWorker().run(ctx).status == "done"
-    (claim,) = _claims(ps)
-    res = narrow_or_withdraw(ctx, claim["id"])
-    assert res.status == "withdrawn" and res.new_claim_id
+    assert SynthesizeWorker().run(ctx).status == "done"  # P1 narrows the uncertain finding at once
+    (n,) = synthesis_notes(ps, 1, kind="narrowed")
+    assert n["status"] == "withdrawn" and n["new_claim_id"]
     old, new = _claims(ps)
     assert old["status"] == new["status"] == "withdrawn"
-    assert res.new_claim_id in old["withdrawn_reason"] and "not supported" in new["withdrawn_reason"]
+    assert n["new_claim_id"] in old["withdrawn_reason"] and "not supported" in new["withdrawn_reason"]
     with pytest.raises(ValueError, match="withdrawn"):
-        narrow_or_withdraw(ctx, claim["id"])
+        narrow_or_withdraw(ctx, old["id"])
 
 
 @pytest.mark.parametrize("env", [{"paper_type": "critical_review", "production_mode": "collab"}], indirect=True)
@@ -874,7 +869,7 @@ def test_stats_invalidated_before_approval_falls_back(env):
 
 
 @pytest.mark.parametrize("env", [{"paper_type": "critical_review"}], indirect=True)
-def test_degrade_narrows_an_overstated_finding(env):
+def test_p1_narrows_an_overstated_finding_and_degrade_finds_nothing_left(env):
     _, ps, _ = env
     _setup(env, {"A": {"design": "rct"}, "B": {"design": "cohort"}}, schema=[DESIGN],
            plan=SynthesisPlan(method="thematic"))
@@ -884,16 +879,12 @@ def test_degrade_narrows_an_overstated_finding(env):
     w = SynthesizeWorker()
     ctx = _ctx(env, ex)
     assert w.run(ctx).status == "done"
-    (claim,) = _claims(ps)
-    assert claim["status"] == "supported"
-    g = w.gate(ps, 1)
-    assert any("V-HEDGE overstated" in f for f in g.failures)
-    out = w.degrade(ctx, g.failures)
-    assert out.status == "done" and f"{claim['id']} narrowed" in out.reason
     old, new = _claims(ps)
     assert "V-HEDGE overstated" in old["withdrawn_reason"] and new["text"] == narrower
     assert ex.of("arguer", "NarrowedClaim")[0]["inputs"]["why"].startswith("V-HEDGE overstated")
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    out = w.degrade(ctx, [])
+    assert out.status == "done" and "nothing to narrow" in out.reason
 
 
 @pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
@@ -1396,3 +1387,26 @@ def test_your_back_rereads_a_study_whose_field_was_verified_not_reported(env):
     assert "Table 3 gives the arm sizes." in ex.of("reader")[0]["inputs"]["guidance"]
     assert {r["carried_from"] for r in store.extractions(ps, 2, item_id=ids["Aronson"])} == {1}
     assert [r["value"] for r in store.extractions(ps, 2, item_id=ids["Ferguson"]) if r["field"] == "n_control"] == [30]
+
+
+# ---- fix wave 2: P1 narrows at once (M8) ----
+@pytest.mark.parametrize("env", [{"paper_type": "critical_review"}], indirect=True)
+def test_p1_narrows_a_failing_finding_at_once(env):
+    """M8: in P1 the attempt narrows (or withdraws) a finding that fails the claim gate before it ends, as design does,
+    instead of failing its gate and running the whole stage twice more first."""
+    _, ps, _ = env
+    _setup(env, {"A": {"design": "rct"}, "B": {"design": "cohort"}}, schema=[DESIGN],
+           plan=SynthesisPlan(method="thematic"))
+    overstated = "Aspirin was proven safe in every older person."
+    narrower = "Aspirin was studied in some older people."
+    ex = _exec(narratives=[_two_findings(overstated)], narrowed=[{"text": narrower, "kind": "fact"}])
+    w = SynthesizeWorker()
+    out = w.run(_ctx(env, ex))
+    assert out.status == "done", out.reason
+    by_text = {c["text"]: c for c in _claims(ps)}
+    assert by_text[overstated]["status"] == "withdrawn" and "narrowed to" in by_text[overstated]["withdrawn_reason"]
+    assert by_text[narrower]["status"] == "supported" and by_text[narrower]["narrowed_from"] == by_text[overstated]["id"]
+    (n,) = synthesis_notes(ps, 1, kind="narrowed")
+    assert (n["claim_id"], n["status"]) == (by_text[overstated]["id"], "narrowed")
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    assert w.run(_ctx(env, ex)).status == "done" and len(ex.of("arguer", "NarrowedClaim")) == 1  # once each

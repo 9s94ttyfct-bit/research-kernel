@@ -55,6 +55,14 @@ without an answered conflict objection is withdrawn, and every objection still u
 input (``argue_limitations``) lists the withdrawn and narrowed claims, the conceded objections and the dropped
 links.
 
+Unlike synthesize and design (M8), a P1 attempt does not narrow its failing claims before it ends: it is gated as it
+is, and a failed gate reruns the stage (``argue->argue``) with the failures as guidance before the degrade at the edge
+limit. This is intended. In argue a failing claim is usually one the red-team rounds left unanswered (an objection, a
+warrant, a contest), which a new attempt answers with a new argument; a narrowing is no cheaper than a round (its
+rewrite takes over the original's links, the Skeptic re-checks it and tests its warrants, a narrowed main claim is
+voted on against the RQ again) and, unlike a new round, it can only weaken or drop the argument. So the narrowing is
+kept for the edge limit, where nothing else is left.
+
 When synthesize passed but none of its findings is supported any more (the degrade or your review withdrew them all),
 an attempt has nothing to argue on: it goes back to synthesize (``argue->synthesize``, under its limit), with the
 withdrawals as guidance."""
