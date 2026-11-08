@@ -11,6 +11,16 @@ DOCS = FIXTURES / "docs"
 HTTP_FIXTURES = FIXTURES / "http"
 GOLD = Path(__file__).parent / "gold"
 MODEL_CLIS = ("claude", "codex", "omp")
+# RK_HOME as it was when pytest started (the researcher's own home, or a scratch one): no test may write there
+RK_HOME_AT_START = os.environ.get("RK_HOME")
+
+
+@pytest.fixture(autouse=True)
+def _temp_rk_home(tmp_path_factory, monkeypatch):
+    """Every test runs with RK_HOME on a temp directory of its own, so nothing a test saves (config.toml, the
+    kernel database, eval caches) reaches the real ``$RK_HOME`` or ``~/ResearchKernel``. ``tmp_home`` and tests
+    that set RK_HOME themselves override it. The directory sits outside ``tmp_path``, which stays empty."""
+    monkeypatch.setenv("RK_HOME", str(tmp_path_factory.mktemp("rk-home")))
 
 
 @pytest.fixture(scope="session")

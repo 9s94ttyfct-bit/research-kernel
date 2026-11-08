@@ -90,7 +90,7 @@ def test_library_step_reports_failure(service, kernel, sites):
     assert result["status"] == "failed" and "login_wait" in result["detail"]
 
 
-def test_capabilities_lists_browser_channels():
+def test_capabilities_lists_browser_channels(tmp_home):
     s = Settings(email="me@example.org", library_name="Uni", library_proxy="https://p.example/?url={url}")
     provider_checks = {"claude_cli": {"roles": ["lead"], "ok": True, "reason": None, "hint": None}}
     caps = capabilities(s, browser_running=True, providers=provider_checks)
