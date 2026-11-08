@@ -46,7 +46,7 @@ P2 asks you at the weak spots; P1 votes and records "not reviewed by a human".
    - the prediction interval uses the CI's standard error and multiplier family, as in RevMan: with HKSJ, μ̂ ± t(k−1)·√(τ̂² + q·var(μ̂)); with the Wald interval, μ̂ ± z·√(τ̂² + var(μ̂)) (§10.10.4.3). Higgins 2009's t(k−2) with the Wald SE is a protocol option;
    - REML is solved by Fisher scoring with step-halving, finished by a safeguarded one-dimensional solve of the REML score.
 
-   The protocol's `synthesis_plan.model` and `heterogeneity` override these with `DL`, `REML` or `FE`, plus `hksj: auto|true|false` and `pi_df: "k-2"` (Higgins 2009).
+   Only the protocol's typed `synthesis_plan` fields override these: `pool_model` (`REML`, `DL` or `FE`), `hksj` (`auto`, `true` or `false`) and `pi_df` (`ci` or `k-2`, Higgins 2009). The free-text `model` and `heterogeneity` describe the analysis in words and change nothing.
 
 ## Global Constraints
 
