@@ -777,3 +777,24 @@ def test_a_new_project_waits_for_another_process_creating_it(tmp_path):
     finally:
         release.join()
         other.close()
+
+
+def test_replay_needs_the_same_protocol_and_year_range(env, monkeypatch):
+    """A logged page is replayed only under the protocol the attempt works under now and the same year range: after
+    a new protocol mark, or with another range, the search asks the sources again."""
+    from rk.production.resume import mark_protocol
+
+    _, ps, _ = env
+    monkeypatch.setattr("rk.production.search.PAGE_LIMIT", 4)
+    many = [_w(f"Work {i}", 2015, doi=f"10.1000/w{i}") for i in range(3)]
+    src = BySource({"openalex": many, "europepmc": many})
+    mark_protocol(ps, "search_screen", 1, "hash-1", actor="tester")
+    run_strategy(_ctx(env, src), a_protocol(search_strategy=_strategy(), record_cap=20))
+    assert len(src.search_args) == 2
+    run_strategy(_ctx(env, src), a_protocol(search_strategy=_strategy(), record_cap=20))
+    assert len(src.search_args) == 2  # replayed
+    run_strategy(_ctx(env, src), a_protocol(search_strategy=_strategy(date_from=2010), record_cap=20))
+    assert len(src.search_args) == 4  # another year range
+    mark_protocol(ps, "search_screen", 1, "hash-2", actor="tester")
+    run_strategy(_ctx(env, src), a_protocol(search_strategy=_strategy(), record_cap=20))
+    assert len(src.search_args) == 6  # another protocol

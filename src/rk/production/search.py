@@ -24,8 +24,9 @@ search: the page's log counts it (``dropped``, not ``incomplete``) and ``dropped
 PRISMA notes.
 
 Run again in the same attempt (an attempt interrupted after or during its search resumes in place), the search asks no
-source again for a page the attempt already logged (``_Paging.replay``: the logged hits and what the page said), and
-a hit already stored as a record keeps that record: no search request and no record is made twice.
+source again for a page the attempt already logged under the protocol it works under and the same year range
+(``_Paging.replay``: the logged hits and what the page said), and a hit already stored as a record keeps that record:
+no search request and no record is made twice.
 
 A failed search is never "nothing found": its error propagates (a transient one steps the run again, spec §11.3).
 
@@ -44,10 +45,11 @@ send the stage back to ``protocol`` (the protocol's record-count probe is adviso
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 from rk.discovery.sources import log_and_search_hits
-from rk.discovery.store import SearchNote, searches
+from rk.discovery.store import SearchNote
 from rk.library.models import normalize_language
 from rk.orchestrator.engine import StageContext
 from rk.production.models import Protocol, SearchStrategy
@@ -112,11 +114,11 @@ class _Paging:
 
     def replay(self, ids: list[str], logged: dict) -> None:
         """Take a page the attempt already logged as ``note`` judged it then: its hits and what it said."""
-        self.raw = len(ids) + (logged["dropped"] or 0)
+        self.raw = len(ids) + (logged.get("dropped") or 0)
         new = set(ids) - self.seen
-        self.last = SearchNote(incomplete=logged["incomplete"], stopped_at_cap=logged["stopped_at_cap"],
-                               dropped=logged["dropped"] or 0)
-        self.ended = bool(logged["incomplete"]) or len(self.found | new) > self.cap or self.raw != self.page
+        self.last = SearchNote(incomplete=logged.get("incomplete"), stopped_at_cap=bool(logged.get("stopped_at_cap")),
+                               dropped=logged.get("dropped") or 0)
+        self.ended = bool(logged.get("incomplete")) or len(self.found | new) > self.cap or self.raw != self.page
 
     def took(self, ids: list[str]) -> None:
         self.seen.update(ids)
@@ -124,22 +126,38 @@ class _Paging:
         self.offset += self.raw
 
 
+def _logged_pages(ps: ProjectStore, stage: str, attempt: int) -> dict[tuple, dict]:
+    """The attempt's logged search pages under the protocol it works under now (logged after its latest
+    ``attempt.protocol`` mark: a page of an earlier protocol is not replayed), by (source, query, offset, limit,
+    date_from, date_to); the first of each."""
+    mark = ps.db.execute("SELECT MAX(seq) FROM events WHERE type='attempt.protocol' AND json_extract(payload, "
+                         "'$.stage')=? AND json_extract(payload, '$.attempt')=?", (stage, attempt)).fetchone()[0]
+    rows = ps.db.execute("SELECT payload FROM events WHERE type='search.logged' AND seq>? AND json_extract(payload, "
+                         "'$.stage')=? AND json_extract(payload, '$.attempt')=? AND json_extract(payload, '$.purpose')=? "
+                         "ORDER BY seq", (mark or 0, stage, attempt, PURPOSE))
+    out: dict[tuple, dict] = {}
+    for r in rows:
+        p = json.loads(r["payload"])
+        out.setdefault((p["source"], p["query"], p.get("offset") or 0, p["limit"], p.get("date_from"),
+                        p.get("date_to")), p)
+    return out
+
+
 def _search(ctx: StageContext, strategy: SearchStrategy, cap: int) -> tuple[list[str], list[str], bool]:
     """One item id per hit in search order, the incomplete reasons, and whether the search stopped at the cap. A page
-    the attempt already logged is replayed, not asked for again."""
+    the attempt already logged, under the same protocol and year range, is replayed, not asked for again."""
     hits: list[str] = []
     incomplete: list[str] = []
     found: set[str] = set()
-    logged: dict[tuple, dict] = {}
-    for r in searches(ctx.ps, ctx.stage, ctx.attempt, purpose=PURPOSE):
-        logged.setdefault((r["source"], r["query"], r["offset_n"] or 0, r["limit_n"]), r)
+    logged = _logged_pages(ctx.ps, ctx.stage, ctx.attempt)
     pairs = [(q, s) for q in strategy.queries for s in strategy.sources]
     for i, (query, source) in enumerate(pairs):
         lim = search_limits(source)
         p = _Paging(source, query, min(PAGE_LIMIT, cap + 1, *([lim.page] if lim else [])),
                     lim.depth if lim else None, cap, found, more_searches=i < len(pairs) - 1)
         while not p.ended:
-            if (page := logged.get((source, query, p.offset, p.page))) is not None:
+            key = (source, query, p.offset, p.page, strategy.date_from, strategy.date_to)
+            if (page := logged.get(key)) is not None:
                 ids = page["item_ids"]
                 p.replay(ids, page)
             else:
