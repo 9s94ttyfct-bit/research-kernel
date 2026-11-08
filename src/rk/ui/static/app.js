@@ -529,8 +529,12 @@ async function protocolCard(c, answer) {
   // every plan value as text: el() skips false, so hksj is shown in words; lists are joined
   const planValue = (k, v) => (k === "method" ? words(v) : k === "hksj" ? HKSJ[String(v)] ?? String(v)
     : Array.isArray(v) ? v.join(", ") : String(v));
+  // the pool options and outcomes are the meta-analysis's: shown only for that method
+  const POOL_KEYS = new Set(["pool_model", "hksj", "pi_df", "outcomes"]);
+  const isMeta = (b.synthesis_plan || {}).method === "meta_analysis";
   const plan = Object.entries(b.synthesis_plan || {})
-    .filter(([, v]) => v !== null && v !== undefined && !(Array.isArray(v) && v.length === 0));
+    .filter(([k, v]) => v !== null && v !== undefined && !(Array.isArray(v) && v.length === 0)
+      && (isMeta || !POOL_KEYS.has(k)));
   const prismaP = Object.entries(b.prisma_p || {});
   return [
     el("p", { class: "hint" }, `Version ${p.version} · ${words(d.paper_type)} · `,

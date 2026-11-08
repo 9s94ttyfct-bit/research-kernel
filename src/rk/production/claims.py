@@ -133,14 +133,15 @@ def narrow_or_withdraw(ctx: StageContext, claim_id: str) -> NarrowOutcome:
 def claim_limitations(ps, claim_ids: list[str]) -> dict:
     """The limitations input of ``claim_ids`` and their rewrites (followed through ``narrowed_from``): every withdrawn
     one with its reason, every rewrite with the claim it narrows and its status, and every conceded objection against
-    them or their evidence."""
+    them, their evidence or an edge into them."""
     svc = ArgumentService(ps)
     ids = list(dict.fromkeys(claim_ids))
     every = svc.list_claims(origin=("argument", "gaps", "synthesis"))
     while more := [c["id"] for c in every if c.get("narrowed_from") in ids and c["id"] not in ids]:
         ids += more
     claims = [svc.get_claim(c) for c in ids]
-    targets = [t for c in claims for t in (c["id"], *(e["id"] for e in c["evidence"]))]
+    targets = [t for c in claims for t in (c["id"], *(e["id"] for e in c["evidence"]),
+                                           *(e["id"] for e in svc.list_edges(to_id=c["id"])))]
     return {"withdrawn": [{"claim_id": c["id"], "text": c["text"], "reason": c.get("withdrawn_reason")}
                           for c in claims if c["status"] == "withdrawn"],
             "narrowed": [{"claim_id": c["id"], "narrowed_from": c["narrowed_from"], "text": c["text"],

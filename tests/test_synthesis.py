@@ -838,3 +838,113 @@ def test_judges_of_a_rewrite_exclude_the_original_and_the_rewrite_vendors(env):
     # judge_2 shares the original claim's vendor and judge_3 the Arguer's: one judge is left, too few to support
     assert [c["role"] for c in ex.calls if c["schema"] == "JudgeVerdict"] == ["judge"]
     assert res.status == "withdrawn" and res.new_claim_id
+
+
+# ---- no cherry-picked pooling ----
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_subset_plan_gets_every_computable_study(env):
+    _, ps, _ = env
+    _enable_stats()
+    ids = _setup(env, {**dict(list(BCG.items())[:3]),
+                       "Median": {**BCG["Hart"], "events_treatment": "not_reported"}}, schema=BINARY, plan=META)
+    picked = [ids["Aronson"], ids["Ferguson"]]
+    ex = _exec(plans=[_group(picked)], votes=_votes_pool())
+    w = SynthesizeWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    (g,) = synthesis_notes(ps, 1, kind="plan")[0]["groups"]
+    assert g["item_ids"] == [*picked, ids["Rosenthal"]] and g["added_by_kernel"] == [ids["Rosenthal"]]
+    stt = next(a for a in artifacts(ps, "synthesize", 1) if a["kind"] == "stt")
+    assert stt["values"]["display"]["k"] == 3  # the uncomputable study is not added
+    assert _analysis_deviations(ps) == []
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_plan_excluding_a_study_with_a_reason_records_a_deviation(env):
+    _, ps, _ = env
+    _enable_stats()
+    ids = _setup(env, dict(list(BCG.items())[:3]), schema=BINARY, plan=META)
+    plan = _group([ids["Aronson"], ids["Ferguson"]])
+    plan["groups"][0]["excluded"] = [{"item_id": ids["Rosenthal"], "reason": "a quasi-randomised trial"}]
+    ex = _exec(plans=[plan], votes=_votes_pool())
+    w = SynthesizeWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    stt = next(a for a in artifacts(ps, "synthesize", 1) if a["kind"] == "stt")
+    assert stt["values"]["item_ids"] == [ids["Aronson"], ids["Ferguson"]]
+    (reason,) = _analysis_deviations(ps)
+    assert reason == ("pooling of 'tuberculosis' (RR) leaves out Rosenthal 1952 (a quasi-randomised trial), "
+                      "which has a computable effect")
+    assert synthesis_limitations(ps, 1)["left_out"] == [
+        {"outcome": "tuberculosis", "measure": "RR", "item_id": ids["Rosenthal"],
+         "reason": "a quasi-randomised trial"}]
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_split_outcome_pools_one_group_only(env):
+    _, ps, _ = env
+    _enable_stats()
+    ids = _setup(env, dict(list(BCG.items())[:3]), schema=BINARY, plan=META)
+    first = _group([ids["Aronson"], ids["Ferguson"]])["groups"][0]
+    second = _group([ids["Rosenthal"]])["groups"][0] | {"outcome": " Tuberculosis "}
+    ex = _exec(plans=[{"groups": [first, second]}], votes=_votes_pool())
+    w = SynthesizeWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    (stt,) = [a for a in artifacts(ps, "synthesize", 1) if a["kind"] == "stt"]
+    assert stt["values"]["display"]["k"] == 3  # the first group, with the study the plan split off
+    (reason,) = _analysis_deviations(ps)
+    assert reason == ("pooling of 'tuberculosis' (RR) not done: a second group for the outcome; only one group per "
+                      "pre-specified outcome and measure is pooled (group 0)")
+    assert len([c for c in ex.calls if c["schema"] == "VoteOut" and c["role"] == "judge"]) == 1
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_outcome_names_match_after_case_and_space_normalisation(env):
+    _, ps, _ = env
+    _enable_stats()
+    _setup(env, dict(list(BCG.items())[:3]), schema=BINARY, plan=META)
+    ex = _exec(plans=[lambda inputs: _two([s["item_id"] for s in inputs["studies"]], ["  TUBERCULOSIS\n"])],
+               votes=_votes_pool())
+    w = SynthesizeWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    (claim,) = [c for c in _claims(ps) if c["kind"] == "stat_result"]
+    assert claim["scope_limits"][0] == "outcome: tuberculosis"  # the protocol's spelling
+    assert _analysis_deviations(ps) == []
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_protocol_frozen_in_the_plan_5a_shape_falls_back(env):
+    _, ps, _ = env
+    _enable_stats()
+    old = SynthesisPlan(method="meta_analysis", effect_measure="RR", model="random effects (DerSimonian-Laird)")
+    _setup(env, dict(list(BCG.items())[:3]), schema=BINARY, plan=old)  # frozen without check_protocol's typed fields
+    ex = _exec()
+    w = SynthesizeWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    assert not ex.of("arguer", "PoolingPlan") and artifacts(ps, "synthesize", 1) == []
+    assert _analysis_deviations(ps) == ["the protocol pre-specifies no pooling model (synthesis_plan.pool_model)"]
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "critical_review"}], indirect=True)
+def test_conceded_objections_on_edges_into_the_claim_reach_the_limitations(env):
+    from rk.argument import ClaimIn, EdgeIn, ObjectionIn
+    from rk.production.claims import claim_limitations
+
+    _, ps, _ = env
+    _setup(env, {"A": {"design": "rct"}, "B": {"design": "cohort"}}, schema=[DESIGN],
+           plan=SynthesisPlan(method="thematic"))
+    ex = _exec(narrowed=[{"text": "Aspirin was studied in some older people.", "kind": "fact"}])
+    ctx = _ctx(env, ex)
+    assert SynthesizeWorker().run(ctx).status == "done"
+    (claim,) = _claims(ps)
+    svc = ArgumentService(ps)
+    reason = svc.add_claim(ClaimIn(text="Trials enrolled them."), generator_vendor=None, actor="t")
+    edge = svc.add_edge(EdgeIn(from_id=reason, to_id=claim["id"], type="reason_of"), actor="t")
+    oid = svc.add_objection(ObjectionIn(target_id=edge, category="soundness", priority=1, text="Not a reason."),
+                            actor="skeptic")
+    assert narrow_or_withdraw(ctx, claim["id"]).status == "narrowed"
+    assert [(c["objection_id"], c["target_id"]) for c in claim_limitations(ps, [claim["id"]])["conceded"]] == [
+        (oid, edge)]

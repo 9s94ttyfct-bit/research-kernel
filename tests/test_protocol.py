@@ -18,7 +18,7 @@ from rk.net.http import BudgetExhausted, HttpClient, HttpError
 from rk.orchestrator.engine import Orchestrator, StageOutcome, default_workers
 from rk.orchestrator.state import latest_attempt, record_attempt, start_run
 from rk.production import store
-from rk.production.models import Protocol
+from rk.production.models import Protocol, SynthesisPlan
 from rk.production.protocol import (
     VOTE_QUESTION,
     ProtocolWorker,
@@ -139,6 +139,12 @@ def test_meta_analysis_draft_without_typed_fields_fails_the_gate_and_is_redrafte
     assert (plan["pool_model"], plan["hksj"], plan["pi_df"], plan["outcomes"]) == ("DL", False, "ci", ["stroke"])
     text = "\n".join(render_protocol(ps, store.frozen_protocol(ps)))
     assert "- hksj: never (Wald intervals)" in text and "- outcomes: stroke" in text
+    # the pool options are shown only for a meta-analysis
+    narrative = store.frozen_protocol(ps) | {"body": a_protocol(synthesis_plan=SynthesisPlan(
+        method="narrative_swim", hksj=False, outcomes=["stroke"])).model_dump(mode="json")}
+    text = "\n".join(render_protocol(ps, narrative))
+    assert "- method: narrative_swim" in text
+    assert not any(f"- {k}:" in text for k in ("hksj", "pi_df", "pool_model", "outcomes"))
 
 
 def test_light_protocol_for_critical_review(env):

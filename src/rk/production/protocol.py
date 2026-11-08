@@ -327,10 +327,14 @@ def _field_line(f: dict) -> str:
 
 
 HKSJ_WORDS = {"auto": "auto (the Cochrane Handbook rule)", True: "always", False: "never (Wald intervals)"}
+POOL_KEYS = frozenset({"pool_model", "hksj", "pi_df", "outcomes"})  # shown only for a meta-analysis
 
 
-def plan_value(key: str, value) -> str | None:
-    """A synthesis plan value as a review shows it (``None``: not shown): ``hksj`` in words, lists joined."""
+def plan_value(key: str, value, method: str | None = None) -> str | None:
+    """A synthesis plan value as a review shows it (``None``: not shown): ``hksj`` in words, lists joined; the
+    meta-analysis fields (``POOL_KEYS``) only when ``method`` is ``meta_analysis``."""
+    if key in POOL_KEYS and method != "meta_analysis":
+        return None
     if key == "hksj":
         return HKSJ_WORDS.get(value, str(value))
     if isinstance(value, list):
@@ -379,7 +383,7 @@ def render_protocol(ps: ProjectStore, row: dict) -> list[str]:
     lines += ["Exclude:"] + ([f"- {c['id']}: {c['text']}" for c in b["eligibility"]["exclude"]] or ["- none"])
     lines += ["", "Extraction schema:"] + ([_field_line(f) for f in b["extraction_schema"]] or ["- none"])
     plan = b["synthesis_plan"]
-    shown = [(k, plan_value(k, v)) for k, v in plan.items()] if plan else []
+    shown = [(k, plan_value(k, v, plan["method"])) for k, v in plan.items()] if plan else []
     lines += ["", "Synthesis plan:"] + ([f"- {k}: {v}" for k, v in shown if v is not None] or ["- none"])
     if b["prisma_p"]:
         lines += ["", "PRISMA-P:"] + [f"- {k}: {v}" for k, v in b["prisma_p"].items()]
