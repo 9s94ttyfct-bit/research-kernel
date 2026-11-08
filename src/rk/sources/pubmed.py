@@ -56,10 +56,11 @@ def _esummary_params(pmids: list[str]) -> dict:
     return {"db": "pubmed", "id": ",".join(pmids), "retmode": "json"}
 
 
-def _summaries(http: HttpClient, pmids: list[str], *, use_cache: bool = True) -> list[ItemIn] | None:
-    """The works of ``pmids``' esummary body, or ``None`` when it is no usable ``result``: NCBI's error body, a 404, or
-    a result that names none of the PMIDs asked for. A uid whose entry is an ``error`` (no document summary, e.g. a
-    withdrawn record) is left out."""
+def _summaries(http: HttpClient, pmids: list[str], *,
+               use_cache: bool = True) -> tuple[list[ItemIn], set[str]] | None:
+    """The works of ``pmids``' esummary body with the uids whose entry is an ``error`` (no document summary, e.g. a
+    withdrawn record; left out of the works), or ``None`` when it is no usable ``result``: NCBI's error body, a 404, or
+    a result that names none of the PMIDs asked for."""
     data, _ = http.get_json(f"{EUTILS}/esummary.fcgi", _esummary_params(pmids), use_cache=use_cache)
     result = (data or {}).get("result") if isinstance(data, dict) else None
     if not isinstance(result, dict):
@@ -67,33 +68,42 @@ def _summaries(http: HttpClient, pmids: list[str], *, use_cache: bool = True) ->
     uids = [uid for uid in result.get("uids") or [] if isinstance(result.get(uid), dict)]
     if not set(uids) & set(pmids):
         return None
-    return [summary_to_item(uid, result[uid]) for uid in uids if "error" not in result[uid]]
+    errors = {uid for uid in uids if "error" in result[uid]}
+    return [summary_to_item(uid, result[uid]) for uid in uids if uid not in errors], errors
 
 
 def esummary(http: HttpClient, pmids: list[str], *, use_cache: bool = True) -> list[ItemIn]:
     if not pmids:
         return []
-    return _summaries(http, pmids, use_cache=use_cache) or []
+    got = _summaries(http, pmids, use_cache=use_cache)
+    return got[0] if got else []
+
+
+def _short(got: tuple[list[ItemIn], set[str]] | None, pmids: list[str]) -> bool:
+    """Whether a body is unusable or short of a PMID with neither a summary nor an explicit ``error`` entry."""
+    return got is None or len(got[0]) + len(got[1] & set(pmids)) < len(pmids)
 
 
 def summaries(http: HttpClient, pmids: list[str]) -> Hits:
-    """The works of a page of ``pmids``, as full as its PMID list: a body short of a summary (cut, or a withdrawn
-    record) is dropped from the HTTP cache and fetched again at once; a PMID still without one is counted as a
-    dropped entry (``Hits.dropped``, as arXiv's unreadable entries), and that short body is not kept either. A body
-    that is no usable ``result`` (an error body, a 404, a result naming none of the PMIDs), also when fetched again, is
-    a ``BadBody`` (transient: the run retries after a backoff), never a page of dropped records. A result whose every
-    PMID is an error entry (withdrawn records) is a page of dropped entries: no retry can change it."""
+    """The works of a page of ``pmids``, as full as its PMID list: a body short of a summary (cut) is dropped from the
+    HTTP cache and fetched again at once; a PMID still without one is counted as a dropped entry (``Hits.dropped``, as
+    arXiv's unreadable entries), and that short body is not kept either. A uid with an explicit ``error`` entry (a
+    withdrawn record) is a dropped entry at once: no refetch can change it, so a body whose every missing PMID is one
+    is not fetched again. A body that is no usable ``result`` (an error body, a 404, a result naming none of the
+    PMIDs), also when fetched again, is a ``BadBody`` (transient: the run retries after a backoff), never a page of
+    dropped records."""
     if not pmids:
         return Hits()
     url, params = f"{EUTILS}/esummary.fcgi", _esummary_params(pmids)
-    items = _summaries(http, pmids)
-    if items is None or len(items) < len(pmids):
+    got = _summaries(http, pmids)
+    if _short(got, pmids):
         http.forget(url, params)
-        items = _summaries(http, pmids, use_cache=False)
-        if items is None or len(items) < len(pmids):
+        got = _summaries(http, pmids, use_cache=False)
+        if _short(got, pmids):
             http.forget(url, params)
-        if items is None:
+        if got is None:
             raise BadBody(url, f"no esummary result for {len(pmids)} PMIDs")
+    items = got[0]
     return Hits(items, dropped=len(pmids) - len(items))
 
 

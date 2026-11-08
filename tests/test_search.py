@@ -515,9 +515,10 @@ def test_pubmed_uid_with_an_error_entry_is_dropped(tmp_path):
         return httpx.Response(200, json={"result": {"uids": ["7", "8"], "7": {"title": "P7", "pubdate": "2011"},
                                                     "8": {"uid": "8", "error": "cannot get document summary"}}})
 
-    http, _ = _client(tmp_path, respond)
+    http, seen = _client(tmp_path, respond)
     hits = resolver.search(SourceContext(http=http, settings=Settings()), "aspirin", "pubmed", 2)
     assert ([h.title for h in hits], hits.dropped) == (["P7"], 1)  # no "(untitled)" record
+    assert len([r for r in seen if r.url.path.endswith("esummary.fcgi")]) == 1  # an error entry is final: no refetch
     http.close()
 
 
@@ -530,9 +531,10 @@ def test_pubmed_page_of_only_withdrawn_uids_is_dropped_not_retried(tmp_path):
         return httpx.Response(200, json={"result": {"uids": ["8"],
                                                     "8": {"uid": "8", "error": "cannot get document summary"}}})
 
-    http, _ = _client(tmp_path, respond)
+    http, seen = _client(tmp_path, respond)
     hits = resolver.search(SourceContext(http=http, settings=Settings()), "aspirin", "pubmed", 1)
     assert (list(hits), hits.dropped) == ([], 1)
+    assert len([r for r in seen if r.url.path.endswith("esummary.fcgi")]) == 1  # every missing uid is an error entry
     http.close()
 
 
