@@ -1569,11 +1569,12 @@ class ArgueWorker:
         return self._on_final(ctx, s, checkpoint)
 
     def _without_findings(self, ctx: StageContext, cp: dict, why: str) -> StageOutcome:
-        """Your final review applied again after a crash, once it withdrew every finding (synthesize's passed attempt
-        has none left, so the inputs cannot load): finish what the interrupted application left, as ``_on_final``
-        does — concede the objections of every claim you withdrew, take withdrawn statistical results' pools out and
-        note your RQ check once — then go back to question if you said the main claim does not answer it, else to
-        synthesize (``run``'s I4 back-edge)."""
+        """Your final review or conflict decision applied again after a crash, once no finding is left (synthesize's
+        passed attempt has none, so the inputs cannot load): finish what the interrupted application left, as
+        ``_on_final`` / ``_apply_conflict`` do — concede the objections of every claim you withdrew, note your conflict
+        decision once (``_finish_conflict``), take withdrawn statistical results' pools out and note your RQ check
+        once — then go back to question if you said the main claim does not answer it, else to synthesize (``run``'s
+        I4 back-edge)."""
         ps = ctx.ps
         answer = cp.get("answer") or {}
         claims = answer.get("claims") or {}
@@ -1583,6 +1584,8 @@ class ArgueWorker:
             for cid in cp["options"].get("claim_ids") or []:
                 if claims.get(cid) == WITHDRAW and _withdrawn(ps, cid):
                     self._concede_gone(replace(ctx, actor=by), cid, f"conceded: the claim {cid} was withdrawn by you")
+        if cp["kind"] == CONFLICT and cp["status"] == "answered" and answer.get("decision") in CONFLICT_CHOICES:
+            self._finish_conflict(ctx, cp, answer)
         reconcile_withdrawn_pools(ctx, argued_synthesis_attempt(ps, ctx.attempt))
         if yours and answer.get("answers_rq") in (YES, NO) and not any(
                 n.get("checkpoint_id") == cp["id"] for n in argue_notes(ps, ctx.attempt, kind="rq_check")):
@@ -1595,6 +1598,25 @@ class ArgueWorker:
                 "you judged that the main claim does not answer the research question"
                 + (f": {comment}" if comment else "")))
         return StageOutcome("back_edge", to="synthesize", reason=why)
+
+    def _finish_conflict(self, ctx: StageContext, cp: dict, answer: dict) -> None:
+        """Your evidence_conflict answer applied again after a crash, with no finding left: concede what the claim
+        your decision withdrew still has open, and note the decision once (``_apply_conflict``)."""
+        ps = ctx.ps
+        idx = cp["options"].get("index")
+        if any(n["index"] == idx for n in argue_notes(ps, ctx.attempt, kind="conflict_decision")):
+            return
+        n = next((n for n in argue_notes(ps, ctx.attempt, kind="conflict") if n["index"] == idx), None)
+        if n is None:
+            return
+        by = answered_by_actor(ps, cp["id"]) or ctx.actor
+        decision = answer["decision"]
+        if decision in (A_HOLDS, B_HOLDS):
+            keep, drop = (n["claim_a"], n["claim_b"]) if decision == A_HOLDS else (n["claim_b"], n["claim_a"])
+            if _withdrawn(ps, drop):
+                self._concede_gone(replace(ctx, actor=by), drop, f"conceded: the claim was withdrawn in favour of {keep}")
+        self._apply_conflict(replace(ctx, actor=by), n, decision, by="human", actor_kind="human",
+                             via={"checkpoint_id": cp["id"], "comment": answer_comment(answer)})
 
     def _on_final(self, ctx: StageContext, s: _Inputs, cp: dict) -> StageOutcome:
         ps = ctx.ps
