@@ -124,8 +124,12 @@ def test_meta_analysis_draft_without_typed_fields_fails_the_gate_and_is_redrafte
     typed fields as its reason, and the redraft that fills them is frozen."""
     _, ps, _ = env
     old = _draft(synthesis_plan={"method": "meta_analysis", "effect_measure": "RR", "model": "random effects (DL)"})
-    typed = _draft(synthesis_plan={"method": "meta_analysis", "effect_measure": "RR", "model": "random effects",
-                                   "pool_model": "DL", "hksj": False, "outcomes": ["stroke"]})
+    roles = ("events_treatment", "n_treatment", "events_control", "n_control")
+    schema = [{"name": f"stroke_{r}", "description": r, "type": "number"} for r in roles]
+    stroke = {"name": "stroke", "fields": {r: f"stroke_{r}" for r in roles}}
+    typed = _draft(extraction_schema=schema,
+                   synthesis_plan={"method": "meta_analysis", "effect_measure": "RR", "model": "random effects",
+                                   "pool_model": "DL", "hksj": False, "outcomes": [stroke]})
     ex = _executor([old, typed], votes=_votes(("approve", "approve")))
     w = ProtocolWorker()
     out = w.run(_ctx(env, ex))
@@ -136,12 +140,14 @@ def test_meta_analysis_draft_without_typed_fields_fails_the_gate_and_is_redrafte
     assert not g.ok and any("pool_model" in f for f in g.failures)
     assert w.run(_ctx(env, ex, attempt=2)).status == "done" and w.gate(ps, 2).ok
     plan = store.frozen_protocol(ps)["body"]["synthesis_plan"]
-    assert (plan["pool_model"], plan["hksj"], plan["pi_df"], plan["outcomes"]) == ("DL", False, "ci", ["stroke"])
+    assert (plan["pool_model"], plan["hksj"], plan["pi_df"], plan["outcomes"]) == ("DL", False, "ci", [stroke])
     text = "\n".join(render_protocol(ps, store.frozen_protocol(ps)))
-    assert "- hksj: never (Wald intervals)" in text and "- outcomes: stroke" in text
+    assert "- hksj: never (Wald intervals)" in text
+    assert ("- outcomes: stroke (events_treatment = stroke_events_treatment, n_treatment = stroke_n_treatment, "
+            "events_control = stroke_events_control, n_control = stroke_n_control)") in text
     # the pool options are shown only for a meta-analysis
     narrative = store.frozen_protocol(ps) | {"body": a_protocol(synthesis_plan=SynthesisPlan(
-        method="narrative_swim", hksj=False, outcomes=["stroke"])).model_dump(mode="json")}
+        method="narrative_swim", hksj=False, outcomes=[stroke])).model_dump(mode="json")}
     text = "\n".join(render_protocol(ps, narrative))
     assert "- method: narrative_swim" in text
     assert not any(f"- {k}:" in text for k in ("hksj", "pi_df", "pool_model", "outcomes"))

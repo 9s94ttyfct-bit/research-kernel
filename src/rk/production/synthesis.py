@@ -11,7 +11,8 @@ artifact, as V-STATS requires) and the frozen protocol (``extraction_schema``, `
    ``sufficient`` at 0 ("abstract only") for a study read on its abstract alone (§11.1).
 2. **Method.**
    - A systematic review whose protocol pre-specifies ``meta_analysis``: with ``stats_enabled`` (and the protocol's
-     typed ``outcomes``, ``pool_model`` and ``effect_measure``; else a fallback) the Arguer proposes the
+     typed ``outcomes`` with their field mappings, ``pool_model`` and ``effect_measure``; else a fallback) the Arguer
+     proposes the
      ``PoolingPlan`` (groups of studies per outcome and measure with their comparability). The pre-specified analysis
      never silently changes: each listed outcome (matched after case and whitespace folding; the protocol's spelling
      is kept) without a group of the pre-specified measure falls back ("the pooling plan proposed no group for the
@@ -27,7 +28,8 @@ artifact, as V-STATS requires) and the frozen protocol (``extraction_schema``, `
      fields), once per field set: a second time, and at the edge limit in P1, it falls back instead. The comparable
      groups go to you in one ``pooling_approval`` checkpoint (P2) or to a P1 vote per group (conservative option
      ``no_pool``), both shown the pre-specified pool options. An approved group is pooled by the kernel (when
-     ``stats_enabled`` still holds) from the extraction rows (``MEASURES``' explicit field names) with the protocol's
+     ``stats_enabled`` still holds) from the extraction rows of its outcome's fields (``OutcomeSpec.fields``: each role
+     of the measure -> its extraction field, recorded in the artifacts' ``field_map``) with the protocol's
      typed pool options (``pool_options``): the ``stt_`` pool and the ``fig_`` forest plot, and the kernel-written
      ``stat_result`` claim (``stat_claim_text``, origin ``synthesis``; its scope names the measure, the extraction
      fields and the studies, no model text). Studies without a computable effect are listed (and kept in the
@@ -101,6 +103,7 @@ from rk.verify.records import record_verification
 from rk.verify.stats import (
     PoolOptions,
     check_stats,
+    field_words,
     make_forest_artifact,
     make_map_artifact,
     make_map_table_artifact,
@@ -188,9 +191,10 @@ class Comparability(BaseModel):
 
 
 class PlanExclusion(BaseModel):
-    """A study with a computable effect the plan leaves out of its group, and why."""
+    """A study with a computable effect the plan leaves out of its group, and why (a blank reason is none: the kernel
+    adds the study back)."""
     item_id: str
-    reason: str = Field(min_length=1)
+    reason: str = ""
 
 
 class PoolingGroup(BaseModel):
@@ -308,7 +312,16 @@ class _Inputs:
     @property
     def outcomes(self) -> list[str]:
         """The pre-specified outcome names (``synthesis_plan.outcomes``)."""
-        return [o.strip() for o in (self.plan or {}).get("outcomes") or [] if o.strip()]
+        return [o["name"].strip() for o in (self.plan or {}).get("outcomes") or [] if o["name"].strip()]
+
+    def field_map(self, outcome: str, measure: str) -> dict[str, str] | None:
+        """The extraction field of each role of the pre-specified measure for the listed ``outcome`` (its
+        ``OutcomeSpec.fields``), or ``None``: an unlisted outcome, another measure, or an incomplete mapping."""
+        if measure != self.measure:
+            return None
+        spec = next((o for o in (self.plan or {}).get("outcomes") or [] if o["name"].strip() == outcome), None)
+        fields = (spec or {}).get("fields") or {}
+        return dict(fields) if set(fields) == set(MEASURES[measure]) else None
 
     @property
     def category_fields(self) -> list[str]:
@@ -360,20 +373,28 @@ def _norm(name: str) -> str:
     return " ".join(name.split()).casefold()
 
 
-def _effect_rows(study: dict, measure: str) -> tuple[list[dict], list[str]]:
-    """The study's usable rows of the measure's fields (``not_reported`` left out), and the fields it has two values
+def _effect_rows(study: dict, field_map: dict[str, str]) -> tuple[list[dict], list[str]]:
+    """The study's usable rows of the outcome's fields (``not_reported`` left out), and the fields it has two values
     for."""
-    fields = MEASURES[measure]
+    fields = set(field_map.values())
     rows = [r for r in _usable_rows(study) if r["field"] in fields and r["value"] != NOT_REPORTED]
     return rows, sorted({r["field"] for r in rows if sum(x["field"] == r["field"] for x in rows) > 1})
 
 
-def _computable_ids(s: _Inputs, measure: str) -> list[str]:
-    """The usable studies, in order, whose rows give a computable effect for ``measure`` (one value per field)."""
+def _effect(measure: str, field_map: dict[str, str], rows: list[dict]):
+    """The effect (or ``Uncomputable``, its reason naming the fields) of one study's rows through ``field_map``."""
+    data = {role: r["value"] for role, f in field_map.items() for r in rows if r["field"] == f}
+    e = compute(measure, data)
+    return Uncomputable(field_words(e.reason, field_map)) if isinstance(e, Uncomputable) else e
+
+
+def _computable_ids(s: _Inputs, measure: str, field_map: dict[str, str] | None) -> list[str]:
+    """The usable studies, in order, whose rows give a computable effect for ``measure`` through ``field_map`` (one
+    value per field); none without a mapping."""
     out = []
-    for u in s.usable:
-        rows, twice = _effect_rows(u, measure)
-        if not twice and not isinstance(compute(measure, {r["field"]: r["value"] for r in rows}), Uncomputable):
+    for u in s.usable if field_map else []:
+        rows, twice = _effect_rows(u, field_map)
+        if not twice and not isinstance(_effect(measure, field_map, rows), Uncomputable):
             out.append(u["item_id"])
     return out
 
@@ -413,6 +434,10 @@ def _unpoolable(s: _Inputs) -> str | None:
                 f"computes ({', '.join(MEASURES)})")
     if not s.outcomes:
         return "the protocol pre-specifies no outcome (synthesis_plan.outcomes)"
+    for o in s.outcomes:
+        if s.field_map(o, s.measure) is None:
+            return (f"the protocol maps no extraction fields to the measure's roles for outcome {o!r} "
+                    f"(synthesis_plan.outcomes[].fields)")
     return None
 
 
@@ -558,7 +583,7 @@ class SynthesizeWorker:
     def _plan(ctx: StageContext, s: _Inputs) -> str | None:
         ps = ctx.ps
         inputs = {"question": s.protocol.question, "synthesis_plan": s.plan, "outcomes": s.outcomes,
-                  "effect_measure": s.measure,
+                  "outcome_fields": {o: s.field_map(o, s.measure) for o in s.outcomes}, "effect_measure": s.measure,
                   "extraction_schema": [f.model_dump(mode="json", exclude_none=True)
                                         for f in s.protocol.extraction_schema],
                   "measures": {m: list(f) for m, f in MEASURES.items()},
@@ -575,9 +600,9 @@ class SynthesizeWorker:
         for i, g in enumerate(r.output.groups):
             outcome = listed.get(_norm(g.outcome), g.outcome)
             ids = [x for x in dict.fromkeys(g.item_ids) if x in usable]
-            computable = _computable_ids(s, g.measure)
+            computable = _computable_ids(s, g.measure, s.field_map(outcome, g.measure))
             why_out = {e.item_id: e.reason.strip() for e in g.excluded
-                       if e.item_id in computable and e.item_id not in ids}
+                       if e.reason.strip() and e.item_id in computable and e.item_id not in ids}
             added = [x for x in computable if x not in ids and x not in why_out]
             ids += added
             key = (_norm(outcome), g.measure)
@@ -604,7 +629,10 @@ class SynthesizeWorker:
         absent from the extraction schema; missing (some study has no row for it, or only rows with a problem: a
         reading again may find it); and reported as ``not_reported`` by every study (verified: reading again cannot
         find it)."""
-        fields = MEASURES[g["measure"]]
+        field_map = s.field_map(g["outcome"], g["measure"])
+        if field_map is None:
+            return [], [], []
+        fields = list(field_map.values())
         schema = {f.name for f in s.protocol.extraction_schema}
         by_id = {u["item_id"]: u for u in s.usable}
         rows = [r for i in g["item_ids"] for r in _usable_rows(by_id[i])]
@@ -695,8 +723,15 @@ class SynthesizeWorker:
     def _vote(ctx: StageContext, s: _Inputs, g: dict, vendor: str | None) -> None:
         inputs = {"outcome": g["outcome"], "measure": g["measure"],
                   "studies": [_label(ctx.ps, i) for i in g["item_ids"]], "comparability": g["comparability"],
-                  "planner_reason": g["reason"], "pool_options": pool_options(s.plan).model_dump(),
-                  "synthesis_plan": s.plan}
+                  "planner_reason": g["reason"],
+                  "added_by_kernel": [_label(ctx.ps, i) for i in g.get("added_by_kernel") or []],
+                  "left_out": [{"study": _label(ctx.ps, x["item_id"]), "reason": x["reason"]}
+                               for x in g.get("left_out") or []],
+                  "note": ("The kernel added the studies in added_by_kernel because their effects are computable and "
+                           "the plan left them out without a reason: they were not assessed for comparability by the "
+                           "planner (its comparability scores do not cover them). The studies in left_out stay out "
+                           "for the reasons given, recorded as a deviation from the protocol."),
+                  "pool_options": pool_options(s.plan).model_dump(), "synthesis_plan": s.plan}
         res = vote(ctx, "pooling_group", f"{STAGE}:{ctx.attempt}:{g['group']}", VOTE_QUESTION, [POOL, NO_POOL],
                    NO_POOL, inputs, generator_vendors={vendor})
         _note(ctx.ps, ctx.attempt, "decision", actor=ctx.actor, group=g["group"], decision=res.decision, by="vote",
@@ -740,7 +775,7 @@ class SynthesizeWorker:
         deviation and the attempt's ``left_out`` note (the limitations input)."""
         studies = [f"{_label(ctx.ps, x['item_id'])} ({x['reason']})" for x in g["left_out"]]
         SynthesizeWorker._fallback(
-            ctx, s, f"pooling of {_group_label(g)} leaves out {', '.join(studies)}, which "
+            ctx, s, f"the pooling plan leaves out of {_group_label(g)} {', '.join(studies)}, which "
                     f"{'has a computable effect' if len(studies) == 1 else 'have computable effects'}",
             kind="left_out", group=g["group"], outcome=g["outcome"], measure=g["measure"], left_out=g["left_out"])
 
@@ -761,27 +796,28 @@ class SynthesizeWorker:
         """Pool an approved group: its ``stt_`` and ``fig_`` artifacts and the kernel-written ``stat_result`` claim;
         or, with fewer than two computable studies, its fallback."""
         ps = ctx.ps
-        fields = MEASURES[g["measure"]]
+        field_map = s.field_map(g["outcome"], g["measure"])
+        fields = list(field_map.values())
         by_id = {u["item_id"]: u for u in s.usable}
         rows, ids, excluded, computable = [], [], [], 0
         for iid in g["item_ids"]:
-            mine, twice = _effect_rows(by_id[iid], g["measure"])
+            mine, twice = _effect_rows(by_id[iid], field_map)
             if twice:
                 excluded.append({"item_id": iid, "reason": f"two values for {', '.join(twice)}"})
                 continue
             rows += mine
             ids.append(iid)
-            computable += not isinstance(compute(g["measure"], {r["field"]: r["value"] for r in mine}), Uncomputable)
+            computable += not isinstance(_effect(g["measure"], field_map, mine), Uncomputable)
         common = {"group": g["group"], "outcome": g["outcome"], "measure": g["measure"], "excluded": excluded}
         if computable < 2:
             uncomputable = [{"item_id": i, "reason": e.reason} for i in ids
-                            if isinstance(e := compute(g["measure"], {r["field"]: r["value"] for r in rows
-                                                                      if r["item_id"] == i}), Uncomputable)]
+                            if isinstance(e := _effect(g["measure"], field_map,
+                                                       [r for r in rows if r["item_id"] == i]), Uncomputable)]
             self._fallback(ctx, s, f"pooling of {_group_label(g)} not done: fewer than two studies with a computable "
                                    f"effect ({computable})", **common, uncomputable=uncomputable)
             return
         options = pool_options(s.plan)
-        kw = {"item_ids": ids, "stage": STAGE, "attempt": ctx.attempt, "actor": ctx.actor}
+        kw = {"item_ids": ids, "stage": STAGE, "attempt": ctx.attempt, "actor": ctx.actor, "field_map": field_map}
         stt = make_stats_artifact(ps, rows, g["measure"], options, **kw)
         fig = make_forest_artifact(ps, rows, g["measure"], options, labels={i: _label(ps, i) for i in ids}, **kw)
         a = artifact(ps, stt)

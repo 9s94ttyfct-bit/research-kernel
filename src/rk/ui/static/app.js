@@ -526,9 +526,13 @@ async function protocolCard(c, answer) {
     el("button", { type: "submit", class: "secondary" }, "Back to the research question"));
   back.addEventListener("submit", (e) => { e.preventDefault(); const comment = why.value.trim(); answer(comment ? { decision: "back", comment } : { decision: "back" }); });
   const HKSJ = { auto: "auto (the Cochrane Handbook rule)", true: "always", false: "never (Wald intervals)" };
-  // every plan value as text: el() skips false, so hksj is shown in words; lists are joined
+  // every plan value as text: el() skips false, so hksj is shown in words; outcomes with their fields; lists joined
+  const outcome = (o) => {
+    const fields = Object.entries(o.fields || {}).map(([r, f]) => `${r} = ${f}`).join(", ");
+    return fields ? `${o.name} (${fields})` : o.name;
+  };
   const planValue = (k, v) => (k === "method" ? words(v) : k === "hksj" ? HKSJ[String(v)] ?? String(v)
-    : Array.isArray(v) ? v.join(", ") : String(v));
+    : k === "outcomes" ? v.map(outcome).join("; ") : Array.isArray(v) ? v.join(", ") : String(v));
   // the pool options and outcomes are the meta-analysis's: shown only for that method
   const POOL_KEYS = new Set(["pool_model", "hksj", "pi_df", "outcomes"]);
   const isMeta = (b.synthesis_plan || {}).method === "meta_analysis";

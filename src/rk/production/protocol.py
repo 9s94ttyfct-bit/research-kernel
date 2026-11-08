@@ -160,7 +160,7 @@ def _free_texts(body: Protocol) -> list[tuple[str, str]]:
     if body.synthesis_plan is not None:
         out += [(f"synthesis_plan.{k}", v) for k, v in body.synthesis_plan.model_dump().items()
                 if isinstance(v, str)]
-        out += [(f"synthesis_plan.outcomes[{i}]", o) for i, o in enumerate(body.synthesis_plan.outcomes)]
+        out += [(f"synthesis_plan.outcomes[{i}].name", o.name) for i, o in enumerate(body.synthesis_plan.outcomes)]
     out += [(f"prisma_p.{k}", v) for k, v in (body.prisma_p or {}).items()]
     return out
 
@@ -177,7 +177,7 @@ def check_protocol(body: Protocol, paper_type: str) -> list[str]:
     distinct extraction fields, no novelty claim in the Ideator's texts. The systematic and scoping reviews also need
     an extraction schema and a synthesis plan; the systematic review also the PRISMA-P items. A meta-analysis plan
     needs its typed ``pool_model``, an ``effect_measure`` the statistics module computes (``MEASURES``) and its
-    pre-specified ``outcomes`` (named, each once)."""
+    pre-specified ``outcomes``, each named once and mapping the measure's roles to its own number fields."""
     if paper_type not in PAPER_TYPES:
         raise ValueError(f"unknown paper type {paper_type!r}")
     out = [] if body.question.strip() else ["question is empty"]
@@ -212,11 +212,7 @@ def check_protocol(body: Protocol, paper_type: str) -> list[str]:
                        f"{list(MEASURES)[-1]} for a meta-analysis (got {plan.effect_measure!r})")
         if not plan.outcomes:
             out.append("synthesis_plan.outcomes is required for a meta-analysis (the pre-specified outcome names)")
-        names = [o.strip() for o in plan.outcomes]
-        if any(not n for n in names):
-            out.append("synthesis_plan.outcomes: an outcome name is empty")
-        out += [f"synthesis_plan.outcomes: outcome {n!r} is given twice" for n in dict.fromkeys(names)
-                if n and names.count(n) > 1]
+        out += _outcome_problems(plan, {f.name: f for f in body.extraction_schema})
     if paper_type == "systematic_review":
         out += [f"PRISMA-P item {i!r} is missing" for i in _prisma_p_missing(body)]
     out += novelty_claims(_free_texts(body))
@@ -330,17 +326,60 @@ HKSJ_WORDS = {"auto": "auto (the Cochrane Handbook rule)", True: "always", False
 POOL_KEYS = frozenset({"pool_model", "hksj", "pi_df", "outcomes"})  # shown only for a meta-analysis
 
 
+def _outcome_problems(plan: SynthesisPlan, schema: dict[str, ExtractionField]) -> list[str]:
+    """What keeps a meta-analysis plan's outcomes from being computed as pre-specified: each named once (after case
+    and whitespace folding), mapping every role of the effect measure (and nothing else) to a number field of the
+    extraction schema, no two outcomes to the same fields."""
+    out: list[str] = []
+    seen: dict[str, str] = {}
+    sets: dict[frozenset, str] = {}
+    roles = MEASURES.get(plan.effect_measure or "")
+    for o in plan.outcomes:
+        name = o.name.strip()
+        if not name:
+            out.append("synthesis_plan.outcomes: an outcome name is empty")
+        elif (key := " ".join(name.split()).casefold()) in seen:
+            out.append(f"synthesis_plan.outcomes: outcome {name!r} is given twice")
+        else:
+            seen[key] = name
+        if roles is None:
+            continue
+        say = f"synthesis_plan.outcomes: outcome {name!r}"
+        if missing := [r for r in roles if r not in o.fields]:
+            out.append(f"{say} maps no field to {', '.join(missing)}")
+        out += [f"{say} maps {k!r}, not a role of {plan.effect_measure} ({', '.join(roles)})" for k in o.fields
+                if k not in roles]
+        for r in roles:
+            f = o.fields.get(r)
+            if f is not None and f not in schema:
+                out.append(f"{say}: {r} -> {f!r} is not a field of the extraction schema")
+            elif f is not None and schema[f].type != "number":
+                out.append(f"{say}: {r} -> {f!r} is not a number field")
+        if not missing:
+            fields = frozenset(o.fields[r] for r in roles)
+            if fields in sets:
+                out.append(f"synthesis_plan.outcomes: outcomes {sets[fields]!r} and {name!r} map to the same fields")
+            sets.setdefault(fields, name)
+    return out
+
+
+def _outcome_text(o: dict) -> str:
+    fields = ", ".join(f"{r} = {f}" for r, f in (o.get("fields") or {}).items())
+    return f"{o['name']} ({fields})" if fields else o["name"]
+
+
 def plan_value(key: str, value, method: str | None = None) -> str | None:
-    """A synthesis plan value as a review shows it (``None``: not shown): ``hksj`` in words, lists joined; the
-    meta-analysis fields (``POOL_KEYS``) only when ``method`` is ``meta_analysis``."""
+    """A synthesis plan value as a review shows it (``None``: not shown): ``hksj`` in words, the outcomes with their
+    fields, lists joined; the meta-analysis fields (``POOL_KEYS``) only when ``method`` is ``meta_analysis``."""
     if key in POOL_KEYS and method != "meta_analysis":
         return None
     if key == "hksj":
         return HKSJ_WORDS.get(value, str(value))
+    if key == "outcomes":
+        return "; ".join(_outcome_text(o) for o in value) or None
     if isinstance(value, list):
         return ", ".join(map(str, value)) or None
     return None if value is None else str(value)
-
 
 
 def probe_lines(probe: dict | None, cap: int) -> list[str]:

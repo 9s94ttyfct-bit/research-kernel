@@ -20,7 +20,7 @@ from rk.orchestrator.state import record_attempt, record_passed, record_ran
 from rk.production import store
 from rk.production.artifacts import artifact, artifacts
 from rk.production.claims import narrow_or_withdraw
-from rk.production.models import ExtractionField, SynthesisPlan
+from rk.production.models import ExtractionField, OutcomeSpec, SynthesisPlan
 from rk.production.protocol import protocol_prereg_ok
 from rk.production.synthesis import (
     STATS_NOT_VALIDATED,
@@ -45,16 +45,23 @@ SR_ITEMS = {"rationale": "Guidelines stop at 80.", "objectives": "Estimate benef
             "selection_process": "Two screeners.", "data_collection_process": "One reader.",
             "risk_of_bias": "RoB 2."}
 BINARY = [ExtractionField(name=f, description=f, type="number") for f in BINARY_FIELDS]
+AE_FIELDS = [f"ae_{f}" for f in BINARY_FIELDS]  # the adverse-event outcome's own fields
+BINARY_AE = BINARY + [ExtractionField(name=f, description=f, type="number") for f in AE_FIELDS]
 DESIGN = ExtractionField(name="design", description="Study design", type="category", categories=["rct", "cohort"])
+TB = OutcomeSpec(name="tuberculosis", fields={r: r for r in BINARY_FIELDS})
+AE = OutcomeSpec(name="adverse events", fields={r: f"ae_{r}" for r in BINARY_FIELDS})
 # the free-text model and heterogeneity fields are descriptive only: the typed fields set the pool options
 META = SynthesisPlan(method="meta_analysis", effect_measure="RR", model="random effects (REML would be the default)",
-                     heterogeneity="I2 and tau2; no HKSJ", pool_model="DL", pi_df="k-2", outcomes=["tuberculosis"])
-META2 = META.model_copy(update={"outcomes": ["tuberculosis", "adverse events"]})
+                     heterogeneity="I2 and tau2; no HKSJ", pool_model="DL", pi_df="k-2", outcomes=[TB])
+META2 = META.model_copy(update={"outcomes": [TB, AE]})
 # BCG trials 1-4 (Viechtbauer 2010)
 BCG = {"Aronson": {"events_treatment": 4, "n_treatment": 123, "events_control": 11, "n_control": 139},
        "Ferguson": {"events_treatment": 6, "n_treatment": 306, "events_control": 29, "n_control": 303},
        "Rosenthal": {"events_treatment": 3, "n_treatment": 231, "events_control": 11, "n_control": 220},
        "Hart": {"events_treatment": 62, "n_treatment": 13598, "events_control": 248, "n_control": 12867}}
+# the same trials with an adverse-event outcome of their own (illustrative counts)
+BCG_AE = {t: {**v, **dict(zip(AE_FIELDS, ae, strict=True))} for (t, v), ae in zip(
+    list(BCG.items())[:3], [(10, 123, 12, 139), (20, 306, 18, 303), (5, 231, 9, 220)], strict=True)}
 SWIM = {k: f"SWiM {k}." for k in ("grouping", "standardised_metric", "synthesis_method", "prioritisation",
                                    "heterogeneity", "certainty", "data_presentation", "results", "limitations")}
 FINDING = "Aspirin was studied in older people."
@@ -620,12 +627,38 @@ def test_meta_analysis_protocol_needs_typed_pool_options():
     assert "synthesis_plan.pool_model is required for a meta-analysis (REML, DL or FE)" in failures
     assert "synthesis_plan.outcomes is required for a meta-analysis (the pre-specified outcome names)" in failures
     assert any("synthesis_plan.effect_measure" in f and "RR, OR, RD, MD or SMD" in f for f in failures)
-    assert check_protocol(a_protocol(synthesis_plan=META, prisma_p=SR_ITEMS), "systematic_review") == []
+    assert check_protocol(a_protocol(synthesis_plan=META, prisma_p=SR_ITEMS, extraction_schema=BINARY),
+                          "systematic_review") == []
+    assert check_protocol(a_protocol(synthesis_plan=META2, prisma_p=SR_ITEMS, extraction_schema=BINARY_AE),
+                          "systematic_review") == []
     assert (META.pool_model, META.hksj, META.pi_df) == ("DL", "auto", "k-2")
-    twice = META.model_copy(update={"outcomes": ["tuberculosis", " tuberculosis", ""]})
-    failures = check_protocol(a_protocol(synthesis_plan=twice, prisma_p=SR_ITEMS), "systematic_review")
-    assert "synthesis_plan.outcomes: outcome 'tuberculosis' is given twice" in failures
+    twice = META.model_copy(update={"outcomes": [TB, OutcomeSpec(name=" Tuberculosis", fields=AE.fields),
+                                                 OutcomeSpec(name="", fields={})]})
+    failures = check_protocol(a_protocol(synthesis_plan=twice, prisma_p=SR_ITEMS, extraction_schema=BINARY_AE),
+                              "systematic_review")
+    assert "synthesis_plan.outcomes: outcome 'Tuberculosis' is given twice" in failures
     assert "synthesis_plan.outcomes: an outcome name is empty" in failures
+    # each outcome maps every role of the measure to its own number fields of the extraction schema
+    schema = [*BINARY, ExtractionField(name="arm", description="Arm", type="text")]
+    bad = META.model_copy(update={"outcomes": [
+        TB, OutcomeSpec(name="harm", fields={"events_treatment": "ae_events_treatment", "n_treatment": "arm",
+                                             "events_control": "events_control", "dose": "n_control"}),
+        OutcomeSpec(name="death", fields={r: r for r in BINARY_FIELDS})]})
+    failures = check_protocol(a_protocol(synthesis_plan=bad, prisma_p=SR_ITEMS, extraction_schema=schema),
+                              "systematic_review")
+    for f in ("synthesis_plan.outcomes: outcome 'harm' maps no field to n_control",
+              ("synthesis_plan.outcomes: outcome 'harm' maps 'dose', not a role of RR (events_treatment, n_treatment, "
+              "events_control, n_control)"),
+              ("synthesis_plan.outcomes: outcome 'harm': events_treatment -> 'ae_events_treatment' is not a field of "
+              "the extraction schema"),
+              "synthesis_plan.outcomes: outcome 'harm': n_treatment -> 'arm' is not a number field",
+              "synthesis_plan.outcomes: outcomes 'tuberculosis' and 'death' map to the same fields"):
+        assert f in failures, (f, failures)
+    # a round-2 protocol's plain outcome names still load (with no field mapping), and fail the check
+    legacy = SynthesisPlan.model_validate({**META.model_dump(), "outcomes": ["tuberculosis"]})
+    assert legacy.outcomes == [OutcomeSpec(name="tuberculosis", fields={})]
+    assert any("maps no field to" in f for f in check_protocol(a_protocol(synthesis_plan=legacy, prisma_p=SR_ITEMS),
+                                                               "systematic_review"))
     with pytest.raises(ValidationError):
         SynthesisPlan(method="meta_analysis", hksj="yes")
     with pytest.raises(ValidationError):
@@ -641,7 +674,7 @@ def _two(item_ids, outcomes: list[str]) -> dict:
 def test_plan_for_a_secondary_outcome_only_falls_back_for_the_primary(env):
     _, ps, _ = env
     _enable_stats()
-    _setup(env, dict(list(BCG.items())[:3]), schema=BINARY, plan=META2)
+    _setup(env, BCG_AE, schema=BINARY_AE, plan=META2)
     ex = _exec(plans=[lambda inputs: _two([s["item_id"] for s in inputs["studies"]], ["adverse events"])],
                votes=_votes_pool())
     w = SynthesizeWorker()
@@ -667,30 +700,54 @@ def test_group_of_an_unlisted_outcome_is_not_pooled(env):
     assert ("pooling of 'Tuberculosis cases' (RR) not done: 'Tuberculosis cases' is not a pre-specified outcome "
             "(pre-specified: 'tuberculosis')") in reasons
     assert "the pooling plan proposed no group for the pre-specified outcome 'tuberculosis' (effect measure RR)" in reasons
-    assert ex.of("arguer", "PoolingPlan")[0]["inputs"]["outcomes"] == ["tuberculosis"]
+    inputs = ex.of("arguer", "PoolingPlan")[0]["inputs"]
+    assert inputs["outcomes"] == ["tuberculosis"] and inputs["outcome_fields"] == {"tuberculosis": TB.fields}
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
 
 
 @pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
-def test_every_pre_specified_outcome_pooled_or_the_gate_names_it(env):
+def test_every_pre_specified_outcome_pooled_from_its_own_fields(env):
     _, ps, _ = env
     _enable_stats()
-    _setup(env, dict(list(BCG.items())[:3]), schema=BINARY, plan=META2)
+    _setup(env, BCG_AE, schema=BINARY_AE, plan=META2)
     ex = _exec(plans=[lambda inputs: _two([s["item_id"] for s in inputs["studies"]], ["tuberculosis", "adverse events"])],
                votes=_votes_pool(2))
     w = SynthesizeWorker()
     assert w.run(_ctx(env, ex)).status == "done"
     stats = [c for c in _claims(ps) if c["kind"] == "stat_result"]
     assert [c["scope_limits"][0] for c in stats] == ["outcome: tuberculosis", "outcome: adverse events"]
+    tb, ae = [a for a in artifacts(ps, "synthesize", 1) if a["kind"] == "stt"]
+    # each outcome is pooled from its own fields: distinct numbers, the mapping recorded for V-STATS
+    assert (tb["values"]["field_map"], ae["values"]["field_map"]) == (TB.fields, AE.fields)
+    assert tb["values"]["display"]["estimate"] != pytest.approx(ae["values"]["display"]["estimate"])
+    assert {r["field"] for r in store.extractions(ps, 1) if r["id"] in ae["values"]["row_ids"]} == set(AE_FIELDS)
+    assert stats[0]["text"] != stats[1]["text"]
     assert _analysis_deviations(ps) == []
-    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures  # V-STATS recomputes each with its mapping
     # the gate checks every pre-specified outcome: one neither pooled nor fallen back is named (here the frozen
     # protocol's projection is edited behind the stage's back)
-    meta3 = META2.model_copy(update={"outcomes": ["tuberculosis", "adverse events", "mortality"]})
+    death = OutcomeSpec(name="mortality", fields={r: f"m_{r}" for r in BINARY_FIELDS})
+    meta3 = META2.model_copy(update={"outcomes": [TB, AE, death]})
     body = store.frozen_protocol(ps)["body"] | {"synthesis_plan": meta3.model_dump()}
     ps.db.execute("UPDATE protocols SET body=? WHERE status='frozen'", (json.dumps(body),))
     assert w.gate(ps, 1).failures == [
         "the pre-specified outcome 'mortality' was neither pooled nor fell back with a deviation"]
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_protocol_without_outcome_field_mappings_falls_back(env):
+    _, ps, _ = env
+    _enable_stats()
+    legacy = SynthesisPlan.model_validate({**META.model_dump(), "outcomes": ["tuberculosis"]})  # the round-2 shape
+    _setup(env, dict(list(BCG.items())[:3]), schema=BINARY, plan=legacy)
+    ex = _exec()
+    w = SynthesizeWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    assert not ex.of("arguer", "PoolingPlan") and artifacts(ps, "synthesize", 1) == []
+    assert _analysis_deviations(ps) == [
+        ("the protocol maps no extraction fields to the measure's roles for outcome 'tuberculosis' "
+        "(synthesis_plan.outcomes[].fields)")]
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
 
 
 @pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
@@ -856,6 +913,10 @@ def test_subset_plan_gets_every_computable_study(env):
     stt = next(a for a in artifacts(ps, "synthesize", 1) if a["kind"] == "stt")
     assert stt["values"]["display"]["k"] == 3  # the uncomputable study is not added
     assert _analysis_deviations(ps) == []
+    # the voters see the studies the kernel added, and that the planner did not assess them for comparability
+    subject = next(c for c in ex.calls if c["schema"] == "VoteOut")["inputs"]["subject"]
+    assert subject["added_by_kernel"] == ["Rosenthal 1952"] and subject["left_out"] == []
+    assert "not assessed for comparability" in subject["note"]
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
 
 
@@ -869,14 +930,31 @@ def test_plan_excluding_a_study_with_a_reason_records_a_deviation(env):
     ex = _exec(plans=[plan], votes=_votes_pool())
     w = SynthesizeWorker()
     assert w.run(_ctx(env, ex)).status == "done"
+    subject = next(c for c in ex.calls if c["schema"] == "VoteOut")["inputs"]["subject"]
+    assert subject["left_out"] == [{"study": "Rosenthal 1952", "reason": "a quasi-randomised trial"}]
     stt = next(a for a in artifacts(ps, "synthesize", 1) if a["kind"] == "stt")
     assert stt["values"]["item_ids"] == [ids["Aronson"], ids["Ferguson"]]
     (reason,) = _analysis_deviations(ps)
-    assert reason == ("pooling of 'tuberculosis' (RR) leaves out Rosenthal 1952 (a quasi-randomised trial), "
+    assert reason == ("the pooling plan leaves out of 'tuberculosis' (RR) Rosenthal 1952 (a quasi-randomised trial), "
                       "which has a computable effect")
     assert synthesis_limitations(ps, 1)["left_out"] == [
         {"outcome": "tuberculosis", "measure": "RR", "item_id": ids["Rosenthal"],
          "reason": "a quasi-randomised trial"}]
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_blank_exclusion_reason_counts_as_none(env):
+    _, ps, _ = env
+    _enable_stats()
+    ids = _setup(env, dict(list(BCG.items())[:3]), schema=BINARY, plan=META)
+    plan = _group([ids["Aronson"], ids["Ferguson"]])
+    plan["groups"][0]["excluded"] = [{"item_id": ids["Rosenthal"], "reason": "  \n "}]
+    w = SynthesizeWorker()
+    assert w.run(_ctx(env, _exec(plans=[plan], votes=_votes_pool()))).status == "done"
+    (g,) = synthesis_notes(ps, 1, kind="plan")[0]["groups"]
+    assert g["added_by_kernel"] == [ids["Rosenthal"]] and g["left_out"] == []
+    assert _analysis_deviations(ps) == []
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
 
 

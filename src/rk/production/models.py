@@ -50,14 +50,28 @@ class ExtractionField(BaseModel):
         return self
 
 
+class OutcomeSpec(BaseModel):
+    """A pre-specified outcome of a meta-analysis: its ``name`` and the extraction fields its effect is computed from
+    (``fields``: each role of the effect measure, ``rk.stats.effects.MEASURES``, e.g. ``events_treatment``, to the
+    name of a number field of the extraction schema). A plain name (the shape before the mapping existed) loads as
+    an outcome without fields, which ``check_protocol`` refuses and synthesize does not pool."""
+    name: str
+    fields: dict[str, str] = {}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _plain_name(cls, v):
+        return {"name": v, "fields": {}} if isinstance(v, str) else v
+
+
 class SynthesisPlan(BaseModel):
     """The protocol's synthesis plan. ``model``, ``heterogeneity`` and ``sensitivity`` describe the analysis in words;
-    a meta-analysis is computed with the typed fields only: ``outcomes`` (the pre-specified outcome names; each pooled
-    group is of one of them, by exact name), ``effect_measure`` (``RR``, ``OR``, ``RD``, ``MD`` or ``SMD``),
-    ``pool_model`` (the τ² estimator: ``REML``, ``DL`` or ``FE``), ``hksj`` (Hartung-Knapp-Sidik-Jonkman intervals:
-    ``"auto"``, the Cochrane Handbook rule, or always / never) and ``pi_df`` (the prediction interval's degrees of
-    freedom: ``"ci"`` as the confidence interval, or Higgins 2009's ``"k-2"``). ``check_protocol`` requires them for a
-    meta-analysis."""
+    a meta-analysis is computed with the typed fields only: ``outcomes`` (the pre-specified outcomes, ``OutcomeSpec``:
+    each pooled group is of one of them, by name, and computed from its fields), ``effect_measure`` (``RR``, ``OR``,
+    ``RD``, ``MD`` or ``SMD``), ``pool_model`` (the τ² estimator: ``REML``, ``DL`` or ``FE``), ``hksj``
+    (Hartung-Knapp-Sidik-Jonkman intervals: ``"auto"``, the Cochrane Handbook rule, or always / never) and ``pi_df``
+    (the prediction interval's degrees of freedom: ``"ci"`` as the confidence interval, or Higgins 2009's ``"k-2"``).
+    ``check_protocol`` requires them for a meta-analysis."""
     method: Literal["narrative_swim", "meta_analysis", "evidence_map", "thematic"]
     effect_measure: str | None = None
     model: str | None = None
@@ -66,7 +80,7 @@ class SynthesisPlan(BaseModel):
     pool_model: Literal["REML", "DL", "FE"] | None = None
     hksj: StrictBool | Literal["auto"] = "auto"
     pi_df: Literal["ci", "k-2"] = "ci"
-    outcomes: list[str] = []
+    outcomes: list[OutcomeSpec] = []
 
 
 class Protocol(BaseModel):

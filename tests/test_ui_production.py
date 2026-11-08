@@ -72,8 +72,7 @@ DRAFT = {"eligibility": {"include": [{"id": "I1", "text": "People over 80"}],
          "extraction_schema": [{"name": "n", "description": "Participants", "type": "number", "unit": "people"},
                                {"name": "design", "description": "Study design", "type": "category",
                                 "categories": ["rct", "cohort", "other"]}],
-         "synthesis_plan": {"method": "meta_analysis", "effect_measure": "RR", "pool_model": "DL", "hksj": False,
-                            "outcomes": ["stroke", "bleeding"]},
+         "synthesis_plan": {"method": "narrative_swim", "hksj": False},
          "prisma_p": dict(SR_ITEMS)}
 STRATEGY = {"queries": ["aspirin stroke elderly", "antiplatelet therapy octogenarians", "stroke prevention over 80"],
             "sources": ["openalex", "europepmc"], "date_from": 2000, "date_to": None}
@@ -433,9 +432,9 @@ def test_protocol_card_answers_reach_the_worker(page, served):
     run_id = served.runs.start("demo", "protocol", actor="tester")
     cp, card = _show(page, ps, "protocol_approval")
     for text in ("aspirin stroke elderly", "People over 80", "Animal studies <script>", "Participants",
-                 "meta analysis", "Two screeners, title/abstract then full text.", "Record-cap probe",
-                 "never (Wald intervals)", "stroke, bleeding"):
+                 "narrative swim", "Two screeners, title/abstract then full text.", "Record-cap probe"):
         assert card.get_by_text(text, exact=False).count() >= 1, text
+    assert card.get_by_text("Wald intervals", exact=False).count() == 0  # pool options: a meta-analysis's only
     assert card.locator("script").count() == 0  # the protocol's text is shown as text
     card.get_by_label("What should change in the protocol").fill("Add PubMed and narrow to trials.")
     card.get_by_role("button", name="Ask for a revision").click()
@@ -452,6 +451,29 @@ def test_protocol_card_answers_reach_the_worker(page, served):
     frozen = store.frozen_protocol(ps)
     assert (frozen["body"]["record_cap"], frozen["status"]) == (5000, "frozen")
     assert ps.db.execute("SELECT actor_kind FROM events WHERE type='protocol.frozen'").fetchone()[0] == "human"
+    assert page.errors == []
+
+
+@pytest.mark.browser
+def test_protocol_card_shows_a_meta_analysis_plan_in_words(page, served):
+    from rk.checkpoints import create_checkpoint
+    from rk.production.models import ExtractionField, OutcomeSpec, SynthesisPlan
+    from rk.stats.effects import BINARY_FIELDS
+
+    ps = served.ps
+    stroke = OutcomeSpec(name="stroke", fields={r: f"stroke_{r}" for r in BINARY_FIELDS})
+    body = a_protocol(extraction_schema=[ExtractionField(name=f, description=f, type="number")
+                                         for f in stroke.fields.values()],
+                      synthesis_plan=SynthesisPlan(method="meta_analysis", effect_measure="RR", pool_model="DL",
+                                                   hksj=False, outcomes=[stroke]), prisma_p=SR_ITEMS)
+    pid = store.add_protocol(ps, 1, body, version=1, actor="tester")
+    create_checkpoint(ps, "protocol_approval", "Review the protocol.",
+                      {"protocol_id": pid, "version": 1, "attempt": 1, "choices": ["approve", "revise", "back"],
+                       "replaces": None}, stage="protocol", actor="tester")
+    _cp, card = _show(page, ps, "protocol_approval")
+    for text in ("meta analysis", "never (Wald intervals)", "DL",
+                 "stroke (events_treatment = stroke_events_treatment, n_treatment = stroke_n_treatment"):
+        assert card.get_by_text(text, exact=False).count() >= 1, text
     assert page.errors == []
 
 

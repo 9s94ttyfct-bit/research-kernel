@@ -8,8 +8,9 @@ Artifacts are made only through the ``make_*`` helpers here, so each records wha
 * ``input_hashes``: per input extraction row, in order, the SHA-256 of the row's canonical JSON (``row_hash``: the
   ``extractions`` row with its ``value`` decoded), and ``values.row_ids``: those rows' ids in the same order; every
   input row comes from one extraction attempt, ``values.extraction_attempt``;
-* ``values``: the request (``measure``, the pool ``options`` as requested, ``hksj="auto"`` included, and the group's
-  ``item_ids``; or the map ``fields``; a forest plot's study ``labels``) and the results.
+* ``values``: the request (``measure``, the pool ``options`` as requested, ``hksj="auto"`` included, the group's
+  ``item_ids`` and, for an outcome of a protocol, its ``field_map``: each role of the measure -> the extraction field
+  holding it; or the map ``fields``; a forest plot's study ``labels``) and the results.
 
 ``values`` of ``rk.stats.meta:pool`` (``stt``) and ``rk.stats.plots:forest_svg`` (``fig``, the SVG file):
 ``{measure, options: {model, hksj, pi_df, level}, item_ids, row_ids, extraction_attempt, studies: [{item_id, yi, vi}]
@@ -39,6 +40,7 @@ false: the gates recheck without recording)."""
 from __future__ import annotations
 
 import math
+import re
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -91,6 +93,7 @@ class _Code:
     kind: Literal["stt", "fig"]
     params: tuple[str, ...]  # the request keys of ``values`` the code is called with
     make: Callable[..., _Made]
+    optional: tuple[str, ...] = ()  # request keys passed only when the artifact has them (made without: defaults)
 
 
 def row_hash(row: dict) -> str:
@@ -117,16 +120,32 @@ def _studies(rows: list[dict], item_ids: list[str]) -> dict[str, dict]:
     return out
 
 
-def _pool_values(rows: list[dict], measure: str, options: dict,
-                 item_ids: list[str]) -> tuple[dict, list[str], list[Effect], object]:
+def _by_role(data: dict, field_map: dict[str, str] | None) -> dict:
+    """A study's values keyed by the measure's roles: through ``field_map`` (role -> extraction field), else as is."""
+    return data if field_map is None else {role: data[f] for role, f in field_map.items() if f in data}
+
+
+def field_words(reason: str, field_map: dict[str, str] | None) -> str:
+    """An uncomputable reason naming the extraction fields instead of the roles they fill."""
+    if not field_map:
+        return reason
+    roles = re.compile(r"\b(" + "|".join(map(re.escape, field_map)) + r")\b")
+    return roles.sub(lambda m: field_map[m[1]], reason)
+
+
+def _pool_values(rows: list[dict], measure: str, options: dict, item_ids: list[str],
+                 field_map: dict[str, str] | None = None) -> tuple[dict, list[str], list[Effect], object]:
     if measure not in MEASURES:
         raise ValueError(f"unknown measure {measure!r}; expected one of {', '.join(MEASURES)}")
+    if field_map is not None and set(field_map) != set(MEASURES[measure]):
+        raise ValueError(f"the field map must name every role of {measure} ({', '.join(MEASURES[measure])}) and "
+                         f"only those, not {sorted(field_map)}")
     opts = PoolOptions(**options)
     studies, uncomputable, ids, effects = [], [], [], []
     for item_id, data in _studies(rows, list(item_ids)).items():
-        e = compute(measure, data)
+        e = compute(measure, _by_role(data, field_map))
         if isinstance(e, Uncomputable):
-            uncomputable.append({"item_id": item_id, "reason": e.reason})
+            uncomputable.append({"item_id": item_id, "reason": field_words(e.reason, field_map)})
             continue
         studies.append({"item_id": item_id, "yi": e.yi, "vi": e.vi})
         ids.append(item_id)
@@ -145,16 +164,18 @@ def _pool_values(rows: list[dict], measure: str, options: dict,
     return values, ids, effects, pooled
 
 
-def _pool(rows: list[dict], *, measure: str, options: dict, item_ids: list[str]) -> _Made:
-    values, _, effects, _ = _pool_values(rows, measure, options, item_ids)
+def _pool(rows: list[dict], *, measure: str, options: dict, item_ids: list[str],
+          field_map: dict[str, str] | None = None) -> _Made:
+    values, _, effects, _ = _pool_values(rows, measure, options, item_ids, field_map)
     if values["pooled"] is None:
         raise ValueError(f"pooling needs at least two computable studies; {len(effects)} of "
                          f"{len(effects) + len(values['uncomputable'])} are")
     return _Made(values)
 
 
-def _forest(rows: list[dict], *, measure: str, options: dict, item_ids: list[str], labels: dict) -> _Made:
-    values, ids, effects, pooled = _pool_values(rows, measure, options, item_ids)
+def _forest(rows: list[dict], *, measure: str, options: dict, item_ids: list[str], labels: dict,
+            field_map: dict[str, str] | None = None) -> _Made:
+    values, ids, effects, pooled = _pool_values(rows, measure, options, item_ids, field_map)
     if not effects:
         raise ValueError("a forest plot needs at least one computable study")
     svg = forest_svg([labels[i] for i in ids], effects, pooled, measure=measure)
@@ -192,8 +213,8 @@ def _map_table(rows: list[dict], *, fields: list, item_ids: list[str]) -> _Made:
 
 
 CODE_PATHS: dict[str, _Code] = {
-    POOL: _Code("stt", ("measure", "options", "item_ids"), _pool),
-    "rk.stats.plots:forest_svg": _Code("fig", ("measure", "options", "item_ids", "labels"), _forest),
+    POOL: _Code("stt", ("measure", "options", "item_ids"), _pool, ("field_map",)),
+    "rk.stats.plots:forest_svg": _Code("fig", ("measure", "options", "item_ids", "labels"), _forest, ("field_map",)),
     "rk.stats.plots:map_table": _Code("stt", ("fields", "item_ids"), _map),
     "rk.verify.stats:map_markdown": _Code("fig", ("fields", "item_ids"), _map_table),
 }
@@ -242,25 +263,33 @@ def _options(options: PoolOptions | dict | None) -> dict:
     return (options if isinstance(options, PoolOptions) else PoolOptions(**options)).model_dump()
 
 
+def _field_map(params: dict, field_map: dict[str, str] | None) -> dict:
+    return params if field_map is None else {**params, "field_map": dict(field_map)}
+
+
 def make_stats_artifact(ps: ProjectStore, rows: list[dict], measure: str, options: PoolOptions | dict | None = None,
                         *, item_ids: list[str], stage: str, attempt: int, actor: str,
-                        created_by_task: str | None = None) -> str:
+                        created_by_task: str | None = None, field_map: dict[str, str] | None = None) -> str:
     """Pool the group ``item_ids`` on ``measure`` with ``options`` from its extraction ``rows`` (each of a group
-    study; a group study without a usable row is uncomputable); returns the ``stt_`` id."""
-    return _make(ps, POOL, rows, {"measure": measure, "options": _options(options), "item_ids": list(item_ids)},
-                 stage=stage, attempt=attempt, actor=actor, created_by_task=created_by_task)
+    study; a group study without a usable row is uncomputable); returns the ``stt_`` id. ``field_map`` (each role of
+    the measure -> the extraction field holding it, an outcome's ``OutcomeSpec.fields``) is recorded so V-STATS
+    recomputes with it; without it the rows' fields are the role names."""
+    params = {"measure": measure, "options": _options(options), "item_ids": list(item_ids)}
+    return _make(ps, POOL, rows, _field_map(params, field_map), stage=stage, attempt=attempt, actor=actor,
+                 created_by_task=created_by_task)
 
 
 def make_forest_artifact(ps: ProjectStore, rows: list[dict], measure: str, options: PoolOptions | dict | None = None,
                          *, item_ids: list[str], labels: dict[str, str] | None = None, stage: str, attempt: int,
-                         actor: str, created_by_task: str | None = None) -> str:
-    """The forest plot of the same pool (``labels``: item id -> study label; the item id by default); returns the
-    ``fig_`` id."""
+                         actor: str, created_by_task: str | None = None,
+                         field_map: dict[str, str] | None = None) -> str:
+    """The forest plot of the same pool (``labels``: item id -> study label; the item id by default; ``field_map`` as
+    for ``make_stats_artifact``); returns the ``fig_`` id."""
     labels = labels or {}
     params = {"measure": measure, "options": _options(options), "item_ids": list(item_ids),
               "labels": {i: labels.get(i, i) for i in item_ids}}
-    return _make(ps, "rk.stats.plots:forest_svg", rows, params, stage=stage, attempt=attempt, actor=actor,
-                 created_by_task=created_by_task)
+    return _make(ps, "rk.stats.plots:forest_svg", rows, _field_map(params, field_map), stage=stage, attempt=attempt,
+                 actor=actor, created_by_task=created_by_task)
 
 
 def make_map_artifact(ps: ProjectStore, rows: list[dict], fields: list[str], *, item_ids: list[str], stage: str,
@@ -373,7 +402,7 @@ def _mismatches(ps: ProjectStore, a: dict) -> list[str]:
     if lacking:
         out.append(f"the artifact lacks its request values {lacking}")
         return out
-    params = {p: values[p] for p in code.params}
+    params = {p: values[p] for p in code.params} | {p: values[p] for p in code.optional if p in values}
     try:
         made = code.make(rows, **params)
     except (ValueError, ArithmeticError, RuntimeError, KeyError, TypeError) as e:
