@@ -92,3 +92,18 @@ def test_settings_models_section_saves_a_gateway_judge(page, omp_catalog):
     assert page.locator(".models .problems b").count() == 0
     assert load_settings().drivers["judge_2"] == "ollama:deepseek-v4.1-flash:cloud"
     assert page.errors == [] or all("422" in e for e in page.errors)
+
+
+@pytest.mark.browser
+def test_settings_models_section_marks_local_models(page, monkeypatch):
+    """The user asked for local models to be marked, not hidden: a local Ollama model's option says "local model";
+    an Ollama Cloud model's option does not."""
+    monkeypatch.setattr(catalog, "default_omp_runner", omp_ok)
+    monkeypatch.setattr(catalog, "default_ollama_runner", lambda s: ["gemma4:12b-it-qat", "gpt-oss:120b-cloud"])
+    page.goto(page.url.split("#")[0] + "#/settings")
+    page.locator('select[name="driver:writer"]').wait_for()
+    option = page.locator('select[name="driver:writer"] option[value="ollama:gemma4:12b-it-qat"]')
+    assert "local model" in option.text_content()
+    cloud = page.locator('select[name="driver:writer"] option[value="ollama:gpt-oss:120b-cloud"]')
+    assert "local model" not in cloud.text_content()
+    assert page.errors == []
