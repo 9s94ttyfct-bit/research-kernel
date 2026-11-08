@@ -209,21 +209,29 @@ def review_lines(ps, listing: dict[str, dict]) -> list[str]:
     return lines
 
 
-def claim_limitations(ps, claim_ids: list[str]) -> dict:
+def claim_limitations(ps, claim_ids: list[str], *, objection_ids: list[str] | None = None) -> dict:
     """The limitations input of ``claim_ids`` and their rewrites (followed through ``narrowed_from``): every withdrawn
     one with its reason, every rewrite with the claim it narrows and its status, and every conceded objection against
-    them, their evidence or an edge into them."""
+    them, their evidence or an edge into them; with ``objection_ids`` (a stage attempt's own objections, e.g. argue's,
+    which also has the soundness objections on warrants), the conceded ones of those instead, so an attempt lists its
+    own concessions, once."""
     svc = ArgumentService(ps)
     ids = list(dict.fromkeys(claim_ids))
     every = svc.list_claims(origin=("argument", "gaps", "synthesis"))
     while more := [c["id"] for c in every if c.get("narrowed_from") in ids and c["id"] not in ids]:
         ids += more
     claims = [svc.get_claim(c) for c in ids]
-    targets = [t for c in claims for t in (c["id"], *(e["id"] for e in c["evidence"]),
-                                           *(e["id"] for e in svc.list_edges(to_id=c["id"])))]
+    if objection_ids is None:
+        targets = [t for c in claims for t in (c["id"], *(e["id"] for e in c["evidence"]),
+                                               *(e["id"] for e in svc.list_edges(to_id=c["id"])))]
+        conceded = [o for t in targets for o in svc.list_objections(target_id=t, status="conceded")]
+    else:
+        order = {oid: i for i, oid in enumerate(dict.fromkeys(objection_ids))}
+        conceded = sorted((o for o in svc.list_objections(status="conceded") if o["id"] in order),
+                          key=lambda o: order[o["id"]])
     return {"withdrawn": [{"claim_id": c["id"], "text": c["text"], "reason": c.get("withdrawn_reason")}
                           for c in claims if c["status"] == "withdrawn"],
             "narrowed": [{"claim_id": c["id"], "narrowed_from": c["narrowed_from"], "text": c["text"],
                           "status": c["status"]} for c in claims if c.get("narrowed_from")],
             "conceded": [{"objection_id": o["id"], "target_id": o["target_id"], "text": o["text"], "note": o["note"]}
-                         for t in targets for o in svc.list_objections(target_id=t, status="conceded")]}
+                         for o in conceded]}

@@ -1347,7 +1347,7 @@ function argumentPanel(d) {
   const looseBlocks = loose.map(block);
   const other = d.objections.filter((o) => !shown.has(o.target_id));
   const lim = d.limitations || {};
-  const conceded = lim.conceded || [];
+  const conceded = lim.claims?.conceded || [];
   const name = (id) => claims.get(id)?.text || id;
   return [
     el("p", { class: "hint" }, `Argument of argue attempt ${d.attempt}`, d.end ? `; the rounds ended at ${words(d.end.reason)}` : "", d.gate?.passed ? "; it passed its gate." : "."),

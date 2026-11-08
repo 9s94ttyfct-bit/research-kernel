@@ -865,3 +865,25 @@ def test_argument_view_shows_the_claim_tree(page, served):
     assert page.locator(".claim-tree > li").count() == 1  # one root: the main claim
     assert list_checkpoints(served.ps, "open") == []
     assert page.errors == []
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("served", [{"paper_type": "critical_review"}], indirect=True)
+def test_argument_view_lists_each_conceded_objection_once(page, served):
+    k, ps, lib = served.env
+    _synthesize(served.env)
+    ex = argue_exec([draft(), responses("conceded"), responses()],
+                    [critique(objections=[_o("main", 2, "The cohort was small.")]), critique()])
+    w = ArgueWorker()
+    ctx = production_ctx(k, ps, lib, ex, stage="argue")
+    out = w.run(ctx)
+    answer_checkpoint(ps, out.checkpoint_id, {"claims": {}, "answers_rq": "yes"}, answered_by="human",
+                      actor="researcher")
+    out = w.on_answer(ctx, get_checkpoint(ps, out.checkpoint_id))
+    assert out.status == "done", out.reason
+    _ran(ps, "argue", out)
+    page.goto_route("argument")
+    page.locator(".claim-tree").wait_for()
+    page.get_by_role("heading", name="Conceded (in the limitations)").wait_for()
+    assert page.locator("h3 + ul > li", has_text="The cohort was small.").count() >= 1
+    assert page.errors == []

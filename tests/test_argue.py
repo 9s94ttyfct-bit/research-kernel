@@ -36,8 +36,10 @@ from rk.production.argue import (
     argue_limitations,
     argue_notes,
     argument_claims,
+    argument_objection_ids,
     main_claim,
 )
+from rk.production.argue import _load as argue_inputs
 from rk.production.extraction import usable_evidence
 from rk.production.models import SynthesisPlan
 from rk.production.synthesis import SynthesizeWorker, synthesis_claims
@@ -336,7 +338,7 @@ def test_objections_must_be_answered_for_gate(env):
     svc.withdraw_claim(reason, reason="the objection holds", actor="tester")
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
     lim = argue_limitations(ps, 1)
-    assert [o["objection_id"] for o in lim["conceded"]] == [first["id"]]
+    assert [o["objection_id"] for o in lim["claims"]["conceded"]] == [first["id"]]
 
 
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
@@ -460,7 +462,7 @@ def test_rewrite_is_rechecked_against_the_objections_it_conceded(env):
     assert by_text[REASON]["status"] == by_text[narrower]["status"] == "withdrawn"
     assert "conceded" in by_text[narrower]["withdrawn_reason"]
     assert all(o["status"] == "conceded" for o in _objections(ps))
-    assert len(argue_limitations(ps, 1)["conceded"]) == 2
+    assert len(argue_limitations(ps, 1)["claims"]["conceded"]) == 2
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
 
 
@@ -1175,6 +1177,54 @@ def test_conceded_objection_on_a_link_from_a_withdrawn_claim_does_not_fail_its_t
     assert [p.kind for p in claim_problems(ps, main)] == ["conceded"]
     svc.withdraw_claim(link["from_id"], reason="dropped", actor="tester")
     assert claim_problems(ps, main) == []
+
+
+def test_limitations_list_the_attempts_conceded_objections_once(env):
+    """T5: the conceded objections of an attempt's limitations are its own (a soundness objection included), listed
+    once (``claims.conceded``), never an earlier attempt's on the same finding."""
+    _, ps, _ = env
+    a, _ = _synthesize(env)
+    ex = _exec([draft(), responses("conceded", "conceded")],
+               [critique(objections=[{"target_id": a, "category": "problem", "priority": 2,
+                                      "text": "The trial was small."}], fail="true"), critique()])
+    w = ArgueWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    conceded = {o["id"] for o in _objections(ps) if o["status"] == "conceded"}
+    assert len(conceded) == 2
+    lim = argue_limitations(ps, 1)
+    assert "conceded" not in lim
+    assert sorted(o["objection_id"] for o in lim["claims"]["conceded"]) == sorted(conceded)
+    assert w.run(_ctx(env, _exec([draft()], [critique()]), 2)).status == "done"
+    assert argue_limitations(ps, 2)["claims"]["conceded"] == []  # attempt 1's concessions are not attempt 2's
+
+
+def test_objections_answered_by_an_in_scope_finding_are_carried_into_the_new_attempt(env):
+    """T5: an objection on a finding that another in-scope finding answers is carried into a new attempt as answered
+    (``answered_in_scope``: in its objections and the V-BALANCE input), a conflict objection with its counterpart, so
+    the contested findings get no second conflict objection to answer again."""
+    _, ps, _ = env
+    a, b, c = _synthesize(env, texts=(F1, F2, "Aspirin was studied in very old people."))
+    conflict = {"claim_a": a, "claim_b": b, "why": "One says randomised, the other cohort."}
+    by_c = answer_each(lambda inputs, o: {"objection_id": o["id"], "status": "responded", "claim_id": c})
+    ex1 = _exec([draft(), by_c],
+                [critique(objections=[{"target_id": a, "category": "problem", "priority": 2,
+                                       "text": "The trial was small."}], conflicts=[conflict]), critique()],
+                votes=_votes(["both_contested"], ["both_contested"]))
+    w = ArgueWorker()
+    assert w.run(_ctx(env, ex1)).status == "done"
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    answered = {o["id"] for o in _objections(ps) if o["status"] == "responded" and o["response_claim_id"] == c}
+    assert len(answered) == 3
+    conflicts1 = {oid: cp for n in argue_notes(ps, 1, kind="conflict_decision")
+                  for oid, cp in (n.get("conflict_objections") or {}).items()}
+    assert w.run(_ctx(env, _exec([draft()], [critique()]), 2)).status == "done"
+    (imp,) = argue_notes(ps, 2, kind="imported")
+    assert set(imp["answered_in_scope"]) == answered and imp["raised"] == [] and imp["copied"] == {}
+    assert imp["conflict_objections"] == conflicts1
+    assert answered <= set(argument_objection_ids(ps, 2))
+    view = ArgueWorker()._view(ps, 2, argue_inputs(ps))
+    assert answered <= {o["id"] for o in view["objections"]}
+    assert w.gate(ps, 2).ok, w.gate(ps, 2).failures
 
 
 def _claim_text(ps, cid: str) -> str:

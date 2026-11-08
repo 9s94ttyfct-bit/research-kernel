@@ -645,19 +645,16 @@ def _runner(ctx: StageContext):
 # ---- limitations ----
 def argue_limitations(ps: ProjectStore, attempt: int) -> dict:
     """The limitations input of the attempt: the withdrawn and narrowed claims of the argument and of the synthesis it
-    rests on (``claim_limitations``; the synthesize attempt it argued on: ``argued_synthesis_attempt``), every conceded
-    objection, the reason links dropped from the argument, the contested claims, and the budget when the rounds
-    stopped there."""
+    rests on and the attempt's conceded objections, listed once (``claim_limitations`` limited to the attempt's
+    objections; the synthesize attempt it argued on: ``argued_synthesis_attempt``), the reason links dropped from the
+    argument, the contested claims, and the budget when the rounds stopped there."""
     synth_attempt = argued_synthesis_attempt(ps, attempt)
     synth = [] if synth_attempt is None else synthesis_claims(ps, synth_attempt)
     svc = ArgumentService(ps)
-    objections = [_row(ps, "objections", o) for o in argument_objection_ids(ps, attempt)]
     scope = [*argument_claims(ps, attempt), *synth]
     end = argue_notes(ps, attempt, kind="end")
     return {
-        "claims": claim_limitations(ps, scope),
-        "conceded": [{"objection_id": o["id"], "target_id": o["target_id"], "text": o["text"], "note": o["note"]}
-                     for o in objections if o["status"] == "conceded"],
+        "claims": claim_limitations(ps, scope, objection_ids=argument_objection_ids(ps, attempt)),
         "dropped_links": [{"edge_id": n["edge_id"], "reason": n["reason"]}
                           for n in argue_notes(ps, attempt, kind="dropped_link")],
         "contested": [{"claim_id": c, "reason": svc.get_claim(c).get("contested_reason")} for c in scope
@@ -695,8 +692,12 @@ class ArgueWorker:
         in-scope findings (the claims and their evidence):
 
         * by id, those still open or responded by a claim that is not supported;
-        * as a copy (the store keeps a supported answer final), those responded by a claim outside this argument
-          (anything but an in-scope finding), one per target and text;
+        * by id, as answered (``answered_in_scope``), those responded by a supported in-scope finding that is neither
+          their target's claim nor their conflict's counterpart: the answer stands in this argument too, so they are in
+          its objections (the V-BALANCE input) and a contested finding's answered conflict objection is not raised
+          again;
+        * as a copy (the store keeps a supported answer final), those responded otherwise (by a claim outside this
+          argument, or by one that may not answer them), one per target and text;
         * for every contested finding without a carried conflict objection, a new conflict objection against the
           counterpart of its latest ``both_contested`` decision. A contested finding with no such decision recorded
           gets none (nobody could answer it): it is noted ``untraced`` and fails the gate.
@@ -717,12 +718,18 @@ class ArgueWorker:
         targets = {*live, *(e["id"] for c in live for e in svc.list_evidence(c))}
         objections = [o for o in (_row(ps, "objections", i) for i in earlier_ids) if o["target_id"] in targets]
         carried = [o["id"] for o in objections if _concedable(ps, o)]
-        keys = {(o["target_id"], _norm(o["text"])) for o in objections if o["id"] in carried}
+
+        def in_scope(o: dict) -> bool:
+            rc = o.get("response_claim_id")
+            own = _target_claims(ps, o["target_id"]) | ({conflict_of[o["id"]]} if o["id"] in conflict_of else set())
+            return o["status"] == "responded" and rc in s.synthesis and _supported(ps, rc) and rc not in own
+
+        answered = [o["id"] for o in objections if o["id"] not in carried and in_scope(o)]
+        keys = {(o["target_id"], _norm(o["text"])) for o in objections if o["id"] in (*carried, *answered)}
         outside: dict[tuple[str, str], dict] = {}
         for o in objections:
             key = (o["target_id"], _norm(o["text"]))
-            if (o["id"] not in conflict_of and key not in keys and o["status"] == "responded"
-                    and o.get("response_claim_id") not in s.synthesis):
+            if o["id"] not in conflict_of and key not in keys and o["status"] == "responded" and not in_scope(o):
                 outside[key] = o  # the latest of the same target and text
         copied = {}
         for o in outside.values():
@@ -730,7 +737,7 @@ class ArgueWorker:
                                                     priority=o.get("priority", 1), source_id=o.get("source_id")),
                                         actor=ctx.actor, actor_kind="kernel")
             copied[new_id_] = o["id"]
-        conflicts = {oid: conflict_of[oid] for oid in carried if oid in conflict_of}
+        conflicts = {oid: conflict_of[oid] for oid in (*carried, *answered) if oid in conflict_of}
         pairs = {(n["attempt"], n["index"]): n for n in earlier if n["kind"] == "conflict"}
         against: dict[str, tuple[str, str]] = {}  # finding -> (counterpart, why) of its latest both_contested decision
         for n in earlier:
@@ -750,8 +757,9 @@ class ArgueWorker:
                                     actor=ctx.actor, actor_kind="kernel")
             raised.append(oid)
             conflicts[oid] = other
-        _note(ps, attempt, "imported", actor=ctx.actor, objection_ids=[*carried, *copied, *raised], carried=carried,
-              copied=copied, raised=raised, conflict_objections=conflicts, untraced=untraced)
+        _note(ps, attempt, "imported", actor=ctx.actor, objection_ids=[*carried, *answered, *copied, *raised],
+              carried=carried, answered_in_scope=answered, copied=copied, raised=raised, conflict_objections=conflicts,
+              untraced=untraced)
 
     # ---- the budget ----
     def _used(self, ctx: StageContext) -> int:
