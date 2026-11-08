@@ -110,11 +110,15 @@ def test_render_draft_markers(ui, project, kernel):
     svc = ArgumentService(ps)
     cid = svc.add_claim(ClaimIn(text="Encapsulation slows degradation."), generator_vendor="human", actor="t")
     svc.link_evidence(EvidenceIn(claim_id=cid, note_ids=[note.note_id]), actor="t")
+    from rk.production.manuscript import write_draft
+
+    write_draft(ps, "intro", "# Intro\n\nOld.\n", stage="draft", attempt=1, round=0, by_task=None, actor="t")
+    write_draft(ps, "intro", f"Encapsulation helps [[clm:{cid}]]. Unknown [[clm:clm_01HXXXXXXXXXXXXXXXXXXXXXXX]]."
+                " We infer more [[inf]].\n\n<script>alert(1)</script>\n", stage="draft", attempt=1, round=0,
+                by_task=None, actor="t")
     drafts = ps.root / "artifacts" / "drafts"
-    drafts.mkdir(parents=True)
-    (drafts / "intro.v1.md").write_text("# Intro\n\nOld.\n")
-    (drafts / "intro.v2.md").write_text(f"Encapsulation helps [[clm:{cid}]]. Unknown [[clm:clm_01HXXXXXXXXXXXXXXXXXXXXXXX]]."
-                                        " We infer more [[inf]].\n\n<script>alert(1)</script>\n")
+    (drafts / "orphan.v1.md").write_text("Not a draft [[inf]].\n")  # a file without a drafts row is no draft
+    (drafts / "intro.v3.md").write_text("Not recorded either [[inf]].\n")
     assert ui.get("/ui/api/drafts", params={"project": "demo"}).json()["result"]["drafts"] == [
         {"section": "intro", "versions": [1, 2]}]
     d = ui.get("/ui/api/drafts/intro", params={"project": "demo"}).json()["result"]
@@ -124,6 +128,21 @@ def test_render_draft_markers(ui, project, kernel):
     assert m["clm_01HXXXXXXXXXXXXXXXXXXXXXXX"]["missing"] is True
     assert any(x["kind"] == "inf" for x in d["markers"])
     assert ui.get("/ui/api/drafts/intro", params={"project": "demo", "version": 1}).json()["result"]["version"] == 1
+    assert ui.get("/ui/api/drafts/orphan", params={"project": "demo"}).status_code == 404
+    assert ui.get("/ui/api/drafts/intro", params={"project": "demo", "version": 3}).status_code == 404
+    (drafts / "intro.v1.md").write_text("Tampered [[inf]].\n")
+    r = ui.get("/ui/api/drafts/intro", params={"project": "demo", "version": 1})
+    assert r.status_code == 409 and "sha256" in r.json()["detail"]
+
+
+def test_render_draft_skips_markers_in_code(ui, project):
+    """One grammar with the verifier: a marker inside a code span or a code block is text, not a hover card."""
+    from rk.ui.drafts import render_draft
+
+    ps, lib = project
+    d = render_draft(ps, lib, "Use `[[clm:clm_A]]` here [[inf]].\n\n```\n[[clm:clm_B]]\n```\n\n    [[clm:clm_C]]\n")
+    assert [x["kind"] for x in d["markers"]] == ["inf"]
+    assert "<code>[[clm:clm_A]]</code>" in d["html"] and "[[clm:clm_B]]" in d["html"] and "[[clm:clm_C]]" in d["html"]
 
 
 def test_render_draft_resolves_statistics_figures_and_missing_plans(ui, project):

@@ -51,6 +51,7 @@ from rk.orchestrator.state import (
     orchestrator_drives,
 )
 from rk.production.artifacts import ARTIFACT_MEDIA_TYPES, ARTIFACTS_DIR, artifact
+from rk.production.manuscript import drafted_sections
 from rk.production.models import PHASE_WORDS
 from rk.production.screening import KIND as DISAGREEMENTS
 from rk.production.screening import disagreement_view
@@ -58,7 +59,7 @@ from rk.production.store import frozen_protocol
 from rk.roles.policy import ROLES
 from rk.tools.registry import CallContext, PermissionDenied, ToolError
 from rk.ui.auth import COOKIE, UiAuth
-from rk.ui.drafts import list_drafts, read_draft, render_draft
+from rk.ui.drafts import read_draft, render_draft
 
 log = logging.getLogger(__name__)
 UI_ACTOR = "ui:user"
@@ -590,7 +591,7 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
     def drafts(request: Request) -> JSONResponse:
         ctx_dep(request)
         ps, _ = project(request.query_params.get("project", ""))
-        return ok({"drafts": list_drafts(ps)})
+        return ok({"drafts": drafted_sections(ps)})
 
     @r.get("/ui/api/drafts/{section}")
     def draft(section: str, request: Request, version: int | None = None) -> JSONResponse:
@@ -600,6 +601,8 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
             n, text = read_draft(ps, section, version)
         except KeyError as e:
             raise HTTPException(status_code=404, detail=f"no draft {e}") from e
+        except ValueError as e:  # the stored file is missing or changed on disk
+            raise HTTPException(status_code=409, detail=str(e)) from e
         return ok({"section": section, "version": n, "markdown": text, **render_draft(ps, lib, text)})
 
     # ---- settings and browser ---------------------------------------------------------------------------------

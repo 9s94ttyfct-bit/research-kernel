@@ -1,6 +1,7 @@
-"""Draft preview (spec §8.7): ``artifacts/drafts/<section>.v<N>.md`` rendered to HTML with every source marker
-(``[[kind:id]]``, spec §9.1 V-COVER; the grammar is ``rk.production.manuscript.MARKER``) turned into a hover card that
-names its target and links to the evidence.
+"""Draft preview (spec §8.7): the stored versions of each section (the ``drafts`` projection; a file without a row is
+no draft, and a file whose sha256 changed is refused) rendered to HTML with every source marker (``[[kind:id]]``,
+spec §9.1 V-COVER; ``rk.production.manuscript.source_markers``, the verifier's markers: none inside a code span or a
+code block) turned into a hover card that names its target and links to the evidence.
 
 Raw HTML in a draft is escaped (markdown-it with ``html=False``); markers are swapped for placeholders before rendering
 and for ``<span class="mk mk-<kind>">`` elements after it, so no draft text can inject markup."""
@@ -9,42 +10,27 @@ from __future__ import annotations
 
 import html as htmlmod
 import re
-from pathlib import Path
 
 from markdown_it import MarkdownIt
 
 from rk.argument import ArgumentService
 from rk.library.service import Library
 from rk.production.artifacts import artifact
-from rk.production.manuscript import MARKER
+from rk.production.manuscript import draft_text, latest_draft, source_markers
 from rk.production.store import design, protocol_row
 from rk.store.project import ProjectStore
 
-_DRAFT = re.compile(r"^(?P<section>[a-z0-9][a-z0-9_-]*)\.v(?P<n>\d+)\.md$")
 _LABELS = {"inf": "author's inference", "ck": "common knowledge"}
 
 
-def drafts_dir(ps: ProjectStore) -> Path:
-    return ps.root / "artifacts" / "drafts"
-
-
-def list_drafts(ps: ProjectStore) -> list[dict]:
-    found: dict[str, list[int]] = {}
-    d = drafts_dir(ps)
-    for p in sorted(d.glob("*.md")) if d.exists() else []:
-        if m := _DRAFT.match(p.name):
-            found.setdefault(m["section"], []).append(int(m["n"]))
-    return [{"section": s, "versions": sorted(v)} for s, v in sorted(found.items())]
-
-
 def read_draft(ps: ProjectStore, section: str, version: int | None = None) -> tuple[int, str]:
-    versions = next((d["versions"] for d in list_drafts(ps) if d["section"] == section), None)
-    if not versions:
+    """``(version, markdown)`` of a stored version (the latest by default). ``KeyError`` when there is none;
+    ``ValueError`` when its file is missing or no longer has its recorded sha256."""
+    if version is not None:
+        return version, draft_text(ps, section, version)
+    if (latest := latest_draft(ps, section)) is None:
         raise KeyError(section)
-    n = version if version is not None else versions[-1]
-    if n not in versions:
-        raise KeyError(f"{section} v{n}")
-    return n, (drafts_dir(ps) / f"{section}.v{n}.md").read_text()
+    return latest
 
 
 def _resolve(ps: ProjectStore, lib: Library, kind: str, target: str | None) -> dict:
@@ -88,12 +74,12 @@ def _resolve(ps: ProjectStore, lib: Library, kind: str, target: str | None) -> d
 
 def render_draft(ps: ProjectStore, lib: Library, markdown: str) -> dict:
     markers: list[dict] = []
-
-    def stash(m: re.Match) -> str:
-        markers.append(_resolve(ps, lib, m[1], m[2]))
-        return f"RKMARKER{len(markers) - 1}X"
-
-    body = MarkdownIt("commonmark", {"html": False}).render(MARKER.sub(stash, markdown))
+    pieces, last = [], 0
+    for m in source_markers(markdown):
+        markers.append(_resolve(ps, lib, m.kind, m.target))
+        pieces += [markdown[last:m.span[0]], f"RKMARKER{len(markers) - 1}X"]
+        last = m.span[1]
+    body = MarkdownIt("commonmark", {"html": False}).render("".join(pieces) + markdown[last:])
 
     def span(m: re.Match) -> str:
         i = int(m[1])
