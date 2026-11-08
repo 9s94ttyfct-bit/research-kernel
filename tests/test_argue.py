@@ -15,12 +15,15 @@ from rk.discovery.executor import BudgetExceeded, RateCapped
 from rk.orchestrator.engine import default_workers
 from rk.orchestrator.graph import BACK_EDGES
 from rk.orchestrator.state import (
+    current_stage,
+    edge_rows,
     latest_attempt,
     record_attempt,
     record_passed,
     record_ran,
     record_run_session,
     record_run_task,
+    stage_row,
     start_run,
     tasks_used,
 )
@@ -977,3 +980,35 @@ def test_limitations_of_an_older_attempt_use_the_synthesis_it_argued_on(env):
     svc.withdraw_claim(first[1], reason="the argued synthesis", actor="tester")
     withdrawn = {c["claim_id"] for c in argue_limitations(ps, 1)["claims"]["withdrawn"]}
     assert first[1] in withdrawn and later not in withdrawn
+
+
+def test_all_findings_withdrawn_in_p1_goes_back_to_synthesize(env):
+    """I4: a P1 degrade that withdraws every finding of synthesize's passed attempt; the next run's argue attempt
+    takes argue->synthesize (counted against its limit) with a reason naming the withdrawals, instead of failing."""
+    k, ps, lib = env
+    a, b = _synthesize(env)
+
+    def on(i: int):
+        def o(inputs):
+            return {"target_id": role(inputs, "synthesis")[i], "category": "problem", "priority": 1,
+                    "text": f"Finding {i} misreads its study."}
+        return o
+
+    ex = _exec([draft(), responses(), responses()], [critique(objections=[on(0), on(1)]), critique()],
+               narrowed=[{"text": F1, "kind": "fact"}, {"text": F2, "kind": "fact"}])  # the same text: withdrawn
+    w = ArgueWorker()
+    record_attempt(ps, "argue", 1, run_id=None, guidance="", requested=None, actor="tester")
+    ctx = _ctx(env, ex)
+    assert w.run(ctx).status == "done"
+    record_ran(ps, "argue", 1, "done", "", actor="tester")
+    g = w.gate(ps, 1)
+    assert not g.ok
+    w.degrade(ctx, g.failures)
+    svc = ArgumentService(ps)
+    assert all(svc.get_claim(c)["status"] == "withdrawn" for c in (a, b))
+    o, run_id = stage_run(k, ps, lib, "argue", _exec())
+    assert o.step("demo", run_id, actor="tester") == "running"
+    assert current_stage(ps) == "synthesize" and edge_rows(ps)["argue->synthesize"]["count"] == 1
+    guidance = stage_row(ps, "synthesize")["guidance"]
+    assert "every finding of synthesize attempt 1 was withdrawn in argue" in guidance
+    assert a in guidance and b in guidance

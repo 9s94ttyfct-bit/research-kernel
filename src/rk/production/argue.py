@@ -50,7 +50,11 @@ included; one still holding withdraws the rewrite) and tests the warrants it too
 failed unanswered or was never tested is dropped from the argument (its objections conceded), a contested claim
 without an answered conflict objection is withdrawn, and every objection still unanswered is conceded. The limitations
 input (``argue_limitations``) lists the withdrawn and narrowed claims, the conceded objections and the dropped
-links."""
+links.
+
+When synthesize passed but none of its findings is supported any more (the degrade or your review withdrew them all),
+an attempt has nothing to argue on: it goes back to synthesize (``argue->synthesize``, under its limit), with the
+withdrawals as guidance."""
 
 from __future__ import annotations
 
@@ -315,6 +319,26 @@ def _load(ps: ProjectStore) -> _Inputs | str:
              "status": h.get("status")} for h in hypotheses(ps, rq["id"])]
     return _Inputs(intake.production_mode, RQBody.model_validate(rq["body"]).three_step.sentence(), rq["body"], hyps,
                    row["passed_attempt"], claims, frozenset(notes))
+
+
+def _no_finding_left(ps: ProjectStore) -> str | None:
+    """When synthesize passed but none of its findings is supported now (a P1 degrade or your review withdrew them):
+    why, naming each finding and what became of it; else ``None``."""
+    row = stage_row(ps, "synthesize")
+    if row is None or not row["passed_attempt"]:
+        return None
+    svc = ArgumentService(ps)
+    claims = [svc.get_claim(c) for c in synthesis_claims(ps, row["passed_attempt"])]
+    if any(c["status"] == "supported" for c in claims):
+        return None
+    if not claims:
+        return f"synthesize attempt {row['passed_attempt']} stored no finding to argue on"
+    gone = "; ".join(f"{c['id']} " + (f"withdrawn ({c.get('withdrawn_reason') or 'no reason recorded'})"
+                                      if c["status"] == "withdrawn" else c["status"]) for c in claims)
+    n = row["passed_attempt"]
+    what = (f"every finding of synthesize attempt {n} was withdrawn in argue"
+            if all(c["status"] == "withdrawn" for c in claims) else f"no finding of synthesize attempt {n} is supported now")
+    return f"{what}: {gone}"
 
 
 # ---- the stored argument ----
@@ -615,6 +639,8 @@ class ArgueWorker:
     def run(self, ctx: StageContext) -> StageOutcome:
         s = _load(ctx.ps)
         if isinstance(s, str):
+            if (why := _no_finding_left(ctx.ps)) is not None:  # nothing to argue on: synthesize again (I4)
+                return StageOutcome("back_edge", to="synthesize", reason=why)
             return StageOutcome("failed", reason=s)
         if sent := argue_notes(ctx.ps, ctx.attempt, kind="back_edge"):  # resumed after the back-edge was noted
             return StageOutcome("back_edge", to=sent[-1]["to"], reason=sent[-1]["reason"])

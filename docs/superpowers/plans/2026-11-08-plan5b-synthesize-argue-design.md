@@ -285,7 +285,7 @@ P2 asks you at the weak spots; P1 votes and records "not reviewed by a human".
   - every `contested` claim has an objection and a response (the structural V-BALANCE input for 5c);
   - the main claim is supported and answers the frozen RQ: an Arguer self-check field `answers_rq: {ok, reason}` plus a judge vote in P1, or the human in P2 via the final `uncertain_support` path; otherwise the `argue → question` back-edge, with the reason.
 - **Degrade (P1):** `narrow_or_withdraw` for every uncertain claim, then a re-check of the gate. The limitations input lists the withdrawn and narrowed claims and the conceded objections.
-- **`argue → synthesize`** is used when the Arguer reports that the synthesis lacks a finding the main claim needs (`needs_synthesis: str`), passed as guidance.
+- **`argue → synthesize`** is used when the Arguer reports that the synthesis lacks a finding the main claim needs (`needs_synthesis: str`), passed as guidance, and (fix wave 2, I4) when synthesize passed but none of its findings is supported any more (a P1 degrade or the P2 review withdrew them all): the guidance names the withdrawals.
 
 - [ ] **Step 1: Failing tests:**
   - `test_argument_round_stores_claims_edges_and_verifies`;
