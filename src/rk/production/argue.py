@@ -570,10 +570,18 @@ class ArgueWorker:
         return _Answers(ps, attempt, s)
 
     def _import(self, ctx: StageContext, s: _Inputs) -> None:
-        """Contests and objections belong to an attempt. A new attempt takes over, as its own, the objections earlier
-        attempts left unanswered on the in-scope findings (open, or responded by a claim that is not supported), and
-        raises again the conflict objection of every contested finding that has no unanswered one: an earlier
-        attempt's answer, outside this attempt's argument, does not count. Noted once (``imported``)."""
+        """Contests and objections belong to an attempt; an earlier attempt's answer, outside this attempt's argument,
+        does not count. A new attempt therefore takes over, as its own, the objections earlier attempts raised on the
+        in-scope findings (the claims and their evidence):
+
+        * by id, those still open or responded by a claim that is not supported;
+        * as a copy (the store keeps a supported answer final), those responded by a claim outside this argument
+          (anything but an in-scope finding), one per target and text;
+        * for every contested finding without a carried conflict objection, a new conflict objection against the
+          counterpart of its latest ``both_contested`` decision. A contested finding with no such decision recorded
+          gets none (nobody could answer it): it is noted ``untraced`` and fails the gate.
+
+        Noted once (``imported``)."""
         ps, attempt = ctx.ps, ctx.attempt
         if argue_notes(ps, attempt, kind="imported"):
             return
@@ -587,27 +595,43 @@ class ArgueWorker:
                        for oid, cp in (n.get("conflict_objections") or {}).items()}
         live = [c for c in s.synthesis if not _withdrawn(ps, c)]
         targets = {*live, *(e["id"] for c in live for e in svc.list_evidence(c))}
-        carried = [oid for oid in earlier_ids if (o := _row(ps, "objections", oid))["target_id"] in targets
-                   and _concedable(ps, o)]
+        objections = [o for o in (_row(ps, "objections", i) for i in earlier_ids) if o["target_id"] in targets]
+        carried = [o["id"] for o in objections if _concedable(ps, o)]
+        keys = {(o["target_id"], _norm(o["text"])) for o in objections if o["id"] in carried}
+        outside: dict[tuple[str, str], dict] = {}
+        for o in objections:
+            key = (o["target_id"], _norm(o["text"]))
+            if (o["id"] not in conflict_of and key not in keys and o["status"] == "responded"
+                    and o.get("response_claim_id") not in s.synthesis):
+                outside[key] = o  # the latest of the same target and text
+        copied = {}
+        for o in outside.values():
+            new_id_ = svc.add_objection(ObjectionIn(target_id=o["target_id"], category=o["category"], text=o["text"],
+                                                    priority=o.get("priority", 1), source_id=o.get("source_id")),
+                                        actor=ctx.actor, actor_kind="kernel")
+            copied[new_id_] = o["id"]
         conflicts = {oid: conflict_of[oid] for oid in carried if oid in conflict_of}
-        why = {}
+        pairs = {(n["attempt"], n["index"]): n for n in earlier if n["kind"] == "conflict"}
+        against: dict[str, tuple[str, str]] = {}  # finding -> (counterpart, why) of its latest both_contested decision
         for n in earlier:
-            if n["kind"] == "conflict":
-                why[n["claim_a"]], why[n["claim_b"]] = (n["claim_b"], n["why"]), (n["claim_a"], n["why"])
-        new = []
+            if n["kind"] == "conflict_decision" and n["decision"] == BOTH and (p := pairs.get((n["attempt"],
+                                                                                               n["index"]))):
+                against[p["claim_a"]], against[p["claim_b"]] = (p["claim_b"], p["why"]), (p["claim_a"], p["why"])
+        raised, untraced = [], []
         for c in live:
             if not _claim(ps, c).get("contested") or any(_row(ps, "objections", o)["target_id"] == c for o in conflicts):
                 continue
-            other, reason = why.get(c, (None, _claim(ps, c).get("contested_reason") or "it is contested"))
-            oid = svc.add_objection(ObjectionIn(
-                target_id=c, category="counterexample", priority=2,
-                text=(f"The supported finding {other} contradicts it: {reason}" if other
-                      else f"It is contested: {reason}")), actor=ctx.actor, actor_kind="kernel")
-            new.append(oid)
-            if other:
-                conflicts[oid] = other
-        _note(ps, attempt, "imported", actor=ctx.actor, objection_ids=[*carried, *new], carried=carried, raised=new,
-              conflict_objections=conflicts)
+            if c not in against:
+                untraced.append(c)
+                continue
+            other, reason = against[c]
+            oid = svc.add_objection(ObjectionIn(target_id=c, category="counterexample", priority=2,
+                                                text=f"The supported finding {other} contradicts it: {reason}"),
+                                    actor=ctx.actor, actor_kind="kernel")
+            raised.append(oid)
+            conflicts[oid] = other
+        _note(ps, attempt, "imported", actor=ctx.actor, objection_ids=[*carried, *copied, *raised], carried=carried,
+              copied=copied, raised=raised, conflict_objections=conflicts, untraced=untraced)
 
     # ---- the budget ----
     def _used(self, ctx: StageContext) -> int:
@@ -1271,21 +1295,26 @@ class ArgueWorker:
                 f"ended at {end[-1]['reason'] if end else 'no end'}")
 
     def _hopeless(self, ps: ProjectStore, attempt: int, s: _Inputs) -> list[str]:
-        """The gate failures no answer to the final P2 review can mend (it can only support or withdraw the claims
-        that are not supported, and say whether the main claim answers the RQ)."""
+        """The gate failures no answer to the final P2 review can mend. The review supports or withdraws each claim
+        that is not supported and says whether the main claim answers the RQ, so a failure is mendable when
+        supporting a listed claim answers it, or when it concerns a listed claim other than the main claim (withdrawn,
+        its objections are conceded with it and its links leave the argument)."""
         listed = {c for c in argument_claims(ps, attempt) if _claim(ps, c)["status"] not in ("supported", "withdrawn")}
+        main = main_claim(ps, attempt)
+        withdrawable = listed - {main}
         answers = self._answers(ps, attempt, s)
         out = []
-        main = main_claim(ps, attempt)
         if main is None or _withdrawn(ps, main):
             out.append("the main claim was withdrawn")
         for c in dict.fromkeys([*argument_claims(ps, attempt), *s.synthesis]):
-            out += [f"{c}: {p.line}" for p in claim_problems(ps, c) if p.kind not in ("status", "objection")]
+            if c not in withdrawable:
+                out += [f"{c}: {p.line}" for p in claim_problems(ps, c) if p.kind not in ("status", "objection")]
         for oid in _objection_ids(ps, attempt):
             o = _row(ps, "objections", oid)
-            if (why := answers.why(o)) is not None and not self._mendable(answers, o, listed):
+            if ((why := answers.why(o)) is not None and not self._mendable(answers, o, listed)
+                    and not _target_claims(ps, o["target_id"]) & withdrawable):
                 out.append(f"objection {oid} {why}")
-        out += self._warrant_failures(ps, attempt, s, mendable=listed)
+        out += self._warrant_failures(ps, attempt, s, mendable=listed, withdrawable=withdrawable)
         out += self._contest_failures(ps, attempt, s, mendable=listed)
         crit = argue_notes(ps, attempt, kind="critique")
         if not crit or crit[-1].get("failed"):
@@ -1419,14 +1448,16 @@ class ArgueWorker:
         return False
 
     def _warrant_failures(self, ps: ProjectStore, attempt: int, s: _Inputs,
-                          mendable: frozenset[str] | set[str] = frozenset()) -> list[str]:
+                          mendable: frozenset[str] | set[str] = frozenset(),
+                          withdrawable: frozenset[str] | set[str] = frozenset()) -> list[str]:
         """Every warrant of a link still in the argument has its tests, and each failed test is answered by a
-        supported response claim (or the link was dropped)."""
+        supported response claim (or the link was dropped). Links with a ``withdrawable`` end are skipped."""
         dropped = _dropped(ps, attempt)
         out = []
         for eid in _edges(ps, attempt):
             e = _row(ps, "edges", eid)
-            if e["type"] != "warrant_of" or e["to_id"] in dropped or _link_gone(ps, e["to_id"]):
+            if e["type"] != "warrant_of" or e["to_id"] in dropped or _link_gone(ps, e["to_id"]) \
+                    or _target_claims(ps, e["to_id"]) & set(withdrawable):
                 continue
             tests = e.get("warrant_tests")
             if not tests:
@@ -1441,12 +1472,22 @@ class ArgueWorker:
     def _contest_failures(self, ps: ProjectStore, attempt: int, s: _Inputs,
                           mendable: frozenset[str] | set[str] = frozenset()) -> list[str]:
         """Every contested claim of the argument has one of the attempt's conflict objections answered by a supported
-        response claim of the argument (the structural V-BALANCE input)."""
+        response claim of the argument (the structural V-BALANCE input). A contested finding with no recorded
+        ``both_contested`` decision (``imported`` ``untraced``) has nothing to answer and fails by name."""
         conflicts = set(_counterparts(ps, attempt))
-        return [f"the contested claim {cid} has no conflict objection of this attempt answered by a supported response "
-                f"claim" for cid in self._roles(ps, attempt, s)
-                if _claim(ps, cid).get("contested")
-                and not self._answered_on(ps, attempt, s, cid, set(mendable), only=conflicts)]
+        untraced = {c for n in argue_notes(ps, attempt, kind="imported") for c in n.get("untraced") or []}
+        out = []
+        for cid in self._roles(ps, attempt, s):
+            c = _claim(ps, cid)
+            if not c.get("contested"):
+                continue
+            if cid in untraced:
+                out.append(f"the contested claim {cid} has no recorded conflict to answer (no both_contested decision; "
+                           f"contested: {c.get('contested_reason') or 'no reason recorded'})")
+            elif not self._answered_on(ps, attempt, s, cid, set(mendable), only=conflicts):
+                out.append(f"the contested claim {cid} has no conflict objection of this attempt answered by a "
+                           f"supported response claim")
+        return out
 
     # ---- degrade ----
     def _targets_of(self, ps: ProjectStore, cid: str) -> list[str]:

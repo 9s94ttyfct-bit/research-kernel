@@ -646,11 +646,80 @@ def test_contests_and_objections_are_scoped_to_the_attempt(env):
     (imp,) = argue_notes(ps, 2, kind="imported")
     assert small["id"] in imp["objection_ids"]
     assert w.gate(ps, 2).ok, w.gate(ps, 2).failures
-    # without answers in attempt 3 the earlier answers do not count
-    ex3 = _exec([draft(), responses()], [critique()])
+    # attempt 3: the objections attempt 2 answered with its own claims come back to answer (one each), and without
+    # answers the earlier answers do not count
+    seen3 = {}
+
+    def first3(inputs):
+        seen3["open"] = sorted((o["target_id"], o["category"], o["text"]) for o in inputs["open_objections"])
+        return draft()(inputs)
+
+    ex3 = _exec([first3, responses()], [critique()])
     assert w.run(_ctx(env, ex3, 3)).status == "done"
+    texts = [t for _, _, t in seen3["open"]]
+    assert texts.count("The trial was small.") == 1 and len(seen3["open"]) == 3, seen3["open"]
     g = w.gate(ps, 3)
     assert any(f"contested claim {a}" in f for f in g.failures), g.failures
+    small3 = {o["id"] for o in _objections(ps) if o["text"] == "The trial was small." and o["status"] == "open"}
+    assert any(any(oid in f for oid in small3) for f in g.failures), g.failures
+
+
+def test_imported_conflicts_take_the_latest_both_contested_counterpart(env):
+    _, ps, _ = env
+    a, b, c = _synthesize(env, texts=(F1, F2, "Aspirin was studied in very old people."))
+    conflict_ab = {"claim_a": a, "claim_b": b, "why": "First reason."}
+    conflict_bc = {"claim_a": b, "claim_b": c, "why": "Second reason."}
+    # attempt 1: a vs b ends both_contested (the votes split); later b vs c is voted a_holds (b holds, c withdrawn),
+    # so b's latest conflict is with c but its latest both_contested decision is with a
+    ex1 = _exec([draft(), responses(RESPONSE, RESPONSE)],
+                [critique(conflicts=[conflict_ab]), critique(conflicts=[conflict_bc])],
+                votes=_votes(["a_holds", "a_holds"], ["b_holds", "a_holds"]))
+    w = ArgueWorker()
+    out = w.run(_ctx(env, ex1))
+    assert out.status == "done", out.reason
+    assert ArgumentService(ps).get_claim(c)["status"] == "withdrawn"
+    ex2 = _exec([draft(), responses()], [critique()])
+    assert w.run(_ctx(env, ex2, 2)).status == "done"
+    (imp,) = argue_notes(ps, 2, kind="imported")
+    svc = ArgumentService(ps)
+    by_target = {}
+    for oid in imp["raised"]:
+        (o,) = [x for x in svc.list_objections() if x["id"] == oid]
+        by_target[o["target_id"]] = imp["conflict_objections"][oid]
+    assert by_target == {a: b, b: a}
+
+
+def test_a_contest_without_a_recorded_conflict_fails_the_gate(env):
+    _, ps, _ = env
+    a, _ = _synthesize(env)
+    ArgumentService(ps).set_contested(a, reason="marked by hand", actor="tester")
+    ex = _exec([draft(), responses()], [critique()])
+    w = ArgueWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    assert not ArgumentService(ps).list_objections(target_id=a)  # no objection nobody could answer
+    g = w.gate(ps, 1)
+    assert any(a in f and "no recorded conflict" in f for f in g.failures), g.failures
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_p2_final_review_opens_when_withdrawing_a_listed_claim_mends_the_gate(env):
+    _, ps, _ = env
+    _synthesize(env)
+    sure = "Older people certainly were enrolled in a randomised trial."
+
+    def reasons(inputs):
+        return [{"ref": "r1", "claim": claim(inputs, sure, "rct"), "supports": "main", "warrant": WARRANT}]
+
+    ex = _exec([draft(reasons=reasons), responses(), responses()],
+               [critique(objections=[_o("reason", 1, "Wrong population.")]), critique()], uncertain=("certainly",))
+    w = ArgueWorker()
+    out = w.run(_ctx(env, ex))
+    assert out.status == "waiting_human", out.reason
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    (reason,) = cp["options"]["claim_ids"]
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"claims": {reason: "withdraw"}, "answers_rq": "yes"}))
+    assert out.status == "done", out.reason
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
 
 
 def test_conceding_a_failed_warrant_drops_its_link(env):
