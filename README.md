@@ -115,30 +115,6 @@ degrades.
   12 h starts a new session. A source that fails for a while (HTTP 429/5xx) makes the run back off and try again;
   one work whose lookup fails is reported and skipped. `uv run rk run resume` on a failed or cancelled run starts a
   new run (and says so), which goes on from the stages that already passed.
-- **After question.** From protocol on, a run drives the later stages of the paper type in D1 and D2 projects alike
-  (`uv run rk run <project> --until <stage>`). A D2 run may go from intake straight past question (it freezes the RQ
-  on the way); a run that starts after question passed needs a frozen RQ (`rq_not_frozen`). Once question passed, or
-  once production began (even if protocol→question reopens question), the Lead only reads and guided stage calls are
-  refused. A stage runs only when it has a worker; the others show as "not yet available" and a run cannot end at or
-  pass them (`stage_unavailable`). The back-edges protocol→question, search_screen→protocol and
-  read_extract→search_screen follow the same limit of two uses per project.
-- **Screening (search_screen).** The frozen search strategy runs (above the record cap the stage goes back to
-  protocol; so does a systematic or scoping review whose search a source could not finish, while a critical review
-  or proposal goes on and records it as a limitation), records in other languages are excluded ("language"), and
-  screener_a (and screener_b where dual screening applies: systematic reviews, the scoping review's 10% sample)
-  decide on titles and abstracts in batches of 25. Dual screening needs two screeners of different vendors: a run
-  that would reach search_screen without them is refused at start (`screeners_unusable`). Disagreements go to you in
-  `screening_disagreements` checkpoints of up to 25 records (P2, `{"decisions": {record_id: "include"|"exclude"}}`)
-  or to the two-vendor vote (P1, which excludes when the judges disagree). An attempt interrupted by an hourly cap is
-  resumed: the next attempt reuses the decisions already made under the same frozen protocol.
-- **Reading and extraction (read_extract).** For every study included at full text the retraction status is
-  checked (V-RETRACT; a retracted or withdrawn study is flagged, not extracted, and listed for the limitations), then
-  the reader extracts each protocol field with a quote the kernel verifies (V-QUOTE, against the full text, or the
-  abstract for a study with no full text: those values carry `sufficient=low`). A value whose quote is not verbatim
-  is kept as a problem, never as evidence; a field the study does not report is `not_reported` with a quote of the
-  section searched. The gate names each study and field without a verified value; at the edge limit P2 asks
-  (`stage_blocked`) and P1 marks those values missing as a limitation. An attempt interrupted by an hourly cap goes
-  on from the studies already read.
 
 ```bash
 uv run rk project intake --audience "…" --paper-type critical_review --mode d2 --production p2 --topics-n 6
@@ -178,6 +154,76 @@ The checkpoints you answer (only a human can, in the Workbench Checkpoints page 
   GapMiner and Ideator generate; `judge`, `judge_2` and `judge_3` (V-SUPPORT, V-NOVELTY, the already-done check) and
   `triage` check, from other vendors.
 - A recorded run: `docs/demo/plan4-discovery.md`.
+
+## Evidence pipeline (protocol, screening, extraction)
+
+After the research question is frozen, three stages turn it into checked evidence: `protocol` (the review protocol,
+frozen), `search_screen` (search, deduplication, title/abstract and full-text screening, PRISMA) and `read_extract`
+(reading and extraction with verified quotes). The paper type of the intake decides how strict each one is.
+
+- **Runs.** From protocol on, a run drives the later stages of the paper type in D1 and D2 projects alike
+  (`uv run rk run <project> --until protocol|search_screen|read_extract`). A D2 run may go from intake straight past
+  question (it freezes the RQ on the way); a run that starts after question passed needs a frozen RQ
+  (`rq_not_frozen`). Once question passed, or once production began (even if protocol→question reopens question), the
+  Lead only reads and guided stage calls are refused. A stage runs only when it has a worker; the others show as "not
+  yet available" and a run cannot end at or pass them (`stage_unavailable`). The back-edges protocol→question,
+  search_screen→protocol and read_extract→search_screen follow the same limit of two uses per project.
+- **Protocol.** The Ideator drafts the eligibility criteria, the extraction schema (text, number or category fields),
+  the synthesis plan and, for a systematic review, the PRISMA-P items; the Scout drafts the search strategy (at least
+  3 queries on at least 2 sources, years, languages). Every query runs on every source of the strategy as written, so
+  a field tag one source understands (PubMed `[tiab]`, Europe PMC `TITLE_ABS:`) breaks the query on the other; Europe
+  PMC and OpenAlex also match full texts, so their hit counts are much higher than PubMed's. The kernel checks the
+  draft (its free texts may not claim novelty, the same rule as for topics and RQs) and sizes it: the record-cap probe
+  counts each query on each source that reports counts (not PubMed). The probe is advisory and overestimates (no date
+  range, duplicates count again). In P2 you approve, revise or go back in a `protocol_approval` checkpoint (a revise,
+  like a failed check, reruns the stage and uses one of its two reruns); in P1 a two-vendor vote
+  approves or asks for a revision. Approving freezes the protocol (`frozen_hash`, the sha256 of its canonical JSON);
+  only you set the record cap (default 3000), with the approval. A frozen protocol is never edited: a later frozen
+  version records a deviation from it. For systematic and scoping reviews the freeze counts as preregistration
+  (G-PREREG); critical reviews and proposals freeze for traceability and need only the question, search and
+  selection principles.
+- **Screening (search_screen).** The frozen search strategy runs and the records are deduplicated (above the record
+  cap the stage goes back to protocol; so does a systematic or scoping review whose search a source could not
+  finish, while a critical review or proposal goes on and records it as a limitation). Records in other languages are
+  excluded ("language"). screener_a, and screener_b where dual screening applies (systematic reviews, the scoping
+  review's 10% sample), decide on titles and abstracts in batches of 25; a decision without the reason it needs is
+  asked again. Dual screening needs two screeners of
+  different vendors: a run that would reach search_screen without them is refused at start (`screeners_unusable`).
+  Disagreements go to you in `screening_disagreements` checkpoints of up to 25 records (P2) or to the two-vendor vote
+  (P1, which excludes when the judges disagree). The full text of every include is then sought (open-access
+  channels, then the browser); a record without one is assessed on its abstract, and the same screeners decide again
+  on the full text's abstract, methods and results. V-PRISMA checks that the flow adds up and that every exclusion
+  has a reason (systematic and scoping reviews); a critical review or proposal keeps the selection reason of every
+  record instead. An attempt interrupted by an hourly cap is resumed: the next attempt reuses the decisions already
+  made under the same frozen protocol.
+- **Reading and extraction (read_extract).** For every study included at full text the retraction status is
+  checked (V-RETRACT; a retracted or withdrawn study is flagged, not extracted, and listed for the limitations), then
+  the reader extracts each protocol field with a quote the kernel verifies (V-QUOTE, against the full text, or the
+  abstract for a study with no full text: those values carry `sufficient=low`). A value whose quote is not verbatim
+  is kept as a problem, never as evidence; a field the study does not report is `not_reported` with a quote of the
+  section searched. The gate names each study and field without a verified value; at the edge limit P2 asks
+  (`stage_blocked`) and P1 marks those values missing as a limitation. An attempt interrupted by an hourly cap goes
+  on from the studies already read.
+
+```bash
+uv run rk run perovskite --until read_extract   # or --until protocol / search_screen
+uv run rk protocol show [ID]                    # the protocol in force (else the latest draft), probe, versions, deviations
+uv run rk prisma [--attempt N]                  # PRISMA flow + V-PRISMA + notes; selection reasons for critical reviews
+uv run rk screening list [--phase title_abstract|full_text] [--final]   # each screener's decisions, or the finals
+uv run rk extraction show [ITEM]                # usable values with their quote notes; set-aside rows with their problem
+```
+
+| Checkpoint | When | Answers |
+|---|---|---|
+| `protocol_approval` | a protocol draft passed its checks (P2) | `{"decision": "approve"}` (optional `"record_cap": N`) freezes it; `revise` with a `comment` reruns the stage; `back` (optional `comment`) returns to question |
+| `screening_disagreements` | the screeners disagree on up to 25 records, in either phase (P2) | `{"decisions": {record_id: "include"\|"exclude"}}`, one per record of the checkpoint |
+
+In the Workbench the protocol and disagreement checkpoints have their own cards (every protocol section; each record
+with its abstract or full-text excerpt and both screeners' reasons). The Progress page shows the PRISMA flow with its
+V-PRISMA result and notes (or the selection reasons), and each library item shows its extraction: the values with links
+to their quote notes, and apart from them the rows that are not evidence.
+
+A recorded run: `docs/demo/plan5a-evidence.md`.
 
 ## Drivers and roles
 
