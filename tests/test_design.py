@@ -15,6 +15,7 @@ from rk.checkpoints import (
     get_checkpoint,
     list_checkpoints,
 )
+from rk.discovery.executor import RateCapped
 from rk.discovery.store import (
     add_hypothesis,
     frozen_rq,
@@ -36,7 +37,7 @@ from rk.production.design import (
     design_notes,
     feasibility_claims,
 )
-from rk.production.models import DesignIn
+from rk.production.models import DesignBody, DesignIn
 from rk.production.store import design, set_design
 from rk.roles.prompts import build_system_prompt
 from tests.production_fakes import make_frozen_project, production_ctx, votes_on
@@ -113,15 +114,14 @@ def plan(**over):
     return out
 
 
-def retest():
-    """A later attempt's draft: the RQ's hypothesis and the new one an earlier attempt added (by their ids now)."""
-    def out(inputs):
-        new = next(h["id"] for h in inputs["hypotheses"] if h["statement"] == NEW_H)
-        return plan(hypotheses=lambda i, h0: [{"id": h0, "falsified_by": ["M1"], "tested_by": ["D1"]},
-                                              {"id": new, "falsified_by": ["M2"], "tested_by": ["D2"]}],
-                    design=lambda i, h0: {"items": [item("D1", ["M1"], [h0]), item("D2", ["M2"], [new])],
-                                          "expected_results": "E.", "alternative_explanations": []})(inputs)
-    return out
+def _count(ps) -> int:
+    """How many hypotheses the frozen RQ has."""
+    return len(hypotheses(ps, frozen_rq(ps)["id"]))
+
+
+def _approved(ps, attempt: int) -> dict:
+    (n,) = design_notes(ps, attempt, kind="approved")
+    return n
 
 
 def _votes(first=(), second=()) -> dict:
@@ -147,6 +147,17 @@ def _answer(ps, cid: str, answer: dict) -> dict:
 
 def _hyp(ps, hid: str) -> dict:
     return next(h for h in hypotheses(ps, frozen_rq(ps)["id"]) if h["id"] == hid)
+
+
+class Capped(Exec):
+    """Raises ``RateCapped`` at the first judge task once ``armed``."""
+    armed = False
+
+    def run(self, role, instructions, inputs, output_schema, **kw):
+        if self.armed and role == "judge":
+            self.armed = False
+            raise RateCapped("codex_cli", 60)
+        return super().run(role, instructions, inputs, output_schema, **kw)
 
 
 # ---- tests ----
@@ -185,17 +196,16 @@ def test_design_gate_requires_links_both_ways(env):
     ex = _exec([bad, plan()])
     out = w.run(_ctx(env, ex))
     assert out.status == "rerun"
-    new = next(h["id"] for h in hypotheses(ps, frozen_rq(ps)["id"]) if h["statement"] == NEW_H)
     res = w.gate(ps, 1)
     assert not res.ok
     text = "\n".join(res.failures)
     assert "design item D2 tests no hypothesis" in text
-    assert f"hypothesis {new} is tested by no design item" in text
-    assert f"hypothesis {new}: its tested_by names D1, which does not list it" in text
-    assert "not frozen" in text
-    for line in ("design item D2 tests no hypothesis", f"hypothesis {new} is tested by no design item"):
+    assert "hypothesis h_new is tested by no design item" in text
+    assert "hypothesis h_new: its tested_by names D1, which does not list it" in text
+    assert "not approved" in text
+    for line in ("design item D2 tests no hypothesis", "hypothesis h_new is tested by no design item"):
         assert line in out.reason
-    assert _hyp(ps, new)["status"] == "proposed"
+    assert _count(ps) == 1  # the new hypothesis of an attempt that was not approved never reaches the RQ
 
     # an item listing a hypothesis whose tested_by leaves it out fails too
     one_way = plan(hypotheses=lambda i, h0: [{"id": h0, "falsified_by": ["M1"], "tested_by": []}],
@@ -206,10 +216,11 @@ def test_design_gate_requires_links_both_ways(env):
     h0 = _h0(ps)
     assert f"hypothesis {h0}: design item D1 lists it, but its tested_by does not name D1" in out.reason
 
-    # attempt 3 links both ways (the earlier attempt's new hypothesis is the RQ's now: it is tested too)
-    out = w.run(_ctx(env, _exec([retest()]), attempt=3))
+    # attempt 3 links both ways
+    out = w.run(_ctx(env, _exec([plan()]), attempt=3))
     assert out.status == "done", out.reason
     assert w.gate(ps, 3).ok, w.gate(ps, 3).failures
+    assert _count(ps) == 2
 
 
 def test_unfalsifiable_hypothesis_fails_design_gate(env):
@@ -238,10 +249,12 @@ def test_unfalsifiable_hypothesis_fails_design_gate(env):
     out = w.run(_ctx(env, _exec([again]), attempt=2, guidance=out.reason))
     assert out.status == "back_edge" and out.to == "argue"
     assert f"hypothesis {h0} has no measurement that can falsify it" in out.reason
-    assert design(ps, design_notes(ps, 2, kind="draft")[0]["design_id"])["status"] == "draft"
-    # at design->argue's limit P1 degrades, and it never freezes a design that was not approved
-    deg = w.degrade(_ctx(env, _exec([]), attempt=2), [out.reason])
+    assert ps.db.execute("SELECT COUNT(*) FROM designs").fetchone()[0] == 0 and _count(ps) == 1
+    # at design->argue's limit P1 degrades: it never freezes a design that was not approved, and asks no role
+    ex = _exec([])
+    deg = w.degrade(_ctx(env, ex, attempt=2), [out.reason])
     assert deg.status == "failed" and "never freezes a design the vote did not approve" in deg.reason
+    assert f"hypothesis {h0} has no measurement that can falsify it" in deg.reason and not ex.calls
 
 
 def test_feasibility_claim_must_be_supported(env):
@@ -249,14 +262,14 @@ def test_feasibility_claim_must_be_supported(env):
     _argued(env)
     w = DesignWorker()
     # P1: an uncertain feasibility claim is narrowed (or withdrawn), never voted up
-    ex = _exec([plan()], uncertain=("can be",), narrowed=[{"text": NARROWER, "kind": "feasibility"}])
+    ex = _exec([plan()], uncertain=("can be",), narrowed=[{"text": NARROWER, "kind": "fact"}])
     out = w.run(_ctx(env, ex))
     assert out.status == "done", out.reason
     svc = ArgumentService(ps)
     original, rewrite = feasibility_claims(ps, 1)
     o, r = svc.get_claim(original), svc.get_claim(rewrite)
     assert (o["kind"], o["status"], o["generator_vendor"]) == ("feasibility", "withdrawn", "anthropic")
-    assert (r["status"], r["narrowed_from"], r["text"]) == ("supported", original, NARROWER)
+    assert (r["status"], r["narrowed_from"], r["text"], r["kind"]) == ("supported", original, NARROWER, "feasibility")
     verifiers = {x["verifier"] for x in ps.db.execute("SELECT verifier FROM verifications WHERE target_id=?",
                                                       (original,))}
     assert {"V-SUPPORT", "V-NUM", "V-HEDGE"} <= verifiers
@@ -283,8 +296,8 @@ def test_p2_feasibility_claim_is_decided_by_you(env):
     assert out.status == "rerun"
     (cid,) = feasibility_claims(ps, 1)
     assert f"{cid}: status unsupported" in out.reason
-    # uncertain (the judges disagree): your design_approval decides it (the earlier new hypothesis is tested by id)
-    out = w.run(_ctx(env, _exec([retest()], uncertain=("can be",)), attempt=2))
+    # uncertain (the judges disagree): your design_approval decides it
+    out = w.run(_ctx(env, _exec([plan()], uncertain=("can be",)), attempt=2))
     assert out.status == "waiting_human"
     cp = get_checkpoint(ps, out.checkpoint_id)
     (cid,) = feasibility_claims(ps, 2)
@@ -315,17 +328,21 @@ def test_p2_design_approval_freezes_and_preregisters_hypotheses(env):
     assert cp["options"]["choices"] == ["approve", "revise", "back"] and cp["options"]["claim_ids"] == []
     for text in ("D1", "M1", "stroke rate M1", NEW_H, "No available method measures it.", FEASIBLE):
         assert text in cp["prompt"], text
-    assert _hyp(ps, extra)["status"] == "proposed"  # nothing is dropped or pre-registered before approval
-    new = next(h["id"] for h in hypotheses(ps, frozen_rq(ps)["id"]) if h["statement"] == NEW_H)
-    assert _hyp(ps, new)["rival_of"] == h0
+    assert _hyp(ps, extra)["status"] == "proposed"  # nothing is added, dropped or pre-registered before approval
+    assert _count(ps) == 2
     answered = _answer(ps, cp["id"], {"decision": "approve"})
     out = w.on_answer(_ctx(env, ex), answered)
     assert out.status == "done", out.reason
     assert w.on_answer(_ctx(env, ex), answered).status == "done"  # applying the answer again changes nothing
-    (n,) = design_notes(ps, 1, kind="draft")
-    d = design(ps, n["design_id"])
+    assert _count(ps) == 3
+    new = next(h["id"] for h in hypotheses(ps, frozen_rq(ps)["id"]) if h["statement"] == NEW_H)
+    assert _hyp(ps, new)["rival_of"] == h0
+    d = design(ps, _approved(ps, 1)["design_id"])
     assert d["status"] == "frozen" and d["frozen_hash"]
     assert d["body"]["falsified_by"] == {h0: ["M1"], new: ["M2"]}
+    assert d["body"]["hypotheses"] == {h0: {"statement": "H.", "falsification": "X."},
+                                       new: {"statement": NEW_H, "falsification": "No lower stroke rate."}}
+    assert d["body"]["items"][1]["hypothesis_ids"] == [new]
     for hid in (h0, new):
         h = _hyp(ps, hid)
         assert (h["status"], h["prereg_hash"]) == ("tested_by_design", d["frozen_hash"])
@@ -335,11 +352,19 @@ def test_p2_design_approval_freezes_and_preregisters_hypotheses(env):
     assert design_limitations(ps, 1)["dropped"] == [{"id": extra, "reason": "No available method measures it."}]
     assert len([c for c in list_checkpoints(ps) if c["kind"] == "design_approval"]) == 1
 
-    # revise reruns with your comment
-    out = w.run(_ctx(env, _exec([retest()]), attempt=2))
+    # a new hypothesis that restates one of the RQ's (whitespace and case aside) is that hypothesis
+    restated = plan(hypotheses=lambda i, h: [
+        {"id": h, "falsified_by": ["M1"], "tested_by": ["D1"]},
+        {"new": {"statement": f"  {NEW_H.upper()} ", "falsification": "no lower  stroke rate."}, "ref": "h_new",
+         "falsified_by": ["M2"], "tested_by": ["D2"]}])
+    out = w.run(_ctx(env, _exec([restated]), attempt=2))
+    assert out.status == "waiting_human", out.reason
+    assert [e["id"] for e in design_notes(ps, 2, kind="draft")[0]["hypotheses"]] == [h0, new]
     cp = get_checkpoint(ps, out.checkpoint_id)
+    # revise reruns with your comment
     out = w.on_answer(_ctx(env, ex, attempt=2), _answer(ps, cp["id"], {"decision": "revise", "comment": "Add M3."}))
     assert (out.status, out.reason) == ("rerun", "Add M3.")
+    assert _count(ps) == 3
 
 
 def test_dropped_hypothesis_cannot_be_designed(env):
@@ -362,17 +387,17 @@ def test_p1_design_vote_disagreement_reruns_with_reasons(env):
     assert "judge says approve" in out.reason and "judge says not_approved" in out.reason
     assert "not reviewed by a human" in out.reason
     (n,) = design_notes(ps, 1, kind="draft")
-    (v,) = votes_on(ps, "design", n["design_id"])
+    (v,) = votes_on(ps, "design", n["draft_id"])
     assert (v["decision"], v["conservative"]) == ("not_approved", 1)
     assert {o["vendor"] for o in v["opinions"]}.isdisjoint({"anthropic"})
-    assert design(ps, n["design_id"])["status"] == "draft"
-    assert {h["status"] for h in hypotheses(ps, frozen_rq(ps)["id"])} == {"proposed"}
+    assert ps.db.execute("SELECT COUNT(*) FROM designs").fetchone()[0] == 0
+    assert [h["status"] for h in hypotheses(ps, frozen_rq(ps)["id"])] == ["proposed"]
     assert not w.gate(ps, 1).ok
 
     def revised(inputs):
         assert "judge says not_approved" in inputs["guidance"]
-        assert inputs["previous_design"]["design_id"] == n["design_id"]
-        return retest()(inputs)
+        assert inputs["previous_design"]["draft_id"] == n["draft_id"]
+        return plan()(inputs)
 
     out = w.run(_ctx(env, _exec([revised]), attempt=2, guidance=out.reason))
     assert out.status == "done", out.reason
@@ -396,3 +421,27 @@ def test_design_back_edges(env):
     out = w.on_answer(_ctx(env, _exec([]), attempt=3),
                       _answer(ps, cp["id"], {"decision": "back", "comment": "The argument is too weak."}))
     assert (out.status, out.to) == ("back_edge", "argue") and "too weak" in out.reason
+
+
+def test_interrupted_attempt_neither_duplicates_nor_orphans(env):
+    """A rate cap after the draft is stored (its feasibility claim being verified) interrupts the attempt; its new
+    hypothesis was never added, so the next attempt neither duplicates it nor fails on an orphan."""
+    _, ps, _ = env
+    _argued(env)
+    w = DesignWorker()
+    ex = Capped({**_exec([plan()]).script})
+    ex.armed = True
+    with pytest.raises(RateCapped):
+        w.run(_ctx(env, ex))
+    assert design_notes(ps, 1, kind="draft") and _count(ps) == 1
+    out = w.run(_ctx(env, _exec([plan()]), attempt=2))
+    assert out.status == "done", out.reason
+    assert [h["statement"] for h in hypotheses(ps, frozen_rq(ps)["id"])] == ["H.", NEW_H]
+    assert w.gate(ps, 2).ok, w.gate(ps, 2).failures
+
+
+def test_measurement_ids_unique_across_design(env):
+    body = {"items": [item("D1", ["M1"], ["h"]), item("D2", ["M1"], ["h"])], "expected_results": "E.",
+            "alternative_explanations": []}
+    with pytest.raises(ValueError, match=r"measurement ids used by more than one design item: \['M1'\]"):
+        DesignBody.model_validate(body)

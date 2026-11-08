@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from rk.argument import ArgumentService, ClaimDraft, ClaimIn, EvidenceIn
+from rk.argument import AgentClaimKind, ArgumentService, ClaimDraft, ClaimIn, EvidenceIn
 from rk.llm.vendors import vendor_of
 from rk.orchestrator.engine import StageContext
 from rk.verify.support import (
@@ -69,10 +69,11 @@ def _concede(svc: ArgumentService, objection_ids: list[str], note: str, *, actor
                               actor_kind="kernel")
 
 
-def narrow_or_withdraw(ctx: StageContext, claim_id: str) -> NarrowOutcome:
+def narrow_or_withdraw(ctx: StageContext, claim_id: str, *, kind: AgentClaimKind | None = None) -> NarrowOutcome:
     """P1 only (``ValueError`` in P2, where the researcher decides): narrow a claim that fails the claim gate
-    (``claim_problems``) into a supported rewrite, or withdraw it (see the module docstring). A withdrawn claim or one
-    without a problem is refused (``ValueError``)."""
+    (``claim_problems``) into a supported rewrite, or withdraw it (see the module docstring). ``kind`` pins the
+    rewrite's kind (e.g. a design's ``feasibility`` claim stays one, whatever kind the Arguer gives). A withdrawn claim
+    or one without a problem is refused (``ValueError``)."""
     ps = ctx.ps
     if (ps.meta("production_mode") or "collab") != "auto":
         raise ValueError("narrow_or_withdraw is P1's rule: in P2 the researcher decides on an unsupported claim")
@@ -104,7 +105,7 @@ def narrow_or_withdraw(ctx: StageContext, claim_id: str) -> NarrowOutcome:
         gave = ("no narrower rewrite" + (f" ({r.error})" if r.error else "") if not r.ok or r.output is None
                 else "the same text again")
         return withdraw(f"{why}; the Arguer gave {gave}", f"conceded: the claim {claim_id} was withdrawn")
-    new = svc.add_claim(ClaimIn(text=r.output.text, kind=r.output.kind, scope_limits=r.output.scope_limits,
+    new = svc.add_claim(ClaimIn(text=r.output.text, kind=kind or r.output.kind, scope_limits=r.output.scope_limits,
                                 narrowed_from=claim_id),
                         generator_vendor=vendor_of(r.provider, r.model), actor=ctx.actor,
                         origin=claim.get("origin") or "argument")

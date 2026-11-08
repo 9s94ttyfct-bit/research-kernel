@@ -11,12 +11,14 @@ which pre-registers the hypotheses it tests.
    (``DesignBody``); the hypotheses of the RQ it does not test, ``dropped`` with a reason; and its feasibility claims
    (kind ``feasibility``) with their evidence. ``needs_argument`` sends the stage back to argue (the argument cannot
    motivate a testable hypothesis), ``rq_untestable`` back to question (no hypothesis of the RQ is falsifiable with the
-   available methods). A draft whose references cannot be stored (an unknown or dropped hypothesis, a bad ref) is
-   refused whole. The kernel adds the new hypotheses (``proposed``), stores the design with its falsification links
-   (``DesignIn.falsified_by``, so the frozen hash pins them) and the feasibility claims (origin ``argument``, the
-   Ideator's vendor), and verifies each claim: V-SUPPORT through the stage's executor (its judges exclude the Ideator's
-   vendor) with V-NUM, then V-HEDGE. In P1 a feasibility claim that fails the claim gate is narrowed or withdrawn at
-   once (``narrow_or_withdraw``; never voted up, never kept as unproven).
+   available methods). A draft whose references cannot be kept (an unknown or dropped hypothesis, a bad ref, a
+   hypothesis named twice) is refused whole. The kernel notes the draft as the attempt's (``design_notes``): nothing is
+   added to the RQ and no design is stored before the approval, so an attempt that is interrupted or not approved
+   leaves no orphan hypothesis; a new hypothesis restating a live one of the RQ (whitespace and case aside) is that
+   one. It stores the feasibility claims (origin ``argument``, the Ideator's vendor) and verifies each: V-SUPPORT
+   through the stage's executor (its judges exclude the Ideator's vendor) with V-NUM, then V-HEDGE. In P1 a
+   feasibility claim that fails the claim gate is narrowed (keeping the kind ``feasibility``) or withdrawn at once
+   (``narrow_or_withdraw``; never voted up, never kept as unproven).
 2. **Structure** (``design_problems``): every design item tests a hypothesis of the design; every hypothesis of the
    design is tested by a design item, and its ``tested_by`` and the items that list it agree; every hypothesis has a
    ``falsified_by`` naming only measurements of the items that test it; every hypothesis of the RQ is tested or
@@ -27,9 +29,11 @@ which pre-registers the hypotheses it tests.
 3. **Approval.** P2: ``design_approval`` (``{"decision": "approve", "claims": {...}}`` deciding every listed
    feasibility claim, ``{"decision": "revise", "comment"}`` or ``{"decision": "back", "comment"?}`` to argue). P1: the
    judges vote whether the design can test and falsify its hypotheses (conservative: not approved, which reruns with
-   their reasons as guidance, then goes back to argue like a structural failure). On approval the design is frozen,
-   each hypothesis it tests becomes ``tested_by_design`` with the frozen hash as its ``prereg_hash``, and the dropped
-   ones become ``dropped``.
+   their reasons as guidance, then goes back to argue like a structural failure). On approval the kernel adds the new
+   hypotheses, stores the design with the real ids, its falsification links (``DesignIn.falsified_by``) and the text of
+   each hypothesis it tests (``DesignIn.hypotheses``), and freezes it, so the frozen hash pins all of them; each
+   hypothesis it tests becomes ``tested_by_design`` with that hash as its ``prereg_hash``, and the dropped ones become
+   ``dropped``. P1's ``degrade`` fails the run: P1 never freezes a design the vote did not approve.
 
 The gate: the structure, the design frozen, every tested hypothesis pre-registered by it and every dropped one dropped.
 The limitations input (``design_limitations``) lists the withdrawn and narrowed feasibility claims and the dropped
@@ -56,16 +60,17 @@ from rk.discovery.store import (
 from rk.llm.vendors import vendor_of
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.orchestrator.graph import EDGE_LIMIT, edge_name
-from rk.orchestrator.state import edge_row, record_degraded, stage_row
+from rk.orchestrator.state import edge_row, stage_row
 from rk.production.argue import ArgEvidence, argument_claims, main_claim
 from rk.production.claims import claim_limitations, failing_claims, narrow_or_withdraw
 from rk.production.extraction import usable_evidence
 from rk.production.models import DesignBody, DesignIn
-from rk.production.store import design, freeze_design, latest_design, set_design
+from rk.production.store import design, freeze_design, set_design
 from rk.production.synthesis import evidence_criteria, synthesis_claims
 from rk.production.vote import vote
-from rk.store.events import NewEvent
+from rk.store.events import ActorKind, NewEvent
 from rk.store.project import ProjectStore
+from rk.store.query import query_rows
 from rk.verify.records import record_verification
 from rk.verify.support import check_claim_hedge, claim_problems, verify_support
 
@@ -157,10 +162,12 @@ def _note(ps: ProjectStore, attempt: int, kind: str, *, actor: str, **fields) ->
 
 
 def design_notes(ps: ProjectStore, attempt: int, *, kind: str | None = None) -> list[dict]:
-    """What design noted in the attempt, in order: ``draft`` (the stored design, its hypotheses with their links, the
-    new and the dropped hypotheses, the feasibility claims), ``refused`` (a draft that could not be stored),
-    ``narrowed`` (P1: a feasibility claim narrowed or withdrawn), ``back_edge``, ``approval`` (the P2 checkpoint),
-    ``vote`` and ``approved`` (the frozen hash, by you or the vote)."""
+    """What design noted in the attempt, in order: ``draft`` (``draft_id``; the design ``body`` as the Ideator wrote
+    it, its items naming a hypothesis by id or, for a new one, by its ref; the ``hypotheses`` with their links, each
+    by ``key``: its id, or for a new one its ref with the ``new`` text; the dropped hypotheses; the feasibility
+    claims), ``refused`` (a draft that could not be noted), ``narrowed`` (P1: a feasibility claim narrowed or
+    withdrawn), ``back_edge``, ``approval`` (the P2 checkpoint), ``vote`` and ``approved`` (the stored design, its
+    frozen hash and the ids the new hypotheses got, by you or the vote)."""
     rows = ps.db.execute("SELECT payload FROM events WHERE type='design.noted' AND json_extract(payload, '$.attempt')=? "
                          "ORDER BY seq", (attempt,))
     return [n for n in (json.loads(r["payload"]) for r in rows) if kind is None or n["kind"] == kind]
@@ -169,6 +176,25 @@ def design_notes(ps: ProjectStore, attempt: int, *, kind: str | None = None) -> 
 def _draft(ps: ProjectStore, attempt: int) -> dict | None:
     drafts = design_notes(ps, attempt, kind="draft")
     return drafts[-1] if drafts else None
+
+
+def _approved(ps: ProjectStore, attempt: int) -> dict | None:
+    done = design_notes(ps, attempt, kind="approved")
+    return done[-1] if done else None
+
+
+def _previous(ps: ProjectStore) -> dict | None:
+    """The latest draft of the stage when it was not approved (the design a rerun revises), else ``None``."""
+    r = ps.db.execute("SELECT payload FROM events WHERE type='design.noted' AND json_extract(payload, '$.kind')='draft' "
+                      "ORDER BY seq DESC LIMIT 1").fetchone()
+    if r is None:
+        return None
+    d = json.loads(r["payload"])
+    return None if _approved(ps, d["attempt"]) else d
+
+
+def _fold(text: str) -> str:
+    return " ".join(text.split()).casefold()
 
 
 def feasibility_claims(ps: ProjectStore, attempt: int) -> list[str]:
@@ -259,13 +285,14 @@ def _listed(ps: ProjectStore, attempt: int) -> list[str]:
 
 def design_problems(ps: ProjectStore, attempt: int, *, review: bool = False) -> list[str]:
     """Why the attempt's design fails its structure (see the module docstring); ``review``: as the P2 approval sees
-    it, its uncertain feasibility claims left to you."""
+    it, its uncertain feasibility claims left to you. A hypothesis is named by its id, a new one by its ref."""
     draft = _draft(ps, attempt)
     if draft is None:
         return ["no design"]
-    body = design(ps, draft["design_id"])["body"]
-    items = body["items"]
-    entries = {e["id"]: e for e in draft["hypotheses"]}
+    items = draft["body"]["items"]
+    entries = {e["key"]: e for e in draft["hypotheses"]}
+    done = _approved(ps, attempt)  # once approved, the new hypotheses are the RQ's, with their ids
+    tested_ids = {e["id"] for e in draft["hypotheses"] if e["id"]} | set(done["hypothesis_ids"].values() if done else ())
     drops = {x["id"] for x in draft["dropped"]}
     item_ids = {i["id"] for i in items}
     measures = {i["id"]: {m["id"] for m in i["measurements"]} for i in items}
@@ -277,47 +304,56 @@ def design_problems(ps: ProjectStore, attempt: int, *, review: bool = False) -> 
                 for h in i["hypothesis_ids"] if h not in entries]
     if not entries:
         out.append("the design tests no hypothesis")
-    for hid, e in entries.items():
-        listed = [i["id"] for i in items if hid in i["hypothesis_ids"]]
+    for key, e in entries.items():
+        listed = [i["id"] for i in items if key in i["hypothesis_ids"]]
         if not listed:
-            out.append(f"hypothesis {hid} is tested by no design item")
+            out.append(f"hypothesis {key} is tested by no design item")
         for t in e["tested_by"]:
             if t not in item_ids:
-                out.append(f"hypothesis {hid}: its tested_by names {t}, which is no design item")
+                out.append(f"hypothesis {key}: its tested_by names {t}, which is no design item")
             elif t not in listed:
-                out.append(f"hypothesis {hid}: its tested_by names {t}, which does not list it")
-        out += [f"hypothesis {hid}: design item {t} lists it, but its tested_by does not name {t}"
+                out.append(f"hypothesis {key}: its tested_by names {t}, which does not list it")
+        out += [f"hypothesis {key}: design item {t} lists it, but its tested_by does not name {t}"
                 for t in listed if t not in e["tested_by"]]
-        falsifiers = body.get("falsified_by", {}).get(hid) or []
-        if not falsifiers:
-            out.append(f"hypothesis {hid} has no measurement that can falsify it (its falsified_by is empty)")
+        if not e["falsified_by"]:
+            out.append(f"hypothesis {key} has no measurement that can falsify it (its falsified_by is empty)")
         testing = {m for t in listed for m in measures[t]}
-        out += [f"hypothesis {hid}: its falsified_by names {m}, which is no measurement of a design item that tests it"
-                for m in falsifiers if m not in testing]
+        out += [f"hypothesis {key}: its falsified_by names {m}, which is no measurement of a design item that tests it"
+                for m in e["falsified_by"] if m not in testing]
     rq = frozen_rq(ps)
     out += [f"hypothesis {h['id']} of the research question is neither tested by the design nor dropped with a reason"
             for h in (hypotheses(ps, rq["id"]) if rq else [])
-            if h["id"] not in entries and h["id"] not in drops and h["status"] != "dropped"]
+            if h["id"] not in tested_ids and h["id"] not in drops and h["status"] != "dropped"]
     out += _claim_lines(ps, feasibility_claims(ps, attempt), review=review)
     return out
+
+
+def _text(rows: dict[str, dict], e: dict) -> dict:
+    """A design hypothesis's statement, falsification and rival: the RQ's for an existing one, the draft's for a new
+    one."""
+    if e["new"] is not None:
+        return e["new"]
+    h = rows.get(e["id"], {})
+    return {"statement": h.get("statement", ""), "falsification": h.get("falsification", ""),
+            "rival_of": h.get("rival_of")}
 
 
 def render_design(ps: ProjectStore, attempt: int) -> list[str]:
     """The attempt's design for its review: the hypotheses with their falsification links, the items, the dropped
     hypotheses and the feasibility claims."""
     draft = _draft(ps, attempt)
-    body = design(ps, draft["design_id"])["body"]
+    body = draft["body"]
     rq = frozen_rq(ps)
     rows = _hyps(ps, rq["id"]) if rq else {}
     svc = ArgumentService(ps)
-    lines = [f"Design {draft['design_id']}", "", "Hypotheses:"]
+    lines = [f"Design {draft['draft_id']}", "", "Hypotheses:"]
     for e in draft["hypotheses"]:
-        h = rows.get(e["id"], {})
-        rival = f" (rival of {h['rival_of']})" if h.get("rival_of") else ""
-        lines += [f"- {e['id']}{' (new)' if e['new'] else ''}{rival}: {h.get('statement', '')}",
-                  f"  counts against it: {h.get('falsification', '')}",
+        t = _text(rows, e)
+        rival = f" (rival of {t['rival_of']})" if t.get("rival_of") else ""
+        lines += [f"- {e['key']}{' (new: added when you approve)' if e['new'] else ''}{rival}: {t['statement']}",
+                  f"  counts against it: {t['falsification']}",
                   (f"  tested by {', '.join(e['tested_by']) or 'no item'}; falsified by "
-                  f"{', '.join(body.get('falsified_by', {}).get(e['id']) or []) or 'no measurement'}")]
+                   f"{', '.join(e['falsified_by']) or 'no measurement'}")]
     lines += ["", "Design items:"]
     for i in body["items"]:
         lines += [(f"- {i['id']} ({i['kind']}), testing {', '.join(i['hypothesis_ids']) or 'nothing'}: sample "
@@ -391,33 +427,42 @@ class DesignWorker:
                 for h in _hyps(ps, s.rq_id).values() if h["status"] != "dropped"]
         inputs: dict = {"question": s.question, "research_question": s.rq_body, "hypotheses": hyps,
                         "argument": claims, "notes": notes}
-        prev = latest_design(ps)
-        if prev is not None and prev["status"] != "frozen":
-            inputs["previous_design"] = {"design_id": prev["id"], "body": prev["body"]}
+        if (prev := _previous(ps)) is not None:
+            inputs["previous_design"] = {k: prev[k] for k in ("draft_id", "body", "hypotheses", "dropped")}
         if guidance:
             inputs["guidance"] = guidance
         return inputs
 
     @staticmethod
-    def _refusals(ps: ProjectStore, s: _Inputs, d: DesignDraft) -> list[str]:
-        """Why the draft cannot be stored (nothing of it is then): no design or hypotheses, an unknown or dropped
+    def _restated(rows: dict[str, dict], d: DesignDraft) -> dict[str, str]:
+        """ref -> the id of the live hypothesis of the RQ a new hypothesis restates (the same statement and
+        falsification, whitespace and case aside): it is that hypothesis, not a new one."""
+        live = {(_fold(r["statement"]), _fold(r["falsification"])): h for h, r in rows.items()
+                if r["status"] != "dropped"}
+        return {hp.ref.strip(): hid for hp in d.hypotheses if hp.new is not None
+                and (hid := live.get((_fold(hp.new.statement), _fold(hp.new.falsification)))) is not None}
+
+    def _refusals(self, ps: ProjectStore, s: _Inputs, d: DesignDraft) -> list[str]:
+        """Why the draft cannot be noted (nothing of it is then): no design or hypotheses, an unknown or dropped
         hypothesis, a ref that is not unique or shadows a hypothesis id, a rival that is neither a hypothesis of the RQ
-        nor an earlier new one, a dropped hypothesis also tested, a design item testing what is neither."""
+        nor an earlier new one, a hypothesis named twice (a restated one included), a dropped hypothesis also tested,
+        a design item testing what is neither."""
         rows = _hyps(ps, s.rq_id)
         live = {h for h, r in rows.items() if r["status"] != "dropped"}
+        restated = self._restated(rows, d)
         out = []
         if d.design is None:
             out.append("it gives no design")
         if not d.hypotheses:
             out.append("it names no hypothesis the design tests")
-        ids: list[str] = []
+        keys: list[str] = []
         refs: list[str] = []
         for hp in d.hypotheses:
             if hp.id is not None:
                 if hp.id not in live:
                     out.append(f"{hp.id} is not a hypothesis of the research question"
                                + (" that is not dropped" if hp.id in rows else ""))
-                ids.append(hp.id)
+                keys.append(hp.id)
                 continue
             ref, rival = hp.ref.strip(), hp.new.rival_of
             if ref in rows:
@@ -425,48 +470,46 @@ class DesignWorker:
             if rival is not None and rival not in live and rival not in refs:
                 out.append(f"the new hypothesis {ref!r} rivals {rival!r}, which is neither a hypothesis of the research "
                            f"question nor an earlier new hypothesis")
+            if ref in refs:
+                out.append(f"the ref {ref!r} is given twice")
             refs.append(ref)
-        out += [f"{x} is named twice among the hypotheses" for x in sorted({x for x in ids + refs
-                                                                             if (ids + refs).count(x) > 1})]
+            keys.append(restated.get(ref, ref))
+        out += [f"{x} is named twice among the hypotheses" + (" (a new hypothesis restates it)" if x in rows else "")
+                for x in sorted({x for x in keys if keys.count(x) > 1} - set(refs))]
         dropped = [x.id for x in d.dropped]
         for x in dropped:
             if x not in live:
                 out.append(f"it drops {x}, which is not a hypothesis of the research question that is not dropped")
-            elif x in ids:
+            elif x in keys:
                 out.append(f"it both tests and drops {x}")
         for item in d.design.items if d.design else []:
             for h in item.hypothesis_ids:
                 if h not in live and h not in refs:
                     out.append(f"design item {item.id} tests {h!r}, which is neither a hypothesis of the research "
                                f"question that is not dropped nor a new hypothesis's ref")
-                elif h in dropped:
+                elif restated.get(h, h) in dropped:
                     out.append(f"design item {item.id} tests {h}, which the design drops")
         return out
 
-    @staticmethod
-    def _store(ctx: StageContext, s: _Inputs, d: DesignDraft, vendor: str | None) -> None:
-        """Add the new hypotheses, store the design with its falsification links and the feasibility claims with their
-        evidence (notes outside the project's usable evidence are left out and noted)."""
+    def _store(self, ctx: StageContext, s: _Inputs, d: DesignDraft, vendor: str | None) -> None:
+        """Note the draft (no hypothesis is added and no design stored before the approval; a new hypothesis that
+        restates one of the RQ's is that one) and store the feasibility claims with their evidence (notes outside the
+        project's usable evidence are left out and noted)."""
         ps = ctx.ps
         svc = ArgumentService(ps)
-        by_ref: dict[str, str] = {}
-        added = []
+        restated = self._restated(_hyps(ps, s.rq_id), d)
+        entries = []
         for hp in d.hypotheses:
-            if hp.new is not None:
-                rival = hp.new.rival_of
-                hid = add_hypothesis(ps, s.rq_id, hp.new.statement, hp.new.falsification,
-                                     rival_of=by_ref.get(rival, rival) if rival else None, actor=ctx.actor)
-                by_ref[hp.ref.strip()] = hid
-                added.append(hid)
-        entries = [{"id": hp.id if hp.id is not None else by_ref[hp.ref.strip()], "ref": hp.ref.strip() or None,
-                    "new": hp.new is not None, "tested_by": list(dict.fromkeys(hp.tested_by)),
-                    "falsified_by": list(dict.fromkeys(hp.falsified_by))} for hp in d.hypotheses]
-        items = [i.model_copy(update={"hypothesis_ids": list(dict.fromkeys(by_ref.get(h, h) for h in i.hypothesis_ids))})
-                 for i in d.design.items]
-        body = DesignIn(items=items, expected_results=d.design.expected_results,
-                        alternative_explanations=d.design.alternative_explanations,
-                        falsified_by={e["id"]: e["falsified_by"] for e in entries})
-        did = set_design(ps, body, stage=ctx.stage, attempt=ctx.attempt, actor=ctx.actor)
+            ref = hp.ref.strip()
+            hid = hp.id if hp.id is not None else restated.get(ref)
+            new = None if hid is not None else {"statement": hp.new.statement, "falsification": hp.new.falsification,
+                                                "rival_of": restated.get(hp.new.rival_of, hp.new.rival_of)}
+            entries.append({"key": hid or ref, "id": hid, "ref": ref or None, "new": new,
+                            "tested_by": list(dict.fromkeys(hp.tested_by)),
+                            "falsified_by": list(dict.fromkeys(hp.falsified_by))})
+        body = d.design.model_copy(update={"items": [
+            i.model_copy(update={"hypothesis_ids": list(dict.fromkeys(restated.get(h, h) for h in i.hypothesis_ids))})
+            for i in d.design.items]})
         claim_ids, refused = [], []
         for fc in d.feasibility_claims:
             cid = svc.add_claim(ClaimIn(text=fc.text, kind="feasibility", scope_limits=fc.scope_limits),
@@ -483,9 +526,9 @@ class DesignWorker:
             if left_out:
                 refused.append(f"{cid}: notes outside the project's usable evidence left out: {', '.join(left_out)}")
             claim_ids.append(cid)
-        _note(ps, ctx.attempt, "draft", actor=ctx.actor, design_id=did, vendor=vendor, hypotheses=entries,
-              added=added, dropped=[x.model_dump() for x in d.dropped], feasibility_claim_ids=claim_ids,
-              refused=refused)
+        _note(ps, ctx.attempt, "draft", actor=ctx.actor, draft_id=f"{STAGE}:{ctx.attempt}", vendor=vendor,
+              body=body.model_dump(mode="json"), hypotheses=entries, restated=restated,
+              dropped=[x.model_dump() for x in d.dropped], feasibility_claim_ids=claim_ids, refused=refused)
 
     @staticmethod
     def _verify(ctx: StageContext) -> None:
@@ -504,7 +547,7 @@ class DesignWorker:
         """P1: narrow or withdraw every feasibility claim that fails the claim gate; claim id -> what was done."""
         done = {}
         for cid in failing_claims(ctx.ps, feasibility_claims(ctx.ps, ctx.attempt)):
-            r = narrow_or_withdraw(ctx, cid)
+            r = narrow_or_withdraw(ctx, cid, kind="feasibility")
             _note(ctx.ps, ctx.attempt, "narrowed", actor=ctx.actor, claim_id=cid, status=r.status,
                   new_claim_id=r.new_claim_id, reason=r.reason)
             done[cid] = (f"{cid} narrowed to {r.new_claim_id}" if r.status == "narrowed"
@@ -554,7 +597,7 @@ class DesignWorker:
                          '"revise", "comment": ...}) or send it back to argue ({"decision": "back"}, optionally with a '
                          '"comment").')]
         cid = create_checkpoint(ps, KIND, "\n".join(lines),
-                                {"attempt": ctx.attempt, "design_id": draft["design_id"], "claim_ids": listed,
+                                {"attempt": ctx.attempt, "draft_id": draft["draft_id"], "claim_ids": listed,
                                  "choices": list(CHOICES), "claim_choices": [SUPPORTED, WITHDRAW],
                                  "replaces": replaces},
                                 stage=ctx.stage, actor=ctx.actor)
@@ -569,15 +612,15 @@ class DesignWorker:
         rows = _hyps(ps, s.rq_id)
         live = [svc.get_claim(c) for c in feasibility_claims(ps, ctx.attempt)]
         live = [c for c in live if c["status"] != "withdrawn"]
-        body = design(ps, draft["design_id"])["body"]
-        inputs = {"research_question": s.question, "design": body,
-                  "hypotheses": [{"id": e["id"], "statement": rows[e["id"]]["statement"],
-                                  "falsification": rows[e["id"]]["falsification"], "tested_by": e["tested_by"],
-                                  "falsified_by": e["falsified_by"]} for e in draft["hypotheses"]],
+        inputs = {"research_question": s.question, "design": draft["body"],
+                  "hypotheses": [{"key": e["key"], "new": e["new"] is not None,
+                                  **{k: _text(rows, e)[k] for k in ("statement", "falsification")},
+                                  "tested_by": e["tested_by"], "falsified_by": e["falsified_by"]}
+                                 for e in draft["hypotheses"]],
                   "dropped": draft["dropped"],
                   "feasibility_claims": [{"claim_id": c["id"], "text": c["text"], "status": c["status"]}
                                          for c in live]}
-        res = vote(ctx, "design", draft["design_id"], VOTE_QUESTION, [APPROVE, NOT_APPROVED], NOT_APPROVED, inputs,
+        res = vote(ctx, "design", draft["draft_id"], VOTE_QUESTION, [APPROVE, NOT_APPROVED], NOT_APPROVED, inputs,
                    generator_vendors={draft["vendor"], *(c.get("generator_vendor") for c in live)})
         why = "; ".join(f"{o['role']} ({o['vendor']}): {o['reason']}" for o in res.opinions if o["reason"])
         _note(ps, ctx.attempt, "vote", actor=ctx.actor, vote_id=res.id, decision=res.decision, reason=why)
@@ -589,25 +632,57 @@ class DesignWorker:
         return self._retry(ctx, f"{head}: {why}" if why else head)
 
     @staticmethod
-    def _approve(ctx: StageContext, *, by: str, actor: str, actor_kind: str, **via) -> str:
-        """Freeze the attempt's design, pre-register each hypothesis it tests and drop the ones it drops; applied again
-        it changes nothing. Returns the frozen hash."""
+    def _approve(ctx: StageContext, *, by: str, actor: str, actor_kind: ActorKind, **via) -> str:
+        """Apply the approval of the attempt's draft: add its new hypotheses to the RQ (a new one that a hypothesis of
+        the RQ already states, e.g. one added before an interruption, is that one), store the design with the real ids,
+        its falsification links and the text of each hypothesis it tests, freeze it, pre-register each hypothesis it
+        tests and drop the ones it drops. Applied again it changes nothing. Returns the frozen hash."""
         ps = ctx.ps
         draft = _draft(ps, ctx.attempt)
-        row = design(ps, draft["design_id"])
-        h = row["frozen_hash"] if row["status"] == "frozen" else freeze_design(ps, row["id"], actor=actor,
-                                                                               actor_kind=actor_kind)
-        rq = frozen_rq(ps)
-        rows = _hyps(ps, rq["id"])
+        rq_id = frozen_rq(ps)["id"]
+        done = _approved(ps, ctx.attempt)
+        ids: dict[str, str] = dict(done["hypothesis_ids"]) if done else {}
         for e in draft["hypotheses"]:
-            if (rows[e["id"]]["status"], rows[e["id"]]["prereg_hash"]) != ("tested_by_design", h):
-                set_hypothesis_status(ps, e["id"], "tested_by_design", prereg_hash=h, actor=actor,
-                                      actor_kind=actor_kind)
+            if e["key"] in ids:
+                continue
+            if e["id"] is not None:
+                ids[e["key"]] = e["id"]
+                continue
+            n = e["new"]
+            same = [h for h, r in _hyps(ps, rq_id).items() if r["status"] != "dropped"
+                    and (_fold(r["statement"]), _fold(r["falsification"])) == (_fold(n["statement"]),
+                                                                               _fold(n["falsification"]))]
+            rival = n["rival_of"]
+            ids[e["key"]] = same[0] if same else add_hypothesis(
+                ps, rq_id, n["statement"], n["falsification"], rival_of=ids.get(rival, rival) if rival else None,
+                actor=actor, actor_kind=actor_kind)
+        rows = _hyps(ps, rq_id)
+        body = DesignIn.model_validate({
+            **draft["body"],
+            "items": [{**i, "hypothesis_ids": [ids.get(h, h) for h in i["hypothesis_ids"]]}
+                      for i in draft["body"]["items"]],
+            "falsified_by": {ids[e["key"]]: e["falsified_by"] for e in draft["hypotheses"]},
+            "hypotheses": {ids[e["key"]]: {"statement": rows[ids[e["key"]]]["statement"],
+                                           "falsification": rows[ids[e["key"]]]["falsification"]}
+                           for e in draft["hypotheses"]}})
+        dump = body.model_dump(mode="json")
+        stored = [r for r in query_rows(ps, "SELECT * FROM designs WHERE stage=? AND attempt=? ORDER BY rowid",
+                                        (ctx.stage, ctx.attempt), ("body",)) if r["body"] == dump]
+        did = stored[0]["id"] if stored else set_design(ps, body, stage=ctx.stage, attempt=ctx.attempt, actor=actor,
+                                                        actor_kind=actor_kind)
+        row = design(ps, did)
+        h = row["frozen_hash"] if row["status"] == "frozen" else freeze_design(ps, did, actor=actor,
+                                                                               actor_kind=actor_kind)
+        rows = _hyps(ps, rq_id)
+        for hid in dict.fromkeys(ids.values()):
+            if (rows[hid]["status"], rows[hid]["prereg_hash"]) != ("tested_by_design", h):
+                set_hypothesis_status(ps, hid, "tested_by_design", prereg_hash=h, actor=actor, actor_kind=actor_kind)
         for x in draft["dropped"]:
             if rows[x["id"]]["status"] != "dropped":
                 set_hypothesis_status(ps, x["id"], "dropped", actor=actor, actor_kind=actor_kind)
-        if not design_notes(ps, ctx.attempt, kind="approved"):
-            _note(ps, ctx.attempt, "approved", actor=actor, design_id=row["id"], frozen_hash=h, by=by, **via)
+        if done is None:
+            _note(ps, ctx.attempt, "approved", actor=actor, design_id=did, frozen_hash=h, hypothesis_ids=ids, by=by,
+                  **via)
         return h
 
     def on_answer(self, ctx: StageContext, checkpoint: dict) -> StageOutcome:
@@ -671,37 +746,22 @@ class DesignWorker:
         draft = _draft(ps, attempt)
         if draft is None:
             return GateResult(False, failures)
-        row = design(ps, draft["design_id"])
-        if row["status"] != "frozen":
-            failures.append(f"the design {row['id']} is not frozen: it was not approved")
+        done = _approved(ps, attempt)
+        row = design(ps, done["design_id"]) if done else None
+        if row is None or row["status"] != "frozen":
+            failures.append(f"the design {draft['draft_id']} was not approved: no design is frozen")
         else:
             rows = _hyps(ps, s.rq_id)
-            failures += [f"hypothesis {e['id']} is not pre-registered by the frozen design"
-                         for e in draft["hypotheses"]
-                         if (rows[e["id"]]["status"], rows[e["id"]]["prereg_hash"])
-                         != ("tested_by_design", row["frozen_hash"])]
+            failures += [f"hypothesis {hid} is not pre-registered by the frozen design"
+                         for hid in dict.fromkeys(done["hypothesis_ids"].values())
+                         if (rows[hid]["status"], rows[hid]["prereg_hash"]) != ("tested_by_design", row["frozen_hash"])]
             failures += [f"hypothesis {x['id']}, which the design drops, is not dropped" for x in draft["dropped"]
                          if rows[x["id"]]["status"] != "dropped"]
         return GateResult(not failures, failures)
 
     def degrade(self, ctx: StageContext, failures: list[str]) -> StageOutcome:
-        """P1 at an edge limit: narrow or withdraw the feasibility claims that fail the claim gate (disclosed,
-        ``stage.degraded``); P1 never freezes a design the vote did not approve, so an unapproved design fails the
-        run."""
-        ps = ctx.ps
-        s = _load(ps)
-        if isinstance(s, str):
-            return StageOutcome("failed", reason=s)
-        draft = _draft(ps, ctx.attempt)
-        if draft is None:
-            return StageOutcome("failed", reason="design did not get past the edge limit: "
-                                                 + ("; ".join(failures) or "no design to degrade"))
-        done = self._narrow(ctx)
-        if done:
-            record_degraded(ps, stage=ctx.stage, attempt=ctx.attempt, removed=list(done),
-                            reason="design at the edge limit: " + "; ".join(done.values()), actor=ctx.actor)
-        if design(ps, draft["design_id"])["status"] != "frozen":
-            return StageOutcome("failed", reason="the design was not approved at the edge limit, and P1 never freezes "
-                                                 "a design the vote did not approve: "
-                                                 + ("; ".join(failures) or "no reason given"))
-        return StageOutcome("done", reason="degraded: " + ("; ".join(done.values()) or "nothing to narrow or withdraw"))
+        """P1 at an edge limit: a design is only frozen when approved, and P1 never freezes one the vote did not
+        approve, so the run fails with the reasons."""
+        return StageOutcome("failed", reason="the design was not approved at the edge limit, and P1 never freezes a "
+                                             "design the vote did not approve: "
+                                             + ("; ".join(failures) or "no reason given"))
