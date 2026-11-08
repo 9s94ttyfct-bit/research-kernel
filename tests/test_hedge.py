@@ -218,3 +218,15 @@ def test_gate_claims_lists_each_problem(env):
     assert gate_claims(ps, [good, minor, withdrawn, unhedged]) == []
     with pytest.raises(KeyError):
         gate_claims(ps, ["clm_missing"])
+
+
+def test_never_negates_a_categorical_word_and_stays_a_universal_elsewhere():
+    """Fix round 1 (minor 4): "has never been proven" is negated like "has not been proven"; "never" on its own is
+    still a universal and categorical."""
+    for text in ("Aspirin has never been proven to prevent stroke.", "It was never clearly established.",
+                 "It has never been conclusively proven."):
+        assert hedge_level(text) == 2, text
+        assert universal_terms(text) == [], text
+    assert hedge_level("Aspirin never caused bleeding.") == 3
+    assert universal_terms("Aspirin never caused bleeding.") == ["never"]
+    assert hedge_level("It never failed, which proves it.") == 3

@@ -28,8 +28,9 @@ SYNONYMS: dict[str, frozenset[str]] = {u: frozenset({u}) for u in UNIVERSALS} | 
     u: frozenset({"none", "never"}) for u in ("none", "never")}
 # Auxiliaries and adverbs that may stand between a negator and the word it negates (at most two of them).
 _BETWEEN = r"(?:\s+(?:been|be|being|yet|ever|always|fully|clearly|conclusively|definitively|firmly|entirely|completely))"
-_QUALIFIERS = re.compile(r"(?:\bnot|\bcannot|n['’]t|\balmost|\bnearly|\bvirtually|\bhardly|\bpractically)"
+_QUALIFIERS = re.compile(r"(?:\bnot|\bnever|\bcannot|n['’]t|\balmost|\bnearly|\bvirtually|\bhardly|\bpractically)"
                          + _BETWEEN + r"{0,2}\s+$", re.IGNORECASE)
+_AFTER = re.compile(_BETWEEN + r"{0,2}\s+", re.IGNORECASE)
 _IN_TOTAL = re.compile(r"\s*(?:[,.;:!?)]|$)")
 _UNIVERSAL = re.compile(r"\b(" + "|".join(UNIVERSALS) + r")\b", re.IGNORECASE)
 
@@ -52,10 +53,18 @@ def _patterns() -> dict[str, re.Pattern]:
     }
 
 
+def _negator(text: str, m: re.Match) -> bool:
+    """Whether ``m`` is a "never" that negates the categorical word after it ("has never been proven"): a negator
+    there, not a universal or a categorical claim of its own ("it never failed" stays both)."""
+    if m[0].lower() != "never" or (gap := _AFTER.match(text, m.end())) is None:
+        return False
+    return _patterns()["categorical"].match(text, gap.end()) is not None
+
+
 def _stated(text: str, m: re.Match) -> bool:
     """Whether the word matched by ``m`` in ``text`` is stated positively (see the module docstring)."""
     word, before, after = m[0].lower(), text[:m.start()], text[m.end():]
-    return not (_QUALIFIERS.search(before) or after.startswith(("-", "‐", "‑"))
+    return not (_QUALIFIERS.search(before) or after.startswith(("-", "‐", "‑")) or _negator(text, m)
                 or (word == "every" and re.match(r"\s+other\b", after, re.IGNORECASE))
                 or (word == "all" and re.search(r"\bin\s+$", before, re.IGNORECASE) and _IN_TOTAL.match(after)))
 
