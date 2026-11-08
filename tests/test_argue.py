@@ -13,12 +13,13 @@ from rk.argument import ArgumentService, ObjectionIn
 from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
 from rk.discovery.executor import BudgetExceeded, RateCapped
 from rk.orchestrator.engine import default_workers
-from rk.orchestrator.graph import BACK_EDGES
+from rk.orchestrator.graph import BACK_EDGES, EDGE_LIMIT
 from rk.orchestrator.state import (
     current_stage,
     edge_rows,
     latest_attempt,
     record_attempt,
+    record_edge_taken,
     record_passed,
     record_ran,
     record_run_session,
@@ -28,7 +29,9 @@ from rk.orchestrator.state import (
     tasks_used,
 )
 from rk.production.argue import (
+    RQ_QUESTION,
     SKEPTIC_TOOLS,
+    SYNTHESIS_QUESTION,
     ArgueWorker,
     ArgumentDraft,
     Critique,
@@ -567,16 +570,194 @@ def test_failed_self_check_without_a_main_claim_reruns_with_it_as_guidance(env):
     assert not _claims(ps) and not argue_notes(ps, 1, kind="back_edge")
 
 
-def test_argue_back_edge_to_synthesize_with_guidance(env):
+NEED = "A finding on bleeding risk in people over 80."
+
+
+def test_needs_synthesis_is_noted_and_the_rounds_go_on(env):
+    """Fix wave 4: ``needs_synthesis`` is an input, not a back-edge. The request is noted with its round, the rounds go
+    on (critique, fixed point, end check), and at the end the P1 judges decide; they disagree here, so the conservative
+    ``proceed`` holds and the unmet request is listed in the limitations."""
     _, ps, _ = env
     _synthesize(env)
     assert ("argue", "synthesize") in BACK_EDGES
-    need = "A finding on bleeding risk in people over 80."
-    out = ArgueWorker().run(_ctx(env, _exec([draft(needs_synthesis=need)])))
-    assert (out.status, out.to, out.reason) == ("back_edge", "synthesize", need)
-    assert not _claims(ps)
-    (n,) = argue_notes(ps, 1, kind="back_edge")
-    assert (n["to"], n["reason"]) == ("synthesize", need)
+    ex = _exec([draft(needs_synthesis=NEED)], [critique()], votes=_votes(["back_to_synthesize"], ["proceed"]))
+    w = ArgueWorker()
+    out = w.run(_ctx(env, ex))
+    assert out.status == "done", out.reason
+    assert [(n["round"], n["text"]) for n in argue_notes(ps, 1, kind="synthesis_request")] == [(1, NEED)]
+    assert not argue_notes(ps, 1, kind="back_edge")
+    assert main_claim(ps, 1) is not None and len(ex.of("skeptic", "Critique")) == 1
+    assert [n["reason"] for n in argue_notes(ps, 1, kind="end")] == ["fixed_point"]
+    (d,) = argue_notes(ps, 1, kind="synthesis_decision")
+    assert (d["decision"], d["by"]) == ("proceed", "vote")
+    (v,) = votes_on(ps, "argue_synthesis", "argue:1:synthesis")
+    assert v["decision"] == "proceed" and v["conservative"]
+    assert argue_limitations(ps, 1)["synthesis_requests"] == [{"round": 1, "text": NEED}]
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    # the Arguer is told to argue with the findings it has and what needs_synthesis is for
+    (first,) = ex.of("arguer", "ArgumentDraft")
+    assert "narrow the main claim" in first["instructions"] and "from the included studies" in first["instructions"]
+
+
+def test_needs_synthesis_without_a_main_claim_reruns_with_the_request(env):
+    _, ps, _ = env
+    _synthesize(env)
+    out = ArgueWorker().run(_ctx(env, _exec([lambda inputs: {"answers_rq": SELF_CHECK, "needs_synthesis": NEED}])))
+    assert out.status == "rerun" and NEED in out.reason
+    assert not argue_notes(ps, 1, kind="back_edge")
+
+
+def test_p1_vote_back_to_synthesize_takes_the_edge_with_the_requests(env):
+    """The judges agree that synthesize can still give what the Arguer asked for: argue->synthesize is taken (counted
+    against its limit), the requests and the judges' reasons as synthesize's guidance. The judges see the requests, the
+    included studies (labels and designs), the extraction schema and the protocol's eligibility and date window."""
+    k, ps, lib = env
+    _synthesize(env)
+    later = "A finding on the cohort's follow-up."
+
+    def second(inputs):
+        return {**responses(RESPONSE)(inputs), "needs_synthesis": later}
+
+    ex = _exec([draft(needs_synthesis=NEED), second], [critique(objections=[_o("main", 2, "Too broad.")]), critique()],
+               votes=_votes(["back_to_synthesize"], ["back_to_synthesize"]))
+    o, run_id = stage_run(k, ps, lib, "argue", ex)
+    assert o.step("demo", run_id, actor="tester") == "running"
+    assert current_stage(ps) == "synthesize" and edge_rows(ps)["argue->synthesize"]["count"] == 1
+    assert [(n["round"], n["text"]) for n in argue_notes(ps, 1, kind="synthesis_request")] == [(1, NEED), (2, later)]
+    guidance = stage_row(ps, "synthesize")["guidance"]
+    assert NEED in guidance and later in guidance and "because back_to_synthesize" in guidance
+    (d,) = argue_notes(ps, 1, kind="synthesis_decision")
+    assert (d["decision"], d["by"]) == ("back_to_synthesize", "vote")
+    (call,) = ex.of("judge", "VoteOut")
+    assert call["inputs"]["question"] == SYNTHESIS_QUESTION
+    subject = call["inputs"]["subject"]
+    assert subject["requests"] == [{"round": 1, "text": NEED}, {"round": 2, "text": later}]
+    assert [(x["label"], x["design"]) for x in subject["included_studies"]] == [("A 1950", "rct"), ("B 1951", "cohort")]
+    assert [f["name"] for f in subject["extraction_schema"]] == ["design"]
+    assert subject["eligibility"]["include"] == [{"id": "I1", "text": "People over 80"}]
+    assert subject["date_window"] == {"date_from": 2000, "date_to": None}
+    # the RQ vote is not asked: the argument goes back to synthesize
+    assert [c["inputs"]["question"] for c in ex.of("judge", "VoteOut")] == [SYNTHESIS_QUESTION]
+    assert argue_limitations(ps, 1)["synthesis_requests"] == []  # acted on: not a limitation
+
+
+def test_p1_synthesis_requests_proceed_without_a_vote_once_the_edge_is_spent(env):
+    _, ps, _ = env
+    _synthesize(env)
+    record_edge_taken(ps, "argue->synthesize", EDGE_LIMIT, actor="tester")
+    ex = _exec([draft(needs_synthesis=NEED)], [critique()])
+    w = ArgueWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    (d,) = argue_notes(ps, 1, kind="synthesis_decision")
+    assert (d["decision"], d["by"]) == ("proceed", "kernel") and "argue->synthesize" in d["reason"]
+    assert [c["inputs"]["question"] for c in ex.of("judge", "VoteOut")] == [RQ_QUESTION]
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+@pytest.mark.parametrize("where", ["first_judge", "rq_vote", "before_the_note"])
+def test_p1_synthesis_vote_interrupted_asks_the_judges_nothing_twice(env, monkeypatch, where):
+    """A rate cap at the synthesis vote's first judge, or at the RQ vote after it, or a crash after the synthesis vote
+    was recorded but before its decision was noted: the resumed attempt asks no judge a question twice (the recorded
+    vote is reused) and the Arguer and the Skeptic nothing again."""
+    import rk.production.argue as mod
+
+    _, ps, _ = env
+    _synthesize(env)
+    script = _exec([draft(needs_synthesis=NEED)], [critique()], votes=_votes(["proceed"], ["proceed"])).script
+    ex = CapOnce(script, at=("judge", "VoteOut"), n={"first_judge": 1, "rq_vote": 2}.get(where, 0))
+    if where == "before_the_note":
+        real = mod._note
+
+        def crash(ps_, attempt, kind, **kw):
+            if kind == "synthesis_decision":
+                monkeypatch.setattr(mod, "_note", real)
+                raise RateCapped("codex_cli", 60)
+            return real(ps_, attempt, kind, **kw)
+
+        monkeypatch.setattr(mod, "_note", crash)
+    w = ArgueWorker()
+    with pytest.raises(RateCapped):
+        w.run(_ctx(env, ex))
+    out = w.run(_ctx(env, ex))
+    assert out.status == "done", out.reason
+    for judge in ("judge", "judge_2"):
+        assert [c["inputs"]["question"] for c in ex.of(judge, "VoteOut")] == [SYNTHESIS_QUESTION, RQ_QUESTION]
+    assert len(ex.of("arguer", "ArgumentDraft")) == len(ex.of("skeptic", "Critique")) == 1
+    assert len(votes_on(ps, "argue_synthesis", "argue:1:synthesis")) == 1
+    (d,) = argue_notes(ps, 1, kind="synthesis_decision")
+    assert d["decision"] == "proceed" and len(argue_notes(ps, 1, kind="synthesis_request")) == 1
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_p2_final_review_lists_the_requests_and_back_takes_the_edge(env):
+    k, ps, lib = env
+    _synthesize(env)
+    ex = _exec([draft(needs_synthesis=NEED)], [critique()])
+    o, run_id = stage_run(k, ps, lib, "argue", ex)
+    assert o.step("demo", run_id, actor="tester") == "paused_waiting_human"
+    cp = get_checkpoint(ps, stage_row(ps, "argue")["waiting_checkpoint"])
+    assert cp["kind"] == "uncertain_support"
+    assert cp["options"]["synthesis_requests"] == [{"round": 1, "text": NEED}]
+    assert cp["options"]["decisions"] == ["rerun", "back"] and cp["options"]["back_to"] == "synthesize"
+    assert NEED in cp["prompt"] and '"decision": "back", "to": "synthesize"' in cp["prompt"]
+    answer_checkpoint(ps, cp["id"], {"decision": "back", "to": "synthesize", "comment": "Use the subgroup table."},
+                      answered_by="human", actor="researcher")
+    assert o.step("demo", run_id, actor="tester") == "running"
+    assert current_stage(ps) == "synthesize" and edge_rows(ps)["argue->synthesize"]["count"] == 1
+    guidance = stage_row(ps, "synthesize")["guidance"]
+    assert NEED in guidance and "Use the subgroup table." in guidance
+    (d,) = argue_notes(ps, 1, kind="synthesis_decision")
+    assert (d["decision"], d["by"], d["checkpoint_id"]) == ("back", "human", cp["id"])
+    assert not [c for c in ex.calls if c["schema"] == "VoteOut"]  # P2 never votes
+    assert not argue_notes(ps, 1, kind="rq_check")  # nothing else of the answer is applied
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_p2_back_is_applied_once_and_other_answers_still_work(env):
+    _, ps, _ = env
+    _synthesize(env)
+    ex = _exec([draft(needs_synthesis=NEED)], [critique()])
+    w = ArgueWorker()
+    cp = get_checkpoint(ps, w.run(_ctx(env, ex)).checkpoint_id)
+    # back elsewhere is refused and the review opens again with the requests
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decision": "back", "to": "question"}))
+    assert out.status == "waiting_human"
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    assert "could not be applied" in cp["prompt"] and NEED in cp["prompt"]
+    assert cp["options"]["synthesis_requests"] == [{"round": 1, "text": NEED}]
+    # your usual answer: the request is not acted on; it is an unmet request in the limitations
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"claims": {}, "answers_rq": "yes"}))
+    assert out.status == "done", out.reason
+    (d,) = argue_notes(ps, 1, kind="synthesis_decision")
+    assert (d["decision"], d["by"]) == ("proceed", "human")
+    assert argue_limitations(ps, 1)["synthesis_requests"] == [{"round": 1, "text": NEED}]
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    # applied again (after a crash), the answer notes nothing twice
+    assert w.on_answer(_ctx(env, ex), get_checkpoint(ps, cp["id"])).status == "done"
+    assert len(argue_notes(ps, 1, kind="synthesis_decision")) == 1
+    # a back answer applied again goes back once, noted once
+    w2 = ArgueWorker()
+    cp2 = get_checkpoint(ps, w2.run(_ctx(env, _exec([draft(needs_synthesis=NEED)], [critique()]), 2)).checkpoint_id)
+    cp2 = _answer(ps, cp2["id"], {"decision": "back", "to": "synthesize"})
+    for _ in range(2):
+        out = w2.on_answer(_ctx(env, ex, 2), cp2)
+        assert (out.status, out.to) == ("back_edge", "synthesize") and NEED in out.reason
+    assert w2.run(_ctx(env, ex, 2)).status == "back_edge"  # resumed after the back-edge was noted
+    assert len(argue_notes(ps, 2, kind="synthesis_decision")) == len(argue_notes(ps, 2, kind="back_edge")) == 1
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_p2_back_is_not_offered_without_a_synthesis_request(env):
+    _, ps, _ = env
+    _synthesize(env)
+    ex = _exec([draft()], [critique()])
+    w = ArgueWorker()
+    cp = get_checkpoint(ps, w.run(_ctx(env, ex)).checkpoint_id)
+    assert cp["options"]["decisions"] == ["rerun"] and cp["options"]["synthesis_requests"] == []
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decision": "back", "to": "synthesize"}))
+    assert out.status == "waiting_human"
+    assert "asked synthesize for nothing" in get_checkpoint(ps, out.checkpoint_id)["prompt"]
+    assert not argue_notes(ps, 1, kind="back_edge")
 
 
 # ---- fix round 1 ----

@@ -617,6 +617,48 @@ def test_final_review_card_shows_the_arguers_failed_self_check(page, served):
 
 @pytest.mark.browser
 @pytest.mark.parametrize("served", [{"paper_type": "critical_review"}], indirect=True)
+def test_final_review_card_back_to_synthesize_reaches_the_worker(page, served):
+    """Fix wave 4: the Arguer's synthesis requests are shown on your final review (as text) with a "Back to
+    synthesize" form; its answer takes argue->synthesize, and synthesize's next attempt gets the requests and your
+    comment as guidance."""
+    ps = served.ps
+    _synthesize(served.env)
+    need = "A finding on <b>bleeding</b> in people over 80."
+    ex = argue_exec([draft(needs_synthesis=need)], [critique()])
+    ex.script[("arguer", "AssessmentOut")] = [assess()]
+    ex.script[("arguer", "NarrativeSynthesis")] = [_synth_narrative((F1, F2))]
+    _start(served, "argue", ex)
+    cp, card = _show(page, ps, "uncertain_support")
+    shown = card.locator(".synthesis-requests")
+    assert shown.count() == 1 and need in shown.inner_text() and "round 1" in shown.inner_text()
+    assert shown.locator("b").count() == 0
+    form = card.locator("form.back-synthesize")
+    form.get_by_label("Why go back to synthesize (optional)").fill("Use the subgroup table.")
+    form.get_by_role("button", name="Back to synthesize").click()
+    assert _answer_of(ps, cp["id"]) == {"decision": "back", "to": "synthesize", "comment": "Use the subgroup table."}
+    until(lambda: edge_rows(ps).get("argue->synthesize", {}).get("count") == 1)
+    until(lambda: len(ex.of("arguer", "NarrativeSynthesis")) == 1)
+    guidance = ex.of("arguer", "NarrativeSynthesis")[0]["inputs"]["guidance"]
+    assert need in guidance and "Use the subgroup table." in guidance
+    assert stage_row(ps, "synthesize")["attempt"] == 2
+    assert page.errors == []
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("served", [{"paper_type": "critical_review"}], indirect=True)
+def test_final_review_card_without_requests_offers_no_back(page, served):
+    ps = served.ps
+    _synthesize(served.env)
+    _start(served, "argue", argue_exec([draft()], [critique()]))
+    _, card = _show(page, ps, "uncertain_support")
+    card.get_by_role("button", name="Submit your review").wait_for()
+    assert card.locator(".synthesis-requests").count() == 0
+    assert card.locator("form.back-synthesize").count() == 0
+    assert page.errors == []
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("served", [{"paper_type": "critical_review"}], indirect=True)
 @pytest.mark.parametrize(("button", "decision"), [("Claim a holds", "a_holds"), ("Claim b holds", "b_holds"),
                                                   ("Both stand, contested", "both_contested")])
 def test_conflict_card_answers_reach_the_worker(page, served, button, decision):

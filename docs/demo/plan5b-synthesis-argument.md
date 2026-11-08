@@ -159,7 +159,8 @@ attempt 2 49 min (21:36–22:25, mostly the judge's codex cap); argue attempts u
    give (a trial outside the date window, absent populations, ICU results, and in attempt 2 a pool below the protocol
    minimum). Nothing checks whether
    synthesize can supply what is asked, and the stand-in's comments did not reach the Arguer's decision; the edge
-   limit stopped it.
+   limit stopped it. (Fixed in fix wave 4: `needs_synthesis` is now an input; the rounds go on, and your final review
+   or a P1 vote decides whether argue goes back to synthesize.)
 3. **Protocol leftovers**: eligibility I6 still names the 2019 trial the 2024-to-now window excludes; this is what the
    Arguer kept asking about.
 4. **Judges again answered "partial"**: one finding in four attempts was supported by both judges, so nearly every

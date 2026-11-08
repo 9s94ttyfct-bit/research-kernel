@@ -720,6 +720,27 @@ function backToReadForm(o, answer) {
 }
 const offersBack = (o) => Array.isArray(o.decisions) && o.decisions.includes("back");
 
+// argue's final review: the Arguer's synthesis requests (as text; it argued on the findings it had) and a "Back to
+// synthesize" form with an optional comment, the guidance synthesize gets with the requests. Offered when the
+// checkpoint lists `back` among its decisions (only when the Arguer asked for something).
+function synthesisRequests(o) {
+  return [el("h4", {}, "The Arguer asked synthesize for findings it lacked"),
+    el("p", { class: "hint" }, "It argued on the findings it has; nothing goes back to synthesize unless you say so. A request you do not send back is listed in the limitations."),
+    el("ul", { class: "synthesis-requests" }, o.synthesis_requests.map((q) => el("li", {}, el("span", { class: "hint" }, `round ${q.round}: `), q.text)))];
+}
+function backToSynthesizeForm(answer) {
+  const why = el("textarea", { name: "back_comment" });
+  const form = el("form", { class: "revise back-synthesize" },
+    el("label", { class: "field" }, "Why go back to synthesize (optional)", why),
+    el("button", { type: "submit", class: "secondary" }, "Back to synthesize"));
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const comment = why.value.trim();
+    answer({ decision: "back", to: "synthesize", ...(comment ? { comment } : {}) });
+  });
+  return el("div", { class: "other-answers" }, el("h4", {}, "Or go back to synthesize for what the Arguer asked"), form);
+}
+
 async function poolingCard(c, answer) {
   const o = c.options || {};
   const d = await api("/ui/api/synthesis", { query: { project: state.project, attempt: o.attempt } });
@@ -809,6 +830,7 @@ async function uncertainCard(c, answer) {
       el("h4", {}, "Main claim"), main ? claimBlock(main) : el("p", { class: "error" }, "The main claim was not found."),
       (o.main_problems || []).length ? el("p", { class: "hint warn" }, "No answer here mends the main claim's own problems above: say whether it answers the research question, and argue again with your comment so the Arguer revises it.") : null,
       o.arguer_self_check && o.arguer_self_check.ok === false ? el("p", { class: "hint warn self-check" }, "The Arguer's own check says the main claim does not answer the research question: ", o.arguer_self_check.reason || "no reason given") : null,
+      (o.synthesis_requests || []).length ? synthesisRequests(o) : null,
       el("h4", {}, "Does the main claim answer the research question?"),
       choices(`rq-${c.id}`, "Does the main claim answer the research question?",
         [["yes", "Yes, it answers the research question", "Yes, it answers the research question"],
@@ -823,6 +845,7 @@ async function uncertainCard(c, answer) {
     el("div", { class: "other-answers" }, el("h4", {}, `Or ${rqAsked ? "argue" : "synthesize"} again`),
       reviseForm(`What should change (${rqAsked ? "argue" : "synthesize"} runs again with your comment)`, (text) => answer({ decision: "rerun", comment: text }))),
     !rqAsked && offersBack(o) ? backToReadForm(o, answer) : null,
+    rqAsked && offersBack(o) && o.back_to === "synthesize" ? backToSynthesizeForm(answer) : null,
   ];
 }
 
