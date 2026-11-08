@@ -133,7 +133,28 @@ def jats_to_layer(xml: bytes, sha: str) -> TextLayer:
             t = _itertext(el)
             if t:
                 lines.append(t)
+    lines += _jats_tables(root)  # after the body, so layers built before tables were read keep their offsets
     return TextLayer(source_kind="jats", pages=[Page(n=1, text=utf8_safe("\n\n".join(lines)))], sha256=sha)
+
+
+def _jats_tables(root) -> list[str]:
+    """Every ``table-wrap`` (body, floats-group, back): "<label>. <caption>", one line per row with the cells joined
+    by " | " (so numbers of neighbouring cells stay apart), then its footnotes."""
+    out: list[str] = []
+    for tw in root.iter("table-wrap"):
+        label = tw.find("label")
+        caption = tw.find("caption")
+        head = ". ".join(t for t in (_itertext(label).rstrip(".:") if label is not None else "",
+                                     _itertext(caption) if caption is not None else "") if t)
+        if head:
+            out.append(head)
+        for tr in tw.iter("tr"):
+            cells = [_itertext(c) for c in tr if c.tag in ("th", "td")]
+            if any(cells):
+                out.append(" | ".join(cells))
+        for foot in tw.iter("table-wrap-foot"):
+            out += [t for p in foot.iter("p") if (t := _itertext(p))]
+    return out
 
 
 def bioc_to_layer(doc: dict, sha: str) -> TextLayer:

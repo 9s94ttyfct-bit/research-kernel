@@ -161,3 +161,62 @@ def test_jats_lone_surrogates_become_replacement(tmp_path):
     assert layer.pages[0].text == "char ref \ufffd and \ufffd here\n\nraw \ufffd\ufffd\ufffd bytes\n\npair \U0001d465"
     layer.save(tmp_path / "l.json")
     assert TextLayer.load(tmp_path / "l.json") == layer
+
+
+_JATS_TABLE = (
+    b'<?xml version="1.0" encoding="UTF-8"?><article><front><article-meta><article-title>Pilot</article-title>'
+    b"<abstract><p>Short abstract.</p></abstract></article-meta></front><body>"
+    b"<sec><title>Results</title><p>POD did not differ (Table 3).</p>"
+    b'<table-wrap id="t3"><label>Table 3</label><caption><p>Incidence of postoperative delirium.</p></caption>'
+    b"<table><thead><tr><th/><th>Melatonin Group (n = 43)</th><th>Placebo Group (n = 42)</th></tr></thead>"
+    b"<tbody><tr><td>Incidence of POD, n (%)</td><td>7 (16.3)</td><td>2 (4.9)</td></tr></tbody></table>"
+    b"<table-wrap-foot><fn><p>POD = postoperative delirium.</p></fn></table-wrap-foot></table-wrap>"
+    b"</sec></body><floats-group><table-wrap><label>Table 4</label><caption><title>Secondary outcomes</title>"
+    b"</caption><table><tr><td>Sedation</td><td>0</td><td>1</td></tr></table></table-wrap></floats-group></article>"
+)
+
+
+def test_jats_tables_are_in_the_text_layer():
+    """Table cells (here the per-arm denominators of a trial, found only in its Table 3 in the live demo) are in the
+    layer, after the body so the body keeps the offsets of layers built before tables were read: each table with its
+    label and caption, one line per row with the cells kept apart, and its footnotes; floats-group tables too."""
+    from rk.text.markup import jats_to_layer
+
+    text = jats_to_layer(_JATS_TABLE, "x").pages[0].text
+    before = ("Pilot\n\nAbstract\n\nShort abstract.\n\nResults\n\nPOD did not differ (Table 3).\n\n"
+              "Incidence of postoperative delirium.\n\nPOD = postoperative delirium.")
+    assert text.startswith(before + "\n\n")  # the body as it was read before
+    assert text[len(before):] == (
+        "\n\nTable 3. Incidence of postoperative delirium."
+        "\n\n | Melatonin Group (n = 43) | Placebo Group (n = 42)"
+        "\n\nIncidence of POD, n (%) | 7 (16.3) | 2 (4.9)"
+        "\n\nPOD = postoperative delirium."
+        "\n\nTable 4. Secondary outcomes"
+        "\n\nSedation | 0 | 1")
+
+
+def test_a_quote_from_a_jats_table_cell_passes_v_quote():
+    from rk.text.markup import jats_to_layer
+    from rk.verify.quote import verify_quote, verify_quote_at
+
+    layer = jats_to_layer(_JATS_TABLE, "x")
+    for quote in ("Melatonin Group (n = 43)", "Placebo Group (n = 42)", "Incidence of POD, n (%) | 7 (16.3) | 2 (4.9)"):
+        r = verify_quote(quote, layer)
+        assert r.ok, quote
+        assert verify_quote_at(quote, layer, r.page, r.start, r.end).ok
+    assert not verify_quote("7 (16.3) 2 (4.9)", layer).ok  # cells stay apart: no number runs into the next cell
+
+
+def test_reading_tables_keeps_the_locators_of_an_earlier_layer():
+    """A quote located in a layer built before tables were read is still verified at the same place in the layer
+    rebuilt from the same JATS (the refetch overwrites text/<sha>.json)."""
+    from rk.text.layer import Page, TextLayer
+    from rk.text.markup import jats_to_layer
+    from rk.verify.quote import verify_quote, verify_quote_at
+
+    new = jats_to_layer(_JATS_TABLE, "x")
+    old_text = new.pages[0].text.split("\n\nTable 3. ")[0]
+    old = TextLayer(source_kind="jats", pages=[Page(n=1, text=old_text)], sha256="x")
+    for quote in ("POD did not differ", "Incidence of postoperative delirium.", "Short abstract."):
+        r = verify_quote(quote, old)
+        assert r.ok and verify_quote_at(quote, new, r.page, r.start, r.end).ok, quote
