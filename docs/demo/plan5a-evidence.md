@@ -13,8 +13,9 @@ designed. The demo stopped there: no title/abstract screening, no full text and 
 would have to change, is under "What failed or was weak". The stand-in first asked for a 150-record budget, then 300;
 the cap was set to 300 at approval (the default is 3000 until then; see Protocol).
 
-**Screening, full text and extraction were not demonstrated here.** They are run live in the Plan 5b demo, which
-reruns this project from protocol with a larger cap.
+**Screening, full text and extraction were not demonstrated in this run.** The Plan 5b demo reran this project from
+protocol with a 2024-to-now window and a record cap of 800; its search, screening, full text and extraction are in
+"Screening and extraction, run in Plan 5b" at the end of this page.
 
 ## Setup: models, and no local model
 
@@ -363,3 +364,70 @@ of postoperative delirium in elderly patients: A systematic review and meta-anal
   judge tasks succeeded.
 - **The RQ's three-step sentence** reads "… in order to help my audience understand help clinicians …": the audience
   text is pasted into the template without fitting it.
+
+## Screening and extraction, run in Plan 5b
+
+Recorded 2026-11-08 in the Plan 5b demo (`docs/demo/plan5b-synthesis-argument.md`), on a copy of this run's scratch
+`RK_HOME`, with the same drivers. The checkpoints were again answered by the agent running the demo, standing in for
+the researcher.
+
+**Protocol, rerun.** The cancelled protocol attempt was rerun (attempts 10–12). Attempt 10 failed the Plan 5b check of
+the typed synthesis plan (no `pool_model`, a free-text `effect_measure`, no `outcomes`); attempt 11 typed them but the
+Scout narrowed the search with `NOT ("intensive care" OR ICU)`, which on Europe PMC's full-text matching would also drop
+ward and surgical trials that mention an ICU. The stand-in asked for the four short queries of version 8, publication
+years 2024 to now, and REML with HKSJ "auto"; attempt 12 did that and was approved with `record_cap` 800 (frozen as
+version 13, a recorded deviation from version 9). Before approving, the stand-in counted the sources itself: Europe PMC
+union 715 (2024–2026), PubMed 43/29/45/32 per query, union 84.
+
+**Search and PRISMA** (`rk prisma`, search_screen attempt 27):
+
+```
+identified 1468, duplicates removed 753
+screened 715, excluded at title/abstract 707
+sought 8, not retrieved 5
+assessed at full text 3, excluded at full text 1 (I2 not met: …: 1)
+included 2
+V-PRISMA: the counts add up
+note: 2 excluded for language
+note: 1263 screening decisions carried over from interrupted attempts
+```
+
+The four queries returned 1,464 works (PubMed 42 + 29 + 45 + 32; Europe PMC 486 + 161 + 426 + 243 in pages of 200).
+
+**Title/abstract screening agreement** (713 records both screeners decided; Haiku = screener_a, codex = screener_b):
+
+| screener_a \ screener_b | yes | no | unclear |
+|---|---|---|---|
+| yes | 1 | 0 | 0 |
+| no | 0 | 667 | 32 |
+| unclear | 0 | 5 | 8 |
+
+Raw agreement 94.8%, Cohen's κ 0.31 (three categories; 0.31 also for "no" against "yes or unclear"). Most
+disagreements are records without an abstract (conference programmes, editorials) that screener_b called "unclear"
+and screener_a excluded. An "unclear" on both sides counts as a disagreement, so 45 records went to the stand-in in two
+`screening_disagreements` checkpoints (25 + 20). **Answers (stand-in):** include 7 (the four melatonin trials of
+older surgical or ward patients, two title-only ramelteon or delirium-drug records and one title-only melatonin bundle
+record, to be checked at full text), exclude 38 (reviews, editorials, conference sections, prediction or cohort
+studies, unrelated topics).
+
+**Full text.** 8 records were sought: 3 were retrieved, all as Europe PMC JATS XML (`…/PMC…/fullTextXML`; one had
+been fetched during the 5a landscape), and 5 were not retrieved ("no full text and no abstract"): their OpenAlex
+records list no open-access URL, and no browser fetch was recorded (`browse_log` is empty; the five lookups took about
+0.1 s each, so the built-in browser fallback did not run, cause not investigated). Full-text screening: both screeners
+included the RESTORE trial (2026, medical wards), both excluded a 2024 trial of patients aged 40–80 (I2), and both
+said "unclear" on the Khaled 2025 surgical pilot because the excerpt named no delirium tool. The stand-in looked it up
+(`rk find`: "short-form confusion assessment method (3D-CAM)") and included it.
+
+**Extraction** (`rk extraction show`): 2 studies, both read on the full text; 39 values with a verified quote, 10
+`not_reported`, 0 values with a problem; no retraction. RESTORE: 55 vs 54 analysed, 2 vs 1 delirium events, 3D-CAM,
+two dose values (5 and 8 mg, both kept). Khaled 2025: 7 vs 2 events, but `n_intervention`, `n_control`, mean age and
+sex `not_reported`. That was wrong: the per-arm sizes (43 and 42) are in the paper's Table 3, and the JATS text layer
+contained no table cells. This was fixed during the 5b demo (`fix(text): JATS tables in the text layer`; see the 5b
+demo), but the extraction above was **not** redone. The Reader also wrote prose into fields meant for note ids, which
+the kernel kept as extraction problems ("… is not a note of this study"), 3 for RESTORE and 5 for Khaled.
+
+**Cost of the hourly caps.** Haiku's 30 calls an hour ran out after 24 title/abstract batches and codex's 20 after 20
+of screener_b's 29; screener_b never started while screener_a waited. Each wait was an interrupted attempt retried
+every 5 minutes (attempts 3–27): 25 `rate_capped` task failures (14 screener_a, 11 screener_b), and every retry ran
+the whole search again and stored all 1,468 records again (38,168 record rows over 26 attempts; 1,263 decisions
+carried over). search_screen took 2 h 5 min (09:24–11:29 UTC), most of it waiting for the caps.

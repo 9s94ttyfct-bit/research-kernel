@@ -46,6 +46,7 @@ State lives in `$RK_HOME`, which defaults to `~/ResearchKernel`:
 | V-HEDGE | A claim may not be worded more strongly than its sources. |
 | V-SUPPORT | Cloud judges only, no local model (user decision 2026-11-07). Three judge roles, `judge`, `judge_2` and `judge_3`, by default GPT-6 Luna (`codex_cli:gpt-6-luna`), DeepSeek v4.1 flash (`ollama:deepseek-v4.1-flash:cloud`, hosted by Ollama Cloud) and Claude Haiku 5.5 (`claude_cli:claude-haiku-5-5`). A judge's vendor must be known, not human, and differ from the claim author's and from every other admitted judge's; a judge that fails this is skipped and does not vote (`same_or_unknown_vendor`, or `duplicate_vendor` when another admitted judge has its vendor). A judge that answers supported, partial or contradicted must quote the evidence verbatim; otherwise its opinion counts as uncertain. **supported**, **unsupported** or **contradicted** needs at least `support_min_judges` (default 2) valid judges that all give that label, and V-NUM gates **supported**. Everything else is **uncertain**: one dissent, a "partial" or a single valid judge. In collaborative mode that opens an `uncertain_support` checkpoint. Latest run: `docs/eval/support-2026-11-07-judges.md`. |
 | V-NUM | Every number in a claim must occur, with the same value and unit, in its evidence. Formats are normalised: thousands separators, Unicode minus, `×10ⁿ`, `%`/percent and ranges. |
+| V-STATS | A statistic or figure is made only by the kernel (`rk.stats`), never by a model. It recomputes, with the current `rk.stats` code, from the extraction rows it was made from (their hashes recorded), to 1e-9; a changed row, a different code version or a different extraction attempt is a mismatch. |
 
 Hidden text is removed before anything enters a text layer:
 - PDF: white, invisible-render-mode, sub-1 pt (font size or text-matrix scaling) and off-page glyphs
@@ -64,6 +65,7 @@ rk eval support --limit 100         # V-SUPPORT judges on SciFact dev: verdict �
 rk eval litqa2 --limit 20           # LitQA2 multiple choice with the Kernel's own search/full-text tools
 rk eval deepfact --limit 10         # DeepFact-Bench claims: gather evidence, then V-SUPPORT (evaluation only)
 rk eval reportbench --reports DIR   # citation precision/recall against ReportBench references
+rk eval stats [--write-config]      # reproduce published meta-analyses with rk.stats; --write-config enables pooling
 rk support check --text passage.txt --sources src_… --driver codex_cli --gold gold.json
 ```
 
@@ -224,6 +226,56 @@ V-PRISMA result and notes (or the selection reasons), and each library item show
 to their quote notes, and apart from them the rows that are not evidence.
 
 A recorded run: `docs/demo/plan5a-evidence.md`.
+
+## Synthesis, argument and design
+
+After read_extract, `synthesize` turns the extracted evidence into findings, `argue` builds and attacks an argument on
+them, and, for a research proposal, `design` ties falsifiable hypotheses to a method design. Their back-edges
+(synthesize→read_extract, argue→synthesize, argue→question, design→argue, design→question) follow the same limit of
+two uses per project.
+
+- **Synthesize.** The Arguer scores every study on seven evidence criteria and drafts the synthesis; the kernel
+  computes every number. A systematic review whose frozen protocol pre-specifies a meta-analysis (typed: effect
+  measure RR, OR, RD, MD or SMD, `pool_model` REML, DL or FE, HKSJ, prediction-interval df, and each outcome mapped to
+  its extraction fields) gets a pooling plan; you approve each comparable group in `pooling_approval` (P1: a vote).
+  The kernel pools it with `rk.stats` (by default REML, and HKSJ when τ² > 0 and k > 2, as in the Cochrane Handbook
+  6.5.1), draws the forest plot and writes the `stat_result` claim itself; V-STATS recomputes each from its
+  extraction rows. Pooling stays off until `rk eval stats --write-config` has validated the current `rk.stats`
+  (`docs/eval/stats-2026-11-08.md`: 180/180 published values reproduced). Every study with a computable effect is in
+  its group; a group that is not comparable, has fewer than two computable studies or lacks a field falls back to the
+  narrative synthesis, and every fallback is an analysis deviation from the frozen protocol and a limitation. A
+  scoping review gets an evidence map. Each finding is a claim with its evidence, checked by V-SUPPORT, V-NUM and
+  V-HEDGE; uncertain ones go to you in `uncertain_support` (P2).
+- **Argue.** The Arguer states the main claim, its reasons and the warrant of each reason; the Skeptic (another
+  vendor) raises objections, tests every warrant and names conflicts between supported claims, round after round,
+  until no new objection of priority 1 or 2 arrives. The Arguer answers each objection (a new claim, a concession or
+  an invalid-objection reason). A conflict goes to you in `evidence_conflict` (P1: a vote); a conceded or failed claim
+  is narrowed or withdrawn, and the limitations list the withdrawn and narrowed claims and the conceded objections.
+  At the end you say in `uncertain_support` whether the main claim answers the frozen RQ (P1: the judges).
+- **Design (research proposals).** The Ideator ties hypotheses (each with what would falsify it) to design items and
+  measurements and states its feasibility claims; the kernel checks the links both ways, verifies the feasibility
+  claims and asks for your `design_approval` (P1: a vote). The approved design is frozen and pre-registers the
+  hypotheses it tests.
+
+```bash
+uv run rk run melatonin --until argue           # or --until synthesize / design (research proposals)
+uv run rk synthesis show [--attempt N]          # assessments, groups, statistics and figures with V-STATS, findings, fallbacks
+uv run rk argument show [--claim ID]            # claims (role, status, hedge), warrants and tests, objections, conflicts
+uv run rk design show [--attempt N]             # the design draft or the frozen design, hypotheses, feasibility claims
+uv run rk eval stats --write-config             # validate rk.stats against published meta-analyses; enables pooling
+```
+
+| Checkpoint | When | Answers |
+|---|---|---|
+| `pooling_approval` | comparable pooling groups (P2) | `{"decisions": {"<group>": "pool"\|"no_pool"}}`, one per group |
+| `uncertain_support` | the judges disagree on synthesis findings (P2) | `{"claims": {claim_id: "supported"\|"withdraw"}}`, or `{"decision": "rerun", "comment"}` (reruns synthesize only) |
+| `uncertain_support` | the end of argue (P2) | `{"answers_rq": "yes"\|"no", "claims": {…}}`, or `{"decision": "rerun", "comment"}` |
+| `evidence_conflict` | two supported claims contradict each other (P2) | `{"decision": "a_holds"\|"b_holds"\|"both_contested"}` |
+| `design_approval` | a design passed its checks (P2) | `{"decision": "approve", "claims": {…}}`, `revise` with a `comment`, or `back` |
+
+In the Workbench these checkpoints have their own cards, and the Argument page shows the claims, warrants, objections
+and conflicts. A recorded run: `docs/demo/plan5b-synthesis-argument.md` (it reached synthesize, not argue; design was
+shown only by the tests).
 
 ## Drivers and roles
 
