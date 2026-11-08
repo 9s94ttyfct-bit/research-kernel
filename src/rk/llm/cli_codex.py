@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import copy
 import json
+import time
 from pathlib import Path
 
 from pydantic import ValidationError
 
 from rk.llm.cli_base import AgenticCli, mcp_server_spec
 from rk.llm.jsonout import extract_json
+from rk.llm.limits import SESSION_LIMITED, usage_limit_wait
 from rk.llm.types import ChatSpec, RunContext, TaskResult, TaskSpec
 from rk.llm.vendors import vendor_of
 from rk.roles.prompts import build_system_prompt, render_inputs
@@ -55,8 +57,9 @@ def mcp_overrides(project: str, role: str, token: str) -> list[str]:
 
 
 def parse_events(stdout: str) -> dict:
-    """thread id, tool-call count and agent messages from ``codex exec --json`` JSONL."""
-    out: dict = {"thread_id": None, "tool_calls": 0, "messages": [], "error": None}
+    """thread id, tool-call count, agent messages and error messages (``error``: the last) from ``codex exec --json``
+    JSONL."""
+    out: dict = {"thread_id": None, "tool_calls": 0, "messages": [], "error": None, "errors": []}
     for line in stdout.splitlines():
         try:
             ev = json.loads(line)
@@ -72,6 +75,7 @@ def parse_events(stdout: str) -> dict:
             out["tool_calls"] += 1
         elif t in ("error", "turn.failed"):
             out["error"] = str(ev.get("message") or ev.get("error") or ev)[:500]
+            out["errors"].append(out["error"])
     return out
 
 
@@ -124,12 +128,16 @@ class CodexCliProvider(AgenticCli):
         ev = parse_events(done.stdout)
         raw = last or (ev["messages"][-1] if ev["messages"] else "")
 
-        def result(ok: bool, output=None, error: str | None = None) -> TaskResult:
+        def result(ok: bool, output=None, error: str | None = None, wait_s: float | None = None) -> TaskResult:
             return TaskResult(spec.task_id, ok, output, raw, self.name, self.model, done.duration_s, error,
-                              ev["tool_calls"], ev["thread_id"])
+                              ev["tool_calls"], ev["thread_id"], wait_s)
 
         if done.code is None:
             return result(False, error="timeout")
+        # the subscription's usage limit ("You’ve hit your usage limit. ... try again at 3:04 PM."): no failed task
+        if (ev["error"] or done.code != 0) and (wait := usage_limit_wait(
+                "\n".join([*ev["errors"], done.stderr]), time.time())) is not None:
+            return result(False, error=SESSION_LIMITED, wait_s=wait)
         if done.code != 0:
             return result(False, error=f"exit {done.code}: {ev['error'] or done.stderr[-500:]}")
         obj = extract_json(raw)

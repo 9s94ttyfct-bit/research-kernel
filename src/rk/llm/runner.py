@@ -1,5 +1,7 @@
 """``run_task``: the one entry point for role tasks. Resolves the driver, enforces call caps, scopes a task token,
-retries (spec §7.2: at most 3 attempts) and writes every attempt to the project's event log (spec §8.2)."""
+retries (spec §7.2: at most 3 attempts) and writes every attempt to the project's event log (spec §8.2). A driver's
+usage-limit reply (``SESSION_LIMITED``, ``rk.llm.limits``) is not retried: it blocks the driver in the call caps until
+the limit resets."""
 
 from __future__ import annotations
 
@@ -10,6 +12,7 @@ from pydantic import BaseModel
 
 from rk.ids import new_id
 from rk.llm.drivers import DriverSpec, build_provider
+from rk.llm.limits import DEFAULT_WAIT_S, SESSION_LIMITED
 from rk.llm.types import Provider, RunContext, TaskResult, TaskSpec
 from rk.roles.policy import role_tools
 from rk.store.events import Event, NewEvent
@@ -17,7 +20,7 @@ from rk.store.projections import projection
 
 MAX_ATTEMPTS = 3
 RAW_LIMIT = 64 * 1024
-NO_RETRY = frozenset({"waiting_human", "rate_capped"})
+NO_RETRY = frozenset({"waiting_human", "rate_capped", SESSION_LIMITED})
 
 
 class FreeText(BaseModel):
@@ -65,7 +68,10 @@ def run_task(kernel, registry, *, project: str, role: str, instructions: str, in
                                         f"{type(e).__name__}: {e}")
             ps.apply(NewEvent(type="task.attempt", entity_id=task_id, actor_kind="agent", actor=ctx.actor, payload={
                 "n": n, "ok": result.ok, "error": result.error, "raw": _clip(result.raw), "model": result.model,
-                "duration_s": result.duration_s, "tool_calls": result.tool_calls, "session_id": result.session_id}))
+                "duration_s": result.duration_s, "tool_calls": result.tool_calls, "session_id": result.session_id,
+                "wait_s": result.wait_s}))
+            if result.error == SESSION_LIMITED:
+                kernel.caps.block_for(spec_driver.provider, result.wait_s or DEFAULT_WAIT_S)
             if result.ok or result.error in NO_RETRY:
                 break
     finally:

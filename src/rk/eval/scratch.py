@@ -10,8 +10,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from rk.config import load_settings, rk_home
-from rk.discovery.executor import RateCapped
+from rk.discovery.executor import RateCapped, SessionLimited
 from rk.llm.drivers import DriverSpec, build_provider
+from rk.llm.limits import SESSION_LIMITED
 from rk.llm.ratelimit import CallCaps
 from rk.llm.runner import run_task
 from rk.llm.types import TaskResult
@@ -40,11 +41,14 @@ def eval_provider(spec: DriverSpec, settings, *, tools: bool = True):
 
 
 def eval_task(k, reg, *, project: str, **task) -> TaskResult:
-    """``run_task`` for evaluations. A task stopped by its driver's hourly call cap raises ``RateCapped``, so the
-    evaluation stops instead of scoring the item as unanswered."""
+    """``run_task`` for evaluations. A task stopped by its driver's hourly call cap raises ``RateCapped`` (by its
+    subscription's usage limit: ``SessionLimited``), so the evaluation stops instead of scoring the item as
+    unanswered."""
     r = run_task(k, reg, project=project, **task)
     if r.error == "rate_capped":
         raise RateCapped(r.provider, k.caps.wait_s(r.provider))
+    if r.error == SESSION_LIMITED:
+        raise SessionLimited(r.provider, max(k.caps.wait_s(r.provider), r.wait_s or 0.0))
     return r
 
 

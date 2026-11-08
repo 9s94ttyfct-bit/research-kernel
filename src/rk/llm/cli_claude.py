@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import time
 
 from pydantic import ValidationError
 
 from rk.llm.cli_base import AgenticCli, mcp_server_spec
+from rk.llm.limits import SESSION_LIMITED, usage_limit_wait
 from rk.llm.types import ChatSpec, RunContext, TaskResult, TaskSpec
 from rk.llm.vendors import vendor_of
 from rk.roles.prompts import build_system_prompt, render_inputs
@@ -60,20 +62,25 @@ class ClaudeCliProvider(AgenticCli):
 
         def fail(error: str, raw: str = done.stdout, **kw) -> TaskResult:
             return TaskResult(spec.task_id, False, None, raw, self.name, kw.get("model", self.model), done.duration_s,
-                              error, kw.get("tool_calls", 0), kw.get("session_id"))
+                              error, kw.get("tool_calls", 0), kw.get("session_id"), kw.get("wait_s"))
 
         if done.code is None:
             return fail("timeout")
         try:
             data = json.loads(done.stdout)
         except json.JSONDecodeError:
+            if (wait := usage_limit_wait(f"{done.stdout}\n{done.stderr}", time.time())) is not None:
+                return fail(SESSION_LIMITED, wait_s=wait)
             return fail(f"exit {done.code}: {(done.stderr or done.stdout)[-500:]}")
         model = next(iter(data.get("modelUsage") or {}), None) or self.model
         calls = max(int(data.get("num_turns") or 1) - 1, 0)
         meta = {"model": model, "tool_calls": calls, "session_id": data.get("session_id")}
         if done.code != 0 or data.get("is_error") or data.get("subtype") != "success":
-            return fail(f"claude {data.get('subtype') or 'error'} (exit {done.code})", raw=str(data.get("result", "")),
-                        **meta)
+            said = str(data.get("result", ""))
+            # the subscription's session/usage limit ("You've hit your session limit · resets 3pm"): no failed task
+            if (wait := usage_limit_wait(f"{said}\n{done.stderr}", time.time())) is not None:
+                return fail(SESSION_LIMITED, raw=said, wait_s=wait, **meta)
+            return fail(f"claude {data.get('subtype') or 'error'} (exit {done.code})", raw=said, **meta)
         structured = data.get("structured_output")
         if structured is None:
             return fail("no structured_output", raw=str(data.get("result", "")), **meta)

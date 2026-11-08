@@ -1,5 +1,5 @@
 """Stand-in for `claude` and `codex`, selected by FAKE_KIND. Records argv/cwd to FAKE_RECORD (JSON lines) and
-behaves per FAKE_MODE: ok | invalid | exit1 | sleep."""
+behaves per FAKE_MODE: ok | invalid | exit1 | sleep | limit (the subscription's session/usage limit reply)."""
 
 import json
 import os
@@ -22,6 +22,17 @@ if mode == "sleep":
     time.sleep(60)
 if mode == "exit1":
     print("boom", file=sys.stderr)
+    sys.exit(1)
+if mode == "limit":
+    if kind == "claude":  # Claude Code 2.1: print mode reports the limit as a "success" result with exit 1
+        print(json.dumps({"type": "result", "subtype": "success", "is_error": True, "num_turns": 1,
+                          "result": "You've hit your session limit · resets 3pm (UTC)", "session_id": "sess-1"}))
+    else:
+        for ev in [{"type": "thread.started", "thread_id": "thread-1"}, {"type": "turn.started"},
+                   {"type": "error", "message": "You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/"
+                                                "usage to purchase more credits or try again in 2 hours 5 minutes."},
+                   {"type": "turn.failed", "error": {"message": "You’ve hit your usage limit."}}]:
+            print(json.dumps(ev))
     sys.exit(1)
 answer = {"found": True} if mode == "ok" else {"found": "not-a-bool"}
 resumed = "--resume" in argv or (len(argv) > 1 and argv[1] == "resume")

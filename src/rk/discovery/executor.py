@@ -1,5 +1,6 @@
 """The role-task facade of the discovery stages: ``TaskExecutor`` and ``KernelExecutor`` over ``run_task``, with the
-per-stage task budget of a run session (spec §7.2) and the hourly call caps surfaced as ``RateCapped``."""
+per-stage task budget of a run session (spec §7.2), and the hourly call caps and the subscriptions' usage limits
+surfaced as ``RateCapped`` (``SessionLimited``)."""
 
 from __future__ import annotations
 
@@ -9,6 +10,7 @@ from typing import Protocol
 from pydantic import BaseModel
 
 from rk.llm.drivers import DriverSpec
+from rk.llm.limits import SESSION_LIMITED
 from rk.llm.runner import run_task
 from rk.llm.types import Provider, TaskResult
 from rk.orchestrator.graph import OPEN_STAGES, STAGE_TASK_BUDGET
@@ -25,10 +27,17 @@ class BudgetExceeded(Exception):
 
 class RateCapped(Exception):
     """A role task hit its driver's hourly call cap; ``wait_s`` is the time until a call frees up."""
+    why = "is at its hourly call cap"
 
     def __init__(self, driver: str, wait_s: float):
-        super().__init__(f"driver {driver!r} is at its hourly call cap; retry in {wait_s:.0f} s")
+        super().__init__(f"driver {driver!r} {self.why}; retry in {wait_s:.0f} s")
         self.driver, self.wait_s = driver, wait_s
+
+
+class SessionLimited(RateCapped):
+    """A role task's driver answered that its subscription hit a session or usage limit (``rk.llm.limits``): the run
+    waits for the reset as at an hourly cap; ``wait_s`` is the time until then."""
+    why = "hit its subscription's session or usage limit"
 
 
 class TaskExecutor(Protocol):
@@ -74,4 +83,6 @@ class KernelExecutor:
                         attempt=attempt, actor=self.actor)
         if result.error == "rate_capped":
             raise RateCapped(result.provider, self.kernel.caps.wait_s(result.provider))
+        if result.error == SESSION_LIMITED:
+            raise SessionLimited(result.provider, max(self.kernel.caps.wait_s(result.provider), result.wait_s or 0.0))
         return result

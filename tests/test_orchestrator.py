@@ -7,6 +7,7 @@ import json
 import time
 
 import pytest
+from pydantic import BaseModel
 
 from rk.checkpoints import (
     answer_checkpoint,
@@ -14,20 +15,26 @@ from rk.checkpoints import (
     get_checkpoint,
     list_checkpoints,
 )
-from rk.discovery.executor import BudgetExceeded, RateCapped
+from rk.config import Settings
+from rk.discovery.executor import BudgetExceeded, KernelExecutor, RateCapped
 from rk.discovery.gaps import GapsWorker, MinerResult
 from rk.discovery.models import Gap, GapEvidence
 from rk.discovery.store import gaps
+from rk.llm.cli_base import Completed
+from rk.llm.cli_claude import ClaudeCliProvider
 from rk.orchestrator.engine import GateResult, IntakeWorker, Orchestrator, StageOutcome
 from rk.orchestrator.graph import DISCOVERY, OPEN_STAGES, stages_for
 from rk.orchestrator.state import (
     current_stage,
     edge_count,
+    edge_rows,
     latest_attempt,
+    rate_capped_driver,
     record_degraded,
     run_row,
     stage_rows,
     start_run,
+    tasks_used,
 )
 from rk.store.projections import rebuild
 from rk.tools.registry import ToolError
@@ -418,6 +425,81 @@ def test_interrupted_attempt_of_a_resuming_worker_runs_again_in_place(project):
     assert [(e["stage"], e["attempt"]) for e in _events(ps, "stage.resumed")] == [("landscape", 2)] * 2
     assert [e["attempt"] for e in _events(ps, "stage.attempt") if e["stage"] == "landscape"] == [1, 2]
     assert get_checkpoint(ps, opened["id"])["status"] == "open"
+
+
+class _Found(BaseModel):
+    found: bool
+
+
+class _ScriptedClaude(ClaudeCliProvider):
+    """``claude_cli`` whose process is scripted: each run takes the next ``(exit code, stdout)``; none is started."""
+
+    def __init__(self, replies: list[tuple[int, str]]):
+        super().__init__(Settings())
+        self.replies, self.runs = list(replies), 0
+
+    def bin_path(self) -> str:
+        return "claude"
+
+    def execute(self, argv, cwd, timeout_s) -> Completed:
+        self.runs += 1
+        code, out = self.replies.pop(0)
+        return Completed(code, out, "", 0.1)
+
+
+class _AskOnce:
+    """A stage that asks the arguer once and reruns when it gets no answer, as synthesize, argue and design do."""
+    resumes_in_place = True
+
+    def __init__(self):
+        self.runs: list[int] = []
+
+    def run(self, ctx):
+        self.runs.append(ctx.attempt)
+        r = ctx.executor.run("arguer", "Answer.", {}, _Found, stage=ctx.stage, attempt=ctx.attempt, tools=[])
+        return StageOutcome("done") if r.ok else StageOutcome("rerun", reason=f"no answer ({r.error})")
+
+    def on_answer(self, ctx, checkpoint):
+        return StageOutcome("failed", reason="no checkpoint")
+
+    def gate(self, ps, attempt):
+        return GateResult(True, [])
+
+    def degrade(self, ctx, failures):
+        return StageOutcome("failed", reason="nothing to degrade")
+
+
+def test_session_limit_waits_without_spending_a_rerun(project):
+    """I2: the Claude CLI's "You've hit your session limit" reply is no failed task. The run waits (``waiting_rate``)
+    until the limit resets: no rerun, no back-edge, no new attempt, and no call reaches the CLI before the reset."""
+    k, ps = project
+    now = [T0]
+    k.caps._clock = lambda: now[0]
+    limit = json.dumps({"type": "result", "subtype": "success", "is_error": True, "num_turns": 1,
+                        "result": "You've hit your session limit · resets 3pm (UTC)", "session_id": "s1"})
+    ok = json.dumps({"type": "result", "subtype": "success", "is_error": False, "num_turns": 1,
+                     "structured_output": {"found": True}, "result": "{}", "session_id": "s2"})
+    claude, worker = _ScriptedClaude([(1, limit), (0, ok)]), _AskOnce()
+    o = Orchestrator(k, None, workers=_workers(landscape=worker),
+                     executor_factory=lambda project, run_id, session: KernelExecutor(
+                         k, None, project, run_id=run_id, session=session, provider_for=lambda role: claude),
+                     sources_factory=lambda project: FakeSources({}), clock=Clock())
+    run_id = start_run(ps, until="landscape", actor="tester", clock=Clock())
+    assert o.step("demo", run_id, actor="tester") == "running"  # intake
+    assert o.step("demo", run_id, actor="tester") == "waiting_rate"
+    assert claude.runs == 1 and edge_rows(ps) == {} and latest_attempt(ps, "landscape") == 1
+    assert rate_capped_driver(ps, run_id) == "claude_cli"  # what the run manager waits on
+    wait = k.caps.wait_s("claude_cli")
+    assert 60 <= wait <= 24 * 3600
+    (task,) = ps.db.execute("SELECT status, error FROM tasks").fetchall()
+    assert tuple(task) == ("failed", "session_limited")
+    # before the reset no call reaches the CLI: the run keeps waiting
+    assert o.step("demo", run_id, actor="tester") == "waiting_rate"
+    assert claude.runs == 1 and latest_attempt(ps, "landscape") == 1
+    now[0] += wait + 1
+    assert o.step("demo", run_id, actor="tester") == "done"
+    assert claude.runs == 2 and worker.runs == [1, 1, 1] and edge_rows(ps) == {}
+    assert latest_attempt(ps, "landscape") == 1 and tasks_used(ps, run_id, 1, "landscape") == 1
 
 
 def test_run_stage_refuses_later_and_plan5_stages(project):

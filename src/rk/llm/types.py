@@ -46,6 +46,7 @@ class TaskResult:
     error: str | None
     tool_calls: int = 0
     session_id: str | None = None
+    wait_s: float | None = None  # with error SESSION_LIMITED (rk.llm.limits): seconds until the usage limit resets
 
 
 @dataclass

@@ -3,10 +3,13 @@ import shutil
 import stat
 import sys
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from pydantic import BaseModel
+from rk.llm.limits import DEFAULT_WAIT_S as LIMIT_DEFAULT_WAIT_S
+from rk.llm.limits import usage_limit_wait
 
 from rk.config import Settings
 from rk.fulltext import attach_pdf
@@ -143,6 +146,54 @@ def test_cli_nonzero_exit_is_failed_result(fake, monkeypatch, cls, kind):
     monkeypatch.setenv("FAKE_MODE", "exit1")
     r = _provider(cls, exe, kind, monkeypatch).run(_spec(), CTX)
     assert not r.ok and "exit 1" in r.error
+
+
+@pytest.mark.parametrize(("cls", "kind", "wait"), [(ClaudeCliProvider, "claude", None),
+                                                   (CodexCliProvider, "codex", 2 * 3600 + 5 * 60)])
+def test_cli_session_limit_is_a_cap_with_a_wait(fake, monkeypatch, cls, kind, wait):
+    """A subscription's session or usage limit is no failed task: the driver reports ``session_limited`` with the time
+    until the limit resets (the run waits instead of spending a rerun)."""
+    exe, _ = fake
+    monkeypatch.setenv("FAKE_MODE", "limit")
+    r = _provider(cls, exe, kind, monkeypatch).run(_spec(), CTX)
+    assert not r.ok and r.error == "session_limited", r.error
+    assert r.wait_s is not None and 0 < r.wait_s <= 24 * 3600
+    if wait is not None:
+        assert abs(r.wait_s - wait) < 60
+
+
+NOON = datetime(2026, 11, 8, 12, 0, tzinfo=UTC).timestamp()
+
+
+@pytest.mark.parametrize(("text", "wait"), [
+    ("You've hit your session limit · resets 3pm (UTC)", 3 * 3600),
+    ("You've hit your session limit · resets 3:30pm (Europe/Berlin)", 2.5 * 3600),  # 15:30 CET is 14:30 UTC
+    ("You've hit your weekly limit · resets 11am (UTC)", 23 * 3600),  # passed today: tomorrow
+    ("You've hit your weekly limit · resets Nov 10, 9am (UTC)", 45 * 3600),
+    ("Claude AI usage limit reached|" + str(int(NOON) + 600), 600),
+    ("You’ve hit your usage limit. Upgrade to Pro or try again in 20 minutes.", 20 * 60),
+    ("You've hit your session limit", LIMIT_DEFAULT_WAIT_S),
+    ("Usage limit reached. You've reached your usage limit.", LIMIT_DEFAULT_WAIT_S),
+    ("Context limit reached", None),
+    ("exit 1: boom", None),
+])
+def test_usage_limit_wait(text, wait):
+    got = usage_limit_wait(text, NOON)
+    assert got is None if wait is None else got == pytest.approx(wait, abs=1)
+
+
+def test_usage_limit_wait_in_local_time():
+    """A reset time without a known zone (codex gives none) is local time."""
+    text = ("You’ve hit your usage limit. Visit the settings to purchase more credits or try again at Nov 9th, 2026 "
+            "1:04 PM.")
+    local = datetime(2026, 11, 9, 13, 4).astimezone().timestamp()
+    assert usage_limit_wait(text, NOON) == pytest.approx(local - NOON, abs=1)
+    at3 = datetime.fromtimestamp(NOON).replace(hour=15, minute=0, second=0, microsecond=0)
+    if at3.astimezone().timestamp() <= NOON:
+        at3 += timedelta(days=1)
+    got = usage_limit_wait("You've hit your session limit · resets 3pm (Not/AZone)", NOON)
+    assert got == pytest.approx(at3.astimezone().timestamp() - NOON, abs=1)
+
 
 
 def test_cli_timeout_kills_process(fake, monkeypatch):

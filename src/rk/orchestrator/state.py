@@ -37,9 +37,10 @@ def record_run_task(ps: ProjectStore, *, task_id: str, run_id: str | None, sessi
 
 def tasks_used(ps: ProjectStore, run_id: str, session: int | None, stage: str, *, attempt: int | None = None) -> int:
     """Role tasks counted against the stage budget of one run session (with ``attempt``, only that attempt's). A task
-    that came back ``rate_capped`` made no model call and is not counted."""
+    that came back ``rate_capped`` made no model call, and one that came back ``session_limited`` did no work (its
+    driver's usage limit was reached): neither is counted."""
     sql = ("SELECT COUNT(*) FROM run_tasks r LEFT JOIN tasks t ON t.id = r.task_id WHERE r.run_id=? AND r.session IS ? "
-           "AND r.stage=? AND COALESCE(t.error, '') != 'rate_capped'")
+           "AND r.stage=? AND COALESCE(t.error, '') NOT IN ('rate_capped', 'session_limited')")
     params: tuple = (run_id, session, stage)
     if attempt is not None:
         sql, params = sql + " AND r.attempt=?", (*params, attempt)
@@ -262,9 +263,11 @@ def latest_run(ps: ProjectStore) -> dict[str, Any] | None:
 
 
 def rate_capped_driver(ps: ProjectStore, run_id: str) -> str | None:
-    """The driver (``provider[:model]``) of the run's latest role task that came back ``rate_capped``, if any."""
+    """The driver (``provider[:model]``) of the run's latest role task that came back ``rate_capped`` or
+    ``session_limited`` (``CallCaps.wait_s`` then says how long it waits), if any."""
     r = ps.db.execute("SELECT t.driver FROM run_tasks r JOIN tasks t ON t.id = r.task_id WHERE r.run_id=? AND "
-                      "t.error='rate_capped' ORDER BY r.rowid DESC LIMIT 1", (run_id,)).fetchone()
+                      "t.error IN ('rate_capped', 'session_limited') ORDER BY r.rowid DESC LIMIT 1",
+                      (run_id,)).fetchone()
     return r["driver"] if r else None
 
 
