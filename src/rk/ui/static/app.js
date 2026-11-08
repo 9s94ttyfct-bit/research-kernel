@@ -510,6 +510,7 @@ const HKSJ = { auto: "auto (the Cochrane Handbook rule)", true: "always", false:
 const POOL_MODELS = { DL: "DerSimonian–Laird random effects", REML: "REML random effects", FE: "fixed effect (inverse variance)" };
 const PI_DF = { ci: "the confidence interval's (RevMan)", "k-2": "t with k−2 degrees of freedom (Higgins 2009)" };
 const minStudies = (n) => `at least ${n} studies with a computable effect (fewer: narrative synthesis)`;
+const POOL_LABELS = { pool_model: "Model", hksj: "HKSJ intervals", pi_df: "Prediction interval", min_studies: "Minimum studies" };
 
 async function protocolCard(c, answer) {
   const d = await api("/ui/api/protocol", { query: { project: state.project, protocol_id: c.options?.protocol_id } });
@@ -537,6 +538,7 @@ async function protocolCard(c, answer) {
     return fields ? `${o.name} (${fields})` : o.name;
   };
   const planValue = (k, v) => (k === "method" ? words(v) : k === "hksj" ? HKSJ[String(v)] ?? String(v)
+    : k === "pool_model" ? POOL_MODELS[v] ?? String(v) : k === "pi_df" ? PI_DF[v] ?? String(v)
     : k === "min_studies" ? minStudies(v)
     : k === "outcomes" ? v.map(outcome).join("; ") : Array.isArray(v) ? v.join(", ") : String(v));
   // the pool options and outcomes are the meta-analysis's: shown only for that method
@@ -566,7 +568,7 @@ async function protocolCard(c, answer) {
             el("td", {}, f.type, f.categories ? `: ${f.categories.join(" | ")}` : "", f.unit ? ` (${f.unit})` : ""), el("td", {}, f.description)))))
       : el("p", { class: "empty" }, "No extraction field."),
     el("h4", {}, "Synthesis plan"),
-    plan.length ? facts(plan.map(([k, v]) => [label(k), planValue(k, v)])) : el("p", { class: "empty" }, "None."),
+    plan.length ? facts(plan.map(([k, v]) => [POOL_LABELS[k] ?? label(k), planValue(k, v)])) : el("p", { class: "empty" }, "None."),
     prismaP.length ? [el("h4", {}, "PRISMA-P"), facts(prismaP.map(([k, v]) => [label(k), v]))] : null,
     el("div", { class: "other-answers" }, approve,
       reviseForm("What should change in the protocol", (comment) => answer({ decision: "revise", comment })), back),
@@ -752,9 +754,9 @@ async function poolingCard(c, answer) {
   return [
     el("p", { class: "hint" }, "The kernel computes every number from the extraction rows. A group you do not pool is synthesized narratively, recorded as a deviation from the protocol."),
     el("h4", {}, "Pool options the protocol pre-specifies"),
-    facts([["Model", POOL_MODELS[p.model] || p.model], ["HKSJ intervals", HKSJ[String(p.hksj)] ?? String(p.hksj)],
-      ["Prediction interval", PI_DF[p.pi_df] || p.pi_df], ["Interval level", p.level ? `${Math.round(p.level * 100)}%` : ""],
-      ["Minimum studies", p.min_studies ? minStudies(p.min_studies) : ""]]),
+    facts([[POOL_LABELS.pool_model, POOL_MODELS[p.model] || p.model], [POOL_LABELS.hksj, HKSJ[String(p.hksj)] ?? String(p.hksj)],
+      [POOL_LABELS.pi_df, PI_DF[p.pi_df] || p.pi_df], ["Interval level", p.level ? `${Math.round(p.level * 100)}%` : ""],
+      [POOL_LABELS.min_studies, p.min_studies ? minStudies(p.min_studies) : ""]]),
     listed.length ? el("ol", { class: "pool-groups" }, listed.map(group)) : el("p", { class: "empty" }, "The groups of this checkpoint were not found."),
     comment.field,
     el("div", { class: "toolbar" }, submit, status),

@@ -474,9 +474,15 @@ def test_protocol_card_shows_a_meta_analysis_plan_in_words(page, served):
                       {"protocol_id": pid, "version": 1, "attempt": 1, "choices": ["approve", "revise", "back"],
                        "replaces": None}, stage="protocol", actor="tester")
     _cp, card = _show(page, ps, "protocol_approval")
-    for text in ("meta analysis", "never (Wald intervals)", "DL", "at least 3 studies with a computable effect",
+    for text in ("meta analysis", "never (Wald intervals)", "DerSimonian–Laird random effects",
+                 "the confidence interval's (RevMan)", "at least 3 studies with a computable effect",
                  "stroke (events_treatment = stroke_events_treatment, n_treatment = stroke_n_treatment"):
         assert card.get_by_text(text, exact=False).count() >= 1, text
+    # the pool options are worded as on the pooling card, not by their keys
+    labels = card.locator("dt").all_text_contents()
+    for word in ("Model", "HKSJ intervals", "Prediction interval", "Minimum studies"):
+        assert word in labels, (word, labels)
+    assert not {"Hksj", "Pi df", "Pool model", "Min studies"} & set(labels), labels
     assert page.errors == []
 
 
