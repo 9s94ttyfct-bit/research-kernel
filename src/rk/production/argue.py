@@ -1584,9 +1584,13 @@ class ArgueWorker:
             new = self._open_final(ctx, s, replaces=cp["id"], why=f"Your answer could not be applied: {why}.")
             return StageOutcome("waiting_human", checkpoint_id=new, reason=why)
         by = answered_by_actor(ps, cp["id"]) or ctx.actor
-        for cid in apply_claim_decisions(ps, {cid: answer["claims"][cid] for cid in listed}, checkpoint_id=cp["id"],
-                                         by=by, comment=comment):
-            self._concede_gone(replace(ctx, actor=by), cid, f"conceded: the claim {cid} was withdrawn by you")
+        apply_claim_decisions(ps, {cid: answer["claims"][cid] for cid in listed}, checkpoint_id=cp["id"], by=by,
+                              comment=comment)
+        # every claim you withdrew, also one an earlier, interrupted application withdrew: _concede_gone concedes
+        # only what is still concedable, so applying the answer again finishes it
+        for cid in listed:
+            if answer["claims"][cid] == WITHDRAW and _withdrawn(ps, cid):
+                self._concede_gone(replace(ctx, actor=by), cid, f"conceded: the claim {cid} was withdrawn by you")
         reconcile_withdrawn_pools(ctx, s.synth_attempt)  # a withdrawn stat_result takes its pool out of the synthesis
         main = cp["options"]["main_claim_id"]
         if not any(n.get("checkpoint_id") == cp["id"] for n in argue_notes(ps, ctx.attempt, kind="rq_check")):

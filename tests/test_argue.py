@@ -1153,6 +1153,37 @@ def test_withdrawing_every_finding_in_your_review_goes_back_to_synthesize(env):
     assert "every finding of synthesize attempt 1 was withdrawn in argue" in out.reason
 
 
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_your_withdrawals_concede_their_objections_when_applied_again_after_a_crash(env, monkeypatch):
+    """Fix round (M4 minor): a crash in the first concession after your withdrawals were applied; applied again, the
+    answer concedes the objections of every claim you withdrew (already withdrawn ones included), so none is left
+    open."""
+    _, ps, _ = env
+    a, _ = _synthesize(env)
+    finding = {"target_id": a, "category": "problem", "priority": 1, "text": "Finding a misreads its study."}
+    ex = _exec([draft(), responses(), responses()],
+               [critique(objections=[finding, _o("reason", 1, "Study A enrolled people under 65.")]), critique()])
+    w = ArgueWorker()
+    cp = get_checkpoint(ps, w.run(_ctx(env, ex)).checkpoint_id)
+    listed = cp["options"]["claim_ids"]
+    assert a in listed and len(listed) == 2
+    cp = _answer(ps, cp["id"], {"claims": dict.fromkeys(listed, "withdraw"), "answers_rq": "yes"})
+    real = ArgumentService.respond_objection
+
+    def crash(*args, **kw):
+        raise RuntimeError("crash in the first concession")
+
+    monkeypatch.setattr(ArgumentService, "respond_objection", crash)
+    with pytest.raises(RuntimeError, match="first concession"):
+        w.on_answer(_ctx(env, ex), cp)
+    monkeypatch.setattr(ArgumentService, "respond_objection", real)
+    assert [ArgumentService(ps).get_claim(c)["status"] for c in listed] == ["withdrawn", "withdrawn"]
+    assert [o["status"] for o in _objections(ps)] == ["open", "open"]
+    out = w.on_answer(_ctx(env, ex), cp)
+    assert out.status == "done", out.reason
+    assert [o["status"] for o in _objections(ps)] == ["conceded", "conceded"]
+
+
 # ---- fix wave 3 ----
 def test_conceded_priority1_objection_fails_its_target_in_p1_until_narrowed(env):
     """I6: the Arguer may concede a priority-1 objection, but its target then fails the claim gate (it is not withdrawn
