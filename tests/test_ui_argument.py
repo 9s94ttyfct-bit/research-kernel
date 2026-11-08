@@ -21,6 +21,7 @@ from rk.orchestrator.graph import DISCOVERY
 from rk.orchestrator.runs import RunManager
 from rk.orchestrator.state import (
     attempt_guidance,
+    edge_rows,
     record_attempt,
     record_passed,
     record_ran,
@@ -827,6 +828,28 @@ def test_design_card_answers_reach_the_worker(page, served):
     page.goto_route("argument")
     page.locator(".design-view").wait_for()
     assert page.get_by_text(approved["frozen_hash"][:12], exact=False).count() >= 1
+    assert page.errors == []
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("served", [{"paper_type": "research_proposal"}], indirect=True)
+def test_design_card_untestable_reaches_the_worker(page, served):
+    """I5 (design): the Ideator says the RQ is untestable (no draft); the card shows its reason and offers back to
+    the question or a revision, not the approval nor back to argue."""
+    ps = served.ps
+    _argued(served.env)
+    why = "No <b>method</b> can measure the outcome."
+    _start(served, "design", design_exec([{"rq_untestable": why}]))
+    cp, card = _show(page, ps, "design_approval")
+    assert cp["options"]["untestable"] == why
+    assert card.get_by_text(why, exact=False).count() >= 1 and card.locator(".card-body b").count() == 0
+    assert card.get_by_role("button", name="Approve this design").count() == 0
+    assert card.get_by_role("button", name="Back to argue").count() == 0
+    card.get_by_label("Why go back to the question (optional)").fill("Measure stroke instead.")
+    card.get_by_role("button", name="Back to the research question").click()
+    assert _answer_of(ps, cp["id"]) == {"decision": "question", "comment": "Measure stroke instead."}
+    until(lambda: (edge_rows(ps).get("design->question") or {}).get("count") == 1)
+    assert "Measure stroke instead." in stage_row(ps, "question")["guidance"]
     assert page.errors == []
 
 

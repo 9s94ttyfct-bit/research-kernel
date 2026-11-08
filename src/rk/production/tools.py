@@ -376,10 +376,13 @@ def argument_view(ps: ProjectStore, attempt: int | None = None, claim_id: str | 
 
 
 def _approval_state(ps: ProjectStore, attempt: int) -> str:
-    """Where the attempt's design stands: ``frozen`` (approved), ``not approved`` (the P1 vote), ``awaiting
-    approval`` (its design_approval is open), ``answered: <decision>``, or ``draft`` (not asked yet)."""
+    """Where the attempt's design stands: ``frozen`` (approved), ``not approved`` (the P1 vote), ``untestable`` (the
+    P1 vote on the Ideator's rq_untestable sent it back to the question), ``awaiting approval`` (its design_approval
+    is open), ``answered: <decision>``, or ``draft`` (not asked yet)."""
     if design_notes(ps, attempt, kind="approved"):
         return "frozen"
+    if (rq := design_notes(ps, attempt, kind="rq_vote")) and rq[-1]["decision"] == "untestable":
+        return "untestable"
     votes = design_notes(ps, attempt, kind="vote")
     if votes and votes[-1]["decision"] != "approve":
         return "not approved"
@@ -402,7 +405,9 @@ def design_view(ps: ProjectStore, attempt: int | None = None) -> dict:
     frozen ``hypotheses`` map) with its ``design_id`` and ``frozen_hash``. Also the design's hypotheses (``new``:
     added on approval; ``id``: the RQ hypothesis it is, once known) with their falsification and links, the dropped
     ones with their reasons, the feasibility claims (``claim_view``), every hypothesis of the frozen RQ with its
-    status and pre-registration hash, the structural ``problems`` now and the gate."""
+    status and pre-registration hash, the structural ``problems`` now and the gate. ``untestable``: the reason the
+    Ideator gave when it said the research question is untestable (``None`` when it did not), with ``status`` even when
+    it gave no draft."""
     if attempt is None:
         attempt = shown_attempt(ps, DESIGN)
     rq = frozen_rq(ps)
@@ -411,7 +416,10 @@ def design_view(ps: ProjectStore, attempt: int | None = None) -> dict:
            "hypotheses": [], "dropped": [], "feasibility_claims": [], "frozen_hash": None,
            "rq_hypotheses": [{k: h.get(k) for k in ("id", "statement", "falsification", "rival_of", "status",
                                                     "prereg_hash")} for h in rows.values()],
-           "problems": [], "gate": None}
+           "problems": [], "gate": None, "untestable": None}
+    untestable = design_notes(ps, attempt, kind="untestable") if attempt is not None else []
+    if untestable:
+        out.update(untestable=untestable[-1]["reason"], status=_approval_state(ps, attempt))
     drafts = design_notes(ps, attempt, kind="draft") if attempt is not None else []
     if not drafts:
         return out

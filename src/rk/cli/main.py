@@ -1254,8 +1254,12 @@ def design_show(attempt: int | None = typer.Option(None, "--attempt", help="Defa
     r = _call("rk_design_get", args)
 
     def render(d):
+        if d.get("untestable"):
+            typer.echo(f"design attempt {d['attempt']}: the Ideator says the research question is untestable: "
+                       f"{d['untestable']} ({d['status']})")
         if d["draft_id"] is None:
-            typer.echo(f"{d['project']}: no design yet")
+            if not d.get("untestable"):
+                typer.echo(f"{d['project']}: no design yet")
             return
         typer.echo(f"{d['draft_id']}: {d['status']}" + (f", frozen hash {d['frozen_hash']}" if d["frozen_hash"] else "")
                    + f" ({_gate_text(d['gate'])})")

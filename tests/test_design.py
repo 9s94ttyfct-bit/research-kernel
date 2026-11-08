@@ -419,15 +419,73 @@ def test_design_back_edges(env):
     w = DesignWorker()
     out = w.run(_ctx(env, _exec([{"needs_argument": "No supported claim motivates a testable effect size."}])))
     assert (out.status, out.to) == ("back_edge", "argue") and "effect size" in out.reason
-    out = w.run(_ctx(env, _exec([{"rq_untestable": "No method can measure the outcome."}]), attempt=2))
-    assert (out.status, out.to) == ("back_edge", "question") and "measure the outcome" in out.reason
     assert ps.db.execute("SELECT COUNT(*) FROM designs").fetchone()[0] == 0
     # your design_approval may send it back to argue
-    out = w.run(_ctx(env, _exec([plan()]), attempt=3))
+    out = w.run(_ctx(env, _exec([plan()]), attempt=2))
     cp = get_checkpoint(ps, out.checkpoint_id)
-    out = w.on_answer(_ctx(env, _exec([]), attempt=3),
+    out = w.on_answer(_ctx(env, _exec([]), attempt=2),
                       _answer(ps, cp["id"], {"decision": "back", "comment": "The argument is too weak."}))
     assert (out.status, out.to) == ("back_edge", "argue") and "too weak" in out.reason
+
+
+UNTESTABLE = "No method can measure the outcome."
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_p2_ideator_untestable_is_yours_to_decide(env):
+    """I5 (design): the Ideator's rq_untestable is an input only. P2 opens your design_approval with its reason,
+    offering back to the question, a revision and, when its draft passes its structure, the approval."""
+    _, ps, _ = env
+    _argued(env)
+    w = DesignWorker()
+    # no draft: back to the question or a revision
+    out = w.run(_ctx(env, _exec([{"rq_untestable": UNTESTABLE}])))
+    assert out.status == "waiting_human", out.reason
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    assert cp["kind"] == "design_approval" and cp["options"]["untestable"] == UNTESTABLE and UNTESTABLE in cp["prompt"]
+    assert cp["options"]["choices"] == ["revise", "question"] and cp["options"]["draft_id"] is None
+    out = w.on_answer(_ctx(env, _exec([])), _answer(ps, cp["id"], {"decision": "approve"}))
+    assert out.status == "waiting_human" and "approve" in out.reason  # not one of its choices: asked again
+    again = get_checkpoint(ps, out.checkpoint_id)
+    assert again["options"]["replaces"] == cp["id"] and again["options"]["choices"] == ["revise", "question"]
+    assert again["options"]["untestable"] == UNTESTABLE
+    out = w.on_answer(_ctx(env, _exec([])), _answer(ps, again["id"], {"decision": "question",
+                                                                      "comment": "Narrow the outcome."}))
+    assert (out.status, out.to) == ("back_edge", "question")
+    assert UNTESTABLE in out.reason and "Narrow the outcome." in out.reason
+    # a draft that passes its structure: the approval too; revise reruns with your comment
+    out = w.run(_ctx(env, _exec([plan(rq_untestable=UNTESTABLE)]), attempt=2))
+    assert out.status == "waiting_human", out.reason
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    assert cp["options"]["choices"] == ["approve", "revise", "question"] and cp["options"]["draft_id"] == "design:2"
+    assert UNTESTABLE in cp["prompt"] and NEW_H in cp["prompt"]
+    out = w.on_answer(_ctx(env, _exec([]), attempt=2),
+                      _answer(ps, cp["id"], {"decision": "revise", "comment": "Use a registry."}))
+    assert (out.status, out.reason) == ("rerun", "Use a registry.")
+    out = w.run(_ctx(env, _exec([plan(rq_untestable=UNTESTABLE)]), attempt=3))
+    out = w.on_answer(_ctx(env, _exec([]), attempt=3), _answer(ps, out.checkpoint_id, {"decision": "approve"}))
+    assert out.status == "done", out.reason
+    assert w.gate(ps, 3).ok, w.gate(ps, 3).failures
+
+
+def test_p1_ideator_untestable_is_decided_by_a_vote(env):
+    """I5 (design), P1: the judges vote whether the RQ is testable (conservative: untestable, back to the question);
+    testable, a draft goes on to its approval vote and no draft reruns with their reasons."""
+    _, ps, _ = env
+    _argued(env)
+    w = DesignWorker()
+    out = w.run(_ctx(env, _exec([plan(rq_untestable=UNTESTABLE)], votes=_votes(["testable"], ["untestable"]))))
+    assert (out.status, out.to) == ("back_edge", "question"), out.reason
+    assert UNTESTABLE in out.reason and "not reviewed by a human" in out.reason
+    (v,) = votes_on(ps, "design_rq", "design:1")
+    assert (v["decision"], v["conservative"]) == ("untestable", 1)
+    assert w.run(_ctx(env, _exec([]))).status == "back_edge"  # resumed: the noted back-edge, no vote again
+    out = w.run(_ctx(env, _exec([{"rq_untestable": UNTESTABLE}], votes=_votes(["testable"], ["testable"])), attempt=2))
+    assert out.status == "rerun" and "judge says testable" in out.reason and UNTESTABLE in out.reason
+    out = w.run(_ctx(env, _exec([plan(rq_untestable=UNTESTABLE)],
+                                votes=_votes(["testable", "approve"], ["testable", "approve"])), attempt=3))
+    assert out.status == "done", out.reason
+    assert w.gate(ps, 3).ok, w.gate(ps, 3).failures
 
 
 def test_interrupted_attempt_neither_duplicates_nor_orphans(env):

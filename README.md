@@ -252,15 +252,18 @@ two uses per project.
 - **Argue.** The Arguer states the main claim, its reasons and the warrant of each reason; the Skeptic (another
   vendor) raises objections, tests every warrant and names conflicts between supported claims, round after round,
   until no new objection of priority 1 or 2 arrives. The Arguer answers each objection (a new claim, a concession or
-  an invalid-objection reason). A conflict goes to you in `evidence_conflict` (P1: a vote); a conceded or failed claim
-  is narrowed or withdrawn, and the limitations list the withdrawn and narrowed claims and the conceded objections.
+  an invalid-objection reason). A conflict goes to you in `evidence_conflict` (P1: a vote); a claim with a conceded
+  priority-1 objection or a failed check is narrowed or withdrawn, a conceded priority-1 objection on a reason link
+  drops the link instead, and the limitations list the withdrawn and narrowed claims, the conceded objections and the
+  dropped links.
   At the end you say in `uncertain_support` whether the main claim answers the frozen RQ (P1: the judges), and you
   withdraw or support each claim (the findings included) that fails the argument's gate. When every finding is
   withdrawn, argue goes back to synthesize.
 - **Design (research proposals).** The Ideator ties hypotheses (each with what would falsify it) to design items and
   measurements and states its feasibility claims; the kernel checks the links both ways, verifies the feasibility
   claims and asks for your `design_approval` (P1: a vote). The approved design is frozen and pre-registers the
-  hypotheses it tests.
+  hypotheses it tests. When the Ideator says the research question is untestable, that is only its input: your
+  `design_approval` shows its reason and offers back to the question (P1: the judges vote testable or untestable).
 
 ```bash
 uv run rk run melatonin --until argue           # or --until synthesize / design (research proposals)
@@ -277,6 +280,7 @@ uv run rk eval stats --write-config             # validate rk.stats against publ
 | `uncertain_support` | the end of argue (P2) | `{"answers_rq": "yes"\|"no", "claims": {…}}`, or `{"decision": "rerun", "comment"}` |
 | `evidence_conflict` | two supported claims contradict each other (P2) | `{"decision": "a_holds"\|"b_holds"\|"both_contested"}` |
 | `design_approval` | a design passed its checks (P2) | `{"decision": "approve", "claims": {…}}`, `revise` with a `comment`, or `back` |
+| `design_approval` | the Ideator says the RQ is untestable (P2) | `{"decision": "question"}` (optional `comment`), `revise` with a `comment`, or `approve` when its draft passes its checks |
 
 In the Workbench these checkpoints have their own cards, and the Argument page shows the claims, warrants, objections
 and conflicts. A recorded run: `docs/demo/plan5b-synthesis-argument.md` (it reached synthesize, not argue; design was

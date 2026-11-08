@@ -876,10 +876,15 @@ function designDetails(d) {
   ];
 }
 
+// design_approval: approve (deciding every feasibility claim the judges could not agree on), revise or back to argue.
+// After the Ideator said the research question is untestable (`untestable`: its reason), the card shows that reason
+// and offers what the checkpoint's `choices` allow: back to the research question, a revision and, only with a draft
+// that passes its structure, the approval.
 async function designCard(c, answer) {
   const o = c.options || {};
+  const allowed = o.choices || ["approve", "revise", "back"];
   const d = await api("/ui/api/design", { query: { project: state.project, attempt: o.attempt } });
-  if (!d.design) return el("p", { class: "error" }, `The design ${o.draft_id} was not found.`);
+  if (!d.design && !o.untestable) return el("p", { class: "error" }, `The design ${o.draft_id} was not found.`);
   const listed = o.claim_ids || [];
   const byId = new Map(d.feasibility_claims.map((x) => [x.id, x]));
   const chosen = new Map();
@@ -890,14 +895,21 @@ async function designCard(c, answer) {
     approve.disabled = chosen.size !== listed.length;
   };
   update();
-  const why = el("textarea", { name: "back_comment" });
-  const back = el("form", { class: "revise" }, el("label", { class: "field" }, "Why go back (optional)", why),
-    el("button", { type: "submit", class: "secondary" }, "Back to argue"));
-  back.addEventListener("submit", (e) => { e.preventDefault(); const comment = why.value.trim(); answer(comment ? { decision: "back", comment } : { decision: "back" }); });
+  const goBack = (label, button, decision) => {
+    const why = el("textarea", { name: `${decision}_comment` });
+    const form = el("form", { class: "revise" }, el("label", { class: "field" }, label, why),
+      el("button", { type: "submit", class: "secondary" }, button));
+    form.addEventListener("submit", (e) => { e.preventDefault(); const comment = why.value.trim(); answer(comment ? { decision, comment } : { decision }); });
+    return form;
+  };
+  const canApprove = allowed.includes("approve") && d.design;
   return [
-    el("p", { class: "hint" }, `Design ${d.draft_id}. Approving freezes it and pre-registers the hypotheses it tests.`),
-    designDetails(d),
-    listed.length ? [el("h4", {}, "Feasibility claims the judges could not agree on"),
+    o.untestable ? [el("h4", {}, "The Ideator says the research question cannot be tested"),
+      el("p", { class: "hint warn" }, o.untestable),
+      el("p", { class: "hint" }, canApprove ? "It gave a design all the same. Send the project back to the research question, ask for a revision, or approve the design."
+        : "Send the project back to the research question, or ask for a revision.")] : null,
+    d.design ? [el("p", { class: "hint" }, `Design ${d.draft_id}.${canApprove ? " Approving freezes it and pre-registers the hypotheses it tests." : ""}`), designDetails(d)] : null,
+    canApprove && listed.length ? [el("h4", {}, "Feasibility claims the judges could not agree on"),
       el("ol", {}, listed.map((cid) => {
         const x = byId.get(cid);
         return el("li", {}, x ? x.text : cid, choices(`feasible-${c.id}-${cid}`, `Your decision: ${x ? x.text : cid}`,
@@ -905,8 +917,10 @@ async function designCard(c, answer) {
           (v) => { chosen.set(cid, v); update(); }));
       }))] : null,
     el("div", { class: "other-answers" },
-      el("div", { class: "toolbar" }, approve, status),
-      reviseForm("What should change in the design", (comment) => answer({ decision: "revise", comment })), back),
+      canApprove ? el("div", { class: "toolbar" }, approve, status) : null,
+      allowed.includes("revise") ? reviseForm("What should change in the design", (comment) => answer({ decision: "revise", comment })) : null,
+      allowed.includes("question") ? goBack("Why go back to the question (optional)", "Back to the research question", "question") : null,
+      allowed.includes("back") ? goBack("Why go back (optional)", "Back to argue", "back") : null),
   ];
 }
 
