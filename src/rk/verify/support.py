@@ -215,7 +215,7 @@ def check_claim_hedge(ps, claim_id: str, *, actor: str = "kernel", record: bool 
 class ClaimProblem:
     """Why a claim fails the claim gate: ``kind``, the gate's short ``line`` and the full ``detail`` (for a narrowing
     task and a withdrawal reason); ``ids``: the artifacts or objections it concerns."""
-    kind: Literal["status", "hedge", "stats", "objection"]
+    kind: Literal["status", "hedge", "stats", "objection", "conceded"]
     line: str
     detail: str
     ids: tuple[str, ...] = ()
@@ -228,15 +228,32 @@ def _support_reason(ps, claim_id: str) -> str:
     return f" ({reason})" if reason else ""
 
 
+def _end_withdrawn(ps, end_id: str) -> bool:
+    """Whether an edge end stands for a withdrawn claim: a claim, the claim of an evidence item, or (an edge) either
+    end of that edge. An unknown id is not withdrawn."""
+    table = {"edg": "edges", "evd": "evidence"}.get(end_id.split("_")[0], "claims")
+    r = ps.db.execute(f"SELECT data FROM {table} WHERE id=?", (end_id,)).fetchone()
+    if r is None:
+        return False
+    row = json.loads(r["data"])
+    if table == "edges":
+        return _end_withdrawn(ps, row["from_id"]) or _end_withdrawn(ps, row["to_id"])
+    if table == "evidence":
+        return _end_withdrawn(ps, row["claim_id"])
+    return row["status"] == "withdrawn"
+
+
 def claim_problems(ps, claim_id: str, *, hedge: HedgeResult | None = None,
                    stats: dict[str, StatsResult] | None = None) -> list[ClaimProblem]:
     """Why the claim fails the claim gate, the one definition ``gate_claims`` formats: its status is not
     ``supported`` (with V-SUPPORT's recorded reason); V-HEDGE, rerun now, is not ``pass``; for a ``stat_result``,
-    V-STATS, rerun now on each of its artifacts, finds a mismatch; or a priority-1 objection is still open against it,
-    its evidence or an edge into it. The reruns record nothing and call no model; a caller that already reran V-HEDGE
-    (``hedge``) or V-STATS (``stats``: artifact id -> result) passes them in. ``[]`` for a withdrawn claim (out of
-    the argument); an unknown id is a ``KeyError``. Edges and objections are read with their legacy shapes tolerated
-    (no typed warrant, hand-added ``response_to`` edges, objections without a priority: priority 1)."""
+    V-STATS, rerun now on each of its artifacts, finds a mismatch; a priority-1 objection is still open against it,
+    its evidence or an edge into it; or one was conceded there (the objection holds, so its target fails: the claim
+    fails until it is narrowed or withdrawn; an edge whose source claim was withdrawn is out of the argument and does
+    not count). The reruns record nothing and call no model; a caller that already reran V-HEDGE (``hedge``) or
+    V-STATS (``stats``: artifact id -> result) passes them in. ``[]`` for a withdrawn claim (out of the argument); an
+    unknown id is a ``KeyError``. Edges and objections are read with their legacy shapes tolerated (no typed warrant,
+    hand-added ``response_to`` edges, objections without a priority: priority 1)."""
     svc = ArgumentService(ps)
     claim = svc.get_claim(claim_id)
     if claim["status"] == "withdrawn":
@@ -254,13 +271,21 @@ def claim_problems(ps, claim_id: str, *, hedge: HedgeResult | None = None,
         out += [ClaimProblem("stats", f"V-STATS mismatch {a}", f"V-STATS mismatch {a}", (a,))
                 for a in claim.get("artifact_ids") or []
                 if not (stats[a] if a in stats else check_stats(ps, a, record=False)).ok]
-    targets = [claim_id, *(e["id"] for e in claim["evidence"]), *(e.get("id") for e in svc.list_edges(to_id=claim_id))]
-    open_p1 = [o for t in targets if t for o in svc.list_objections(target_id=t)
-               if o.get("status", "open") == "open" and o.get("priority", 1) == 1]
+    edges = svc.list_edges(to_id=claim_id)
+    targets = [claim_id, *(e["id"] for e in claim["evidence"]), *(e.get("id") for e in edges)]
+    p1 = [o for t in targets if t for o in svc.list_objections(target_id=t) if o.get("priority", 1) == 1]
+    open_p1 = [o for o in p1 if o.get("status", "open") == "open"]
     if open_p1:
         out.append(ClaimProblem("objection", "open priority-1 objection " + ", ".join(o["id"] for o in open_p1),
                                 "; ".join(f"open priority-1 objection {o['id']}: {o['text']}" for o in open_p1),
                                 tuple(o["id"] for o in open_p1)))
+    gone = {e.get("id") for e in edges if e.get("from_id") and _end_withdrawn(ps, e["from_id"])}
+    conceded = [o for o in p1 if o.get("status") == "conceded" and o["target_id"] not in gone]
+    if conceded:
+        out.append(ClaimProblem("conceded", "conceded priority-1 objection " + ", ".join(o["id"] for o in conceded),
+                                "; ".join(f"conceded priority-1 objection {o['id']} (it holds, so the claim must be "
+                                          f"narrowed or withdrawn): {o['text']}" for o in conceded),
+                                tuple(o["id"] for o in conceded)))
     return out
 
 

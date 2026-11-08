@@ -2,7 +2,8 @@
 new claim that must verify as supported. Never a vote, never "kept as unproven".
 
 Why a claim fails is ``rk.verify.support.claim_problems`` (the one definition the claim gate formats: not supported,
-V-HEDGE overstated, V-STATS mismatch, an open priority-1 objection); ``failing_claims`` lists the claims with a
+V-HEDGE overstated, V-STATS mismatch, an open priority-1 objection, a conceded priority-1 objection: it holds, so the
+claim stands only narrowed or withdrawn); ``failing_claims`` lists the claims with a
 problem. ``narrow_or_withdraw`` asks the Arguer once for the rewrite (``NarrowedClaim``, a ``ClaimDraft``: no
 statistical kind, so a model never rewrites a kernel-written ``stat_result``, which is withdrawn directly), given the
 claim's actual problems. The kernel stores the rewrite with ``narrowed_from`` and the original's evidence, verifies it

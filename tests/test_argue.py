@@ -330,6 +330,10 @@ def test_objections_must_be_answered_for_gate(env):
                           actor="arguer")
     svc.respond_objection(second["id"], response_claim_id=None, status="rejected_invalid",
                           note="The cohort's notes name aspirin.", actor="arguer")
+    # a conceded priority-1 objection holds: its target fails until it is narrowed or withdrawn (I6)
+    reason = first["target_id"]
+    assert w.gate(ps, 1).failures == [f"{reason}: conceded priority-1 objection {first['id']}"]
+    svc.withdraw_claim(reason, reason="the objection holds", actor="tester")
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
     lim = argue_limitations(ps, 1)
     assert [o["objection_id"] for o in lim["conceded"]] == [first["id"]]
@@ -1104,3 +1108,74 @@ def test_withdrawing_every_finding_in_your_review_goes_back_to_synthesize(env):
                                                               "answers_rq": "yes"}))
     assert (out.status, out.to) == ("back_edge", "synthesize")
     assert "every finding of synthesize attempt 1 was withdrawn in argue" in out.reason
+
+
+# ---- fix wave 3 ----
+def test_conceded_priority1_objection_fails_its_target_in_p1_until_narrowed(env):
+    """I6: the Arguer may concede a priority-1 objection, but its target then fails the claim gate (it is not withdrawn
+    for it); the P1 degrade narrows it, and the rewrite is re-checked against the conceded objection."""
+    _, ps, _ = env
+    _synthesize(env)
+    narrower = "Some older people were enrolled in a randomised trial."
+    ex = _exec([draft(), responses("conceded"), responses()],
+               [critique(objections=[_o("reason", 1, "Study A enrolled people under 65.")]), critique()],
+               narrowed=[{"text": narrower, "kind": "fact"}],
+               rechecks=[lambda inputs: {"warrant_tests": [{"edge_id": w["edge_id"], "tests": verdicts()}
+                                                           for w in inputs["untested_warrants"]]}])
+    w = ArgueWorker()
+    ctx = _ctx(env, ex)
+    assert w.run(ctx).status == "done"
+    (o,) = _objections(ps)
+    by_text = {c["text"]: c for c in _claims(ps)}
+    assert o["status"] == "conceded" and by_text[REASON]["status"] == "supported"  # not withdrawn by the kernel
+    g = w.gate(ps, 1)
+    assert f"{by_text[REASON]['id']}: conceded priority-1 objection {o['id']}" in g.failures, g.failures
+    assert w.degrade(ctx, g.failures).status == "done"
+    by_text = {c["text"]: c for c in _claims(ps)}
+    assert by_text[REASON]["status"] == "withdrawn" and by_text[narrower]["status"] == "supported"
+    (recheck,) = ex.of("skeptic", "RecheckOut")
+    assert [x["id"] for x in recheck["inputs"]["conceded_objections"]] == [o["id"]]
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_conceded_priority1_objection_reaches_your_review_in_p2(env):
+    _, ps, _ = env
+    _synthesize(env)
+    ex = _exec([draft(), responses("conceded"), responses()],
+               [critique(objections=[_o("reason", 1, "Study A enrolled people under 65.")]), critique()])
+    w = ArgueWorker()
+    out = w.run(_ctx(env, ex))
+    assert out.status == "waiting_human", out.reason
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    (o,) = _objections(ps)
+    (reason,) = cp["options"]["claim_ids"]
+    assert _claim_text(ps, reason) == REASON and cp["options"]["claim_choices"][reason] == ["withdraw"]
+    assert any(f"conceded priority-1 objection {o['id']}" in p for p in cp["options"]["problems"][reason])
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"claims": {reason: "withdraw"}, "answers_rq": "yes"}))
+    assert out.status == "done", out.reason
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+def test_conceded_objection_on_a_link_from_a_withdrawn_claim_does_not_fail_its_target(env):
+    """A conceded priority-1 objection on a reason link into a claim fails the claim, but not once the link's reason
+    left the argument (withdrawn: its objections are conceded with it)."""
+    from rk.verify.support import claim_problems
+
+    _, ps, _ = env
+    _synthesize(env)
+    w = ArgueWorker()
+    assert w.run(_ctx(env, _exec([draft()], [critique()]))).status == "done"
+    svc = ArgumentService(ps)
+    main = main_claim(ps, 1)
+    (link,) = svc.list_edges(to_id=main, type="reason_of")
+    oid = svc.add_objection(ObjectionIn(target_id=link["id"], category="problem", priority=1,
+                                        text="The trial does not support the claim."), actor="skeptic")
+    svc.respond_objection(oid, response_claim_id=None, status="conceded", note="It holds.", actor="arguer")
+    assert [p.kind for p in claim_problems(ps, main)] == ["conceded"]
+    svc.withdraw_claim(link["from_id"], reason="dropped", actor="tester")
+    assert claim_problems(ps, main) == []
+
+
+def _claim_text(ps, cid: str) -> str:
+    return ArgumentService(ps).get_claim(cid)["text"]
