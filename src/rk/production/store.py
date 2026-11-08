@@ -87,12 +87,15 @@ def _deviation_event(ps: ProjectStore, kind: DeviationKind, from_v: int, to_v: i
 # ---- method designs (research proposals) ----
 def set_design(ps: ProjectStore, d: DesignIn, *, stage: str, attempt: int, actor: str,
                actor_kind: ActorKind = "agent") -> str:
-    """A draft design; every hypothesis it tests must be one of the frozen research question's."""
-    wanted = {h for item in d.items for h in item.hypothesis_ids}
+    """A draft design; every hypothesis it tests (or names in ``falsified_by``) must be one of the frozen research
+    question's and not dropped, so that freezing it can pre-register every one of them."""
+    wanted = {h for item in d.items for h in item.hypothesis_ids} | set(d.falsified_by)
     rq = frozen_rq(ps)
-    known = {h["id"] for h in hypotheses(ps, rq["id"])} if rq else set()
-    if missing := sorted(wanted - known):
+    rows = {h["id"]: h for h in hypotheses(ps, rq["id"])} if rq else {}
+    if missing := sorted(wanted - set(rows)):
         raise ValueError(f"the design tests what are not hypotheses of the frozen research question: {missing}")
+    if dropped := sorted(h for h in wanted if rows[h]["status"] == "dropped"):
+        raise ValueError(f"the design tests dropped hypotheses: {dropped}")
     did = new_id("dsg")
     ps.apply(NewEvent(type="design.set", entity_id=did, actor_kind=actor_kind, actor=actor,
                       payload={"stage": stage, "attempt": attempt, "body": d.model_dump(mode="json")}))

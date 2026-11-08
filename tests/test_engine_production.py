@@ -328,7 +328,7 @@ def test_run_texts_list_runnable_stages(project):
         assert e.value.type == "not_d1" and f"then {', '.join(later)};" in e.value.message
         assert ("design" in e.value.message) == proposal
         # the default workers: the texts follow what runs, no hard-coded stage list
-        assert _orch(k, _workers()).stages_after_question(ps) == [*FIRST, "synthesize", "argue"]
+        assert _orch(k, _workers()).stages_after_question(ps) == later
         for name in ("rk_run_start", "rk_run_status"):
             assert "read_extract" not in reg.get(name).summary
     finally:

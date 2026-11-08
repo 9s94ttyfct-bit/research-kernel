@@ -121,15 +121,23 @@ class DesignItem(BaseModel):
         return self
 
 
-class DesignIn(BaseModel):
-    """A research proposal's method design (§7.3); frozen, it pre-registers the hypotheses it tests."""
+class DesignBody(BaseModel):
+    """A research proposal's method design as the Ideator writes it (§7.3): its items, expected results and alternative
+    explanations."""
     items: list[DesignItem] = Field(min_length=1)
     expected_results: str
     alternative_explanations: list[str]
 
     @model_validator(mode="after")
-    def _unique_items(self) -> DesignIn:
+    def _unique_items(self) -> DesignBody:
         ids = [i.id for i in self.items]
         if dup := sorted({i for i in ids if ids.count(i) > 1}):
             raise ValueError(f"duplicate design item ids: {dup}")
         return self
+
+
+class DesignIn(DesignBody):
+    """The stored design: the body plus ``falsified_by`` (hypothesis id -> the ids of the measurements whose result
+    would count against it), filled by the kernel from the Ideator's hypotheses. Frozen, it pre-registers the
+    hypotheses it tests, with their falsification links."""
+    falsified_by: dict[str, list[str]] = {}
