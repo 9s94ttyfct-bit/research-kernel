@@ -927,3 +927,32 @@ def test_attempt_resumed_in_a_new_session_gets_the_fresh_session_budget(env):
     assert w._used(replace(_ctx(env, _exec()), run_id=run_id)) == 30
     record_run_session(ps, run_id, 2, actor="tester", clock=lambda: 1.8e9)
     assert w._used(replace(_ctx(env, _exec()), run_id=run_id)) == 0
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_p2_conflict_checkpoint_is_opened_once_after_its_note(env, monkeypatch):
+    """A crash right after P2's evidence_conflict checkpoint is opened: the resumed attempt finds that checkpoint
+    (opened after the conflict's note) instead of opening a second one or asking the Skeptic again."""
+    import rk.production.argue as mod
+
+    _, ps, _ = env
+    a, b = _synthesize(env)
+    conflict = {"claim_a": a, "claim_b": b, "why": "One says randomised, the other cohort."}
+    ex = _exec([draft(), draft()], [critique(conflicts=[conflict]), critique(conflicts=[conflict])])
+    real, calls = mod.create_checkpoint, []
+
+    def crash_once(*args, **kw):
+        cid = real(*args, **kw)
+        calls.append(cid)
+        if len(calls) == 1:
+            raise RuntimeError("crash after opening the checkpoint")
+        return cid
+
+    monkeypatch.setattr(mod, "create_checkpoint", crash_once)
+    w = ArgueWorker()
+    with pytest.raises(RuntimeError, match="crash after"):
+        w.run(_ctx(env, ex))
+    out = w.run(_ctx(env, ex))
+    assert out.status == "waiting_human" and out.checkpoint_id == calls[0]
+    assert [c["id"] for c in list_checkpoints(ps) if c["kind"] == "evidence_conflict"] == [calls[0]]
+    assert len(ex.of("skeptic", "Critique")) == 1

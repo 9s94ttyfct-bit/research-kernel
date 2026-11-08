@@ -847,17 +847,28 @@ class SynthesizeWorker:
             return
         options = pool_options(s.plan)
         kw = {"item_ids": ids, "stage": STAGE, "attempt": ctx.attempt, "actor": ctx.actor, "field_map": field_map}
-        stt = make_stats_artifact(ps, rows, g["measure"], options, **kw)
-        fig = make_forest_artifact(ps, rows, g["measure"], options, labels={i: study_label(ps, i) for i in ids}, **kw)
+        # a pool an interruption cut short (its artifacts or claim stored, its note not) is finished, not made again
+        made = {a["kind"]: a["id"] for a in artifacts(ps, STAGE, ctx.attempt)
+                if a["values"].get("item_ids") == ids and a["values"].get("field_map") == field_map
+                and a["values"].get("measure") == g["measure"]}
+        stt = made.get("stt") or make_stats_artifact(ps, rows, g["measure"], options, **kw)
+        fig = made.get("fig") or make_forest_artifact(ps, rows, g["measure"], options,
+                                                      labels={i: study_label(ps, i) for i in ids}, **kw)
         a = artifact(ps, stt)
-        text, bindings = stat_claim_text(a)
-        claim = ClaimIn(text=text, kind="stat_result", artifact_ids=[stt, fig],
-                        number_bindings=[NumberBinding(**b) for b in bindings],
-                        scope_limits=[f"outcome: {g['outcome']}", f"effect measure: {g['measure']}",
-                                      f"extraction fields: {', '.join(fields)}",
-                                      "studies: " + ", ".join(study_label(ps, x["item_id"]) for x in a["values"]["studies"])])
-        cid = ArgumentService(ps).add_claim(claim, generator_vendor=None, actor=ctx.actor, actor_kind="kernel",
-                                            origin="synthesis")
+        svc = ArgumentService(ps)
+        stored = [c["id"] for c in svc.list_claims(origin="synthesis")
+                  if c["kind"] == "stat_result" and stt in (c.get("artifact_ids") or []) and c["status"] != "withdrawn"]
+        if stored:
+            cid = stored[0]
+        else:
+            text, bindings = stat_claim_text(a)
+            claim = ClaimIn(text=text, kind="stat_result", artifact_ids=[stt, fig],
+                            number_bindings=[NumberBinding(**b) for b in bindings],
+                            scope_limits=[f"outcome: {g['outcome']}", f"effect measure: {g['measure']}",
+                                          f"extraction fields: {', '.join(fields)}",
+                                          "studies: " + ", ".join(study_label(ps, x["item_id"])
+                                                                  for x in a["values"]["studies"])])
+            cid = svc.add_claim(claim, generator_vendor=None, actor=ctx.actor, actor_kind="kernel", origin="synthesis")
         check_stats(ps, fig, actor=ctx.actor)
         _note(ps, ctx.attempt, "pooled", actor=ctx.actor, **common, stt=stt, fig=fig, claim_id=cid, item_ids=ids,
               uncomputable=a["values"]["uncomputable"])

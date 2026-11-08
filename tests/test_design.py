@@ -600,3 +600,31 @@ def test_approved_design_is_the_one_the_passed_attempt_approved(env):
     assert approved["id"] == _approved(ps, 1)["design_id"] and approved["status"] == "frozen"
     later = set_design(ps, DesignIn.model_validate(approved["body"]), stage="design", attempt=2, actor="ideator")
     assert later != approved["id"] and approved_design(ps)["id"] == approved["id"]
+
+
+def test_vote_recorded_before_a_crash_is_reused(env, monkeypatch):
+    """A crash between the P1 vote's record and its note: resumed, the attempt takes the recorded vote
+    (``reuse=True``) instead of asking the judges again."""
+    import rk.production.vote as vote_mod
+
+    _, ps, _ = env
+    _argued(env)
+    real, calls = vote_mod.add_vote, []
+
+    def crash_once(*args, **kw):
+        vid = real(*args, **kw)
+        calls.append(vid)
+        if len(calls) == 1:
+            raise RuntimeError("crash after the vote")
+        return vid
+
+    monkeypatch.setattr(vote_mod, "add_vote", crash_once)
+    ex = _exec([plan()])
+    w = DesignWorker()
+    with pytest.raises(RuntimeError, match="crash after"):
+        w.run(_ctx(env, ex))
+    asked = len(ex.of("judge", "VoteOut"))
+    assert w.run(_ctx(env, ex)).status == "done"
+    assert len(ex.of("judge", "VoteOut")) == asked and len(calls) == 1
+    assert ps.db.execute("SELECT COUNT(*) FROM votes WHERE subject_type='design'").fetchone()[0] == 1
+    assert design_notes(ps, 1, kind="vote")[0]["vote_id"] == calls[0]

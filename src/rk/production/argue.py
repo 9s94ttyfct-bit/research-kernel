@@ -544,6 +544,17 @@ def _current(ps: ProjectStore, kind: str, cid: str) -> str:
     return cid
 
 
+def conflict_checkpoint(ps: ProjectStore, attempt: int, conflict: dict) -> str | None:
+    """The ``evidence_conflict`` checkpoint P2 opened for a noted conflict of the attempt (the note's own, from before
+    the checkpoint was opened after the note), else ``None``."""
+    if conflict.get("checkpoint_id"):
+        return conflict["checkpoint_id"]
+    r = ps.db.execute("SELECT id FROM checkpoints WHERE kind=? AND stage=? AND json_extract(options, '$.attempt')=? "
+                      "AND json_extract(options, '$.index')=? AND json_extract(options, '$.replaces') IS NULL "
+                      "ORDER BY created, id LIMIT 1", (CONFLICT, STAGE, attempt, conflict["index"])).fetchone()
+    return r["id"] if r else None
+
+
 def _comment(answer: dict) -> str:
     return answer.get("comment").strip() if isinstance(answer.get("comment"), str) else ""
 
@@ -1150,8 +1161,9 @@ class ArgueWorker:
                 continue
             pairs.add(pair)
             conflict = {"round": r, "index": len(noted) + len(out), "claim_a": a, "claim_b": b, "why": cd.why}
-            cid = self._open_conflict(ctx, conflict) if s.mode == "collab" else None
-            _note(ps, attempt, "conflict", actor=ctx.actor, checkpoint_id=cid, **conflict)
+            # P2's checkpoint is opened after the note (``_pending_conflict``), once: a crash between the two never
+            # leaves a checkpoint no note points to
+            _note(ps, attempt, "conflict", actor=ctx.actor, checkpoint_id=None, **conflict)
             out.append(conflict["index"])
         return out
 
@@ -1227,11 +1239,10 @@ class ArgueWorker:
         for n in argue_notes(ps, ctx.attempt, kind="conflict"):
             if n["index"] in decided:
                 continue
-            if not n.get("checkpoint_id"):
-                if s.mode != "collab":
-                    self._vote_conflict(ctx, n)
+            if s.mode != "collab":
+                self._vote_conflict(ctx, n)
                 continue
-            cid = _current(ps, CONFLICT, n["checkpoint_id"])
+            cid = _current(ps, CONFLICT, conflict_checkpoint(ps, ctx.attempt, n) or self._open_conflict(ctx, n))
             cp = get_checkpoint(ps, cid)
             if cp["status"] == "open":
                 return StageOutcome("waiting_human", checkpoint_id=cid,

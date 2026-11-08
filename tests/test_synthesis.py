@@ -1116,3 +1116,33 @@ def test_interrupted_attempt_resumes_in_place(env):
     every = [c["id"] for c in ArgumentService(ps).list_claims(origin="synthesis")]
     assert sorted(every) == sorted(synthesis_claims(ps, 1))  # nothing orphaned
     assert len(artifacts(ps, "synthesize", 1)) == 2 and len(ps.db.execute("SELECT * FROM votes").fetchall()) == 1
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review", "production_mode": "collab"}], indirect=True)
+def test_pool_cut_short_by_a_crash_is_finished_not_made_again(env, monkeypatch):
+    """A crash after the pool's artifacts and stat claim are stored (before its note): applying the answer again
+    reuses them instead of pooling again, so no artifact or stat claim is orphaned."""
+    import rk.production.synthesis as mod
+
+    _, ps, _ = env
+    _enable_stats()
+    _setup(env, dict(list(BCG.items())[:3]), schema=BINARY, plan=META)
+    ex = _exec(plans=[lambda inputs: _group(s["item_id"] for s in inputs["studies"])])
+    w = SynthesizeWorker()
+    cp = _answer(ps, w.run(_ctx(env, ex)).checkpoint_id, {"decisions": {"0": "pool"}})
+    real, calls = mod.check_stats, []
+
+    def crash_once(*a, **kw):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("crash after the stat claim")
+        return real(*a, **kw)
+
+    monkeypatch.setattr(mod, "check_stats", crash_once)
+    with pytest.raises(RuntimeError, match="crash after"):
+        w.on_answer(_ctx(env, ex), cp)
+    assert w.on_answer(_ctx(env, ex), cp).status == "done"
+    assert len(artifacts(ps, "synthesize", 1)) == 2
+    assert len([c for c in _claims(ps) if c["kind"] == "stat_result"]) == 1
+    stat = [c for c in ArgumentService(ps).list_claims(origin="synthesis") if c["kind"] == "stat_result"]
+    assert len(stat) == 1 and w.gate(ps, 1).ok, w.gate(ps, 1).failures
