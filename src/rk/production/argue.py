@@ -16,7 +16,8 @@ One round:
    The round is noted, then every new claim is verified (V-SUPPORT through the stage's executor, with V-NUM; then
    V-HEDGE), so an interrupted verification resumes. Warrant claims are tested by the Skeptic instead
    (``WarrantTests``), not by V-SUPPORT. ``needs_synthesis`` sends the stage back to synthesize with that guidance; a
-   failed self-check sends it back to question.
+   failed self-check is an input only (I5): the P1 RQ vote or your final review decides (without a main claim, the
+   stage reruns with it as guidance).
 2. **Skeptic** (``Critique``; the codex vendor by default, with search tools that may add sources): objections on
    claims, evidence or edges of the argument (a cited source must be in the library, else it is dropped from the
    objection and noted), the tests of every untested warrant (a failed test becomes a priority-1 ``soundness``
@@ -944,13 +945,14 @@ class ArgueWorker:
             if r == 1:
                 if d.answers_rq is None:
                     return StageOutcome("rerun", reason="the arguer gave no answers_rq self-check")
-                if not d.answers_rq.ok:
-                    why = f"the Arguer's main claim does not answer the research question: {d.answers_rq.reason}"
-                    _note(ps, attempt, "back_edge", actor=ctx.actor, round=r, to="question", reason=why,
-                          tasks=counter.n)
-                    return StageOutcome("back_edge", to="question", reason=why)
                 if d.main_claim is None:
-                    return StageOutcome("rerun", reason="the arguer gave no main claim")
+                    why = "the arguer gave no main claim"
+                    if not d.answers_rq.ok:  # the self-check is the next draft's guidance, not a back-edge (I5)
+                        why += (f"; its self-check says the research question is not answered: "
+                                f"{d.answers_rq.reason}")
+                    return StageOutcome("rerun", reason=why)
+                # a failed self-check is an input only: round 1 is stored and the rounds go on; the P1 RQ vote or your
+                # final review decides whether the project goes back to question (I5)
         fields = self._store(cctx, s, d, vendor, r, closing=closing)
         # noted before verifying: a round interrupted while its claims are verified resumes with the verification
         _note(ps, attempt, kind, actor=ctx.actor, round=r, vendor=vendor, error=None, tasks=counter.n,
@@ -1392,6 +1394,9 @@ class ArgueWorker:
         lines = [why, ""] if why else []
         lines += ["The argument's red-team rounds ended. Does its main claim answer the research question?", "",
                   f"Research question: {s.question}", f"Main claim ({main}, {m['status']}): {m['text']}"]
+        check = argue_notes(ps, ctx.attempt, kind="draft")[0].get("answers_rq") or {}
+        if check and not check.get("ok"):
+            lines.append(f"The Arguer's own check says it does not answer the research question: {check.get('reason')}")
         if own:
             lines += ["", ("The main claim fails the gate for reasons no answer here mends (withdrawing it leaves the "
                            "argument without one). Say whether it answers the research question, and argue again with "
@@ -1413,7 +1418,7 @@ class ArgueWorker:
                                  "problems": {c: e["problems"] for c, e in listing.items()},
                                  "claim_choices": {c: e["choices"] for c, e in listing.items()},
                                  "choices": [SUPPORTED, WITHDRAW], "answers_rq": [YES, NO], "decisions": ["rerun"],
-                                 "main_problems": own, "replaces": replaces},
+                                 "main_problems": own, "arguer_self_check": check or None, "replaces": replaces},
                                 stage=ctx.stage, actor=ctx.actor)
         if replaces is None:
             _note(ps, ctx.attempt, "final", actor=ctx.actor, checkpoint_id=cid)
@@ -1613,8 +1618,8 @@ class ArgueWorker:
         if not critiques or critiques[-1].get("failed"):
             failures.append("the Skeptic did not review the argument"
                             + (f" ({critiques[-1]['failed']})" if critiques else ""))
-        if not (drafts[0].get("answers_rq") or {}).get("ok"):
-            failures.append("the Arguer's self-check does not say that the main claim answers the research question")
+        if drafts[0].get("answers_rq") is None:  # an input of the RQ check only (I5); its absence is a gap
+            failures.append("the Arguer gave no self-check of whether the main claim answers the research question")
         checks = [n for n in notes if n["kind"] == "rq_check" and n["main_claim_id"] == main]
         if not checks:
             failures.append(f"no check that the main claim {main} answers the research question "

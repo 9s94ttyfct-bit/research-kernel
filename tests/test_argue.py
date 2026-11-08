@@ -511,19 +511,60 @@ def test_main_claim_not_answering_rq_goes_back_to_question(env):
     _synthesize(env)
     assert ("argue", "question") in BACK_EDGES
     w = ArgueWorker()
-    # the Arguer's own check
-    out = w.run(_ctx(env, _exec([draft(answers={"ok": False, "reason": "It is about trials, not timing."})])))
-    assert (out.status, out.to) == ("back_edge", "question")
-    assert "It is about trials, not timing." in out.reason
-    assert not _claims(ps)
     # the P1 judge vote, conservative: does not answer
     ex = _exec([draft()], [critique()], votes=_votes(["does_not_answer"], ["answers"]))
-    out = w.run(_ctx(env, ex, 2))
+    out = w.run(_ctx(env, ex))
     assert (out.status, out.to) == ("back_edge", "question")
     assert "does not answer" in out.reason
-    (check,) = argue_notes(ps, 2, kind="rq_check")
+    (check,) = argue_notes(ps, 1, kind="rq_check")
     assert check["decision"] == "does_not_answer" and check["by"] == "vote"
-    assert any("research question" in f for f in w.gate(ps, 2).failures)
+    assert any("research question" in f for f in w.gate(ps, 1).failures)
+
+
+NOT_ANSWERED = {"ok": False, "reason": "It is about trials, not timing."}
+
+
+def test_failed_self_check_in_p1_is_an_input_of_the_rq_vote(env):
+    """I5: the Arguer's failed self-check does not send the project back to question by itself: round 1 is stored, the
+    rounds go on, and the judges' RQ vote decides with the self-check among its inputs."""
+    _, ps, _ = env
+    _synthesize(env)
+    w = ArgueWorker()
+    ex = _exec([draft(answers=NOT_ANSWERED)], [critique()])
+    out = w.run(_ctx(env, ex))
+    assert out.status == "done", out.reason
+    assert main_claim(ps, 1) is not None and not argue_notes(ps, 1, kind="back_edge")
+    rq_votes = [c for c in ex.of("judge", "VoteOut") if c["inputs"]["subject"].get("main_claim")]
+    assert rq_votes and rq_votes[0]["inputs"]["subject"]["arguer_self_check"] == NOT_ANSWERED
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures  # the vote said it answers
+    # the vote's conservative choice still goes back to question
+    out = w.run(_ctx(env, _exec([draft(answers=NOT_ANSWERED)], [critique()],
+                                votes=_votes(["answers"], ["does_not_answer"])), 2))
+    assert (out.status, out.to) == ("back_edge", "question")
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_failed_self_check_in_p2_reaches_your_final_review(env):
+    _, ps, _ = env
+    _synthesize(env)
+    w = ArgueWorker()
+    ex = _exec([draft(answers=NOT_ANSWERED)], [critique()])
+    out = w.run(_ctx(env, ex))
+    assert out.status == "waiting_human", out.reason
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    assert cp["kind"] == "uncertain_support" and cp["options"]["arguer_self_check"] == NOT_ANSWERED
+    assert "It is about trials, not timing." in cp["prompt"]
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"claims": {}, "answers_rq": "yes"}))
+    assert out.status == "done", out.reason
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures  # you decided: it answers
+
+
+def test_failed_self_check_without_a_main_claim_reruns_with_it_as_guidance(env):
+    _, ps, _ = env
+    _synthesize(env)
+    out = ArgueWorker().run(_ctx(env, _exec([lambda inputs: {"answers_rq": NOT_ANSWERED}])))
+    assert out.status == "rerun" and "It is about trials, not timing." in out.reason
+    assert not _claims(ps) and not argue_notes(ps, 1, kind="back_edge")
 
 
 def test_argue_back_edge_to_synthesize_with_guidance(env):
