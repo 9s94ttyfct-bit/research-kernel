@@ -35,6 +35,7 @@ from rk.orchestrator.state import (
     latest_attempt,
     rate_capped_driver,
     record_degraded,
+    record_run_status,
     run_row,
     stage_rows,
     start_run,
@@ -447,8 +448,42 @@ def test_resume_that_stores_nothing_three_times_starts_a_new_attempt(project):
     assert o.step("demo", run_id, actor="tester") == "done"
     assert [c[1] for c in landscape.calls if c[0] == "run"] == [1, 1, 1, 1, 2]
     (gave_up,) = _events(ps, "stage.resume_abandoned")
-    assert gave_up["attempt"] == 1 and "resumed 3 times in a row without storing anything" in gave_up["reason"]
+    assert gave_up["attempt"] == 1 and "resumed 3 times in a row and crashed each time without storing anything" in gave_up["reason"]
     assert len(_events(ps, "stage.resumed")) == 3
+
+
+def test_waiting_source_resumes_never_give_up_the_attempt(project):
+    """A source outage (``waiting_source``) or a budget pause is no crash: however often the attempt is resumed after
+    one, it is never given up, so search_screen never searches and stores its records again."""
+    k, ps = project
+    landscape = FakeWorker(runs=[httpx.ConnectError("source down")] * 4 + [StageOutcome("done")])
+    landscape.resumes_in_place = True
+    o = _orch(k, _workers(landscape=landscape))
+    run_id = start_run(ps, until="landscape", actor="tester", clock=Clock())
+    assert o.step("demo", run_id, actor="tester") == "running"  # intake
+    assert [o.step("demo", run_id, actor="tester") for _ in range(4)] == ["waiting_source"] * 4
+    assert o.step("demo", run_id, actor="tester") == "done"
+    assert [c[1] for c in landscape.calls if c[0] == "run"] == [1] * 5
+    assert _events(ps, "stage.resume_abandoned") == [] and latest_attempt(ps, "landscape") == 1
+
+
+def test_crash_loop_across_new_runs_gives_up_the_attempt(project):
+    """A crash, the run failed, a new run resumes the attempt and crashes at the same place, three times: the attempt
+    is given up (``stage.resume_abandoned``) and attempt 2 starts; the new runs are no progress."""
+    k, ps = project
+    landscape = FakeWorker(runs=[RuntimeError("crash")] * 4 + [StageOutcome("done")])
+    landscape.resumes_in_place = True
+    o = _orch(k, _workers(landscape=landscape))
+    run_id = start_run(ps, until="landscape", actor="tester", clock=Clock())
+    assert o.step("demo", run_id, actor="tester") == "running"  # intake
+    for _ in range(4):
+        with pytest.raises(RuntimeError, match="crash"):
+            o.step("demo", run_id, actor="tester")
+        record_run_status(ps, run_id, "failed", reason="crash", actor="tester", clock=Clock())
+        run_id = start_run(ps, until="landscape", actor="tester", clock=Clock())
+    assert o.step("demo", run_id, actor="tester") == "done"
+    assert [c[1] for c in landscape.calls if c[0] == "run"] == [1, 1, 1, 1, 2]
+    assert [e["attempt"] for e in _events(ps, "stage.resume_abandoned")] == [1]
 
 
 class _Found(BaseModel):

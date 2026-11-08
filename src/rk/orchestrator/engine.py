@@ -45,6 +45,7 @@ from rk.orchestrator.state import (
     latest_attempt,
     orchestrator_drives,
     record_attempt,
+    record_crashed,
     record_edge_allowed,
     record_edge_taken,
     record_gate,
@@ -274,9 +275,11 @@ class Orchestrator:
         attempt without it was interrupted) and link a checkpoint wait to the attempt. An open checkpoint of the stage
         left by an attempt this one replaces is superseded. An interrupted attempt of a worker that resumes in place
         (``resumes_in_place``; no guidance asked for) runs again instead, as the same attempt with its guidance
-        (``stage.resumed``): nothing is superseded, the worker goes on from what the attempt stored. After
-        ``MAX_STALLED_RESUMES`` resumes that stored nothing (``stalled_resumes``: e.g. a crash at the same place each
-        time) the attempt is given up (``stage.resume_abandoned``, with why) and a new one starts."""
+        (``stage.resumed``): nothing is superseded, the worker goes on from what the attempt stored. A run of the
+        worker that ends in an exception other than a wait or a pause (a rate cap, a budget, a transient source error)
+        is recorded as a crash (``stage.crashed``); after ``MAX_STALLED_RESUMES`` resumes in a row that crashed without
+        storing anything (``stalled_resumes``) the attempt is given up (``stage.resume_abandoned``, with why) and a new
+        one starts."""
         row = stage_row(ps, stage)
         latest = latest_attempt(ps, stage)
         resume = (guidance is None and getattr(worker, "resumes_in_place", False) and row is not None
@@ -294,7 +297,14 @@ class Orchestrator:
             record_attempt(ps, stage, attempt, run_id=run_id, guidance=composed, requested=requested, actor=actor)
             supersede_open(ps, stage, attempt, actor=actor)
         ctx = self._ctx(project, ps, lib, stage, attempt, run_id, composed, actor, session=session)
-        outcome = worker.run(ctx)
+        try:
+            outcome = worker.run(ctx)
+        except (RateCapped, BudgetExceeded, BudgetExhausted):
+            raise  # a wait or a pause, no crash
+        except Exception as e:
+            if not transient_source_error(e):  # a source outage is a wait too
+                record_crashed(ps, stage, attempt, error_text(e), actor=actor)
+            raise
         self._check(stage, outcome)
         record_ran(ps, stage, attempt, outcome.status, outcome.reason, actor=actor)
         if outcome.status == "waiting_human":

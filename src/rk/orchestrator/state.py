@@ -67,26 +67,38 @@ def record_resumed(ps: ProjectStore, stage: str, attempt: int, *, run_id: str | 
     _emit(ps, "stage.resumed", stage, {"stage": stage, "attempt": attempt, "run_id": run_id}, actor)
 
 
-MAX_STALLED_RESUMES = 3  # resumes in a row that stored nothing before an interrupted attempt is given up
-_NO_PROGRESS = ("stage.resumed", "run.status", "run.session")
+MAX_STALLED_RESUMES = 3  # resumes in a row that crashed without storing anything before an attempt is given up
+_NO_PROGRESS = ("stage.resumed", "stage.crashed", "run.started", "run.status", "run.session")
+
+
+def record_crashed(ps: ProjectStore, stage: str, attempt: int, error: str, *, actor: str) -> None:
+    """The worker's run of the attempt ended in an exception that is no wait or pause (not a rate cap, a budget or a
+    transient source error): a crash, which ``stalled_resumes`` counts."""
+    _emit(ps, "stage.crashed", stage, {"stage": stage, "attempt": attempt, "error": error[:500]}, actor)
 
 
 def stalled_resumes(ps: ProjectStore, stage: str, attempt: int) -> str | None:
-    """Why the interrupted ``attempt`` is not resumed again: its last ``MAX_STALLED_RESUMES`` resumes stored nothing
-    (no task, note or other event since the first of them: e.g. a crash at the same place every time); else ``None``.
-    A resume that ran a task (a rate-capped one too) or noted anything made progress."""
-    seqs = [r["seq"] for r in ps.db.execute(
-        "SELECT seq FROM events WHERE type='stage.resumed' AND json_extract(payload, '$.stage')=? AND "
-        "json_extract(payload, '$.attempt')=? ORDER BY seq", (stage, attempt))]
-    if len(seqs) < MAX_STALLED_RESUMES:
-        return None
+    """Why the interrupted ``attempt`` is not resumed again: each of its last ``MAX_STALLED_RESUMES`` resumes crashed
+    (``stage.crashed``) without storing anything in between (no task, note or other event: the same crash each time,
+    in one run or across new runs); else ``None``. A resume that ended waiting (a rate cap, a source outage, a budget
+    pause) is no crash, so an attempt is never given up for waiting."""
+    rows = ps.db.execute("SELECT seq, type FROM events WHERE type IN ('stage.resumed', 'stage.crashed') AND "
+                         "json_extract(payload, '$.stage')=? AND json_extract(payload, '$.attempt')=? ORDER BY seq",
+                         (stage, attempt)).fetchall()
     marks = ",".join("?" * len(_NO_PROGRESS))
-    since = seqs[-MAX_STALLED_RESUMES]
-    if ps.db.execute(f"SELECT 1 FROM events WHERE seq>? AND type NOT IN ({marks}) LIMIT 1",
-                     (since, *_NO_PROGRESS)).fetchone() is not None:
+    stalled = 0
+    for i, r in enumerate(rows):
+        if r["type"] != "stage.resumed":
+            continue
+        nxt = rows[i + 1] if i + 1 < len(rows) else None
+        crashed = nxt is not None and nxt["type"] == "stage.crashed" and ps.db.execute(
+            f"SELECT 1 FROM events WHERE seq>? AND seq<? AND type NOT IN ({marks}) LIMIT 1",
+            (r["seq"], nxt["seq"], *_NO_PROGRESS)).fetchone() is None
+        stalled = stalled + 1 if crashed else 0
+    if stalled < MAX_STALLED_RESUMES:
         return None
-    return (f"{stage!r} attempt {attempt} was resumed {MAX_STALLED_RESUMES} times in a row without storing anything "
-            f"(interrupted at the same place each time): a new attempt starts")
+    return (f"{stage!r} attempt {attempt} was resumed {stalled} times in a row and crashed each time without storing "
+            f"anything: a new attempt starts")
 
 
 def record_resume_abandoned(ps: ProjectStore, stage: str, attempt: int, reason: str, *, actor: str) -> None:
