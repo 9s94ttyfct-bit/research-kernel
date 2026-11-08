@@ -174,11 +174,12 @@ def _note(ps: ProjectStore, attempt: int, kind: str, *, actor: str, **fields) ->
 
 
 def design_notes(ps: ProjectStore, attempt: int, *, kind: str | None = None) -> list[dict]:
-    """What design noted in the attempt, in order: ``draft`` (``draft_id``; the design ``body`` as the Ideator wrote
-    it, its items naming a hypothesis by id or, for a new one, by its ref; the ``hypotheses`` with their links, each
-    by ``key``: its id, or for a new one its ref with the ``new`` text; the dropped hypotheses; the feasibility
-    claims), ``refused`` (a draft that could not be noted), ``untestable`` (the Ideator's ``rq_untestable``: its
-    ``reason``, its ``vendor`` and the ``draft_problems`` of a draft that could not be kept; noted before the draft),
+    """What design noted in the attempt, in order: ``draft`` (``draft_id``; ``rq_id``, the frozen RQ it designs for;
+    the design ``body`` as the Ideator wrote it, its items naming a hypothesis by id or, for a new one, by its ref; the
+    ``hypotheses`` with their links, each by ``key``: its id, or for a new one its ref with the ``new`` text; the
+    dropped hypotheses; the feasibility claims), ``refused`` (a draft that could not be noted), ``untestable`` (the
+    Ideator's ``rq_untestable``: its ``reason``, its ``vendor`` and the ``draft_problems`` of a draft that could not
+    be kept; noted before the draft),
     ``rq_vote`` (P1: the judges' testable/untestable vote on it), ``narrowed`` (P1: a feasibility claim narrowed or
     withdrawn), ``back_edge``, ``approval`` (the P2 checkpoint), ``vote``, ``approving`` (written before an approval's
     first write: the ids already resolved and the new hypotheses to add) and ``approved`` (the stored design, its
@@ -209,10 +210,11 @@ def approved_design(ps: ProjectStore) -> dict | None:
     return design(ps, done["design_id"]) if done else None
 
 
-def _previous(ps: ProjectStore) -> dict | None:
-    """The latest draft of the stage when it was not approved (the design a rerun revises), else ``None``."""
+def _previous(ps: ProjectStore, rq_id: str) -> dict | None:
+    """The latest draft of the stage for the frozen RQ ``rq_id`` when it was not approved (the design a rerun revises),
+    else ``None``: a draft of an earlier RQ (before ``design->question`` froze a new one) names its hypotheses (M5)."""
     r = ps.db.execute("SELECT payload FROM events WHERE type='design.noted' AND json_extract(payload, '$.kind')='draft' "
-                      "ORDER BY seq DESC LIMIT 1").fetchone()
+                      "AND json_extract(payload, '$.rq_id')=? ORDER BY seq DESC LIMIT 1", (rq_id,)).fetchone()
     if r is None:
         return None
     d = json.loads(r["payload"])
@@ -516,7 +518,7 @@ class DesignWorker:
                 for h in _hyps(ps, s.rq_id).values() if h["status"] != "dropped"]
         inputs: dict = {"question": s.question, "research_question": s.rq_body, "hypotheses": hyps,
                         "argument": claims, "notes": notes}
-        if (prev := _previous(ps)) is not None:
+        if (prev := _previous(ps, s.rq_id)) is not None:
             inputs["previous_design"] = {k: prev[k] for k in ("draft_id", "body", "hypotheses", "dropped")}
         if guidance:
             inputs["guidance"] = guidance
@@ -620,8 +622,8 @@ class DesignWorker:
             if left_out:
                 refused.append(f"{cid}: notes outside the project's usable evidence left out: {', '.join(left_out)}")
             claim_ids.append(cid)
-        _note(ps, ctx.attempt, "draft", actor=ctx.actor, draft_id=f"{STAGE}:{ctx.attempt}", vendor=vendor,
-              body=body.model_dump(mode="json"), hypotheses=entries, restated=restated,
+        _note(ps, ctx.attempt, "draft", actor=ctx.actor, draft_id=f"{STAGE}:{ctx.attempt}", rq_id=s.rq_id,
+              vendor=vendor, body=body.model_dump(mode="json"), hypotheses=entries, restated=restated,
               dropped=[x.model_dump() for x in d.dropped], feasibility_claim_ids=claim_ids, refused=refused)
 
     @staticmethod

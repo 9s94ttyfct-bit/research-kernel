@@ -16,8 +16,11 @@ from rk.checkpoints import (
     list_checkpoints,
 )
 from rk.discovery.executor import RateCapped
+from rk.discovery.models import HypothesisIn, RQBody
 from rk.discovery.store import (
     add_hypothesis,
+    add_rq,
+    freeze_rq,
     frozen_rq,
     hypotheses,
     set_hypothesis_status,
@@ -410,6 +413,33 @@ def test_p1_design_vote_disagreement_reruns_with_reasons(env):
     assert out.status == "done", out.reason
     assert "not reviewed by a human" in out.reason
     assert w.gate(ps, 2).ok, w.gate(ps, 2).failures
+
+
+def test_previous_design_is_of_the_frozen_rq(env):
+    """M5: a rerun revises the last unapproved draft of the frozen RQ only. After ``design->question`` and a new RQ,
+    the Ideator does not get the old draft, whose hypothesis ids belong to the old RQ."""
+    _, ps, _ = env
+    _argued(env)
+    w = DesignWorker()
+    out = w.run(_ctx(env, _exec([plan()], votes=_votes(["approve"], ["not_approved"]))))
+    assert out.status == "rerun"
+    old = frozen_rq(ps)
+    (n,) = design_notes(ps, 1, kind="draft")
+    assert n["rq_id"] == old["id"]
+    # back to the question: a new RQ is frozen
+    new = add_rq(ps, 2, old["topic_id"], RQBody.model_validate(old["body"]),
+                 [HypothesisIn(statement="H2.", falsification="X2.")], actor="tester")
+    freeze_rq(ps, new, adopted_by="human", actor="tester")
+    assert frozen_rq(ps)["id"] == new
+
+    def fresh(inputs):
+        assert "previous_design" not in inputs
+        assert [h["statement"] for h in inputs["hypotheses"]] == ["H2."]
+        return plan()(inputs)
+
+    out = w.run(_ctx(env, _exec([fresh]), attempt=2))
+    assert out.status == "done", out.reason
+    assert design_notes(ps, 2, kind="draft")[0]["rq_id"] == new
 
 
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
