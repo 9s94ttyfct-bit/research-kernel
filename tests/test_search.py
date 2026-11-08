@@ -800,3 +800,73 @@ def test_replay_needs_the_same_protocol_and_year_range(env, monkeypatch):
     mark_protocol(ps, "search_screen", 1, "hash-2", actor="tester")
     run_strategy(_ctx(env, src), a_protocol(search_strategy=_strategy(), record_cap=20))
     assert len(src.search_args) == 6  # another protocol
+
+
+def _merging() -> dict[str, list[ItemIn]]:
+    """Two sources whose pages (of 4, with ``PAGE_LIMIT`` 4) hold hits the library merges into an item already on the
+    page (the same DOI under another title): openalex a a b c | d e e (a short last page ending in a merged hit),
+    europepmc e f g g | (an empty page): 11 hits, 7 works."""
+    a, b, c, d, e, f, g = (_w(f"Work {x}", 2015, doi=f"10.1000/{x}") for x in "abcdefg")
+
+    def again(w: ItemIn) -> ItemIn:
+        return _w(f"{w.title} (preprint)", 2015, doi=w.ids.doi)
+
+    return {"openalex": [a, again(a), b, c, d, e, again(e)], "europepmc": [e, f, g, again(g)]}
+
+
+MERGED_COUNTS = {"identified": 11, "duplicates_removed": 4, "screened": 7}
+
+
+def _drop_hit_ids(ps) -> None:
+    """Make the logged pages look like pages logged before ``hit_ids`` were (their distinct item ids only)."""
+    ps.db.execute("UPDATE events SET payload=json_remove(payload, '$.hit_ids') WHERE type='search.logged'")
+
+
+def test_a_search_run_again_replays_merged_hits_one_by_one(env, monkeypatch):
+    """Hits the library merges into an item already on their page (the Plan 5b demo's 1,468 records for 1,464 logged
+    works) are logged hit by hit (``hit_ids``) and replayed so: run again in its attempt (a rate cap while screening),
+    the search asks nothing again, stores no record twice, PRISMA's counts stay and a record cap of exactly the works
+    found still holds (the demo's resumed attempt stored 1,171 records again and went back to protocol over the
+    cap)."""
+    _, ps, _ = env
+    monkeypatch.setattr("rk.production.search.PAGE_LIMIT", 4)
+    src = BySource(_merging())
+    protocol = a_protocol(search_strategy=_strategy(), record_cap=7)
+    first = run_strategy(_ctx(env, src), protocol)
+    assert search_counts(ps, 1) == MERGED_COUNTS and len(src.search_args) == 4
+    again = run_strategy(_ctx(env, src), protocol)
+    assert len(src.search_args) == 4 and again.record_ids == first.record_ids
+    assert search_counts(ps, 1) == MERGED_COUNTS and check_record_cap(ps, 1, protocol) is None
+    pages = _logged(ps)
+    assert [len(p["hit_ids"]) for p in pages] == [4, 3, 4, 0]
+    assert [len(p["item_ids"]) for p in pages] == [3, 2, 3, 0]  # the distinct ids, as before
+
+
+def test_pages_logged_without_hit_ids_replay_from_the_stored_records(env, monkeypatch):
+    """Pages logged before ``hit_ids`` (distinct item ids only) are replayed from the attempt's stored records, each
+    record used once, a later hit of an item on the page repeating it: no request, no record, PRISMA unchanged."""
+    _, ps, _ = env
+    monkeypatch.setattr("rk.production.search.PAGE_LIMIT", 4)
+    src = BySource(_merging())
+    protocol = a_protocol(search_strategy=_strategy(), record_cap=7)
+    first = run_strategy(_ctx(env, src), protocol)
+    _drop_hit_ids(ps)
+    again = run_strategy(_ctx(env, src), protocol)
+    assert len(src.search_args) == 4 and again.record_ids == first.record_ids
+    assert search_counts(ps, 1) == MERGED_COUNTS and check_record_cap(ps, 1, protocol) is None
+
+
+def test_pages_logged_without_hit_ids_and_no_records_are_asked_again(env, monkeypatch):
+    """A search interrupted before it stored any record (a source outage at its fourth page) whose pages were logged
+    before ``hit_ids``: the stored records cannot give their hits, so those pages are asked for again rather than
+    records made from their distinct ids; the counts are those of an uninterrupted search."""
+    _, ps, _ = env
+    monkeypatch.setattr("rk.production.search.PAGE_LIMIT", 4)
+    src = FailsOnce(_merging(), n=4)
+    protocol = a_protocol(search_strategy=_strategy(), record_cap=7)
+    with pytest.raises(httpx.ConnectError):
+        run_strategy(_ctx(env, src), protocol)
+    assert len(src.search_args) == 3 and store.records(ps, 1) == []
+    _drop_hit_ids(ps)
+    run_strategy(_ctx(env, src), protocol)
+    assert len(src.search_args) == 7 and search_counts(ps, 1) == MERGED_COUNTS

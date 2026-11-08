@@ -21,7 +21,7 @@ from rk.production.screening import (
     sample_size,
     switches_to_dual,
 )
-from rk.production.search import SearchResult, deduplicated
+from rk.production.search import SearchResult, deduplicated, search_counts
 from rk.production.store import screening_notes, voted_out
 from rk.tools.builtin import build_registry
 from rk.tools.registry import ToolError
@@ -696,4 +696,27 @@ def test_rate_capped_search_screen_reuses_its_search_and_records(env):
     assert o.step("demo", run_id, actor="tester") == "done"
     assert latest_attempt(ps, "search_screen") == 1
     assert len(src.search_args) == searched and _record_count(ps) == stored
+    assert SearchScreenWorker().gate(ps, 1).ok
+
+
+@pytest.mark.parametrize("env", [SR_P1], indirect=True)
+def test_rate_capped_search_screen_with_merged_hits_stores_no_record_twice(env):
+    """A page with two hits the library merges into one item (the same DOI under another title), then a rate cap while
+    screening: the resumed attempt stores no record again, keeps PRISMA's counts and does not go back to protocol over
+    a record cap of exactly the works found (the Plan 5b demo rerun stored 1,171 records again on its resume and went
+    back over the cap: "1336 records > cap 800")."""
+    k, ps, lib = env
+    _freeze(ps, record_cap=31)
+    works = _works("yes/yes", n=30) + [_work("Aspirin split [yes/no]", 99)]
+    preprint = works[0].model_copy(update={"title": "Aspirin study 0 [yes/yes] (preprint)"})
+    src = FakeSources({"aspirin": [works[0], preprint, *works[1:]]}, lib=lib)
+    ex = CappedAt("screener_b", 2, votes={"Aspirin split [yes/no]": ("include", "include")})
+    o, run_id = stage_run(k, ps, lib, "search_screen", ex, sources=src)
+    assert o.step("demo", run_id, actor="tester") == "waiting_rate"
+    stored, counts = _record_count(ps), search_counts(ps, 1)
+    assert counts == {"identified": 64, "duplicates_removed": 33, "screened": 31}  # 32 hits on each of 2 sources
+    ex.cap_role = None  # the cap is lifted
+    assert o.step("demo", run_id, actor="tester") == "done"
+    assert latest_attempt(ps, "search_screen") == 1
+    assert _record_count(ps) == stored and search_counts(ps, 1) == counts
     assert SearchScreenWorker().gate(ps, 1).ok

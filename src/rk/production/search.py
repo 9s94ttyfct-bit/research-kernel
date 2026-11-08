@@ -26,7 +26,11 @@ PRISMA notes.
 Run again in the same attempt (an attempt interrupted after or during its search resumes in place), the search asks no
 source again for a page the attempt already logged under the protocol it works under and the same year range
 (``_Paging.replay``: the logged hits and what the page said), and a hit already stored as a record keeps that record:
-no search request and no record is made twice.
+no search request and no record is made twice. A page is replayed hit by hit (its logged ``hit_ids``, a hit the
+library merged into an item already on the page repeating that id), so hit i of the replayed search is hit i of the
+first pass and keeps its record. A page logged before ``hit_ids`` were (its distinct ``item_ids`` only) is replayed
+from the attempt's stored records when they line up with the logged pages (``_legacy_hits``), else asked for again:
+its distinct ids alone never make records.
 
 A failed search is never "nothing found": its error propagates (a transient one steps the run again, spec §11.3).
 
@@ -126,30 +130,93 @@ class _Paging:
         self.offset += self.raw
 
 
+def _key(p: dict, offset: int | None = None) -> tuple:
+    """A logged page's key: (source, query, offset, limit, date_from, date_to); ``offset`` replaces the page's."""
+    at = (p.get("offset") or 0) if offset is None else offset
+    return (p["source"], p["query"], at, p["limit"], p.get("date_from"), p.get("date_to"))
+
+
 def _logged_pages(ps: ProjectStore, stage: str, attempt: int) -> dict[tuple, dict]:
     """The attempt's logged search pages under the protocol it works under now (logged after its latest
-    ``attempt.protocol`` mark: a page of an earlier protocol is not replayed), by (source, query, offset, limit,
-    date_from, date_to); the first of each."""
+    ``attempt.protocol`` mark: a page of an earlier protocol is not replayed), by ``_key``, in the order they were
+    logged: the first of each, or the first with ``hit_ids`` when an earlier one lacks them (asked for again)."""
     mark = ps.db.execute("SELECT MAX(seq) FROM events WHERE type='attempt.protocol' AND json_extract(payload, "
                          "'$.stage')=? AND json_extract(payload, '$.attempt')=?", (stage, attempt)).fetchone()[0]
-    rows = ps.db.execute("SELECT payload FROM events WHERE type='search.logged' AND seq>? AND json_extract(payload, "
-                         "'$.stage')=? AND json_extract(payload, '$.attempt')=? AND json_extract(payload, '$.purpose')=? "
-                         "ORDER BY seq", (mark or 0, stage, attempt, PURPOSE))
-    out: dict[tuple, dict] = {}
+    rows = ps.db.execute("SELECT seq, payload FROM events WHERE type='search.logged' AND seq>? AND "
+                         "json_extract(payload, '$.stage')=? AND json_extract(payload, '$.attempt')=? AND "
+                         "json_extract(payload, '$.purpose')=? ORDER BY seq", (mark or 0, stage, attempt, PURPOSE))
+    out: dict[tuple, tuple[int, dict]] = {}
     for r in rows:
         p = json.loads(r["payload"])
-        out.setdefault((p["source"], p["query"], p.get("offset") or 0, p["limit"], p.get("date_from"),
-                        p.get("date_to")), p)
-    return out
+        key = _key(p)
+        if key not in out or (out[key][1].get("hit_ids") is None and p.get("hit_ids") is not None):
+            out[key] = (r["seq"], p)
+    return {k: p for k, (_, p) in sorted(out.items(), key=lambda kv: kv[1][0])}
+
+
+def _slice_lengths(distinct: list[str], items: list[str], pos: int, n: int | None) -> list[int]:
+    """The lengths, longest first, of the runs of ``items`` from ``pos`` that can be the hits of a page whose distinct
+    hit item ids are ``distinct``: those ids in their order, each later hit of an item already on the page repeating
+    it; only ``n`` when the page's number of hits is known."""
+    seen: set[str] = set()
+    j, k, out = 0, pos, [0] if not distinct else []
+    while k < len(items) and (n is None or k - pos < n):
+        if j < len(distinct) and items[k] == distinct[j]:
+            seen.add(items[k])
+            j += 1
+        elif items[k] not in seen:
+            break
+        k += 1
+        if j == len(distinct):
+            out.append(k - pos)
+    return [m for m in reversed(out) if n is None or m == n]
+
+
+def _legacy_hits(logged: dict[tuple, dict], stored: list[str]) -> dict[tuple, list[str]]:
+    """The hits of each logged page without ``hit_ids`` (logged before they were), read from the attempt's stored
+    records (``stored``: their item ids in record order, the hits of the first pass's whole search, since records
+    are made after it): the logged pages, in the order logged, must cover the records in order, a page with
+    ``hit_ids`` exactly, a page without them as its distinct ids with later hits of an item on the page repeating it
+    (``_slice_lengths``), each record used once; a page followed by the next page of its query and source was full
+    (``limit`` hits less the dropped ones). ``{}`` when there is no such page or the records do not line up (those
+    pages are asked for again)."""
+    pages = list(logged.values())
+    if all(p.get("hit_ids") is not None for p in pages):
+        return {}
+
+    def known(p: dict) -> int | None:
+        if _key(p, (p.get("offset") or 0) + p["limit"]) in logged:
+            return p["limit"] - (p.get("dropped") or 0)
+        return None
+
+    def align(i: int, pos: int) -> list[list[str]] | None:
+        if i == len(pages):
+            return []
+        p = pages[i]
+        if (hits := p.get("hit_ids")) is not None:
+            lengths = [len(hits)] if stored[pos:pos + len(hits)] == hits else []
+        else:
+            lengths = _slice_lengths(p["item_ids"], stored, pos, known(p))
+        for m in lengths:
+            if (rest := align(i + 1, pos + m)) is not None:
+                return [stored[pos:pos + m], *rest]
+        return None
+
+    found = align(0, 0)
+    if found is None:
+        return {}
+    return {_key(p): hits for p, hits in zip(pages, found, strict=True) if p.get("hit_ids") is None}
 
 
 def _search(ctx: StageContext, strategy: SearchStrategy, cap: int) -> tuple[list[str], list[str], bool]:
     """One item id per hit in search order, the incomplete reasons, and whether the search stopped at the cap. A page
-    the attempt already logged, under the same protocol and year range, is replayed, not asked for again."""
+    the attempt already logged, under the same protocol and year range, is replayed hit by hit, not asked for again
+    (one logged without ``hit_ids`` only when the stored records give its hits, ``_legacy_hits``)."""
     hits: list[str] = []
     incomplete: list[str] = []
     found: set[str] = set()
     logged = _logged_pages(ctx.ps, ctx.stage, ctx.attempt)
+    legacy = _legacy_hits(logged, [r["item_id"] for r in records(ctx.ps, ctx.attempt)])
     pairs = [(q, s) for q in strategy.queries for s in strategy.sources]
     for i, (query, source) in enumerate(pairs):
         lim = search_limits(source)
@@ -157,8 +224,8 @@ def _search(ctx: StageContext, strategy: SearchStrategy, cap: int) -> tuple[list
                     lim.depth if lim else None, cap, found, more_searches=i < len(pairs) - 1)
         while not p.ended:
             key = (source, query, p.offset, p.page, strategy.date_from, strategy.date_to)
-            if (page := logged.get(key)) is not None:
-                ids = page["item_ids"]
+            page = logged.get(key)
+            if page is not None and (ids := page.get("hit_ids", legacy.get(key))) is not None:
                 p.replay(ids, page)
             else:
                 ids = log_and_search_hits(ctx.ps, ctx.sources, stage=ctx.stage, attempt=ctx.attempt, purpose=PURPOSE,

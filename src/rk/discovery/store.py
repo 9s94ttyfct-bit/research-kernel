@@ -51,15 +51,18 @@ class SearchNote(NamedTuple):
 def log_search(ps: ProjectStore, *, stage: str, attempt: int, purpose: str, source: str, query: str, limit: int,
                item_ids: list[str], actor: str, actor_kind: ActorKind = "kernel", after_year: int | None = None,
                offset: int = 0, date_from: int | None = None, date_to: int | None = None,
-               note: SearchNote | None = None) -> str:
-    """One search; ``after_year`` is the year the search was limited to works published after (or None),
-    ``date_from``..``date_to`` the publication years it was limited to (inclusive; None: open), ``offset`` the rank of
-    its first hit (a later page), ``note`` what else it says."""
+               note: SearchNote | None = None, hit_ids: list[str] | None = None) -> str:
+    """One search; ``item_ids`` its distinct hit item ids, ``hit_ids`` one item id per hit in rank order (a hit the
+    library merged into an earlier hit's item repeats that id; ``None``: the hits are ``item_ids``), ``after_year``
+    the year the search was limited to works published after (or None), ``date_from``..``date_to`` the publication
+    years it was limited to (inclusive; None: open), ``offset`` the rank of its first hit (a later page), ``note``
+    what else it says."""
     sid, note = new_id("sch"), note or SearchNote()
     ps.apply(NewEvent(type="search.logged", entity_id=sid, actor_kind=actor_kind, actor=actor,
                       payload={"stage": stage, "attempt": attempt, "purpose": purpose, "source": source,
                                "query": query, "limit": limit, "after_year": after_year, "offset": offset,
                                "date_from": date_from, "date_to": date_to, "item_ids": list(item_ids),
+                               "hit_ids": list(item_ids if hit_ids is None else hit_ids),
                                "incomplete": note.incomplete, "stopped_at_cap": note.stopped_at_cap,
                                "dropped": note.dropped}))
     return sid
