@@ -252,6 +252,20 @@ class ArgumentService:
                 raise ValueError(f"claim {claim_id} is already withdrawn")
             self._ev("claim.withdrawn", claim_id, {"reason": reason}, actor, actor_kind)
 
+    def set_contested(self, claim_id: str, *, reason: str, actor: str, actor_kind: str = "kernel") -> None:
+        """Mark the claim ``contested`` (two supported findings contradict each other and neither is preferred,
+        spec §9.1 V-BALANCE): it stays in the argument with its status, carrying an objection and a response. A
+        withdrawn claim is refused; marking a contested claim again records nothing."""
+        with self.ps.lock:
+            c = self._row("claims", claim_id)
+            if c is None:
+                raise KeyError(claim_id)
+            if c["status"] == "withdrawn":
+                raise ValueError(f"claim {claim_id} is withdrawn: it is out of the argument")
+            if c.get("contested"):
+                return
+            self._ev("claim.contested", claim_id, {"reason": reason}, actor, actor_kind)
+
     def link_evidence(self, e: EvidenceIn, *, actor: str, actor_kind: str = "agent") -> str:
         if self._row("claims", e.claim_id) is None:
             raise KeyError(e.claim_id)
@@ -378,6 +392,11 @@ def _claim_status(conn: sqlite3.Connection, ev: Event) -> None:
 def _claim_withdrawn(conn: sqlite3.Connection, ev: Event) -> None:
     _update(conn, "claims", ev.entity_id, status="withdrawn", withdrawn_reason=ev.payload["reason"])
     conn.execute("UPDATE claims SET status='withdrawn' WHERE id=?", (ev.entity_id,))
+
+
+@projection("claim.contested")
+def _claim_contested(conn: sqlite3.Connection, ev: Event) -> None:
+    _update(conn, "claims", ev.entity_id, contested=True, contested_reason=ev.payload["reason"])
 
 
 @projection("evidence.linked")

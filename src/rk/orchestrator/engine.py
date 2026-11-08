@@ -154,6 +154,7 @@ def default_workers() -> dict[str, Worker]:
     from rk.discovery.landscape import LandscapeWorker
     from rk.discovery.question import QuestionWorker
     from rk.discovery.topics import TopicsWorker
+    from rk.production.argue import ArgueWorker
     from rk.production.extraction import ReadExtractWorker
     from rk.production.protocol import ProtocolWorker
     from rk.production.screening import SearchScreenWorker
@@ -161,7 +162,7 @@ def default_workers() -> dict[str, Worker]:
 
     return {"intake": IntakeWorker(), "landscape": LandscapeWorker(), "gaps": GapsWorker(), "topics": TopicsWorker(),
             "question": QuestionWorker(), "protocol": ProtocolWorker(), "search_screen": SearchScreenWorker(),
-            "read_extract": ReadExtractWorker(), "synthesize": SynthesizeWorker()}
+            "read_extract": ReadExtractWorker(), "synthesize": SynthesizeWorker(), "argue": ArgueWorker()}
 
 
 @functools.cache

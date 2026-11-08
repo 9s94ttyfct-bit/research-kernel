@@ -463,7 +463,7 @@ def representativeness_problem(statement: str, k: int) -> str | None:
 
 
 # ---- evidence criteria ----
-def _criteria(ps: ProjectStore, attempt: int, note_ids: list[str]) -> dict:
+def evidence_criteria(ps: ProjectStore, attempt: int, note_ids: list[str]) -> dict:
     """The criteria of an evidence item from the assessments of the studies its notes come from: each criterion's
     lowest score (with that study's reason), except ``sufficient``, judged on the item as a whole: its highest score,
     capped at 0 ("abstract only") when every note of the item is abstract-sourced (§11.1)."""
@@ -953,7 +953,7 @@ class SynthesizeWorker:
                 dropped += [n for n in e.note_ids if n not in usable_notes]
                 if ids:
                     svc.link_evidence(EvidenceIn(claim_id=cid, note_ids=ids,
-                                                 criteria=_criteria(ps, ctx.attempt, ids),
+                                                 criteria=evidence_criteria(ps, ctx.attempt, ids),
                                                  interpretation=e.interpretation), actor=ctx.actor,
                                       actor_kind="kernel")
             _note(ps, ctx.attempt, "finding", actor=ctx.actor, index=i, claim_id=cid, dropped_notes=dropped)
