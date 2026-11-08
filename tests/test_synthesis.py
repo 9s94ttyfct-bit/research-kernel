@@ -18,10 +18,13 @@ from rk.fulltext import latest_snapshot
 from rk.library.models import Creator, Ids, ItemIn
 from rk.notes import NoteIn, add_note
 from rk.orchestrator.state import (
+    current_stage,
+    edge_rows,
     latest_attempt,
     record_attempt,
     record_passed,
     record_ran,
+    stage_row,
 )
 from rk.production import store
 from rk.production.artifacts import artifact, artifacts
@@ -86,17 +89,20 @@ def _enable_stats() -> None:
                                                                           "report": "docs/eval/stats-x.md"}}))
 
 
-def _setup(env, studies: dict[str, dict], *, schema, plan, abstract: frozenset = frozenset()) -> dict[str, str]:
+def _setup(env, studies: dict[str, dict], *, schema, plan, abstract: frozenset = frozenset(),
+           text_only: dict[str, dict] | None = None) -> dict[str, str]:
     """Freeze a protocol with ``schema`` and ``plan``, include ``studies`` (title -> {field: value}) in a passed
     search_screen and extract them in a passed read_extract attempt 1, each value with a verified quote note (from the
-    full text; from the abstract for the titles in ``abstract``). Returns title -> item id."""
+    full text; from the abstract for the titles in ``abstract``). ``text_only`` (title -> {field: value}): values the
+    study's text states but its extraction lacks. Returns title -> item id."""
     _, ps, lib = env
     pid = store.add_protocol(ps, 1, a_protocol(extraction_schema=schema, synthesis_plan=plan, prisma_p=SR_ITEMS),
                              version=1, actor="tester")
     store.freeze_protocol(ps, pid, actor="tester")
     ids = {}
     for i, (title, values) in enumerate(studies.items()):
-        text = "Methods section. " + " ".join(f"The {f} was {v}." for f, v in values.items() if v != "not_reported")
+        stated = {**values, **(text_only or {}).get(title, {})}
+        text = "Methods section. " + " ".join(f"The {f} was {v}." for f, v in stated.items() if v != "not_reported")
         is_abs = title in abstract
         iid = lib.add_item(ItemIn(title=f"{title} trial", year=1950 + i, creators=[Creator(family=title)],
                                   ids=Ids(doi=f"10.1000/s{i}"), abstract=text if is_abs else "Abstract."),
@@ -1226,3 +1232,167 @@ def test_review_choices_follow_the_claim_problems():
     for problems in ([hedge], [stats], [status, stats], [objection], [status, hedge]):
         assert review_choices(problems) == ["withdraw"], problems
     assert review_choices([status], structural=True) == ["withdraw"]
+
+
+# ---- fix wave 2: your way back to read_extract (a) ----
+def _bcg2(env, **kw) -> dict[str, str]:
+    _enable_stats()
+    return _setup(env, dict(list(BCG.items())[:2]), schema=BINARY, plan=META, **kw)
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review", "production_mode": "collab"}], indirect=True)
+def test_pooling_approval_back_goes_to_read_extract_naming_studies(env):
+    _, ps, _ = env
+    ids = _bcg2(env)
+    ex = _exec(plans=[lambda inputs: _group(s["item_id"] for s in inputs["studies"])])
+    w = SynthesizeWorker()
+    cp = get_checkpoint(ps, w.run(_ctx(env, ex)).checkpoint_id)
+    assert cp["kind"] == "pooling_approval" and "back" in cp["options"]["decisions"]
+    assert "back to read_extract" in cp["prompt"]
+    assert [x["item_id"] for x in cp["options"]["studies"]] == [ids["Aronson"], ids["Ferguson"]]
+    for bad in ({"decision": "back", "studies": ["itm_unknown"]}, {"decision": "back", "fields": ["dose"]},
+                {"decision": "back", "studies": "Aronson"}):
+        out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], bad))
+        assert out.status == "waiting_human", bad
+        cp = get_checkpoint(ps, out.checkpoint_id)
+        assert cp["kind"] == "pooling_approval" and "could not be applied" in cp["prompt"], bad
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {
+        "decision": "back", "comment": "Table 3 gives the arm sizes.", "studies": [ids["Ferguson"]],
+        "fields": ["n_control"]}))
+    assert (out.status, out.to) == ("back_edge", "read_extract")
+    assert "Ferguson 1951" in out.reason and "n_control" in out.reason and "Table 3 gives the arm sizes." in out.reason
+    (note,) = synthesis_notes(ps, 1, kind="back_edge")
+    assert note["by"] == "human" and note["version"] == 1
+    assert note["studies"] == [{"item_id": ids["Ferguson"], "label": "Ferguson 1951", "fields": ["n_control"]}]
+    assert artifacts(ps, "synthesize", 1) == []  # nothing pooled
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "critical_review", "production_mode": "collab"}], indirect=True)
+def test_uncertain_support_back_reads_every_study_again(env):
+    _, ps, _ = env
+    _setup(env, {"A": {"design": "rct"}, "B": {"design": "cohort"}}, schema=[DESIGN],
+           plan=SynthesisPlan(method="thematic"))
+    ex = _exec(judges=_judges("partial"))
+    w = SynthesizeWorker()
+    cp = get_checkpoint(ps, w.run(_ctx(env, ex)).checkpoint_id)
+    assert cp["kind"] == "uncertain_support" and "back" in cp["options"]["decisions"]
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decision": "back"}))
+    assert (out.status, out.to) == ("back_edge", "read_extract")
+    assert "every included study" in out.reason
+    (note,) = synthesis_notes(ps, 1, kind="back_edge")
+    assert note["studies"] is None and note["by"] == "human"
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review", "production_mode": "collab"}], indirect=True)
+def test_your_back_uses_the_synthesize_read_extract_edge(env):
+    k, ps, lib = env
+    _bcg2(env)
+    ex = _exec(plans=[lambda inputs: _group(s["item_id"] for s in inputs["studies"])])
+    o, run_id = stage_run(k, ps, lib, "synthesize", ex)
+    assert o.step("demo", run_id, actor="tester") == "paused_waiting_human"
+    (cp,) = [c for c in list_checkpoints(ps) if c["kind"] == "pooling_approval"]
+    answer_checkpoint(ps, cp["id"], {"decision": "back", "comment": "Re-read the tables."}, answered_by="human",
+                      actor="researcher")
+    assert o.step("demo", run_id, actor="tester") == "running"
+    assert edge_rows(ps)["synthesize->read_extract"]["count"] == 1
+    assert current_stage(ps) == "read_extract"
+    assert "Re-read the tables." in stage_row(ps, "read_extract")["guidance"]
+
+
+# ---- fix wave 2: a study missing a value goes back on its own (b, M6) ----
+def _reader(values: dict[str, dict]):
+    """A reader extracting, per study title, the given values with their verified quotes ("The f was v.")."""
+    def out(inputs):
+        title = inputs["study"]["title"].removesuffix(" trial")
+        return {"values": [{"field": f, "value": v, "quote": f"The {f} was {v}."} for f, v in values[title].items()]}
+    return out
+
+
+def _one_group(inputs) -> dict:
+    """A pooling plan of one group with every study given."""
+    return _group(s["item_id"] for s in inputs["studies"])
+
+
+def _no_control(title: str) -> tuple[dict, dict]:
+    """BCG's first two trials, ``title`` without its ``n_control`` row (its text still states it)."""
+    studies = dict(list(BCG.items())[:2])
+    studies[title] = {f: v for f, v in studies[title].items() if f != "n_control"}
+    return studies, {title: {"n_control": BCG[title]["n_control"]}}
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_a_study_missing_a_value_goes_back_once_and_only_it_is_read_again(env):
+    """(b): one study of a two-study group has no n_control row: synthesize goes back once (naming that study), only
+    that study is read again, the other keeps its extraction (carried_from), and the next synthesize pools k=2."""
+    k, ps, lib = env
+    _enable_stats()
+    studies, text_only = _no_control("Ferguson")
+    ids = _setup(env, studies, schema=BINARY, plan=META, text_only=text_only)
+    ex = _exec(plans=[_one_group, _one_group], votes=_votes_pool())
+    ex.script[("reader", "ExtractOut")] = [_reader({"Ferguson": BCG["Ferguson"]})]
+    o, run_id = stage_run(k, ps, lib, "synthesize", ex)
+    assert o.step("demo", run_id, actor="tester") == "running"
+    (note,) = synthesis_notes(ps, 1, kind="back_edge")
+    assert note["by"] == "kernel" and note["version"] == 1
+    assert [(x["item_id"], x["fields"]) for x in note["studies"]] == [(ids["Ferguson"], ["n_control"])]
+    assert "Ferguson 1951" in note["reason"] and "n_control" in note["reason"]
+    assert current_stage(ps) == "read_extract"
+    assert o.step("demo", run_id, actor="tester") == "running"  # read_extract attempt 2 passes
+    assert [c["inputs"]["study"]["title"] for c in ex.of("reader")] == ["Ferguson trial"]  # only it is read again
+    assert {r["carried_from"] for r in store.extractions(ps, 2, item_id=ids["Aronson"])} == {1}
+    assert {r["carried_from"] for r in store.extractions(ps, 2, item_id=ids["Ferguson"])} == {None}
+    assert stage_row(ps, "read_extract")["passed_attempt"] == 2
+    assert o.step("demo", run_id, actor="tester") == "done"  # synthesize attempt 2
+    (pooled,) = synthesis_notes(ps, 2, kind="pooled")
+    assert pooled["item_ids"] == [ids["Aronson"], ids["Ferguson"]] and pooled["uncomputable"] == []
+    assert artifact(ps, pooled["stt"])["values"]["display"]["k"] == 2
+    assert edge_rows(ps)["synthesize->read_extract"]["count"] == 1
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_a_study_is_asked_for_once_per_protocol_version(env):
+    """(b, M6): the same study and fields are not asked for twice under one protocol version; a new version asks
+    again."""
+    _, ps, _ = env
+    _enable_stats()
+    studies, _ = _no_control("Ferguson")
+    ids = _setup(env, studies, schema=BINARY, plan=META)
+    w = SynthesizeWorker()
+    assert w.run(_ctx(env, _exec(plans=[_one_group]))).to == "read_extract"
+    out = w.run(_ctx(env, _exec(plans=[_one_group], votes=_votes_pool()), 2))
+    assert out.status == "done", out.reason  # asked already: Ferguson stays uncomputable, k < 2 falls back
+    assert not synthesis_notes(ps, 2, kind="back_edge")
+    assert any("fewer than two studies" in f["reason"] for f in synthesis_notes(ps, 2, kind="fallback"))
+    pid = store.add_protocol(ps, 1, a_protocol(extraction_schema=BINARY, synthesis_plan=META, prisma_p=SR_ITEMS),
+                             version=2, actor="tester")
+    store.freeze_protocol(ps, pid, actor="tester")
+    out = w.run(_ctx(env, _exec(plans=[_one_group]), 3))
+    assert (out.status, out.to) == ("back_edge", "read_extract")
+    (note,) = synthesis_notes(ps, 3, kind="back_edge")
+    assert note["version"] == 2 and note["studies"][0]["item_id"] == ids["Ferguson"]
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review", "production_mode": "collab"}], indirect=True)
+def test_your_back_rereads_a_study_whose_field_was_verified_not_reported(env):
+    """The Khaled case: a study's n_control is a verified not_reported (its table was missing from the text layer),
+    so the kernel does not go back; your back naming that study reads it again in full, the other keeps its
+    extraction."""
+    k, ps, lib = env
+    _enable_stats()
+    studies = dict(list(BCG.items())[:2])
+    studies["Ferguson"] = {**studies["Ferguson"], "n_control": "not_reported"}
+    ids = _setup(env, studies, schema=BINARY, plan=META, text_only={"Ferguson": {"n_control": 30}})
+    ex = _exec(plans=[_one_group, _one_group])
+    ex.script[("reader", "ExtractOut")] = [_reader({"Ferguson": {**BCG["Ferguson"], "n_control": 30}})]
+    o, run_id = stage_run(k, ps, lib, "synthesize", ex)
+    assert o.step("demo", run_id, actor="tester") == "paused_waiting_human"
+    assert not synthesis_notes(ps, 1, kind="back_edge")  # verified absence: no gap
+    (cp,) = [c for c in list_checkpoints(ps) if c["kind"] == "pooling_approval"]
+    answer_checkpoint(ps, cp["id"], {"decision": "back", "studies": [ids["Ferguson"]], "fields": ["n_control"],
+                                     "comment": "Table 3 gives the arm sizes."}, answered_by="human", actor="researcher")
+    assert o.step("demo", run_id, actor="tester") == "running"
+    assert o.step("demo", run_id, actor="tester") == "running"  # read_extract attempt 2
+    assert [c["inputs"]["study"]["title"] for c in ex.of("reader")] == ["Ferguson trial"]
+    assert "Table 3 gives the arm sizes." in ex.of("reader")[0]["inputs"]["guidance"]
+    assert {r["carried_from"] for r in store.extractions(ps, 2, item_id=ids["Aronson"])} == {1}
+    assert [r["value"] for r in store.extractions(ps, 2, item_id=ids["Ferguson"]) if r["field"] == "n_control"] == [30]

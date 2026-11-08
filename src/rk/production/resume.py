@@ -19,7 +19,10 @@ What is carried: in ``search_screen`` each screener's decision and the final of 
 ``read_extract`` a study the interrupted attempt finished (its ``study`` note, written after its values) with its
 extraction values (``carried_extraction``); a study it left half-read is read again.
 
-A carried row keeps the attempt it was made in (``carried_from``), so PRISMA and audits can tell it apart."""
+A carried row keeps the attempt it was made in (``carried_from``), so PRISMA and audits can tell it apart.
+
+``read_extract`` also keeps the studies of its passed attempt (``kept_extraction``) when ``synthesize`` sent it back to
+read only some studies again (``rk.production.extraction.reread_request``); they carry ``carried_from`` likewise."""
 
 from __future__ import annotations
 
@@ -110,15 +113,26 @@ class CarriedStudy:
     values: list[dict]
 
 
+def _carried_study(ps: ProjectStore, attempt: int, note: dict) -> CarriedStudy:
+    made = note.get("carried_from") or attempt
+    values = [{**e, "carried_from": e["carried_from"] or made} for e in extractions(ps, attempt, item_id=note["item_id"])]
+    return CarriedStudy({**note, "carried_from": made}, values)
+
+
 def carried_extraction(ps: ProjectStore, stage: str, attempt: int, protocol_hash: str) -> dict[str, CarriedStudy]:
     """item id -> the newest study ``attempt`` carries over of the reading (``carry_attempts``): only a study the
     interrupted attempt finished (its ``study`` note), with its extraction values."""
     out: dict[str, CarriedStudy] = {}
     for a in carry_attempts(ps, stage, attempt, protocol_hash):
         for n in extraction_notes(ps, a, kind="study"):
-            if n["item_id"] in out:
-                continue
-            made = n.get("carried_from") or a
-            values = [{**e, "carried_from": e["carried_from"] or made} for e in extractions(ps, a, item_id=n["item_id"])]
-            out[n["item_id"]] = CarriedStudy({**n, "carried_from": made}, values)
+            if n["item_id"] not in out:
+                out[n["item_id"]] = _carried_study(ps, a, n)
     return out
+
+
+def kept_extraction(ps: ProjectStore, passed_attempt: int) -> dict[str, CarriedStudy]:
+    """item id -> each study of ``read_extract``'s passed attempt with its extraction values (``carried_from``: the
+    attempt it was read in), for an attempt that reads again only the studies synthesize sent it back for
+    (``rk.production.extraction.reread_request``): every other study keeps its extraction."""
+    return {n["item_id"]: _carried_study(ps, passed_attempt, n)
+            for n in extraction_notes(ps, passed_attempt, kind="study")}

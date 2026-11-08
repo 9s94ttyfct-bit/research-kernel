@@ -243,15 +243,20 @@ two uses per project.
   extraction rows. Pooling stays off until `rk eval stats --write-config` has validated the current `rk.stats`
   (`docs/eval/stats-2026-11-08.md`: 180/180 published values reproduced). Every study with a computable effect is in
   its group; a group that is not comparable, has fewer than two computable studies or lacks a field falls back to the
-  narrative synthesis, and every fallback is an analysis deviation from the frozen protocol and a limitation. A
-  scoping review gets an evidence map. Each finding is a claim with its evidence, checked by V-SUPPORT, V-NUM and
-  V-HEDGE; uncertain ones go to you in `uncertain_support` (P2).
+  narrative synthesis, and every fallback is an analysis deviation from the frozen protocol and a limitation. A study
+  of a group missing a value its effect measure needs sends synthesize back to read_extract once (per study and field
+  set, per protocol version), and read_extract reads only that study again. A scoping review gets an evidence map.
+  Each finding is a claim with its evidence, checked by V-SUPPORT, V-NUM and V-HEDGE; every claim that fails the
+  claim gate goes to you in `uncertain_support` (P2): withdraw it, or call it supported when the judges were its only
+  problem. Both synthesize cards also offer "Back to read_extract", naming the studies to read again.
 - **Argue.** The Arguer states the main claim, its reasons and the warrant of each reason; the Skeptic (another
   vendor) raises objections, tests every warrant and names conflicts between supported claims, round after round,
   until no new objection of priority 1 or 2 arrives. The Arguer answers each objection (a new claim, a concession or
   an invalid-objection reason). A conflict goes to you in `evidence_conflict` (P1: a vote); a conceded or failed claim
   is narrowed or withdrawn, and the limitations list the withdrawn and narrowed claims and the conceded objections.
-  At the end you say in `uncertain_support` whether the main claim answers the frozen RQ (P1: the judges).
+  At the end you say in `uncertain_support` whether the main claim answers the frozen RQ (P1: the judges), and you
+  withdraw or support each claim (the findings included) that fails the argument's gate. When every finding is
+  withdrawn, argue goes back to synthesize.
 - **Design (research proposals).** The Ideator ties hypotheses (each with what would falsify it) to design items and
   measurements and states its feasibility claims; the kernel checks the links both ways, verifies the feasibility
   claims and asks for your `design_approval` (P1: a vote). The approved design is frozen and pre-registers the

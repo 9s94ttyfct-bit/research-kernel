@@ -678,6 +678,31 @@ function optionalComment() {
 const groupName = (g) => `${g.outcome} (${g.measure})`;
 const studyNames = (list) => list.map((s) => s.label).join(", ");
 
+// "Back to read_extract" on synthesize's pooling_approval and uncertain_support: the studies to read again (none
+// ticked: those missing a value the pooling needs, else every study; the others keep their extraction) and an
+// optional comment, the guidance read_extract gets. Offered when the checkpoint lists `back` among its decisions.
+function backToReadForm(o, answer) {
+  const studies = o.studies || [];
+  const picked = new Set();
+  const why = el("textarea", { name: "back_comment" });
+  const form = el("form", { class: "revise back-read" },
+    studies.length ? el("fieldset", { class: "back-studies" },
+      el("legend", {}, "Studies to read again (none ticked: those missing a value the pooling needs, else every study)"),
+      studies.map((s) => el("label", { class: "choice" },
+        el("input", { type: "checkbox", value: s.item_id, "aria-label": `Read again: ${s.label}`,
+          onchange: (e) => (e.target.checked ? picked.add(s.item_id) : picked.delete(s.item_id)) }), s.label))) : null,
+    el("label", { class: "field" }, "Why go back (optional; what to look for, e.g. a table)", why),
+    el("button", { type: "submit", class: "secondary" }, "Back to read_extract"));
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const comment = why.value.trim();
+    const named = studies.map((s) => s.item_id).filter((id) => picked.has(id));
+    answer({ decision: "back", ...(named.length ? { studies: named } : {}), ...(comment ? { comment } : {}) });
+  });
+  return el("div", { class: "other-answers" }, el("h4", {}, "Or read studies again"), form);
+}
+const offersBack = (o) => Array.isArray(o.decisions) && o.decisions.includes("back");
+
 async function poolingCard(c, answer) {
   const o = c.options || {};
   const d = await api("/ui/api/synthesis", { query: { project: state.project, attempt: o.attempt } });
@@ -717,6 +742,7 @@ async function poolingCard(c, answer) {
     listed.length ? el("ol", { class: "pool-groups" }, listed.map(group)) : el("p", { class: "empty" }, "The groups of this checkpoint were not found."),
     comment.field,
     el("div", { class: "toolbar" }, submit, status),
+    offersBack(o) ? backToReadForm(o, answer) : null,
   ];
 }
 
@@ -768,12 +794,13 @@ async function uncertainCard(c, answer) {
           ["no", "No: back to the question stage", "No: back to the question stage"]], (v) => { rq = v; update(); })] : null,
     o.claim_ids.length ? [el("h4", {}, rqAsked ? "Claims that fail the argument's gate" : "Synthesis claims that fail the gate"),
       el("p", { class: "hint" }, "Withdraw each, or call it supported when its only problem is that the judges did not find it supported. Withdrawing a claim takes it out and lists it in the limitations."),
-      o.no_supported_left ? el("p", { class: "hint warn" }, "No other finding is supported: withdrawing every listed claim leaves the synthesis without one, and its gate fails. You may synthesize again instead.") : null,
+      o.no_supported_left ? el("p", { class: "hint warn" }, "No other finding is supported: withdrawing every listed claim leaves the synthesis without one, and its gate fails. You may synthesize again, or read studies again, instead.") : null,
       el("ol", { class: "review-claims" }, o.claim_ids.map(row))] : null,
     comment.field,
     el("div", { class: "toolbar" }, submit, status),
     el("div", { class: "other-answers" }, el("h4", {}, `Or ${rqAsked ? "argue" : "synthesize"} again`),
       reviseForm(`What should change (${rqAsked ? "argue" : "synthesize"} runs again with your comment)`, (text) => answer({ decision: "rerun", comment: text }))),
+    !rqAsked && offersBack(o) ? backToReadForm(o, answer) : null,
   ];
 }
 

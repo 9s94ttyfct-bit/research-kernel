@@ -20,6 +20,7 @@ from rk.orchestrator.engine import Orchestrator
 from rk.orchestrator.graph import DISCOVERY
 from rk.orchestrator.runs import RunManager
 from rk.orchestrator.state import (
+    attempt_guidance,
     record_attempt,
     record_passed,
     record_ran,
@@ -37,6 +38,7 @@ from rk.production.argue import (
 )
 from rk.production.artifacts import artifacts
 from rk.production.design import DesignWorker, design_notes, feasibility_claims
+from rk.production.extraction import reread_request
 from rk.production.synthesis import SynthesizeWorker, synthesis_claims, synthesis_notes
 from rk.roles.policy import ROLES, TOOL_ROLES, lead_closed_after_discovery, role_tools
 from rk.server.app import create_app
@@ -77,6 +79,7 @@ from tests.test_synthesis import (
     META2,
     Exec,
     _enable_stats,
+    _one_group,
     _setup,
     _two,
     _two_findings,
@@ -679,6 +682,49 @@ def test_review_card_offers_only_withdraw_past_a_hedge_problem(page, served):
     assert _answer_of(ps, cp["id"]) == {"claims": {cid: "withdraw"}}
     until(lambda: run_row(ps, run_id)["status"] == "done")
     assert ArgumentService(ps).get_claim(cid)["status"] == "withdrawn"
+    assert page.errors == []
+
+
+@pytest.mark.browser
+def test_pooling_card_back_names_the_study_to_read_again(page, served):
+    """(a): the pooling card's "Back to read_extract" form names a study and says why; read_extract's next attempt is
+    asked to read only that study again (the Khaled case: its n_control was a verified not_reported). The read itself
+    is the real worker's (tests/test_synthesis.py); here read_extract is a fake."""
+    ps = served.ps
+    _enable_stats()
+    studies = dict(list(BCG.items())[:2])
+    studies["Ferguson"] = {**studies["Ferguson"], "n_control": "not_reported"}
+    ids = _setup(served.env, studies, schema=BINARY, plan=META, text_only={"Ferguson": {"n_control": 30}})
+    _start(served, "synthesize", synth_exec(plans=[_one_group, _one_group]))
+    cp, card = _show(page, ps, "pooling_approval")
+    form = card.locator("form.back-read")
+    assert form.get_by_text("Aronson 1950").count() == 1 and form.get_by_text("Ferguson 1951").count() == 1
+    form.get_by_label("Read again: Ferguson 1951").check()
+    form.get_by_label("Why go back", exact=False).fill("Table 3 gives the arm sizes.")
+    form.get_by_role("button", name="Back to read_extract").click()
+    assert _answer_of(ps, cp["id"]) == {"decision": "back", "studies": [ids["Ferguson"]],
+                                        "comment": "Table 3 gives the arm sizes."}
+    until(lambda: stage_row(ps, "read_extract")["attempt"] == 2)
+    assert reread_request(ps, 2) == {ids["Ferguson"]}
+    assert "Table 3 gives the arm sizes." in attempt_guidance(ps, "read_extract", 2)
+    assert page.errors == []
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("served", [{"paper_type": "critical_review"}], indirect=True)
+def test_review_card_back_reaches_the_worker(page, served):
+    from rk.production.models import SynthesisPlan
+
+    ps = served.ps
+    _setup(served.env, {"A": {"design": "rct"}, "B": {"design": "cohort"}}, schema=[DESIGN],
+           plan=SynthesisPlan(method="thematic"))
+    ex = Exec({("arguer", "AssessmentOut"): [assess()], ("arguer", "NarrativeSynthesis"): [narrative()],
+               **_judges(uncertain=(FINDING,))})
+    _start(served, "synthesize", ex)
+    cp, card = _show(page, ps, "uncertain_support")
+    card.locator("form.back-read").get_by_role("button", name="Back to read_extract").click()
+    assert _answer_of(ps, cp["id"]) == {"decision": "back"}
+    until(lambda: stage_row(ps, "read_extract")["attempt"] == 2)
     assert page.errors == []
 
 

@@ -23,9 +23,12 @@ artifact, as V-STATS requires) and the frozen protocol (``extraction_schema``, `
      or the kernel finds not comparable (said so, a comparability criterion scored 0, fewer than two studies), or
      whose measure needs a field the extraction schema lacks or every study verifiably reports as ``not_reported``,
      falls back.
-     When a field its measure needs has no usable value because some study has no row for it (or only rows with a
-     problem), the stage goes back to ``read_extract`` (``synthesize->read_extract``, the guidance naming the
-     fields), once per field set: a second time, and at the edge limit in P1, it falls back instead. The comparable
+     When a study of such a group has no usable value for a field its measure needs (no row for it, or only rows with
+     a problem; a verified ``not_reported`` is no gap), the stage goes back to ``read_extract``
+     (``synthesize->read_extract``, the guidance naming each study and its fields; read_extract reads only those
+     studies again), once per study and field set under the frozen protocol version (``_requested``: a new version
+     asks again): a second time, and at the edge limit in P1, the group goes on without it (fewer than two
+     computable studies fall back). The comparable
      groups go to you in one ``pooling_approval`` checkpoint (P2) or to a P1 vote per group (conservative option
      ``no_pool``), both shown the pre-specified pool options. An approved group is pooled by the kernel (when
      ``stats_enabled`` still holds) from the extraction rows of its outcome's fields (``OutcomeSpec.fields``: each role
@@ -57,6 +60,11 @@ the edge limit ``degrade`` narrows or withdraws every finding that fails the cla
 Answers to ``pooling_approval``: ``{"decisions": {"<group>": "pool" | "no_pool"}, "comment"?}``, one decision per
 listed group. An answer that cannot be applied opens the checkpoint again, saying why. Handling an answer again pools
 nothing twice.
+
+Both checkpoints also take ``{"decision": "back", "comment"?, "studies"?: [item id], "fields"?: [field]}`` (``_back``):
+``synthesize->read_extract`` under its limit, as design_approval's back; read_extract reads again the studies you name
+(in full, the fields named as what to look for; e.g. a verified ``not_reported`` whose table was missing from the text
+layer), else those with a gap, else every study; every other study keeps its extraction.
 
 The gate: every usable study is assessed; every synthesis claim passes ``gate_claims`` and at least one is supported;
 V-STATS passes on every artifact of the attempt; the representativeness statement names the included count (and a
@@ -538,6 +546,46 @@ def _map_text(field_map: dict[str, str] | None, measure: str) -> str:
     return ", ".join(f"{r} = {field_map[r]}" for r in order)
 
 
+BACK = "back"
+BACK_TEXT = ('Or answer {"decision": "back", "comment"?: ..., "studies"?: ["<item id>", ...], "fields"?: '
+             '["<extraction field>", ...]} to send synthesize back to read_extract (the back-edge '
+             'synthesize->read_extract, within its limit): the studies you name are read again in full (the fields you '
+             'name are what to look for), every other study keeps its extraction; when you name none, the studies '
+             'missing a value the pooling needs are read again, else every included study.')
+
+
+def _back_studies(ps: ProjectStore, s: _Inputs) -> list[dict]:
+    """The included studies a ``back`` answer may name (read_extract's usable evidence): item id and label."""
+    return [{"item_id": u["item_id"], "label": study_label(ps, u["item_id"])} for u in s.usable]
+
+
+def _back_problem(s: _Inputs, answer: dict) -> str:
+    """Why a ``back`` answer cannot be applied (``""``: it can): ``studies`` must be included studies of
+    read_extract's passed attempt and ``fields`` fields of the extraction schema."""
+    usable = [u["item_id"] for u in s.usable]
+    schema = [f.name for f in s.protocol.extraction_schema]
+    studies, fields = answer.get("studies", []), answer.get("fields", [])
+    if not isinstance(studies, list) or not all(isinstance(x, str) for x in studies):
+        return 'give "studies" as a list of item ids of the included studies'
+    if bad := [x for x in studies if x not in usable]:
+        return f"{', '.join(bad)}: not an included study of read_extract's passed attempt"
+    if not isinstance(fields, list) or not all(isinstance(x, str) for x in fields):
+        return 'give "fields" as a list of extraction field names'
+    if bad := [f for f in fields if f not in schema]:
+        return f"{', '.join(bad)}: not a field of the extraction schema ({', '.join(schema)})"
+    return ""
+
+
+def _reread_text(studies: list[dict] | None, fields: list[str] = ()) -> str:
+    """What a back-edge asks read_extract to read again: each named study (its label) with the fields to look for;
+    ``None``: every included study."""
+    if studies is None:
+        return "read every included study again" + (f", looking for {', '.join(fields)}" if fields else "")
+    return "read again " + "; ".join(
+        f"{x['label']} ({x['item_id']})" + (f", looking for {', '.join(x['fields'])}" if x["fields"] else "")
+        for x in studies) + "; every other study keeps its extraction"
+
+
 def _decided(answer: dict, groups: list[int]) -> str:
     """Why a ``pooling_approval`` answer cannot be applied, else ``""``."""
     decisions = answer.get("decisions")
@@ -659,14 +707,15 @@ class SynthesizeWorker:
         return None
 
     @staticmethod
-    def _absent(s: _Inputs, g: dict) -> tuple[list[str], list[str], list[str]]:
+    def _absent(s: _Inputs, g: dict) -> tuple[list[str], list[str], list[str], dict[str, list[str]]]:
         """The fields the group's measure needs that no study of the group has a usable value for, in three kinds:
         absent from the extraction schema; missing (some study has no row for it, or only rows with a problem: a
         reading again may find it); and reported as ``not_reported`` by every study (verified: reading again cannot
-        find it)."""
+        find it). Fourth, the per-study gaps: study -> the fields of the measure (in the schema) it has no usable row
+        for (no row, or only rows with a problem); a verified ``not_reported`` row is no gap."""
         field_map = s.field_map(g["outcome"], g["measure"])
         if field_map is None:
-            return [], [], []
+            return [], [], [], {}
         fields = list(field_map.values())
         schema = {f.name for f in s.protocol.extraction_schema}
         by_id = {u["item_id"]: u for u in s.usable}
@@ -676,42 +725,65 @@ class SynthesizeWorker:
         lacking = [f for f in fields if f in schema and f not in given]
         said = {(r["item_id"], r["field"]) for r in rows if r["value"] == NOT_REPORTED}
         reported = [f for f in lacking if all((i, f) in said for i in g["item_ids"])]
-        return unknown, [f for f in lacking if f not in reported], reported
+        have = {(r["item_id"], r["field"]) for r in rows if r["value"] is not None}
+        gaps = {i: miss for i in g["item_ids"] if (miss := [f for f in fields if f in schema and (i, f) not in have])}
+        return unknown, [f for f in lacking if f not in reported], reported, gaps
 
     @staticmethod
-    def _requested(ps: ProjectStore) -> set[tuple[str, tuple[str, ...]]]:
-        """The (measure, fields) synthesize already went back to read_extract for, in any attempt."""
+    def _requested(ps: ProjectStore, version: int) -> set[tuple[str, tuple[str, ...]]]:
+        """The (study, fields) synthesize already went back to read_extract for under the protocol ``version`` (its
+        ``back_edge`` notes of any attempt; a request under another version, e.g. before ``argue->question`` and a new
+        protocol, asks nothing now)."""
         rows = ps.db.execute("SELECT payload FROM events WHERE type='synthesis.noted' "
                              "AND json_extract(payload, '$.kind')='back_edge' ORDER BY seq")
-        return {(g["measure"], tuple(g["fields"])) for r in rows for g in json.loads(r["payload"])["groups"]}
+        notes = [json.loads(r["payload"]) for r in rows]
+        return {(x["item_id"], tuple(x["fields"])) for n in notes if n.get("version") == version
+                for x in n.get("studies") or []}
+
+    def _gaps(self, ps: ProjectStore, s: _Inputs, groups: list[dict],
+              requested: set[tuple[str, tuple[str, ...]]] = frozenset()) -> list[dict]:
+        """The per-study gaps (``_absent``) of the plan's groups of a pre-specified outcome and measure that could be
+        pooled (comparable, not a duplicate, every field in the schema), except those ``requested`` already: one entry
+        per study and group, ``{"item_id", "label", "fields", "outcome"}``."""
+        out = []
+        for g in groups:
+            if not (g["comparable"] and g["outcome"] in s.outcomes and g["measure"] == s.measure
+                    and g.get("duplicate_of") is None):
+                continue
+            unknown, _, _, gaps = self._absent(s, g)
+            if unknown:
+                continue
+            out += [{"item_id": i, "label": study_label(ps, i), "fields": f, "outcome": _group_label(g)}
+                    for i, f in gaps.items() if (i, tuple(f)) not in requested]
+        return out
+
+    def _gap_studies(self, ps: ProjectStore, attempt: int, s: _Inputs) -> list[dict]:
+        """The per-study gaps of the attempt's pooling plan (``_gaps``), for a ``back`` answer that names no study."""
+        plan = _last(ps, attempt, "plan")
+        return self._gaps(ps, s, plan["groups"] if plan else [])
 
     def _after_plan(self, ctx: StageContext, s: _Inputs, *, back_edge: bool) -> StageOutcome:
         """The pooling plan's groups: the pre-specified meta-analysis is never silently skipped or changed (a plan
         without a group of the pre-specified measure, or a group of another measure, falls back with its deviation);
-        missing fields go back to read_extract once per field set (``back_edge``), never for fields the studies
-        verifiably do not report; the comparable groups are approved (P2) or voted on (P1)."""
+        a study of a group with no usable value for a field the measure needs (no row, or only rows with a problem)
+        sends the stage back to read_extract to read that study again (``back_edge``), once per study and field set
+        under the frozen protocol version (``_requested``), never for fields it verifiably does not report; the
+        comparable groups are approved (P2) or voted on (P1)."""
         ps = ctx.ps
         plan = _last(ps, ctx.attempt, "plan")
         groups = plan["groups"] if plan else []
         if back_edge and (sent := _last(ps, ctx.attempt, "back_edge")) is not None:  # resumed after it was noted
             return StageOutcome("back_edge", to="read_extract", reason=sent.get("reason") or "")
-        requested = self._requested(ps)
-        if back_edge:
-            wanted = []
-            for g in groups:
-                unknown, missing, _ = self._absent(s, g)
-                if (g["comparable"] and g["outcome"] in s.outcomes and g["measure"] == s.measure
-                        and g.get("duplicate_of") is None and not unknown and missing
-                        and (g["measure"], tuple(missing)) not in requested):
-                    wanted.append((g, missing))
-            if wanted:
-                reason = "; ".join(
-                    f"the pre-specified outcome {_group_label(g)} needs the fields {', '.join(m)}, which no "
-                    f"included study has a usable value for: extract them where the studies report them"
-                    for g, m in wanted)
-                _note(ps, ctx.attempt, "back_edge", actor=ctx.actor, reason=reason,
-                      groups=[{"group": g["group"], "measure": g["measure"], "fields": m} for g, m in wanted])
-                return StageOutcome("back_edge", to="read_extract", reason=reason)
+        requested = self._requested(ps, s.version)
+        if back_edge and (wanted := self._gaps(ps, s, groups, requested)):
+            reason = ("studies of the pre-specified pooling have no usable value for fields its effect measure needs: "
+                      + "; ".join(f"{x['label']} ({x['item_id']}), outcome {x['outcome']}: {', '.join(x['fields'])}"
+                                  for x in wanted)
+                      + ". Read those studies again and extract those fields where they report them; every other "
+                        "study keeps its extraction")
+            _note(ps, ctx.attempt, "back_edge", actor=ctx.actor, reason=reason, by="kernel", version=s.version,
+                  studies=wanted)
+            return StageOutcome("back_edge", to="read_extract", reason=reason)
         for o in s.outcomes:
             if not any(g["outcome"] == o and g["measure"] == s.measure for g in groups):
                 self._fallback(ctx, s, f"the pooling plan proposed no group for the pre-specified outcome {o!r} "
@@ -723,7 +795,7 @@ class SynthesizeWorker:
             i = g["group"]
             if i in decided or i in fell:
                 continue
-            unknown, missing, reported = self._absent(s, g)
+            unknown, missing, reported, gaps = self._absent(s, g)
             if g["outcome"] not in s.outcomes:
                 why = (f"{g['outcome']!r} is not a pre-specified outcome (pre-specified: "
                        f"{', '.join(repr(o) for o in s.outcomes)})")
@@ -742,7 +814,7 @@ class SynthesizeWorker:
             elif missing:
                 why = f"no included study has a usable value for {', '.join(missing)}" + (
                     "; synthesize already asked to go back to read_extract for them"
-                    if (g["measure"], tuple(missing)) in requested else "")
+                    if all((i, tuple(f)) in requested for i, f in gaps.items()) else "")
             else:
                 if g.get("left_out"):
                     self._left_out(ctx, s, g)
@@ -804,10 +876,11 @@ class SynthesizeWorker:
                 lines.append("- left out by the plan (recorded as a deviation): " + ", ".join(
                     f"{study_label(ctx.ps, x['item_id'])} ({x['reason']})" for x in g["left_out"]))
         lines += ["", ('Answer {"decisions": {"<group>": "pool" or "no_pool", ...}} for every group, optionally with '
-                      'a "comment".')]
+                      'a "comment".'), "", BACK_TEXT]
         return create_checkpoint(ctx.ps, KIND, "\n".join(lines),
                                  {"attempt": ctx.attempt, "groups": [g["group"] for g in pending],
-                                  "choices": [POOL, NO_POOL], "replaces": replaces}, stage=ctx.stage, actor=ctx.actor)
+                                  "choices": [POOL, NO_POOL], "decisions": [BACK], "studies": _back_studies(ctx.ps, s),
+                                  "replaces": replaces}, stage=ctx.stage, actor=ctx.actor)
 
     @staticmethod
     def _left_out(ctx: StageContext, s: _Inputs, g: dict) -> None:
@@ -940,7 +1013,7 @@ class SynthesizeWorker:
         self._store_findings(ctx, s, narrative)
         self._verify(ctx)
         if s.mode == "collab" and (listing := review_listing(ps, synthesis_claims(ps, ctx.attempt))):
-            return StageOutcome("waiting_human", checkpoint_id=self._open_uncertain(ctx, listing),
+            return StageOutcome("waiting_human", checkpoint_id=self._open_uncertain(ctx, s, listing),
                                 reason="synthesis claims that fail the claim gate await your decision")
         return StageOutcome("done", reason=self._summary(ps, ctx.attempt))
 
@@ -1014,7 +1087,7 @@ class SynthesizeWorker:
             check_claim_hedge(ps, cid, actor=ctx.actor)
 
     @staticmethod
-    def _open_uncertain(ctx: StageContext, listing: dict[str, dict], *, replaces: str | None = None,
+    def _open_uncertain(ctx: StageContext, s: _Inputs, listing: dict[str, dict], *, replaces: str | None = None,
                         why: str = "") -> str:
         """Your review of every synthesis claim that fails the claim gate (``review_listing``), each with its problems
         and the answers it allows (``review_choices``)."""
@@ -1036,16 +1109,17 @@ class SynthesizeWorker:
         if not left:
             lines += ["", ("No other finding is supported: withdrawing every listed claim leaves the synthesis "
                            "without a supported finding, and its gate fails. You may synthesize again with your "
-                           "comment instead.")]
+                           "comment, or send synthesize back to read_extract, instead.")]
         lines += ["", ('Answer {"claims": {"<claim id>": "supported" or "withdraw", ...}} for every listed claim (one '
                        'of its answers), optionally with a "comment", or {"decision": "rerun", "comment": ...} to '
-                       'synthesize again with your comment.')]
+                       'synthesize again with your comment.'), "", BACK_TEXT]
         return create_checkpoint(ps, UNCERTAIN, "\n".join(lines),
                                  {"attempt": ctx.attempt, "claim_ids": list(listing),
                                   "problems": {c: e["problems"] for c, e in listing.items()},
                                   "claim_choices": {c: e["choices"] for c, e in listing.items()},
-                                  "choices": [SUPPORTED, WITHDRAW], "decisions": ["rerun"],
-                                  "no_supported_left": not left, "replaces": replaces},
+                                  "choices": [SUPPORTED, WITHDRAW], "decisions": ["rerun", BACK],
+                                  "studies": _back_studies(ps, s), "no_supported_left": not left,
+                                  "replaces": replaces},
                                  stage=ctx.stage, actor=ctx.actor)
 
     @staticmethod
@@ -1071,14 +1145,38 @@ class SynthesizeWorker:
         by = answered_by_actor(ctx.ps, checkpoint["id"]) or ctx.actor
         if checkpoint["kind"] == KIND:
             return self._on_pooling(ctx, s, checkpoint, answer, by)
-        return self._on_uncertain(ctx, checkpoint, answer, by)
+        return self._on_uncertain(ctx, s, checkpoint, answer, by)
+
+    def _back(self, ctx: StageContext, s: _Inputs, cp: dict, answer: dict, by: str) -> StageOutcome:
+        """Your ``back`` answer (``_back_problem`` checked it): ``synthesize->read_extract`` (under its limit), the
+        studies you named read again (with the fields you named as guidance), else those with a gap
+        (``_gap_studies``), else every included study. Noted once per checkpoint (``back_edge``, ``by="human"``)."""
+        ps = ctx.ps
+        sent = [n for n in synthesis_notes(ps, ctx.attempt, kind="back_edge") if n.get("checkpoint") == cp["id"]]
+        if sent:
+            return StageOutcome("back_edge", to="read_extract", reason=sent[-1]["reason"])
+        named = list(dict.fromkeys(answer.get("studies") or []))
+        fields = list(dict.fromkeys(answer.get("fields") or []))
+        comment = answer.get("comment").strip() if isinstance(answer.get("comment"), str) else ""
+        if named:
+            studies = [{"item_id": i, "label": study_label(ps, i), "fields": fields} for i in named]
+        else:
+            studies = self._gap_studies(ps, ctx.attempt, s) or None
+        reason = f"you sent synthesize back to read_extract (checkpoint {cp['id']}): " + _reread_text(studies, fields)
+        if comment:
+            reason += f". Your comment: {comment}"
+        _note(ps, ctx.attempt, "back_edge", actor=by, reason=reason, by="human", checkpoint=cp["id"],
+              version=s.version, studies=studies)
+        return StageOutcome("back_edge", to="read_extract", reason=reason)
 
     def _on_pooling(self, ctx: StageContext, s: _Inputs, cp: dict, answer: dict, by: str) -> StageOutcome:
         ps = ctx.ps
         listed = cp["options"]["groups"]
         plan = _last(ps, ctx.attempt, "plan")
         groups = {g["group"]: g for g in plan["groups"]} if plan else {}
-        why = _decided(answer, listed)
+        why = _back_problem(s, answer) if answer.get("decision") == BACK else _decided(answer, listed)
+        if not why and answer.get("decision") == BACK:
+            return self._back(ctx, s, cp, answer, by)
         if why:
             pending = [groups[i] for i in listed]
             cid = self._open_pooling(ctx, s, pending, replaces=cp["id"],
@@ -1100,7 +1198,7 @@ class SynthesizeWorker:
                                group=i, outcome=g["outcome"], measure=g["measure"])
         return self._finish(ctx, s)
 
-    def _on_uncertain(self, ctx: StageContext, cp: dict, answer: dict, by: str) -> StageOutcome:
+    def _on_uncertain(self, ctx: StageContext, s: _Inputs, cp: dict, answer: dict, by: str) -> StageOutcome:
         ps = ctx.ps
         opts = cp["options"]
         listed = opts["claim_ids"]
@@ -1110,12 +1208,16 @@ class SynthesizeWorker:
             if comment:
                 return StageOutcome("rerun", reason=comment)
             why = "rerun needs a comment saying what to change"
+        elif answer.get("decision") == BACK:
+            if not (why := _back_problem(s, answer)):
+                return self._back(ctx, s, cp, answer, by)
         else:
             why = review_answer_problem(answer, allowed)
         if why:
             listing = {c: {"problems": (opts.get("problems") or {}).get(c) or [], "choices": allowed[c]}
                        for c in listed}
-            cid = self._open_uncertain(ctx, listing, replaces=cp["id"], why=f"Your answer could not be applied: {why}.")
+            cid = self._open_uncertain(ctx, s, listing, replaces=cp["id"],
+                                       why=f"Your answer could not be applied: {why}.")
             return StageOutcome("waiting_human", checkpoint_id=cid, reason=why)
         svc = ArgumentService(ps)
         for cid in listed:

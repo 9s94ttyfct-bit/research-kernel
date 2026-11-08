@@ -39,6 +39,11 @@ same kind and the same snapshot), is carried over with its values and notes (``c
 again; any other is read again. Never from an attempt that ran to completion. The stage opens no checkpoint, so an
 attempt never runs twice: every attempt starts with no extraction of its own.
 
+When ``synthesize->read_extract`` reopened the stage naming studies (``reread_request``: the kernel's per-study gaps
+or the studies you named on a synthesize checkpoint), the attempt reads only those studies again; every other study
+keeps its values and notes from the passed attempt (``kept_extraction``, ``carried_from``), unless its text changed
+or the P1 degrade touched it (then it is read again too).
+
 The gate (``gate``, from ``findings``): every non-flagged included study was read and its retraction checked; every
 extraction field of each has a value whose quote note is a verified quote of the text the study was read on (the same
 kind, the same snapshot, which is still the item's latest), or ``not_reported`` with such a quote, or (after a P1
@@ -71,7 +76,13 @@ from rk.notes import Locator, NoteIn, NoteRejected, add_note, list_notes, locate
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.orchestrator.state import record_degraded, stage_row
 from rk.production.models import FULL_TEXT, ExtractionField, Protocol
-from rk.production.resume import CarriedStudy, carried_extraction, mark_protocol
+from rk.production.resume import (
+    CarriedStudy,
+    carried_extraction,
+    kept_extraction,
+    mark_protocol,
+    protocol_of,
+)
 from rk.production.store import (
     add_extraction,
     add_extraction_note,
@@ -87,6 +98,7 @@ from rk.verify.paraphrase import check_paraphrase
 from rk.verify.records import FLAG_COLLECTION, record_verification
 from rk.verify.retract import FLAGGED
 
+STAGE = "read_extract"
 ROLE = "reader"
 READER_TOOLS = ["rk_text_find", "rk_text_read", "rk_note_add"]
 NOT_REPORTED = "not_reported"  # the value of a field the study does not report; its quote shows the section searched
@@ -476,7 +488,45 @@ def _read(ctx: StageContext, protocol: Protocol, rec: dict, kind: str) -> tuple[
     return linked, problems
 
 
-# ---- the worker ----
+# ---- synthesize's way back ----
+SYNTHESIZE_BACK = "synthesize->read_extract"
+
+
+def reread_request(ps: ProjectStore, attempt: int) -> set[str] | None:
+    """The studies the attempt reads again when it starts after ``synthesize->read_extract`` reopened the stage and
+    synthesize's ``back_edge`` note (the kernel's per-study gaps, or the studies you named) names studies: their item
+    ids. ``None``: read every study (any other attempt, or a back-edge that names no study). An attempt that replaces
+    an interrupted one keeps the request (no reopen between them); a rerun after a failed gate reads every study."""
+    start = ps.db.execute("SELECT seq FROM events WHERE type='stage.attempt' AND json_extract(payload, '$.stage')=? "
+                          "AND json_extract(payload, '$.attempt')=? ORDER BY seq LIMIT 1", (STAGE, attempt)).fetchone()
+    if start is None:
+        return None
+    reopen = ps.db.execute("SELECT seq, payload FROM events WHERE type='stage.reopened' AND "
+                           "json_extract(payload, '$.stage')=? AND seq<? ORDER BY seq DESC LIMIT 1",
+                           (STAGE, start["seq"])).fetchone()
+    if reopen is None or json.loads(reopen["payload"])["by_edge"] != SYNTHESIZE_BACK:
+        return None
+    note = ps.db.execute("SELECT payload FROM events WHERE type='synthesis.noted' AND "
+                         "json_extract(payload, '$.kind')='back_edge' AND seq<? ORDER BY seq DESC LIMIT 1",
+                         (reopen["seq"],)).fetchone()
+    studies = json.loads(note["payload"]).get("studies") if note else None
+    return {x["item_id"] for x in studies} if studies else None
+
+
+def _kept(ps: ProjectStore, protocol_hash: str) -> dict[str, CarriedStudy]:
+    """The studies of the passed attempt an attempt reading only some studies again keeps (``kept_extraction``), when
+    that attempt worked under the same frozen protocol; never a study the P1 degrade touched (taken out of the
+    evidence, a value marked missing, a linked note dropped): it is read again."""
+    row = stage_row(ps, STAGE)
+    passed = row["passed_attempt"] if row else None
+    if not passed or protocol_of(ps, STAGE, passed) not in (None, protocol_hash):
+        return {}
+    excluded, dropped = _degraded(ps, passed)
+    return {iid: c for iid, c in kept_extraction(ps, passed).items()
+            if iid not in excluded and not set(c.note["notes"]) & dropped
+            and not any(_marked(e, m) for e in c.values for m in (MISSING, EXCLUDED, DEGRADED))}
+
+
 class ReadExtractWorker:
     def run(self, ctx: StageContext) -> StageOutcome:
         ps = ctx.ps
@@ -489,10 +539,14 @@ class ReadExtractWorker:
         mark_protocol(ps, ctx.stage, ctx.attempt, row["frozen_hash"], actor=ctx.actor)
         protocol = Protocol.model_validate(row["body"])
         carried = carried_extraction(ps, ctx.stage, ctx.attempt, row["frozen_hash"])
+        reread = reread_request(ps, ctx.attempt)
+        kept = {} if reread is None else _kept(ps, row["frozen_hash"])
         for rec in studies:
             iid = rec["item_id"]
-            c = carried.get(iid)
             kind, sha, _ = _text(ctx, rec)
+            c = carried.get(iid)
+            if c is None and reread is not None and iid not in reread:
+                c = kept.get(iid)
             if c is not None and (c.note["flagged"] or (kind is not None and c.note["text"] == kind
                                                         and c.note.get("snapshot") == sha)):
                 self._carry(ctx, c)
@@ -500,6 +554,9 @@ class ReadExtractWorker:
                 self._study(ctx, protocol, rec)
         noted = _studies(ps, ctx.attempt)
         reason = _summary(ps, ctx.attempt, len(studies))
+        if reread is not None:
+            reason += (f"; synthesize sent read_extract back to read {len(reread)} "
+                       f"{'study' if len(reread) == 1 else 'studies'} again, every other study kept its extraction")
         if all(noted[r["item_id"]]["flagged"] for r in studies):
             which = "; ".join(f"{_study_label(ps, r['item_id'])}: {noted[r['item_id']]['retraction']['status']}"
                               for r in studies)
