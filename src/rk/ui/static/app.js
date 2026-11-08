@@ -1273,7 +1273,7 @@ function argumentPanel(d) {
       objectionList(on([cid, ...c.evidence.map((e) => e.id)])),
       reasons.length ? el("ul", { class: "reasons" }, reasons.map((e) => {
         const w = d.warrants.find((x) => x.licenses === e.id);
-        return el("li", { class: `reason-link${e.out ? " out" : ""}` },
+        return el("li", { class: `reason-link${e.out || e.dropped ? " out" : ""}` },
           el("div", { class: "hint" }, e.dropped ? "Dropped link (its warrant failed): " : e.out ? "Link out of the argument: " : "Supported by:"),
           el("ul", { class: "claim-tree-sub" }, node(e.from_id, seen)),
           warrantBlock(w),
