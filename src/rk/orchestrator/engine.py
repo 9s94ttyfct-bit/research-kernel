@@ -299,13 +299,13 @@ class Orchestrator:
         ctx = self._ctx(project, ps, lib, stage, attempt, run_id, composed, actor, session=session)
         try:
             outcome = worker.run(ctx)
+            self._check(stage, outcome)  # an outcome the engine refuses is a worker bug: a crash like any other
         except (RateCapped, BudgetExceeded, BudgetExhausted):
             raise  # a wait or a pause, no crash
         except Exception as e:
             if not transient_source_error(e):  # a source outage is a wait too
                 record_crashed(ps, stage, attempt, error_text(e), actor=actor)
             raise
-        self._check(stage, outcome)
         record_ran(ps, stage, attempt, outcome.status, outcome.reason, actor=actor)
         if outcome.status == "waiting_human":
             record_waiting(ps, stage, attempt, outcome.checkpoint_id, actor=actor)

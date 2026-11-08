@@ -391,3 +391,10 @@ def test_a_dated_reset_without_a_year_long_past_is_next_years():
     new_year_eve = datetime(2026, 12, 31, 12, 0, tzinfo=UTC).timestamp()
     got = usage_limit_wait("You've hit your weekly limit · resets Jan 3, 9am (UTC)", new_year_eve)
     assert got == pytest.approx(2 * 86400 + 21 * 3600, abs=1)
+
+
+def test_a_dated_reset_without_a_year_recently_past_is_stale_not_next_years():
+    """A dated reset without a year that passed hours or days ago is a stale reply (retry soon), not next year's."""
+    nov8 = datetime(2026, 11, 8, 12, 0, tzinfo=UTC).timestamp()
+    assert usage_limit_wait("You've hit your weekly limit · resets Nov 7, 9am (UTC)", nov8) == pytest.approx(60)
+    assert usage_limit_wait("You've hit your weekly limit · resets Nov 8, 5am (UTC)", nov8) == pytest.approx(60)
