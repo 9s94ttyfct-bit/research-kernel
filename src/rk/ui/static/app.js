@@ -728,9 +728,11 @@ function synthesisRequests(o) {
     el("p", { class: "hint" }, "It argued on the findings it has; nothing goes back to synthesize unless you say so. A request you do not send back is listed in the limitations."),
     el("ul", { class: "synthesis-requests" }, o.synthesis_requests.map((q) => el("li", {}, el("span", { class: "hint" }, `round ${q.round}: `), q.text)))];
 }
-function backToSynthesizeForm(answer) {
+// `spent`: set when argue->synthesize has no use left ("used n of limit: back asks to allow one more use").
+function backToSynthesizeForm(answer, spent) {
   const why = el("textarea", { name: "back_comment" });
   const form = el("form", { class: "revise back-synthesize" },
+    spent ? el("p", { class: "hint warn back-spent" }, spent) : null,
     el("label", { class: "field" }, "Why go back to synthesize (optional)", why),
     el("button", { type: "submit", class: "secondary" }, "Back to synthesize"));
   form.addEventListener("submit", (e) => {
@@ -845,7 +847,7 @@ async function uncertainCard(c, answer) {
     el("div", { class: "other-answers" }, el("h4", {}, `Or ${rqAsked ? "argue" : "synthesize"} again`),
       reviseForm(`What should change (${rqAsked ? "argue" : "synthesize"} runs again with your comment)`, (text) => answer({ decision: "rerun", comment: text }))),
     !rqAsked && offersBack(o) ? backToReadForm(o, answer) : null,
-    rqAsked && offersBack(o) && o.back_to === "synthesize" ? backToSynthesizeForm(answer) : null,
+    rqAsked && offersBack(o) && o.back_to === "synthesize" ? backToSynthesizeForm(answer, o.back_spent) : null,
   ];
 }
 

@@ -19,10 +19,10 @@ One round:
    The round is noted, then every new claim is verified (V-SUPPORT through the stage's executor, with V-NUM; then
    V-HEDGE), so an interrupted verification resumes. Warrant claims are tested by the Skeptic instead
    (``WarrantTests``), not by V-SUPPORT. Like a failed self-check, ``needs_synthesis`` is an input only (I5): the
-   request is noted (``synthesis_request``, with its round) and the rounds go on with the findings the Arguer has
-   (its main claim narrowed to what they support, what is missing stated as a limitation); the end check decides
-   whether synthesize runs again (below). A failed self-check: the P1 RQ vote or your final review decides (without a
-   main claim, the stage reruns with it, and any synthesis request, as guidance).
+   request is part of the stored round (its ``draft`` note: ``synthesis_requests``) and the rounds go on with the
+   findings the Arguer has (its main claim narrowed to what they support, what is missing stated as a limitation); the
+   end check decides whether synthesize runs again (below). A failed self-check: the P1 RQ vote or your final review
+   decides (without a main claim, the stage reruns with it, and any synthesis request, as guidance).
 2. **Skeptic** (``Critique``; the codex vendor by default, with search tools that may add sources): objections on
    claims, evidence or edges of the argument (a cited source must be in the library, else it is dropped from the
    objection and noted), the tests of every untested warrant (a failed test becomes a priority-1 ``soundness``
@@ -54,13 +54,17 @@ objection, a failed warrant or an unanswered contest out of the argument (``with
 answer can mend the gate (the main claim's own problems, an unreviewed argument): the stage argues again.
 
 The Arguer's synthesis requests are decided there too, never by the Arguer alone. P2: your final review lists them
-and also takes ``{"decision": "back", "to": "synthesize", "comment"?}``: ``argue->synthesize`` (under its limit) with
-the requests and your comment as guidance (``synthesis_decision`` ``back``; any other answer: ``proceed``). P1: before
-the RQ vote, the judges vote ``back_to_synthesize`` or ``proceed`` (conservative: ``proceed``, which adds no evidence
-and no conclusion) on the requests, seeing the included studies (labels and designs), the extraction schema and the
-protocol's eligibility and date window; once ``argue->synthesize`` has no use left, ``proceed`` without a vote.
-Requests not acted on are listed in the limitations input. The decision, the vote (``reuse``) and the back-edge are
-noted, so a resumed attempt acts on no request twice and asks no judge again.
+and also takes ``{"decision": "back", "to": "synthesize", "comment"?}`` and nothing else (with ``claims`` or
+``answers_rq`` it is refused): ``argue->synthesize`` (under its limit; when it has no use left, the review says that
+``back`` asks you to allow one more) with the requests and your comment as guidance (``synthesis_decision`` ``back``).
+Your claims answer notes ``proceed``; a ``rerun`` notes nothing (the new attempt argues afresh). When the review is not
+asked (no answer can mend the gate), the requests go with the reason and the gate's failures into the rerun's
+guidance. P1: before the RQ vote, the judges vote ``back_to_synthesize`` or ``proceed`` (conservative: ``proceed``,
+which adds no evidence and no conclusion) on the requests, seeing the included studies (labels and designs), the
+extraction schema and the protocol's eligibility and date window; once ``argue->synthesize`` has no use left,
+``proceed`` without a vote (and no task is kept for it). Requests not acted on are listed in the limitations input;
+the I4 back-edge carries them in its reason. The decision, the vote (``reuse``) and the back-edge are noted, so a
+resumed attempt acts on no request twice and asks no judge again.
 
 The P1 degrade (at an edge limit) drops the reason links an unanswered priority-1 objection holds against, then
 narrows or withdraws every claim that fails the claim gate (``narrow_or_withdraw``):
@@ -338,13 +342,13 @@ def _note(ps: ProjectStore, attempt: int, kind: str, *, actor: str, **fields) ->
 
 def argue_notes(ps: ProjectStore, attempt: int, *, kind: str | None = None) -> list[dict]:
     """What argue noted in the attempt, in order: ``imported`` (earlier attempts' objections taken over), ``draft`` (an
-    Arguer round: the claims, edges and answers it stored) and ``verified`` (its claims verified),
-    ``synthesis_request`` (an Arguer round's ``needs_synthesis``: its round and text), ``critique`` (a Skeptic round:
-    its objections, warrant tests and conflicts), ``conflict`` and ``conflict_decision``, ``closing`` (the Arguer's
-    last answers), ``end`` (``fixed_point`` or ``budget``), ``synthesis_decision`` (``back_to_synthesize`` or
-    ``proceed`` by the vote or the kernel, ``back`` or ``proceed`` by you), ``back_edge``, ``rq_check``, ``final`` (the
-    P2 checkpoint), ``dropped_link``, and from the P1 degrade ``rewrite`` and ``recheck``. Each role round notes the
-    ``tasks`` it used; each Arguer round (``draft``, ``closing``) the ``synthesis_attempt`` it argued on."""
+    Arguer round: the claims, edges and answers it stored, and its ``needs_synthesis``, the round's synthesis request)
+    and ``verified`` (its claims verified), ``critique`` (a Skeptic round: its objections, warrant tests and
+    conflicts), ``conflict`` and ``conflict_decision``, ``closing`` (the Arguer's last answers), ``end``
+    (``fixed_point`` or ``budget``), ``synthesis_decision`` (``back_to_synthesize`` or ``proceed`` by the vote or the
+    kernel, ``back`` or ``proceed`` by you), ``back_edge``, ``rq_check``, ``final`` (the P2 checkpoint),
+    ``dropped_link``, and from the P1 degrade ``rewrite`` and ``recheck``. Each role round notes the ``tasks`` it used;
+    each Arguer round (``draft``, ``closing``) the ``synthesis_attempt`` it argued on."""
     rows = ps.db.execute("SELECT payload FROM events WHERE type='argue.noted' AND json_extract(payload, '$.attempt')=? "
                          "ORDER BY seq", (attempt,))
     notes = [json.loads(r["payload"]) for r in rows]
@@ -352,10 +356,19 @@ def argue_notes(ps: ProjectStore, attempt: int, *, kind: str | None = None) -> l
 
 
 def synthesis_requests(ps: ProjectStore, attempt: int) -> list[dict]:
-    """The Arguer's synthesis requests of the attempt (its ``needs_synthesis``), by round: ``{round, text}``; a round
-    asked again (resumed after a crash before it was stored) counts its latest request once."""
-    by_round = {n["round"]: n["text"] for n in argue_notes(ps, attempt, kind="synthesis_request")}
-    return [{"round": r, "text": t} for r, t in sorted(by_round.items())]
+    """The Arguer's synthesis requests of the attempt: the ``needs_synthesis`` of its stored rounds (``draft`` notes),
+    in order, ``{round, text}``. Part of the stored round, so an answer lost to a crash before its round was stored
+    leaves no request."""
+    return [{"round": n["round"], "text": n["needs_synthesis"]} for n in argue_notes(ps, attempt, kind="draft")
+            if n.get("needs_synthesis")]
+
+
+def _back_edge_spent(ps: ProjectStore) -> dict | None:
+    """``argue->synthesize``'s uses and limit (``{"edge", "count", "limit"}``) when none is left, else ``None``."""
+    edge = edge_name(STAGE, "synthesize")
+    uses = edge_row(ps, edge)
+    limit = EDGE_LIMIT + uses["allowed"]
+    return {"edge": edge, "count": uses["count"], "limit": limit} if uses["count"] >= limit else None
 
 
 def synthesis_decision(ps: ProjectStore, attempt: int) -> dict | None:
@@ -366,6 +379,19 @@ def synthesis_decision(ps: ProjectStore, attempt: int) -> dict | None:
 
 def _requests_text(requests: list[dict]) -> str:
     return "; ".join(f"round {q['round']}: {q['text']}" for q in requests)
+
+
+def _with_requests(ps: ProjectStore, attempt: int, reason: str) -> str:
+    """``reason`` with the attempt's synthesis requests appended (when there are any)."""
+    requests = synthesis_requests(ps, attempt)
+    return f"{reason}; the Arguer asked synthesize for: {_requests_text(requests)}" if requests else reason
+
+
+def _design_fields(protocol: Protocol) -> list[str]:
+    """The extraction fields that name a study's design (``design``, ``study_design``, ``*_design``; never e.g.
+    ``design_effect``), category fields first."""
+    named = [f for f in protocol.extraction_schema if f.name.lower() == "design" or f.name.lower().endswith("_design")]
+    return [f.name for f in sorted(named, key=lambda f: f.type != "category")]
 
 
 # ---- inputs ----
@@ -730,7 +756,7 @@ class ArgueWorker:
             if (why := _no_finding_left(ctx.ps)) is not None:  # nothing to argue on: synthesize again (I4)
                 # mends a crash after the last finding, a stat_result, was withdrawn before its pool was taken out
                 reconcile_withdrawn_pools(ctx, argued_synthesis_attempt(ctx.ps, ctx.attempt))
-                return StageOutcome("back_edge", to="synthesize", reason=why)
+                return StageOutcome("back_edge", to="synthesize", reason=_with_requests(ctx.ps, ctx.attempt, why))
             return StageOutcome("failed", reason=s)
         if sent := argue_notes(ctx.ps, ctx.attempt, kind="back_edge"):  # resumed after the back-edge was noted
             return StageOutcome("back_edge", to=sent[-1]["to"], reason=sent[-1]["reason"])
@@ -834,10 +860,11 @@ class ArgueWorker:
     @staticmethod
     def _reserve(ps: ProjectStore, attempt: int, s: _Inputs) -> int:
         """Tasks kept for the final P1 votes: the RQ check, and the vote on the Arguer's synthesis requests when there
-        are any; P2 asks you instead."""
+        are any and ``argue->synthesize`` has a use left (else the kernel proceeds without it); P2 asks you instead."""
         if s.mode != "auto":
             return 0
-        return len(JUDGE_ROLES) * (2 if synthesis_requests(ps, attempt) else 1)
+        asks = synthesis_requests(ps, attempt) and _back_edge_spent(ps) is None
+        return len(JUDGE_ROLES) * (2 if asks else 1)
 
     def _round_cost(self, ps: ProjectStore, attempt: int, s: _Inputs, r: int) -> int:
         """The next round's estimated tasks: the last round's, or an Arguer and a Skeptic task plus the V-SUPPORT
@@ -1000,27 +1027,26 @@ class ArgueWorker:
                   tasks=counter.n, synthesis_attempt=s.synth_attempt)
             return None
         d, vendor = res.output, vendor_of(res.provider, res.model)
-        if not closing:
-            need = d.needs_synthesis.strip()
+        need = "" if closing else d.needs_synthesis.strip()
+        if not closing and r == 1:
             asked = f"; it asked synthesize for: {need}" if need else ""
-            if r == 1:
-                if d.answers_rq is None:
-                    return StageOutcome("rerun", reason="the arguer gave no answers_rq self-check" + asked)
-                if d.main_claim is None:
-                    why = "the arguer gave no main claim"
-                    if not d.answers_rq.ok:  # the self-check is the next draft's guidance, not a back-edge (I5)
-                        why += (f"; its self-check says the research question is not answered: "
-                                f"{d.answers_rq.reason}")
-                    return StageOutcome("rerun", reason=why + asked)
-                # a failed self-check is an input only: round 1 is stored and the rounds go on; the P1 RQ vote or your
-                # final review decides whether the project goes back to question (I5)
-            if need:  # an input too: noted, the rounds go on; the P1 vote or your review decides (_synthesis_vote)
-                _note(ps, attempt, "synthesis_request", actor=ctx.actor, round=r, text=need, vendor=vendor)
+            if d.answers_rq is None:
+                return StageOutcome("rerun", reason="the arguer gave no answers_rq self-check" + asked)
+            if d.main_claim is None:
+                why = "the arguer gave no main claim"
+                if not d.answers_rq.ok:  # the self-check is the next draft's guidance, not a back-edge (I5)
+                    why += (f"; its self-check says the research question is not answered: "
+                            f"{d.answers_rq.reason}")
+                return StageOutcome("rerun", reason=why + asked)
+            # a failed self-check is an input only: round 1 is stored and the rounds go on; the P1 RQ vote or your
+            # final review decides whether the project goes back to question (I5)
         fields = self._store(cctx, s, d, vendor, r, closing=closing)
-        # noted before verifying: a round interrupted while its claims are verified resumes with the verification
+        # noted before verifying: a round interrupted while its claims are verified resumes with the verification.
+        # needs_synthesis is an input too, part of the stored round: the rounds go on, and the P1 vote or your review
+        # decides (_synthesis_vote, _on_final); a round asked again after a crash keeps only what it stored
         _note(ps, attempt, kind, actor=ctx.actor, round=r, vendor=vendor, error=None, tasks=counter.n,
               answers_rq=d.answers_rq.model_dump() if (r == 1 and not closing and d.answers_rq) else None,
-              synthesis_attempt=s.synth_attempt, **fields)
+              needs_synthesis=need or None, synthesis_attempt=s.synth_attempt, **fields)
         self._verify_pending(ctx, r)
         return None
 
@@ -1426,8 +1452,9 @@ class ArgueWorker:
         reconcile_withdrawn_pools(ctx, s.synth_attempt)  # mends a crash after any withdrawal of a stat_result
         if s.mode == "collab":
             if hopeless := self._hopeless(ps, ctx.attempt, s):
-                return StageOutcome("done", reason="the gate will fail whatever your review says, so it is not asked: "
-                                                   + "; ".join(hopeless))
+                return StageOutcome("done", reason=_with_requests(
+                    ps, ctx.attempt, "the gate will fail whatever your review says, so it is not asked: "
+                    + "; ".join(hopeless)))
             return StageOutcome("waiting_human", checkpoint_id=self._open_final(ctx, s),
                                 reason="the argument awaits your review: does its main claim answer the research "
                                        "question, and what becomes of the claims that fail its gate")
@@ -1449,15 +1476,13 @@ class ArgueWorker:
             return None
         decided = synthesis_decision(ps, attempt)
         if decided is None:
-            edge = edge_name(STAGE, "synthesize")
-            uses = edge_row(ps, edge)
-            if uses["count"] >= EDGE_LIMIT + uses["allowed"]:
+            if (spent := _back_edge_spent(ps)) is not None:
                 decided = _note(ps, attempt, "synthesis_decision", actor=ctx.actor, decision=PROCEED, by="kernel",
-                                reason=f"{edge} has no use left (limit {EDGE_LIMIT}), so the judges were not asked",
-                                tasks=0)
+                                reason=(f"{spent['edge']} has no use left (used {spent['count']} of {spent['limit']}), "
+                                        f"so the judges were not asked"), tasks=0)
             else:
                 cctx, counter = _counted(ctx)
-                vendors = {n.get("vendor") for n in argue_notes(ps, attempt, kind="synthesis_request")}
+                vendors = {n.get("vendor") for n in argue_notes(ps, attempt, kind="draft") if n.get("needs_synthesis")}
                 res = vote(cctx, SYNTHESIS_VOTE, f"{STAGE}:{attempt}:synthesis", SYNTHESIS_QUESTION,
                            [BACK_TO_SYNTH, PROCEED], PROCEED, self._synthesis_subject(ps, s, requests),
                            generator_vendors=vendors, reuse=True)
@@ -1480,11 +1505,11 @@ class ArgueWorker:
     @staticmethod
     def _synthesis_subject(ps: ProjectStore, s: _Inputs, requests: list[dict]) -> dict:
         """What the judges see of the requests: the requests, the findings argued on, the included studies (label and
-        design: the value of an extraction field named for the design, else ``None``), the extraction schema and the
+        design: the value of a ``_design_fields`` field, else ``None``), the extraction schema and the
         protocol's eligibility and date window."""
         row = frozen_protocol(ps)
         protocol = Protocol.model_validate(row["body"]) if row else None
-        design = [f.name for f in protocol.extraction_schema if "design" in f.name.lower()] if protocol else []
+        design = _design_fields(protocol) if protocol else []
         read = stage_row(ps, "read_extract")
         studies = []
         for u in usable_evidence(ps, read["passed_attempt"]) if read and read["passed_attempt"] else []:
@@ -1570,18 +1595,23 @@ class ArgueWorker:
         lines += ["", ('Answer {"answers_rq": "yes" or "no", "claims": {"<claim id>": "supported" or "withdraw", ...} '
                        'for every listed claim (one of its answers), optionally with a "comment"}, or '
                        '{"decision": "rerun", "comment": ...} to argue again with your comment.')]
+        spent = None
         if requests:
-            lines.append('Or answer {"decision": "back", "to": "synthesize", "comment"?: ...} to send argue back to '
-                         'synthesize for what the Arguer asked (the back-edge argue->synthesize, within its limit), '
-                         'with the requests and your comment as guidance.')
+            lines.append('Or answer {"decision": "back", "to": "synthesize", "comment"?: ...} (nothing else) to send '
+                         'argue back to synthesize for what the Arguer asked (the back-edge argue->synthesize, within '
+                         'its limit), with the requests and your comment as guidance.')
+            if (used := _back_edge_spent(ps)) is not None:
+                spent = f"{used['edge']} used {used['count']} of {used['limit']}: back asks to allow one more use"
+                lines.append(spent + ".")
         cid = create_checkpoint(ps, UNCERTAIN, "\n".join(lines),
                                 {"attempt": ctx.attempt, "claim_ids": list(listing), "main_claim_id": main,
                                  "problems": {c: e["problems"] for c, e in listing.items()},
                                  "claim_choices": {c: e["choices"] for c, e in listing.items()},
                                  "choices": [SUPPORTED, WITHDRAW], "answers_rq": [YES, NO],
                                  "decisions": ["rerun", BACK] if requests else ["rerun"],
-                                 "back_to": "synthesize" if requests else None, "synthesis_requests": requests,
-                                 "main_problems": own, "arguer_self_check": check or None, "replaces": replaces},
+                                 "back_to": "synthesize" if requests else None, "back_spent": spent,
+                                 "synthesis_requests": requests, "main_problems": own,
+                                 "arguer_self_check": check or None, "replaces": replaces},
                                 stage=ctx.stage, actor=ctx.actor)
         if replaces is None:
             _note(ps, ctx.attempt, "final", actor=ctx.actor, checkpoint_id=cid)
@@ -1737,7 +1767,7 @@ class ArgueWorker:
             return StageOutcome("back_edge", to="question", reason=(
                 "you judged that the main claim does not answer the research question"
                 + (f": {comment}" if comment else "")))
-        return StageOutcome("back_edge", to="synthesize", reason=why)
+        return StageOutcome("back_edge", to="synthesize", reason=_with_requests(ps, ctx.attempt, why))
 
     def _finish_conflict(self, ctx: StageContext, cp: dict, answer: dict) -> None:
         """Your evidence_conflict answer applied again after a crash, with no finding left: concede what the claim
@@ -1773,6 +1803,9 @@ class ArgueWorker:
                 why = "back is not offered: the Arguer asked synthesize for nothing"
             elif answer.get("to", "synthesize") != "synthesize":
                 why = f'back goes to synthesize only: give "to": "synthesize" (got {answer.get("to")!r})'
+            elif "claims" in answer or "answers_rq" in answer:
+                why = ("back takes no claims or answers_rq: nothing else of the review is applied when argue goes "
+                       "back; answer back alone, or the review without back")
             else:
                 return self._on_back(ctx, cp, comment)
         else:
@@ -1804,7 +1837,7 @@ class ArgueWorker:
                 "you judged that the main claim does not answer the research question"
                 + (f": {comment}" if comment else "")))
         if (gone := _no_finding_left(ps)) is not None:  # you withdrew every finding: synthesize again (I4)
-            return StageOutcome("back_edge", to="synthesize", reason=gone)
+            return StageOutcome("back_edge", to="synthesize", reason=_with_requests(ps, ctx.attempt, gone))
         return StageOutcome("done", reason=self._summary(ps, ctx.attempt))
 
     @staticmethod
@@ -1875,6 +1908,11 @@ class ArgueWorker:
         elif ends[-1]["reason"] == "budget" and open_p1:
             failures.append(f"the open-stage budget of {ends[-1]['budget']} role tasks was reached with open "
                             f"priority-1 objections: {', '.join(open_p1)}")
+        requests = synthesis_requests(ps, attempt)
+        if failures and requests and synthesis_decision(ps, attempt) is None:
+            # not a failure of its own: the requests nobody decided on (your review was not asked) go with the
+            # failures into the rerun's guidance and a stage_blocked checkpoint
+            failures.append(f"not decided: the Arguer asked synthesize for: {_requests_text(requests)}")
         return GateResult(not failures, failures)
 
     def _answered_on(self, ps: ProjectStore, attempt: int, s: _Inputs, target_id: str, mendable: set[str],

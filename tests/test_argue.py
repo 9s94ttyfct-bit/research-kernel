@@ -12,6 +12,8 @@ from pydantic import ValidationError
 from rk.argument import ArgumentService, ObjectionIn
 from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
 from rk.discovery.executor import BudgetExceeded, RateCapped
+from rk.ids import new_id
+from rk.llm.types import TaskResult
 from rk.orchestrator.engine import default_workers
 from rk.orchestrator.graph import BACK_EDGES, EDGE_LIMIT
 from rk.orchestrator.state import (
@@ -41,12 +43,13 @@ from rk.production.argue import (
     argument_claims,
     argument_objection_ids,
     main_claim,
+    synthesis_requests,
 )
 from rk.production.argue import _load as argue_inputs
 from rk.production.extraction import usable_evidence
 from rk.production.models import SynthesisPlan
 from rk.production.synthesis import SynthesizeWorker, synthesis_claims
-from rk.roles.policy import tool_roles
+from rk.roles.policy import JUDGE_ROLES, tool_roles
 from rk.roles.prompts import build_system_prompt
 from tests.production_fakes import (
     make_frozen_project,
@@ -584,7 +587,9 @@ def test_needs_synthesis_is_noted_and_the_rounds_go_on(env):
     w = ArgueWorker()
     out = w.run(_ctx(env, ex))
     assert out.status == "done", out.reason
-    assert [(n["round"], n["text"]) for n in argue_notes(ps, 1, kind="synthesis_request")] == [(1, NEED)]
+    assert synthesis_requests(ps, 1) == [{"round": 1, "text": NEED}]
+    (first_draft,) = argue_notes(ps, 1, kind="draft")
+    assert first_draft["needs_synthesis"] == NEED  # the request is part of the stored round
     assert not argue_notes(ps, 1, kind="back_edge")
     assert main_claim(ps, 1) is not None and len(ex.of("skeptic", "Critique")) == 1
     assert [n["reason"] for n in argue_notes(ps, 1, kind="end")] == ["fixed_point"]
@@ -623,7 +628,7 @@ def test_p1_vote_back_to_synthesize_takes_the_edge_with_the_requests(env):
     o, run_id = stage_run(k, ps, lib, "argue", ex)
     assert o.step("demo", run_id, actor="tester") == "running"
     assert current_stage(ps) == "synthesize" and edge_rows(ps)["argue->synthesize"]["count"] == 1
-    assert [(n["round"], n["text"]) for n in argue_notes(ps, 1, kind="synthesis_request")] == [(1, NEED), (2, later)]
+    assert synthesis_requests(ps, 1) == [{"round": 1, "text": NEED}, {"round": 2, "text": later}]
     guidance = stage_row(ps, "synthesize")["guidance"]
     assert NEED in guidance and later in guidance and "because back_to_synthesize" in guidance
     (d,) = argue_notes(ps, 1, kind="synthesis_decision")
@@ -652,6 +657,8 @@ def test_p1_synthesis_requests_proceed_without_a_vote_once_the_edge_is_spent(env
     assert (d["decision"], d["by"]) == ("proceed", "kernel") and "argue->synthesize" in d["reason"]
     assert [c["inputs"]["question"] for c in ex.of("judge", "VoteOut")] == [RQ_QUESTION]
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    # minor 9: no task is kept for a vote the spent edge will not hold
+    assert w._reserve(ps, 1, argue_inputs(ps)) == len(JUDGE_ROLES)
 
 
 @pytest.mark.parametrize("where", ["first_judge", "rq_vote", "before_the_note"])
@@ -685,7 +692,7 @@ def test_p1_synthesis_vote_interrupted_asks_the_judges_nothing_twice(env, monkey
     assert len(ex.of("arguer", "ArgumentDraft")) == len(ex.of("skeptic", "Critique")) == 1
     assert len(votes_on(ps, "argue_synthesis", "argue:1:synthesis")) == 1
     (d,) = argue_notes(ps, 1, kind="synthesis_decision")
-    assert d["decision"] == "proceed" and len(argue_notes(ps, 1, kind="synthesis_request")) == 1
+    assert d["decision"] == "proceed" and len(synthesis_requests(ps, 1)) == 1
 
 
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
@@ -758,6 +765,100 @@ def test_p2_back_is_not_offered_without_a_synthesis_request(env):
     assert out.status == "waiting_human"
     assert "asked synthesize for nothing" in get_checkpoint(ps, out.checkpoint_id)["prompt"]
     assert not argue_notes(ps, 1, kind="back_edge")
+
+
+# ---- fix wave 4 minors ----
+def test_a_round_interrupted_before_it_was_stored_leaves_no_stale_request(env, monkeypatch):
+    """Minor 1: the request is part of the stored round (the draft note). A rate cap before round 1 was stored; asked
+    again, the Arguer asks for nothing, so no request of the unstored answer is left."""
+    _, ps, _ = env
+    _synthesize(env)
+    real = ArgueWorker._store
+
+    def crash(self, *args, **kw):
+        monkeypatch.setattr(ArgueWorker, "_store", real)
+        raise RateCapped("codex_cli", 60)
+
+    monkeypatch.setattr(ArgueWorker, "_store", crash)
+    ex = _exec([draft(needs_synthesis=NEED), draft()], [critique()])
+    w = ArgueWorker()
+    with pytest.raises(RateCapped):
+        w.run(_ctx(env, ex))
+    assert w.run(_ctx(env, ex)).status == "done"
+    assert len(ex.of("arguer", "ArgumentDraft")) == 2
+    assert synthesis_requests(ps, 1) == [] and not argue_notes(ps, 1, kind="synthesis_decision")
+    assert argue_limitations(ps, 1)["synthesis_requests"] == []
+    assert [c["inputs"]["question"] for c in ex.of("judge", "VoteOut")] == [RQ_QUESTION]
+
+
+class SkepticFails(Exec):
+    """``Exec`` whose Skeptic task always fails."""
+
+    def run(self, role, instructions, inputs, output_schema, **kw):
+        if role == "skeptic":
+            self.calls.append({"role": role, "schema": output_schema.__name__, "inputs": inputs})
+            return TaskResult(new_id("tsk"), False, None, "", "openai", "x", 0.0, "the skeptic failed")
+        return super().run(role, instructions, inputs, output_schema, **kw)
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_p2_review_skipped_as_hopeless_passes_the_requests_on(env):
+    """Minor 2: no review answer can mend the gate (the Skeptic never reviewed the argument), so the review is not
+    asked; the requests are in the outcome's reason and in the gate's failures, the next attempt's guidance."""
+    _, ps, _ = env
+    _synthesize(env)
+    ex = SkepticFails(_exec([draft(needs_synthesis=NEED)]).script)
+    w = ArgueWorker(budget=10)
+    out = w.run(_ctx(env, ex))
+    assert out.status == "done" and "the Skeptic did not review" in out.reason and NEED in out.reason
+    g = w.gate(ps, 1)
+    assert not g.ok and any(NEED in f and "asked synthesize" in f for f in g.failures), g.failures
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_p2_review_says_when_argue_to_synthesize_is_spent(env):
+    _, ps, _ = env
+    _synthesize(env)
+    record_edge_taken(ps, "argue->synthesize", EDGE_LIMIT, actor="tester")
+    w = ArgueWorker()
+    cp = get_checkpoint(ps, w.run(_ctx(env, _exec([draft(needs_synthesis=NEED)], [critique()]))).checkpoint_id)
+    spent = f"argue->synthesize used {EDGE_LIMIT} of {EDGE_LIMIT}: back asks to allow one more use"
+    assert cp["options"]["back_spent"] == spent and spent in cp["prompt"]
+    assert "back" in cp["options"]["decisions"]
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+@pytest.mark.parametrize("extra", [{"answers_rq": "no"}, {"claims": {}}])
+def test_p2_back_with_claims_or_an_rq_answer_is_refused(env, extra):
+    """Minor 4: ``back`` takes nothing else of the review; a mixed answer reopens the review saying why."""
+    _, ps, _ = env
+    _synthesize(env)
+    ex = _exec([draft(needs_synthesis=NEED)], [critique()])
+    w = ArgueWorker()
+    cp = get_checkpoint(ps, w.run(_ctx(env, ex)).checkpoint_id)
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decision": "back", "to": "synthesize", **extra}))
+    assert out.status == "waiting_human"
+    assert "back takes no claims or answers_rq" in get_checkpoint(ps, out.checkpoint_id)["prompt"]
+    for kind in ("back_edge", "rq_check", "synthesis_decision"):
+        assert not argue_notes(ps, 1, kind=kind), kind
+
+
+def test_the_judges_see_the_study_design_field_not_a_design_effect(env):
+    """Minor 6: the design is the value of a field named ``design``, ``study_design`` or ``*_design``, a category
+    field first; never ``design_effect``."""
+    from types import SimpleNamespace
+
+    from rk.production.models import ExtractionField
+
+    _, ps, _ = env
+    schema = [ExtractionField(name="design_effect", description="Design effect", type="number"),
+              ExtractionField(name="trial_design", description="Trial design in words", type="text"),
+              ExtractionField(name="study_design", description="Study design", type="category",
+                              categories=["rct", "cohort"])]
+    _setup(env, {"A": {"design_effect": 1.2, "trial_design": "parallel arms", "study_design": "rct"}},
+           schema=schema, plan=SynthesisPlan(method="thematic"))
+    subject = ArgueWorker._synthesis_subject(ps, SimpleNamespace(question="q", synthesis=[]), [])
+    assert [(x["label"], x["design"]) for x in subject["included_studies"]] == [("A 1950", "rct")]
 
 
 # ---- fix round 1 ----
@@ -1314,7 +1415,8 @@ def test_unanswered_objection_on_a_finding_reaches_your_review(env, priority):
 
 
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
-def test_withdrawing_every_finding_in_your_review_goes_back_to_synthesize(env):
+@pytest.mark.parametrize("asked", [False, True])
+def test_withdrawing_every_finding_in_your_review_goes_back_to_synthesize(env, asked):
     _, ps, _ = env
     a, b = _synthesize(env)
 
@@ -1324,7 +1426,8 @@ def test_withdrawing_every_finding_in_your_review_goes_back_to_synthesize(env):
                     "text": f"Finding {i} misreads its study."}
         return o
 
-    ex = _exec([draft(), responses(), responses()], [critique(objections=[on(0), on(1)]), critique()])
+    first = draft(needs_synthesis=NEED) if asked else draft()
+    ex = _exec([first, responses(), responses()], [critique(objections=[on(0), on(1)]), critique()])
     w = ArgueWorker()
     cp = get_checkpoint(ps, w.run(_ctx(env, ex)).checkpoint_id)
     assert cp["options"]["claim_ids"] == [a, b]
@@ -1332,6 +1435,7 @@ def test_withdrawing_every_finding_in_your_review_goes_back_to_synthesize(env):
                                                               "answers_rq": "yes"}))
     assert (out.status, out.to) == ("back_edge", "synthesize")
     assert "every finding of synthesize attempt 1 was withdrawn in argue" in out.reason
+    assert (NEED in out.reason) == asked  # the I4 back-edge carries the Arguer's requests too
 
 
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)

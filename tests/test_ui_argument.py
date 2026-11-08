@@ -659,6 +659,26 @@ def test_final_review_card_without_requests_offers_no_back(page, served):
 
 @pytest.mark.browser
 @pytest.mark.parametrize("served", [{"paper_type": "critical_review"}], indirect=True)
+def test_final_review_card_says_when_back_to_synthesize_is_spent(page, served):
+    """Wave 4 minor 3: once argue->synthesize used every allowed use, the card's back form says that back asks you to
+    allow one more use."""
+    from rk.orchestrator.graph import EDGE_LIMIT
+    from rk.orchestrator.state import record_edge_taken
+
+    ps = served.ps
+    _synthesize(served.env)
+    record_edge_taken(ps, "argue->synthesize", EDGE_LIMIT, actor="tester")
+    _start(served, "argue", argue_exec([draft(needs_synthesis="A finding on bleeding.")], [critique()]))
+    _, card = _show(page, ps, "uncertain_support")
+    form = card.locator("form.back-synthesize")
+    form.wait_for()
+    spent = f"argue->synthesize used {EDGE_LIMIT} of {EDGE_LIMIT}: back asks to allow one more use"
+    assert form.get_by_text(spent, exact=False).count() == 1
+    assert page.errors == []
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("served", [{"paper_type": "critical_review"}], indirect=True)
 @pytest.mark.parametrize(("button", "decision"), [("Claim a holds", "a_holds"), ("Claim b holds", "b_holds"),
                                                   ("Both stand, contested", "both_contested")])
 def test_conflict_card_answers_reach_the_worker(page, served, button, decision):
