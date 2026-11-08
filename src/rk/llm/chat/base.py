@@ -46,12 +46,17 @@ class ChatBackend(Protocol):
 
 
 def http_error_message(r) -> str:
-    """Server-provided error text for a non-2xx response (JSON ``error`` field when present)."""
+    """Server-provided error text for a non-2xx response (JSON ``error`` field when present); a 429 names its
+    ``Retry-After`` seconds (``rk.llm.limits.http_limit`` reads them)."""
+    status = f"HTTP {r.status_code}"
+    after = (r.headers.get("retry-after") or "").strip()
+    if r.status_code == 429 and after.replace(".", "", 1).isdigit():
+        status += f" (retry-after {after})"
     try:
         body = r.json()
     except ValueError:
-        return f"HTTP {r.status_code}: {r.text[:500]}"
+        return f"{status}: {r.text[:500]}"
     err = body.get("error") if isinstance(body, dict) else None
     if isinstance(err, dict):
         err = err.get("message") or err
-    return f"HTTP {r.status_code}: {err or body}"
+    return f"{status}: {err or body}"

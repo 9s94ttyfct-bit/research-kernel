@@ -134,8 +134,9 @@ class CodexCliProvider(AgenticCli):
 
         if done.code is None:
             return result(False, error="timeout")
-        # the subscription's usage limit ("You’ve hit your usage limit. ... try again at 3:04 PM."): no failed task
-        if (ev["error"] or done.code != 0) and (wait := usage_limit_wait(
+        # the subscription's usage limit ("You’ve hit your usage limit. ... try again at 3:04 PM."): no failed task;
+        # only when codex failed or gave no answer (a limit word in an answer or a passing warning is no limit)
+        if (done.code != 0 or extract_json(raw) is None) and (wait := usage_limit_wait(
                 "\n".join([*ev["errors"], done.stderr]), time.time())) is not None:
             return result(False, error=SESSION_LIMITED, wait_s=wait)
         if done.code != 0:

@@ -1,5 +1,6 @@
 """Stand-in for `claude` and `codex`, selected by FAKE_KIND. Records argv/cwd to FAKE_RECORD (JSON lines) and
-behaves per FAKE_MODE: ok | invalid | exit1 | sleep | limit (the subscription's session/usage limit reply)."""
+behaves per FAKE_MODE: ok | invalid | exit1 | sleep | limit (the subscription's session/usage limit reply) |
+limit_warning (codex: a limit warning event next to a real answer)."""
 
 import json
 import os
@@ -34,7 +35,9 @@ if mode == "limit":
                    {"type": "turn.failed", "error": {"message": "You’ve hit your usage limit."}}]:
             print(json.dumps(ev))
     sys.exit(1)
-answer = {"found": True} if mode == "ok" else {"found": "not-a-bool"}
+answer = {"found": True} if mode in ("ok", "limit_warning") else {"found": "not-a-bool"}
+if mode == "limit_warning":  # a passing warning next to a real answer
+    print(json.dumps({"type": "error", "message": "You’ve hit your usage limit for GPT-6 Sol; switched to Luna."}))
 resumed = "--resume" in argv or (len(argv) > 1 and argv[1] == "resume")
 if kind == "claude":
     if "stream-json" in argv:

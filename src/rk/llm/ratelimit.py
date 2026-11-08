@@ -48,6 +48,20 @@ class CallCaps:
         r = self._db.execute("SELECT until FROM blocked WHERE driver=?", (driver,)).fetchone()
         return r[0] if r else 0.0
 
+    def blocks(self) -> dict[str, float]:
+        """The drivers blocked now: driver -> the unix time the block ends."""
+        with self._lock:
+            rows = self._db.execute("SELECT driver, until FROM blocked WHERE until>? ORDER BY driver",
+                                    (self._clock(),)).fetchall()
+        return {d: u for d, u in rows}
+
+    def clear(self, driver: str) -> bool:
+        """Lift the driver's block (the operator knows the limit was reset); whether one was in force."""
+        with self._lock:
+            live = self._blocked_until(driver) > self._clock()
+            self._db.execute("DELETE FROM blocked WHERE driver=?", (driver,))
+        return live
+
     def acquire(self, driver: str, cap: int | None) -> bool:
         """Record one call if the driver is not blocked and under its cap for the last hour; uncapped drivers pass
         unless blocked. The count and the insert are one write transaction (``BEGIN IMMEDIATE``), so processes sharing

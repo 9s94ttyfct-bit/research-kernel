@@ -42,6 +42,8 @@ extraction_app = typer.Typer(help="Extracted values of the read_extract stage", 
 synthesis_app = typer.Typer(help="The synthesis of the synthesize stage", no_args_is_help=True)
 argument_app = typer.Typer(help="The argument of the argue stage", no_args_is_help=True)
 design_app = typer.Typer(help="The method design of the design stage (research proposals)", no_args_is_help=True)
+limits_app = typer.Typer(help="Model drivers blocked by a usage limit (rk.llm.limits), and their hourly call caps",
+                         invoke_without_command=True)
 app.add_typer(project_app, name="project")
 app.add_typer(library_app, name="library")
 app.add_typer(note_app, name="note")
@@ -57,6 +59,45 @@ app.add_typer(extraction_app, name="extraction")
 app.add_typer(synthesis_app, name="synthesis")
 app.add_typer(argument_app, name="argument")
 app.add_typer(design_app, name="design")
+app.add_typer(limits_app, name="limits")
+
+
+def _caps():
+    from rk.llm.ratelimit import CallCaps
+
+    return CallCaps(rk_home() / "kernel.sqlite")  # the call log rk serve counts against
+
+
+@limits_app.callback()
+def limits(ctx: typer.Context) -> None:
+    """List every driver blocked by a usage limit (until when) and the hourly call caps with their use."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from datetime import datetime
+
+    caps = _caps()
+    try:
+        blocks = caps.blocks()
+        for driver, until in blocks.items():
+            typer.echo(f"{driver}: blocked by a usage limit until {datetime.fromtimestamp(until):%Y-%m-%d %H:%M}")
+        if not blocks:
+            typer.echo("no driver is blocked by a usage limit")
+        for driver, cap in sorted(load_settings().calls_per_hour.items()):
+            typer.echo(f"{driver}: {caps.used(driver)} of {cap} calls in the last hour")
+    finally:
+        caps.close()
+
+
+@limits_app.command("clear")
+def limits_clear(driver: str = typer.Argument(..., help="The provider, e.g. claude_cli")) -> None:
+    """Lift a driver's usage-limit block (e.g. after the limit was reset or more usage bought)."""
+    caps = _caps()
+    try:
+        live = caps.clear(driver)
+    finally:
+        caps.close()
+    typer.echo(f"{driver}: block lifted" if live else f"{driver} was not blocked")
+
 
 JSON_OPT = typer.Option(False, "--json", help="Print raw JSON")
 KEYWORD_OPT = typer.Option(None, "--keyword", help="Repeatable")

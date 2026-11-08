@@ -1,18 +1,21 @@
 """``run_task``: the one entry point for role tasks. Resolves the driver, enforces call caps, scopes a task token,
 retries (spec §7.2: at most 3 attempts) and writes every attempt to the project's event log (spec §8.2). A driver's
 usage-limit reply (``SESSION_LIMITED``, ``rk.llm.limits``) is not retried: it blocks the driver in the call caps until
-the limit resets."""
+the limit resets. A chat API's HTTP 429 is one too: at once when its ``Retry-After`` or body says how long, else
+once every retry was a 429 as well (``DEFAULT_WAIT_S``)."""
 
 from __future__ import annotations
 
 import json
 import sqlite3
+import time
+from dataclasses import replace
 
 from pydantic import BaseModel
 
 from rk.ids import new_id
 from rk.llm.drivers import DriverSpec, build_provider
-from rk.llm.limits import DEFAULT_WAIT_S, SESSION_LIMITED
+from rk.llm.limits import DEFAULT_WAIT_S, SESSION_LIMITED, http_limit
 from rk.llm.types import Provider, RunContext, TaskResult, TaskSpec
 from rk.roles.policy import role_tools
 from rk.store.events import Event, NewEvent
@@ -66,6 +69,11 @@ def run_task(kernel, registry, *, project: str, role: str, instructions: str, in
                 except Exception as e:  # noqa: BLE001 - a driver bug becomes a failed attempt, recorded below
                     result = TaskResult(task_id, False, None, "", spec_driver.provider, spec_driver.model, 0.0,
                                         f"{type(e).__name__}: {e}")
+            if not result.ok and result.error and (limit := http_limit(result.error, time.time())) is not None:
+                # a chat API's 429: a usage limit at once when it says how long; a plain one after every retry
+                at_once, wait = limit
+                if at_once or n == MAX_ATTEMPTS:
+                    result = replace(result, error=SESSION_LIMITED, wait_s=wait, raw=result.raw or result.error)
             ps.apply(NewEvent(type="task.attempt", entity_id=task_id, actor_kind="agent", actor=ctx.actor, payload={
                 "n": n, "ok": result.ok, "error": result.error, "raw": _clip(result.raw), "model": result.model,
                 "duration_s": result.duration_s, "tool_calls": result.tool_calls, "session_id": result.session_id,

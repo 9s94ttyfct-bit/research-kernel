@@ -8,8 +8,6 @@ from pathlib import Path
 
 import pytest
 from pydantic import BaseModel
-from rk.llm.limits import DEFAULT_WAIT_S as LIMIT_DEFAULT_WAIT_S
-from rk.llm.limits import usage_limit_wait
 
 from rk.config import Settings
 from rk.fulltext import attach_pdf
@@ -17,6 +15,8 @@ from rk.library.models import Creator, ItemIn
 from rk.llm.cli_claude import ClaudeCliProvider
 from rk.llm.cli_codex import CodexCliProvider, strict_schema
 from rk.llm.drivers import DriverSpec
+from rk.llm.limits import DEFAULT_WAIT_S as LIMIT_DEFAULT_WAIT_S
+from rk.llm.limits import MIN_WAIT_S, PASSED_S, http_limit, usage_limit_wait
 from rk.llm.runner import run_task
 from rk.llm.types import RunContext, TaskSpec
 from rk.notes import list_notes
@@ -162,20 +162,37 @@ def test_cli_session_limit_is_a_cap_with_a_wait(fake, monkeypatch, cls, kind, wa
         assert abs(r.wait_s - wait) < 60
 
 
+def test_codex_answer_with_a_limit_warning_is_no_limit(fake, monkeypatch):
+    """codex counts as limited only when it failed or gave no answer: an answer next to a limit warning stands."""
+    exe, _ = fake
+    monkeypatch.setenv("FAKE_MODE", "limit_warning")
+    r = _provider(CodexCliProvider, exe, "codex", monkeypatch).run(_spec(), CTX)
+    assert r.ok and r.output == Found(found=True), r.error
+
+
 NOON = datetime(2026, 11, 8, 12, 0, tzinfo=UTC).timestamp()
 
 
 @pytest.mark.parametrize(("text", "wait"), [
     ("You've hit your session limit · resets 3pm (UTC)", 3 * 3600),
     ("You've hit your session limit · resets 3:30pm (Europe/Berlin)", 2.5 * 3600),  # 15:30 CET is 14:30 UTC
-    ("You've hit your weekly limit · resets 11am (UTC)", 23 * 3600),  # passed today: tomorrow
+    ("You've hit your weekly limit · resets 5am (UTC)", 17 * 3600),  # passed 7 h ago: tomorrow
+    ("You've hit your weekly limit · resets 11:59am (UTC)", MIN_WAIT_S),  # just passed: a stale reply
     ("You've hit your weekly limit · resets Nov 10, 9am (UTC)", 45 * 3600),
+    ("You've hit your weekly limit · resets Nov 7, 9am (UTC)", MIN_WAIT_S),  # a past date
     ("Claude AI usage limit reached|" + str(int(NOON) + 600), 600),
+    ("Claude AI usage limit reached|" + str(int(NOON) - 30), MIN_WAIT_S),  # 30 s in the past
     ("You’ve hit your usage limit. Upgrade to Pro or try again in 20 minutes.", 20 * 60),
     ("You've hit your session limit", LIMIT_DEFAULT_WAIT_S),
     ("Usage limit reached. You've reached your usage limit.", LIMIT_DEFAULT_WAIT_S),
+    ("You're out of usage credits · add funds to continue", LIMIT_DEFAULT_WAIT_S),
+    ("Your org is out of usage · ask your admin", LIMIT_DEFAULT_WAIT_S),
+    ("spend limit reached (daily; resets 2026-11-08 18:00 UTC)", 6 * 3600),
+    ("spend limit reached (daily; resets 2026-11-08T11:59:30Z)", MIN_WAIT_S),  # 30 s in the past
+    ("you have reached your monthly usage limit, upgrade for higher limits", LIMIT_DEFAULT_WAIT_S),
     ("Context limit reached", None),
     ("exit 1: boom", None),
+    ("You have reached your conclusion about the dose limit too early.", None),  # prose, not a limit
 ])
 def test_usage_limit_wait(text, wait):
     got = usage_limit_wait(text, NOON)
@@ -189,11 +206,40 @@ def test_usage_limit_wait_in_local_time():
     local = datetime(2026, 11, 9, 13, 4).astimezone().timestamp()
     assert usage_limit_wait(text, NOON) == pytest.approx(local - NOON, abs=1)
     at3 = datetime.fromtimestamp(NOON).replace(hour=15, minute=0, second=0, microsecond=0)
-    if at3.astimezone().timestamp() <= NOON:
+    if at3.astimezone().timestamp() <= NOON - PASSED_S:
         at3 += timedelta(days=1)
+    expected = max(at3.astimezone().timestamp() - NOON, MIN_WAIT_S)
     got = usage_limit_wait("You've hit your session limit · resets 3pm (Not/AZone)", NOON)
-    assert got == pytest.approx(at3.astimezone().timestamp() - NOON, abs=1)
+    assert got == pytest.approx(expected, abs=1)
 
+
+@pytest.mark.parametrize(("error", "out"), [
+    ("provider_error: HTTP 429 (retry-after 120): slow down", (True, 120)),
+    ("provider_error: HTTP 429: you have reached your monthly usage limit", (True, LIMIT_DEFAULT_WAIT_S)),
+    ("provider_error: HTTP 429: too many requests", (False, LIMIT_DEFAULT_WAIT_S)),
+    ("provider_error: HTTP 500: boom", None),
+])
+def test_http_limit(error, out):
+    assert http_limit(error, NOON) == out
+
+
+def test_limits_command_lists_and_clears_a_block(tmp_home):
+    from typer.testing import CliRunner
+
+    from rk.cli.main import app
+    from rk.llm.ratelimit import CallCaps
+
+    caps = CallCaps(tmp_home / "kernel.sqlite")
+    caps.block_for("claude_cli", 3600)
+    caps.close()
+    out = CliRunner().invoke(app, ["limits"])
+    assert out.exit_code == 0 and "claude_cli: blocked by a usage limit until" in out.output, out.output
+    out = CliRunner().invoke(app, ["limits", "clear", "claude_cli"])
+    assert out.exit_code == 0 and "claude_cli: block lifted" in out.output
+    caps = CallCaps(tmp_home / "kernel.sqlite")
+    assert caps.blocks() == {} and caps.wait_s("claude_cli") == 0 and caps.acquire("claude_cli", None)
+    caps.close()
+    assert "no driver is blocked" in CliRunner().invoke(app, ["limits"]).output
 
 
 def test_cli_timeout_kills_process(fake, monkeypatch):

@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import time
 
+import httpx
 import pytest
 from pydantic import BaseModel
 
@@ -20,8 +21,11 @@ from rk.discovery.executor import BudgetExceeded, KernelExecutor, RateCapped
 from rk.discovery.gaps import GapsWorker, MinerResult
 from rk.discovery.models import Gap, GapEvidence
 from rk.discovery.store import gaps
+from rk.llm.chat.ollama import OllamaBackend
+from rk.llm.chat_provider import ChatApiProvider
 from rk.llm.cli_base import Completed
 from rk.llm.cli_claude import ClaudeCliProvider
+from rk.llm.types import TaskResult
 from rk.orchestrator.engine import GateResult, IntakeWorker, Orchestrator, StageOutcome
 from rk.orchestrator.graph import DISCOVERY, OPEN_STAGES, stages_for
 from rk.orchestrator.state import (
@@ -36,6 +40,7 @@ from rk.orchestrator.state import (
     start_run,
     tasks_used,
 )
+from rk.production.vote import vote
 from rk.store.projections import rebuild
 from rk.tools.registry import ToolError
 
@@ -500,6 +505,66 @@ def test_session_limit_waits_without_spending_a_rerun(project):
     assert o.step("demo", run_id, actor="tester") == "done"
     assert claude.runs == 2 and worker.runs == [1, 1, 1] and edge_rows(ps) == {}
     assert latest_attempt(ps, "landscape") == 1 and tasks_used(ps, run_id, 1, "landscape") == 1
+
+
+class _VoteOut(BaseModel):
+    choice: str
+    reason: str = ""
+
+
+class _Voter:
+    """A judge provider that always votes ``a``."""
+    kind, model, vendor = "chat_api", "fake", "x"
+
+    def available(self):
+        return None
+
+    def run(self, spec, ctx):
+        out = _VoteOut(choice="a", reason="fine")
+        return TaskResult(spec.task_id, True, out, "{}", "codex_cli", "fake", 0.0, None)
+
+
+class _VoteOnce(_AskOnce):
+    """A stage that asks the judges' P1 vote once."""
+
+    def run(self, ctx):
+        self.runs.append(ctx.attempt)
+        vote(ctx, "record", "rec_1", "Include it?", ["a", "b"], "b", {"title": "x"})
+        return StageOutcome("done")
+
+
+@pytest.mark.parametrize(("headers", "body", "http_calls", "wait"), [
+    ({"retry-after": "120"}, {"error": "slow down"}, 1, 120),  # says how long: a usage limit at once
+    ({}, {"error": "you have reached your monthly usage limit"}, 1, 1800),
+    ({}, {"error": "too many requests"}, 3, 1800),  # a plain 429: retried, then a usage limit
+])
+def test_chat_api_429_in_a_judge_vote_waits_without_a_conservative_vote(project, headers, body, http_calls, wait):
+    """I-3: an HTTP 429 of a chat API judge (Ollama) is a usage limit, not a failed judge: no conservative vote is
+    recorded and the run waits (``waiting_rate``) until the driver may be called again."""
+    k, ps = project
+    calls = []
+
+    def answer(request):
+        calls.append(request)
+        return httpx.Response(429, json=body, headers=headers)
+
+    ollama = ChatApiProvider(OllamaBackend("http://ollama:1", "deepseek-v4.1-flash:cloud",
+                                           httpx.Client(transport=httpx.MockTransport(answer))), "ollama")
+    voter = _Voter()
+    o = Orchestrator(k, None, workers=_workers(landscape=_VoteOnce()),
+                     executor_factory=lambda project, run_id, session: KernelExecutor(
+                         k, None, project, run_id=run_id, session=session,
+                         provider_for=lambda role: ollama if role == "judge_2" else voter),
+                     sources_factory=lambda project: FakeSources({}), clock=Clock())
+    run_id = start_run(ps, until="landscape", actor="tester", clock=Clock())
+    assert o.step("demo", run_id, actor="tester") == "running"  # intake
+    assert o.step("demo", run_id, actor="tester") == "waiting_rate"
+    assert len(calls) == http_calls and ps.db.execute("SELECT COUNT(*) FROM votes").fetchone()[0] == 0
+    assert edge_rows(ps) == {} and latest_attempt(ps, "landscape") == 1
+    assert rate_capped_driver(ps, run_id).startswith("ollama")
+    assert k.caps.wait_s("ollama") == pytest.approx(wait, abs=5)
+    errors = [r["error"] for r in ps.db.execute("SELECT error FROM tasks ORDER BY created")]
+    assert errors[-1] == "session_limited"
 
 
 def test_run_stage_refuses_later_and_plan5_stages(project):
