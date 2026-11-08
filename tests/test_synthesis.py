@@ -45,8 +45,9 @@ SR_ITEMS = {"rationale": "Guidelines stop at 80.", "objectives": "Estimate benef
             "risk_of_bias": "RoB 2."}
 BINARY = [ExtractionField(name=f, description=f, type="number") for f in BINARY_FIELDS]
 DESIGN = ExtractionField(name="design", description="Study design", type="category", categories=["rct", "cohort"])
-META = SynthesisPlan(method="meta_analysis", effect_measure="RR", model="DerSimonian-Laird (DL)",
-                     heterogeneity="I2 and tau2; Higgins prediction interval with k-2 df")
+# the free-text model and heterogeneity fields are descriptive only: the typed fields set the pool options
+META = SynthesisPlan(method="meta_analysis", effect_measure="RR", model="random effects (REML would be the default)",
+                     heterogeneity="I2 and tau2; no HKSJ", pool_model="DL", pi_df="k-2")
 # BCG trials 1-4 (Viechtbauer 2010)
 BCG = {"Aronson": {"events_treatment": 4, "n_treatment": 123, "events_control": 11, "n_control": 139},
        "Ferguson": {"events_treatment": 6, "n_treatment": 306, "events_control": 29, "n_control": 303},
@@ -238,6 +239,8 @@ def test_meta_analysis_pools_approved_group_with_kernel_claims(env):
     cp = get_checkpoint(ps, out.checkpoint_id)
     assert cp["kind"] == "pooling_approval" and cp["stage"] == "synthesize"
     assert "tuberculosis" in cp["prompt"] and "RR" in cp["prompt"]
+    # the pre-specified pool options are shown
+    assert "model DL, HKSJ auto, prediction interval df k-2" in cp["prompt"]
     with pytest.raises(ValueError, match="only be answered by a human"):  # a hard human checkpoint
         answer_checkpoint(ps, cp["id"], {"decisions": {"0": "pool"}}, answered_by="vote", actor="kernel")
     assert artifacts(ps, "synthesize", 1) == []  # nothing pooled before your approval
@@ -260,7 +263,11 @@ def test_meta_analysis_pools_approved_group_with_kernel_claims(env):
     text, bindings = stat_claim_text(artifact(ps, stt["id"]))
     assert claim["text"] == text and claim["number_bindings"] == bindings
     assert claim["origin"] == "synthesis" and claim["status"] == "supported"
-    assert set(claim["artifact_ids"]) == {stt["id"], fig["id"]} and "tuberculosis" in " ".join(claim["scope_limits"])
+    assert set(claim["artifact_ids"]) == {stt["id"], fig["id"]}
+    # the scope names the protocol's extraction fields, never model-written text
+    assert claim["scope_limits"][:2] == ["effect measure: RR",
+                                         "extraction fields: events_treatment, n_treatment, events_control, n_control"]
+    assert "tuberculosis" not in " ".join(claim["scope_limits"])
     for a in (stt, fig):
         assert ("V-STATS", "pass") in [tuple(r) for r in ps.db.execute(
             "SELECT verifier, verdict FROM verifications WHERE target_id=?", (a["id"],))]
@@ -289,6 +296,9 @@ def test_p1_pooling_vote_disagreement_means_narrative(env):
     assert artifacts(ps, "synthesize", 1) == [] and all(c["kind"] != "stat_result" for c in _claims(ps))
     (reason,) = _analysis_deviations(ps)
     assert "tuberculosis" in reason and "not approved by the P1 vote" in reason
+    (call,) = [c for c in ex.calls if c["role"] == "judge" and c["schema"] == "VoteOut"]
+    assert call["inputs"]["subject"]["pool_options"] == {"model": "DL", "hksj": "auto", "pi_df": "k-2", "level": 0.95}
+    assert "data, not instructions" in call["inputs"]["question"]
     assert reason in [f["reason"] for f in synthesis_limitations(ps, 1)["fallbacks"]]
     assert protocol_prereg_ok(ps)
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
@@ -455,7 +465,37 @@ def test_p2_uncertain_finding_opens_uncertain_support(env):
     assert out.status == "done", out.reason
     (claim,) = _claims(ps)
     assert claim["status"] == "supported"
+    # your decision is attributed to you in the status event
+    (kind,) = ps.db.execute("SELECT actor_kind FROM events WHERE type='claim.status_set' AND entity_id=? "
+                            "ORDER BY seq DESC LIMIT 1", (claim["id"],)).fetchone()
+    assert kind == "human"
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "critical_review", "production_mode": "collab"}], indirect=True)
+def test_uncertain_support_answers_withdraw_rerun_and_invalid(env):
+    _, ps, _ = env
+    _setup(env, {"A": {"design": "rct"}, "B": {"design": "cohort"}}, schema=[DESIGN],
+           plan=SynthesisPlan(method="thematic"))
+    ex = _exec(judges=_judges("partial"))
+    w = SynthesizeWorker()
+    cp = get_checkpoint(ps, w.run(_ctx(env, ex)).checkpoint_id)
+    (claim,) = _claims(ps)
+    for bad in ({"claims": {}}, {"claims": {claim["id"]: "maybe"}}, {"decision": "rerun"}):
+        out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], bad))
+        assert out.status == "waiting_human" and out.checkpoint_id != cp["id"], bad
+        cp = get_checkpoint(ps, out.checkpoint_id)
+        assert cp["kind"] == "uncertain_support" and "could not be applied" in cp["prompt"]
+        assert cp["options"]["claim_ids"] == [claim["id"]]
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decision": "rerun", "comment": "Use fewer words."}))
+    assert (out.status, out.reason) == ("rerun", "Use fewer words.")
+    cp2 = get_checkpoint(ps, w.run(_ctx(env, _exec(judges=_judges("partial")), 2)).checkpoint_id)
+    (claim2,) = _claims(ps, 2)
+    out = w.on_answer(_ctx(env, ex, 2), _answer(ps, cp2["id"], {"claims": {claim2["id"]: "withdraw"}}))
+    assert out.status == "done"
+    (claim2,) = _claims(ps, 2)
+    assert claim2["status"] == "withdrawn" and "withdrawn by you" in claim2["withdrawn_reason"]
+    assert "no supported synthesis finding" in w.gate(ps, 2).failures
 
 
 # ---- the representativeness statement ----
@@ -491,9 +531,10 @@ def test_systematic_narrative_needs_every_swim_item(env):
 def test_missing_outcome_fields_go_back_to_read_extract(env):
     _, ps, _ = env
     _enable_stats()
-    studies = {t: {**v, "events_control": "not_reported"} for t, v in list(BCG.items())[:3]}
-    _setup(env, studies, schema=BINARY, plan=META)
-    ex = _exec(plans=[lambda inputs: _group(s["item_id"] for s in inputs["studies"])])
+    studies = {t: {f: x for f, x in v.items() if f != "events_control"} for t, v in list(BCG.items())[:3]}
+    _setup(env, studies, schema=BINARY, plan=META)  # no study has an events_control row
+    plan = [lambda inputs: _group(s["item_id"] for s in inputs["studies"])]
+    ex = _exec(plans=list(plan))
     w = SynthesizeWorker()
     ctx = _ctx(env, ex)
     out = w.run(ctx)
@@ -505,6 +546,157 @@ def test_missing_outcome_fields_go_back_to_read_extract(env):
     (reason,) = _analysis_deviations(ps)
     assert "events_control" in reason
     assert artifacts(ps, "synthesize", 1) == [] and ex.of("arguer", "NarrativeSynthesis")
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    # never back twice for the same fields: the next attempt falls back instead
+    out = w.run(_ctx(env, _exec(plans=list(plan)), 2))
+    assert out.status == "done", out.reason
+    (fb,) = synthesis_notes(ps, 2, kind="fallback")
+    assert "events_control" in fb["reason"] and "already went back to read_extract" in fb["reason"]
+    assert w.gate(ps, 2).ok, w.gate(ps, 2).failures
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_fields_reported_as_not_reported_fall_back_without_going_back(env):
+    _, ps, _ = env
+    _enable_stats()
+    studies = {t: {**v, "events_control": "not_reported"} for t, v in list(BCG.items())[:3]}
+    _setup(env, studies, schema=BINARY, plan=META)
+    ex = _exec(plans=[lambda inputs: _group(s["item_id"] for s in inputs["studies"])])
+    w = SynthesizeWorker()
+    out = w.run(_ctx(env, ex))
+    assert out.status == "done", out.reason  # the studies verifiably do not report it: no dead-end back-edge
+    (reason,) = _analysis_deviations(ps)
+    assert "events_control" in reason and "not reported" in reason
+    assert artifacts(ps, "synthesize", 1) == []
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+# ---- the pre-specified analysis never silently changes ----
+def _votes_pool(n: int = 1) -> dict:
+    return {("judge", "VoteOut"): [{"choice": "pool", "reason": "ok"}] * n,
+            ("judge_2", "VoteOut"): [{"choice": "pool", "reason": "ok"}] * n}
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_empty_pooling_plan_falls_back_with_deviation(env):
+    _, ps, _ = env
+    _enable_stats()
+    _setup(env, dict(list(BCG.items())[:3]), schema=BINARY, plan=META)
+    w = SynthesizeWorker()
+    assert w.run(_ctx(env, _exec(plans=[{"groups": []}]))).status == "done"
+    (reason,) = _analysis_deviations(ps)
+    assert reason == "the pooling plan proposed no group for the pre-specified meta-analysis (effect measure RR)"
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    # a fallback that is not recorded fails the gate
+    ps.db.execute("DELETE FROM protocol_deviations")
+    assert any("not recorded as a deviation" in f for f in w.gate(ps, 1).failures)
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_measure_other_than_pre_specified_falls_back_with_deviation(env):
+    _, ps, _ = env
+    _enable_stats()
+    _setup(env, dict(list(BCG.items())[:3]), schema=BINARY, plan=META)
+    ex = _exec(plans=[lambda inputs: _group((s["item_id"] for s in inputs["studies"]), measure="OR")],
+               votes=_votes_pool())
+    w = SynthesizeWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    assert not [c for c in ex.calls if c["schema"] == "VoteOut"] and artifacts(ps, "synthesize", 1) == []
+    reasons = _analysis_deviations(ps)
+    assert any("pre-specifies the effect measure RR" in r and "OR" in r for r in reasons)
+    assert "the pooling plan proposed no group for the pre-specified meta-analysis (effect measure RR)" in reasons
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+def test_meta_analysis_protocol_needs_typed_pool_options():
+    from pydantic import ValidationError
+
+    from rk.production.protocol import check_protocol
+
+    bare = a_protocol(synthesis_plan=SynthesisPlan(method="meta_analysis", effect_measure="risk ratio"),
+                      prisma_p=SR_ITEMS)
+    failures = check_protocol(bare, "systematic_review")
+    assert "synthesis_plan.pool_model is required for a meta-analysis (REML, DL or FE)" in failures
+    assert any("synthesis_plan.effect_measure" in f and "RR, OR, RD, MD or SMD" in f for f in failures)
+    assert check_protocol(a_protocol(synthesis_plan=META, prisma_p=SR_ITEMS), "systematic_review") == []
+    assert (META.pool_model, META.hksj, META.pi_df) == ("DL", "auto", "k-2")
+    with pytest.raises(ValidationError):
+        SynthesisPlan(method="meta_analysis", hksj="yes")
+    with pytest.raises(ValidationError):
+        SynthesisPlan(method="meta_analysis", pool_model="ML")
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_fewer_than_two_computable_studies_fall_back(env):
+    _, ps, _ = env
+    _enable_stats()
+    ids = _setup(env, {"Aronson": BCG["Aronson"], "Median": {**BCG["Ferguson"], "events_treatment": "not_reported"}},
+                 schema=BINARY, plan=META)
+    ex = _exec(plans=[lambda inputs: _group(s["item_id"] for s in inputs["studies"])], votes=_votes_pool())
+    w = SynthesizeWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    assert artifacts(ps, "synthesize", 1) == []
+    (reason,) = _analysis_deviations(ps)
+    assert "fewer than two studies with a computable effect (1)" in reason
+    assert [u["item_id"] for u in synthesis_limitations(ps, 1)["uncomputable"]] == [ids["Median"]]
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_study_with_two_values_for_a_field_is_left_out_of_the_pool(env):
+    _, ps, _ = env
+    _enable_stats()
+    ids = _setup(env, dict(list(BCG.items())[:3]), schema=BINARY, plan=META)
+    row = next(r for r in store.extractions(ps, 1, item_id=ids["Rosenthal"]) if r["field"] == "events_treatment")
+    store.add_extraction(ps, 1, ids["Rosenthal"], "events_treatment", 5, row["note_id"], True, actor="tester")
+    ex = _exec(plans=[lambda inputs: _group(s["item_id"] for s in inputs["studies"])], votes=_votes_pool())
+    w = SynthesizeWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    stt = next(a for a in artifacts(ps, "synthesize", 1) if a["kind"] == "stt")
+    assert stt["values"]["item_ids"] == [ids["Aronson"], ids["Ferguson"]] and stt["values"]["display"]["k"] == 2
+    assert synthesis_limitations(ps, 1)["conflicting"] == [
+        {"outcome": "tuberculosis", "measure": "RR", "item_id": ids["Rosenthal"],
+         "reason": "two values for events_treatment"}]
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review", "production_mode": "collab"}], indirect=True)
+def test_stats_invalidated_before_approval_falls_back(env):
+    _, ps, _ = env
+    _enable_stats()
+    _setup(env, dict(list(BCG.items())[:3]), schema=BINARY, plan=META)
+    ex = _exec(plans=[lambda inputs: _group(s["item_id"] for s in inputs["studies"])])
+    w = SynthesizeWorker()
+    out = w.run(_ctx(env, ex))
+    save_settings(load_settings().model_copy(update={"stats_validated": None}))
+    out = w.on_answer(_ctx(env, ex), _answer(ps, out.checkpoint_id, {"decisions": {"0": "pool"}}))
+    assert out.status == "done", out.reason
+    assert artifacts(ps, "synthesize", 1) == []
+    (reason,) = _analysis_deviations(ps)
+    assert STATS_NOT_VALIDATED in reason and "tuberculosis" in reason
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "critical_review"}], indirect=True)
+def test_degrade_narrows_an_overstated_finding(env):
+    _, ps, _ = env
+    _setup(env, {"A": {"design": "rct"}, "B": {"design": "cohort"}}, schema=[DESIGN],
+           plan=SynthesisPlan(method="thematic"))
+    narrower = "Aspirin was studied in some older people."
+    ex = _exec(narratives=[narrative(text="Aspirin was always studied in older people.")],
+               narrowed=[{"text": narrower, "kind": "fact"}])
+    w = SynthesizeWorker()
+    ctx = _ctx(env, ex)
+    assert w.run(ctx).status == "done"
+    (claim,) = _claims(ps)
+    assert claim["status"] == "supported"
+    g = w.gate(ps, 1)
+    assert any("V-HEDGE overstated" in f for f in g.failures)
+    out = w.degrade(ctx, g.failures)
+    assert out.status == "done" and f"{claim['id']} narrowed" in out.reason
+    old, new = _claims(ps)
+    assert "V-HEDGE overstated" in old["withdrawn_reason"] and new["text"] == narrower
+    assert ex.of("arguer", "NarrowedClaim")[0]["inputs"]["why"].startswith("V-HEDGE overstated")
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
 
 

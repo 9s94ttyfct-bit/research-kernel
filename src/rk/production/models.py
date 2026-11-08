@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, StrictBool, model_validator
 
 ScreeningPhase = Literal["title_abstract", "full_text"]
 TITLE_ABSTRACT: ScreeningPhase = "title_abstract"
@@ -51,11 +51,20 @@ class ExtractionField(BaseModel):
 
 
 class SynthesisPlan(BaseModel):
+    """The protocol's synthesis plan. ``model``, ``heterogeneity`` and ``sensitivity`` describe the analysis in words;
+    a meta-analysis is computed with the typed fields only: ``effect_measure`` (``RR``, ``OR``, ``RD``, ``MD`` or
+    ``SMD``), ``pool_model`` (the τ² estimator: ``REML``, ``DL`` or ``FE``), ``hksj`` (Hartung-Knapp-Sidik-Jonkman
+    intervals: ``"auto"``, the Cochrane Handbook rule, or always / never) and ``pi_df`` (the prediction interval's
+    degrees of freedom: ``"ci"`` as the confidence interval, or Higgins 2009's ``"k-2"``). ``check_protocol``
+    requires them for a meta-analysis."""
     method: Literal["narrative_swim", "meta_analysis", "evidence_map", "thematic"]
     effect_measure: str | None = None
     model: str | None = None
     heterogeneity: str | None = None
     sensitivity: str | None = None
+    pool_model: Literal["REML", "DL", "FE"] | None = None
+    hksj: StrictBool | Literal["auto"] = "auto"
+    pi_df: Literal["ci", "k-2"] = "ci"
 
 
 class Protocol(BaseModel):

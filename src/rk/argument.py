@@ -337,8 +337,10 @@ class ArgumentService:
         self._ev("warrant.tested", edge_id, {"tests": tests.model_dump(mode="json")}, actor, actor_kind)
 
     def set_claim_status(self, claim_id: str, status: ClaimStatus, *, verification_id: str | None,
-                         actor: str = "kernel") -> None:
-        """V-SUPPORT's verdict. A withdrawn claim stays withdrawn; withdrawing goes through ``withdraw_claim``."""
+                         actor: str = "kernel", actor_kind: Literal["kernel", "human"] = "kernel") -> None:
+        """V-SUPPORT's verdict (``actor_kind="kernel"``), or the researcher's on an ``uncertain_support`` checkpoint
+        (``"human"``, attributed in the status event). A withdrawn claim stays withdrawn; withdrawing goes through
+        ``withdraw_claim``."""
         c = self._row("claims", claim_id)
         if c is None:
             raise KeyError(claim_id)
@@ -347,7 +349,7 @@ class ArgumentService:
         if status == "withdrawn":
             raise ValueError("withdraw a claim with withdraw_claim (it keeps the reason)")
         self._ev("claim.status_set", claim_id, {"status": status, "verification_id": verification_id}, actor,
-                 "kernel")
+                 actor_kind)
 
 
 # ---- projections ----

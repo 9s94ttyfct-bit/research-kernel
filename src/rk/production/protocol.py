@@ -75,6 +75,7 @@ from rk.production.store import (
     protocols,
 )
 from rk.production.vote import vote
+from rk.stats.effects import MEASURES
 from rk.store.events import ActorKind, NewEvent
 from rk.store.project import ProjectStore
 from rk.store.query import query_rows
@@ -96,7 +97,8 @@ DRAFT_TASK = (
     "Draft the review protocol for the frozen research question, its hypotheses and topic, for the intake's paper type "
     "and audience: eligibility (include and exclude criteria, each with a short id and its text), the extraction "
     "schema (each field named, described and typed: text, number or category with its categories, and a unit where "
-    "there is one), the synthesis plan and, for a systematic review, the PRISMA-P items (rationale, objectives, "
+    "there is one), the synthesis plan (a meta-analysis with its typed effect_measure, pool_model, hksj and pi_df) "
+    "and, for a systematic review, the PRISMA-P items (rationale, objectives, "
     "selection process, data collection process, risk of bias). Never claim that the question or the review is novel. "
     "When a previous draft is given, revise it: change only what the guidance asks for and keep the rest. When a frozen "
     "protocol is given, change only what the guidance asks for. Follow the guidance when there is any.")
@@ -171,7 +173,8 @@ def check_protocol(body: Protocol, paper_type: str) -> list[str]:
     """What keeps the protocol from the structure of its paper type, one failure per item; ``[]`` when it has it.
     Every type: the question, a query and a source, an include criterion (the selection principles), named and
     distinct extraction fields, no novelty claim in the Ideator's texts. The systematic and scoping reviews also need
-    an extraction schema and a synthesis plan; the systematic review also the PRISMA-P items."""
+    an extraction schema and a synthesis plan; the systematic review also the PRISMA-P items. A meta-analysis plan
+    needs its typed ``pool_model`` and an ``effect_measure`` the statistics module computes (``MEASURES``)."""
     if paper_type not in PAPER_TYPES:
         raise ValueError(f"unknown paper type {paper_type!r}")
     out = [] if body.question.strip() else ["question is empty"]
@@ -197,6 +200,13 @@ def check_protocol(body: Protocol, paper_type: str) -> list[str]:
             out.append("extraction_schema has no field")
         if body.synthesis_plan is None:
             out.append("synthesis_plan is missing")
+    plan = body.synthesis_plan
+    if plan is not None and plan.method == "meta_analysis":
+        if plan.pool_model is None:
+            out.append("synthesis_plan.pool_model is required for a meta-analysis (REML, DL or FE)")
+        if plan.effect_measure not in MEASURES:
+            out.append(f"synthesis_plan.effect_measure must be one of {', '.join(list(MEASURES)[:-1])} or "
+                       f"{list(MEASURES)[-1]} for a meta-analysis (got {plan.effect_measure!r})")
     if paper_type == "systematic_review":
         out += [f"PRISMA-P item {i!r} is missing" for i in _prisma_p_missing(body)]
     out += novelty_claims(_free_texts(body))
