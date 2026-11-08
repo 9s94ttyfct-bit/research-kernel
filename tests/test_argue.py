@@ -5,9 +5,11 @@ claim, edge, warrant test and objection, resolves contradictions (P2 asks, P1 vo
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
-from rk.argument import ArgumentService
+from rk.argument import ArgumentService, ObjectionIn
 from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
+from rk.discovery.executor import RateCapped
 from rk.orchestrator.engine import default_workers
 from rk.orchestrator.graph import BACK_EDGES
 from rk.orchestrator.state import record_attempt, record_passed, record_ran
@@ -16,6 +18,7 @@ from rk.production.argue import (
     ArgueWorker,
     ArgumentDraft,
     Critique,
+    RecheckOut,
     argue_limitations,
     argue_notes,
     argument_claims,
@@ -116,12 +119,19 @@ def verdicts(failed: str | None = None) -> dict:
     return {t: {"ok": t != failed, "reason": f"{t} {'fails' if t == failed else 'holds'}"} for t in TESTS}
 
 
-def critique(*, objections=(), fail: str | None = None, conflicts=()):
+def critique(*, objections=(), fail: str | None = None, conflicts=(), test: bool = True, extra_tests=()):
     def out(inputs):
+        given = [{"edge_id": w["edge_id"], "tests": verdicts(fail)} for w in inputs["untested_warrants"]]
         return {"objections": [o(inputs) if callable(o) else o for o in objections],
-                "warrant_tests": [{"edge_id": w["edge_id"], "tests": verdicts(fail)}
-                                  for w in inputs["untested_warrants"]],
+                "warrant_tests": [*(given if test else []), *({"edge_id": e, "tests": verdicts()} for e in extra_tests)],
                 "conflicts": [c(inputs) if callable(c) else c for c in conflicts]}
+    return out
+
+
+def answer_each(fn):
+    """A round answering each open objection with ``fn(inputs, objection)`` (a response dict or None)."""
+    def out(inputs):
+        return {"responses": [r for o in inputs["open_objections"] if (r := fn(inputs, o)) is not None]}
     return out
 
 
@@ -173,7 +183,8 @@ def _objections(ps) -> list[dict]:
 
 
 def _rewrite(ps, cid: str) -> str:
-    (new,) = [c["id"] for c in ArgumentService(ps).list_claims() if c.get("narrowed_from") == cid]
+    (new,) = [c["id"] for c in ArgumentService(ps).list_claims(origin=("argument", "synthesis"))
+              if c.get("narrowed_from") == cid]
     return new
 
 
@@ -221,7 +232,10 @@ def test_argument_round_stores_claims_edges_and_verifies(env):
     for e in reasons:
         (wr,) = svc.list_edges(to_id=e["id"], type="warrant_of")
         assert wr["warrant"] == WARRANT and all(t["ok"] for t in wr["warrant_tests"].values())
-        assert svc.get_claim(wr["from_id"])["text"].startswith("When a study enrolled older people")
+        wc = svc.get_claim(wr["from_id"])
+        assert wc["text"].startswith("When a study enrolled older people") and wc["origin"] == "warrant"
+    # warrant claims stay out of the argument's listings (rk_claim_list's default)
+    assert {c["id"] for c in svc.list_claims()} == {main["id"], reason["id"]}
     assert {e["to_id"] for e in svc.list_edges(type="evidence_of")} == {main["id"], reason["id"]}
     assert all(e["from_id"].startswith("evd_") for e in svc.list_edges(type="evidence_of"))
     # the Skeptic is the codex vendor by default, with search tools; it writes no objection itself
@@ -497,3 +511,248 @@ def test_argue_back_edge_to_synthesize_with_guidance(env):
     assert not _claims(ps)
     (n,) = argue_notes(ps, 1, kind="back_edge")
     assert (n["to"], n["reason"]) == ("synthesize", need)
+
+
+# ---- fix round 1 ----
+def _o(role_name: str, priority: int, text: str, category: str = "problem"):
+    def o(inputs):
+        return {"target_id": role(inputs, role_name)[0], "category": category, "priority": priority, "text": text}
+    return o
+
+
+def test_rewrite_is_rechecked_against_every_unanswered_objection(env):
+    _, ps, _ = env
+    _synthesize(env)
+    sure = "Older people certainly were enrolled in a randomised trial."
+    narrower = "Some older people were enrolled in a randomised trial."
+
+    def reasons(inputs):
+        return [{"ref": "r1", "claim": claim(inputs, sure, "rct"), "supports": "main", "warrant": WARRANT}]
+
+    def holds(inputs):
+        (o,) = inputs["conceded_objections"]  # the open priority-2 objection, conceded before the re-check
+        assert (o["priority"], o["text"]) == (2, "The trial was small.")
+        return {"still_holds": [{"objection_id": o["id"], "reason": "Still small."}],
+                "warrant_tests": [{"edge_id": w["edge_id"], "tests": verdicts()} for w in inputs["untested_warrants"]]}
+
+    ex = _exec([draft(reasons=reasons), responses(), responses()],
+               [critique(objections=[_o("reason", 2, "The trial was small.")]), critique()], uncertain=("certainly",),
+               narrowed=[{"text": narrower, "kind": "fact"}], rechecks=[holds])
+    w = ArgueWorker()
+    ctx = _ctx(env, ex)
+    assert w.run(ctx).status == "done"
+    assert w.degrade(ctx, w.gate(ps, 1).failures).status == "done"
+    by_text = {c["text"]: c for c in _claims(ps)}
+    assert by_text[sure]["status"] == by_text[narrower]["status"] == "withdrawn"
+    assert all(o["status"] == "conceded" for o in _objections(ps))
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+def test_rewrite_of_a_contested_claim_is_rechecked_against_the_conflict(env):
+    _, ps, _ = env
+    a, b = _synthesize(env)
+    conflict = {"claim_a": a, "claim_b": b, "why": "One says randomised, the other cohort."}
+    narrower = "Aspirin may have been studied in a randomised trial of some older people."
+
+    def holds(inputs):
+        texts = [o["text"] for o in inputs["conceded_objections"]]
+        assert any("contradicts" in t for t in texts), texts
+        return {"still_holds": [{"objection_id": o["id"], "reason": "Still contradicts."}
+                                for o in inputs["conceded_objections"]]}
+
+    # the Arguer answers b's conflict objection only; a stays contested without an answer
+    def only_b(inputs, o):
+        return ({"objection_id": o["id"], "status": "responded", "claim": claim(inputs, RESPONSE, "cohort")}
+                if o["target_id"] == b else None)
+
+    ex = _exec([draft(), answer_each(only_b), answer_each(lambda i, o: None)],
+               [critique(conflicts=[conflict]), critique()], votes=_votes(["a_holds"], ["b_holds"]),
+               narrowed=[{"text": narrower, "kind": "fact"}], rechecks=[holds])
+    w = ArgueWorker()
+    ctx = _ctx(env, ex)
+    assert w.run(ctx).status == "done"
+    # a's open priority-2 conflict objection is no claim problem: narrowing only follows a gate failure of the claim
+    ArgumentService(ps).add_objection(ObjectionIn(target_id=a, category="problem", priority=1, text="Too broad."),
+                                      actor="tester")
+    w.degrade(ctx, w.gate(ps, 1).failures)
+    assert len(ex.of("skeptic", "RecheckOut")) == 1
+    new = _rewrite(ps, a)
+    assert ArgumentService(ps).get_claim(new)["status"] == "withdrawn"
+
+
+def test_a_claim_cannot_answer_an_objection_against_itself(env):
+    _, ps, _ = env
+    a, b = _synthesize(env)
+    conflict = {"claim_a": a, "claim_b": b, "why": "One says randomised, the other cohort."}
+
+    def itself(inputs, o):  # a answers its own objection; b's is answered by its counterpart a
+        return {"objection_id": o["id"], "status": "responded", "claim_id": a}
+
+    ex = _exec([draft(), answer_each(itself), answer_each(lambda i, o: None)],
+               [critique(conflicts=[conflict]), critique()], votes=_votes(["a_holds"], ["b_holds"]))
+    w = ArgueWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    (d2,) = [n for n in argue_notes(ps, 1, kind="draft") if n["round"] == 2]
+    assert len(d2["refused"]) == 2 and all("its own target" in r or "counterpart" in r for r in d2["refused"])
+    assert all(o["status"] == "open" for o in _objections(ps))
+    # the gate rejects a self-answer recorded by any other path
+    svc = ArgumentService(ps)
+    (oa,) = svc.list_objections(target_id=a)
+    svc.respond_objection(oa["id"], response_claim_id=a, status="responded", note="self", actor="tester")
+    assert any(oa["id"] in f and "own target" in f for f in w.gate(ps, 1).failures), w.gate(ps, 1).failures
+
+
+def test_untested_warrants_get_another_critique_before_the_fixed_point(env):
+    _, ps, _ = env
+    _synthesize(env)
+    ex = _exec([draft()], [critique(test=False), critique()])
+    w = ArgueWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    assert len(ex.of("skeptic", "Critique")) == 2 and len(ex.of("arguer", "ArgumentDraft")) == 1
+    assert [n["reason"] for n in argue_notes(ps, 1, kind="end")] == ["fixed_point"]
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+def test_contests_and_objections_are_scoped_to_the_attempt(env):
+    _, ps, _ = env
+    a, b = _synthesize(env)
+    conflict = {"claim_a": a, "claim_b": b, "why": "One says randomised, the other cohort."}
+
+    def conflicts_only(inputs, o):
+        return ({"objection_id": o["id"], "status": "responded", "claim": claim(inputs, RESPONSE, "cohort")}
+                if o["category"] == "counterexample" else None)
+
+    ex1 = _exec([draft(), answer_each(conflicts_only), answer_each(lambda i, o: None)],
+                [critique(objections=[{"target_id": a, "category": "problem", "priority": 2,
+                                       "text": "The trial was small."}], conflicts=[conflict]), critique()],
+                votes=_votes(["a_holds"], ["b_holds"]))
+    w = ArgueWorker()
+    assert w.run(_ctx(env, ex1)).status == "done"
+    (small,) = [o for o in _objections(ps) if o["text"] == "The trial was small."]
+    assert small["status"] == "open" and not w.gate(ps, 1).ok
+    # attempt 2 (a rerun): the earlier unanswered objection and the contests come along as the attempt's own
+    seen = {}
+
+    def first(inputs):
+        seen["open"] = [(o["target_id"], o["category"]) for o in inputs["open_objections"]]
+        out = draft()(inputs)
+        out["responses"] = [{"objection_id": o["id"], "status": "responded", "claim": claim(inputs, RESPONSE, "cohort")}
+                            for o in inputs["open_objections"]]
+        return out
+
+    ex2 = _exec([first], [critique()])
+    assert w.run(_ctx(env, ex2, 2)).status == "done"
+    assert sorted(seen["open"]) == sorted([(a, "problem"), (a, "counterexample"), (b, "counterexample")])
+    (imp,) = argue_notes(ps, 2, kind="imported")
+    assert small["id"] in imp["objection_ids"]
+    assert w.gate(ps, 2).ok, w.gate(ps, 2).failures
+    # without answers in attempt 3 the earlier answers do not count
+    ex3 = _exec([draft(), responses()], [critique()])
+    assert w.run(_ctx(env, ex3, 3)).status == "done"
+    g = w.gate(ps, 3)
+    assert any(f"contested claim {a}" in f for f in g.failures), g.failures
+
+
+def test_conceding_a_failed_warrant_drops_its_link(env):
+    _, ps, _ = env
+    _synthesize(env)
+    ex = _exec([draft(), responses("conceded")], [critique(fail="true"), critique()])
+    w = ArgueWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    (wr,) = ArgumentService(ps).list_edges(type="warrant_of")
+    (dropped,) = argue_notes(ps, 1, kind="dropped_link")
+    assert dropped["edge_id"] == wr["to_id"] and "conceded" in dropped["reason"]
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+def test_conflict_objections_need_a_supported_response(env):
+    _, ps, _ = env
+    a, b = _synthesize(env)
+    conflict = {"claim_a": a, "claim_b": b, "why": "One says randomised, the other cohort."}
+    ex = _exec([draft(), responses("conceded", ("rejected_invalid", "Not a conflict.")), responses()],
+               [critique(conflicts=[conflict]), critique()], votes=_votes(["a_holds"], ["b_holds"]))
+    w = ArgueWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    (d2,) = [n for n in argue_notes(ps, 1, kind="draft") if n["round"] == 2]
+    assert len(d2["refused"]) == 2 and all("supported response" in r for r in d2["refused"])
+    assert all(o["status"] == "open" for o in _objections(ps))
+
+
+def test_reason_cycles_are_refused(env):
+    _, ps, _ = env
+    _synthesize(env)
+
+    def reasons(inputs):
+        return [{"ref": "r1", "claim": claim(inputs, REASON, "rct"), "supports": "r2", "warrant": WARRANT},
+                {"ref": "r2", "claim": claim(inputs, RESPONSE, "cohort"), "supports": "r1", "warrant": WARRANT}]
+
+    ex = _exec([draft(reasons=reasons)], [critique()])
+    assert ArgueWorker().run(_ctx(env, ex)).status == "done"
+    assert len(ArgumentService(ps).list_edges(type="reason_of")) == 1
+    (d,) = argue_notes(ps, 1, kind="draft")
+    assert any("cycle" in r for r in d["refused"])
+
+
+def test_output_models_forbid_extra_fields_and_dropped_tests_are_noted(env):
+    _, ps, _ = env
+    _synthesize(env)
+    for model, data in ((ArgumentDraft, {"surprise": 1}), (Critique, {"surprise": 1}),
+                        (RecheckOut, {"surprise": 1})):
+        with pytest.raises(ValidationError):
+            model.model_validate(data)
+    ex = _exec([draft()], [critique(extra_tests=["edg_unknown"])])
+    assert ArgueWorker().run(_ctx(env, ex)).status == "done"
+    (crit,) = argue_notes(ps, 1, kind="critique")
+    assert crit["tests_dropped"] == [{"edge_id": "edg_unknown", "reason": "not an untested warrant of the argument"}]
+
+
+def test_budget_estimate_counts_the_pending_verifications(env):
+    _, ps, _ = env
+    _synthesize(env)
+    objections = [_o("main", 2, f"Problem {i}.") for i in range(3)]
+    ex = _exec([draft(), responses(RESPONSE, RESPONSE, RESPONSE)], [critique(objections=objections), critique()])
+    w = ArgueWorker(budget=15)  # round 1 costs 6; three answers need 2 + 3 x 3 judges more, plus the final vote
+    assert w.run(_ctx(env, ex)).status == "done"
+    assert len(ex.of("arguer", "ArgumentDraft")) == 1
+    assert [n["reason"] for n in argue_notes(ps, 1, kind="end")] == ["budget"]
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_p2_final_review_is_not_opened_when_the_gate_must_fail(env):
+    _, ps, _ = env
+    _synthesize(env)
+    ex = _exec([draft(), responses(), responses()], [critique(objections=[_o("main", 1, "Wrong.")]), critique()])
+    w = ArgueWorker()
+    out = w.run(_ctx(env, ex))
+    assert out.status == "done" and "Wrong" not in out.reason and "gate" in out.reason, out.reason
+    assert not [c for c in list_checkpoints(ps) if c["kind"] == "uncertain_support"]
+    assert not w.gate(ps, 1).ok
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_p2_rate_cap_mid_verification_resumes_without_orphans(env):
+    _, ps, _ = env
+    a, b = _synthesize(env)
+    conflict = {"claim_a": a, "claim_b": b, "why": "One says randomised, the other cohort."}
+
+    class Capped(Exec):
+        armed = False
+
+        def run(self, role, instructions, inputs, output_schema, **kw):
+            if self.armed and role == "judge":
+                self.armed = False
+                raise RateCapped("codex_cli", 60)
+            return super().run(role, instructions, inputs, output_schema, **kw)
+
+    ex = Capped({**_exec([draft(), responses(RESPONSE, RESPONSE)], [critique(conflicts=[conflict]), critique()]).script})
+    w = ArgueWorker()
+    cp = get_checkpoint(ps, w.run(_ctx(env, ex)).checkpoint_id)
+    _answer(ps, cp["id"], {"decision": "both_contested"})
+    ex.armed = True
+    with pytest.raises(RateCapped):
+        w.on_answer(_ctx(env, ex), get_checkpoint(ps, cp["id"]))
+    out = w.on_answer(_ctx(env, ex), get_checkpoint(ps, cp["id"]))
+    assert out.status == "waiting_human"
+    assert len(ex.of("arguer", "ArgumentDraft")) == 2
+    claims = _claims(ps)
+    assert len(claims) == 4 and all(c["status"] == "supported" for c in claims)

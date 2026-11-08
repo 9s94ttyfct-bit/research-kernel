@@ -23,9 +23,10 @@ AgentClaimKind = Literal["fact", "definition", "cause", "evaluation", "policy", 
 ClaimKind = Literal[AgentClaimKind, "stat_result"]
 ClaimStatus = Literal["draft", "supported", "uncertain", "unsupported", "contradicted", "withdrawn"]
 # Which part of the kernel wrote a claim: the argument (the default); gap mining, whose claims are evidence checks of a
-# candidate gap (a quoted finding checked against another source) and stay out of the argument's listings; or the
-# synthesis, whose findings the argue stage builds on.
-ClaimOrigin = Literal["argument", "gaps", "synthesis"]
+# candidate gap (a quoted finding checked against another source) and stay out of the argument's listings; the
+# synthesis, whose findings the argue stage builds on; or a warrant, the general rule of a ``warrant_of`` edge (argue
+# stores one per reason), tested by the Skeptic instead of V-SUPPORT and kept out of the argument's listings and gates.
+ClaimOrigin = Literal["argument", "gaps", "synthesis", "warrant"]
 EdgeType = Literal["reason_of", "evidence_of", "warrant_of", "objection_to", "response_to"]
 ObjectionCategory = Literal["problem", "soundness", "alternative", "other_cause", "counterexample", "definition"]
 # How an objection was answered: by a response claim, by conceding it (the claim was narrowed or withdrawn), or by
