@@ -1575,3 +1575,94 @@ def test_an_interrupted_targeted_reread_is_replaced_with_the_same_request(env):
     assert reread_request(ps, 3) == {ids["Ferguson"]}
     assert [c["inputs"]["study"]["title"] for c in ex.of("reader")] == ["Ferguson trial"]
     assert {r["carried_from"] for r in store.extractions(ps, 3, item_id=ids["Aronson"])} == {1}
+
+
+# ---- fix wave 2, fix round 2: a withdrawn stat_result always takes its pool out ----
+def _pooled(env, ex) -> tuple[SynthesizeWorker, dict, dict]:
+    """A pooled synthesize attempt 1 (P2: your approval; P1: the vote): the worker, the stat_result claim and the stt."""
+    _, ps, _ = env
+    _enable_stats()
+    _setup(env, dict(list(BCG.items())[:3]), schema=BINARY, plan=META)
+    w = SynthesizeWorker()
+    out = w.run(_ctx(env, ex))
+    if out.status == "waiting_human":
+        out = w.on_answer(_ctx(env, ex), _answer(ps, out.checkpoint_id, {"decisions": {"0": "pool"}}))
+    assert out.status == "done", out.reason
+    (stat,) = [c for c in _claims(ps) if c["kind"] == "stat_result"]
+    stt = next(a for a in artifacts(ps, "synthesize", 1) if a["kind"] == "stt")
+    return w, stat, stt
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review", "production_mode": "collab"},
+                                 {"paper_type": "systematic_review"}], indirect=True)
+def test_a_crash_after_withdrawing_a_stat_result_is_mended_on_resume(env):
+    """Round 2: the stat_result is withdrawn and the attempt crashes before its pool is taken out: the gate refuses
+    that state; the resumed attempt records the fallback and its deviation (once), and the gate passes."""
+    _, ps, _ = env
+    w, stat, _ = _pooled(env, _exec(plans=[_one_group], votes=_votes_pool()))
+    ArgumentService(ps).withdraw_claim(stat["id"], reason="withdrawn before a crash", actor="tester")
+    assert any("has no fallback" in f for f in w.gate(ps, 1).failures), w.gate(ps, 1).failures
+    for _ in range(2):  # resumed twice: recorded once
+        assert w.run(_ctx(env, _exec())).status == "done"
+    fell = [n for n in synthesis_notes(ps, 1, kind="fallback") if "withdrawn" in n["reason"]]
+    assert len(fell) == 1 and fell[0]["deviation_id"]
+    assert sum("withdrawn" in r for r in _analysis_deviations(ps)) == 1
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_p1_withdraws_a_mismatched_stat_result_and_falls_back(env):
+    """Round 2 minor 4: the P1 case of the stat_result withdrawal (V-STATS mismatch at the edge limit)."""
+    _, ps, _ = env
+    ex = _exec(plans=[_one_group], votes=_votes_pool())
+    w, stat, stt = _pooled(env, ex)
+    store.mark_extraction(ps, stt["values"]["row_ids"][0], "missing: changed", actor="tester")
+    g = w.gate(ps, 1)
+    assert not g.ok
+    out = w.degrade(_ctx(env, ex), g.failures)
+    assert f"{stat['id']} withdrawn" in out.reason, out.reason
+    assert any("pooling of 'tuberculosis' (RR) withdrawn" in r for r in _analysis_deviations(ps))
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_argue_withdrawing_a_stat_result_takes_its_pool_out(env):
+    """Round 2: argue (your review or its P1 degrade) withdraws a stat_result of synthesize's passed attempt and calls
+    the reconcile on that attempt: the group falls back with its deviation."""
+    from rk.production.synthesis import reconcile_withdrawn_pools
+
+    k, ps, lib = env
+    w, stat, _ = _pooled(env, _exec(plans=[_one_group], votes=_votes_pool()))
+    record_ran(ps, "synthesize", 1, "done", "", actor="tester")
+    record_passed(ps, "synthesize", 1, actor="tester")
+    ArgumentService(ps).withdraw_claim(stat["id"], reason="withdrawn in argue", actor="tester")
+    reconcile_withdrawn_pools(production_ctx(k, ps, lib, _exec(), stage="argue", attempt=3), 1)
+    (fb,) = [n for n in synthesis_notes(ps, 1, kind="fallback") if "withdrawn in argue" in n["reason"]]
+    assert fb["group"] == 0 and fb["deviation_id"]
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+def test_a_request_covers_the_same_study_read_for_its_fields_or_in_full():
+    """Round 2 minor 2: your back naming a study (without fields: a full re-read) or the kernel's request for more
+    fields covers a later gap of that study; another field does not."""
+    asked = SynthesizeWorker._asked
+    assert asked({("itm_f", ())}, "itm_f", ["n_control"])
+    assert asked({("itm_f", ("n_control", "events_control"))}, "itm_f", ["n_control"])
+    assert not asked({("itm_f", ("events_control",))}, "itm_f", ["n_control"])
+    assert not asked({("itm_a", ())}, "itm_f", ["n_control"])
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "critical_review", "production_mode": "collab"}], indirect=True)
+def test_a_review_of_another_shape_supersedes_the_open_one(env):
+    """Round 2: the attempt's open review is reused only when its shape matches (no-narrative flag, listed claims)."""
+    import rk.production.synthesis as mod
+
+    _, ps, _ = env
+    _setup(env, {"A": {"design": "rct"}, "B": {"design": "cohort"}}, schema=[DESIGN],
+           plan=SynthesisPlan(method="thematic"))
+    w = SynthesizeWorker()
+    first = w.run(_ctx(env, NoNarrative(_exec().script))).checkpoint_id
+    s = mod._load(ps)
+    assert w._open_uncertain(_ctx(env, _exec()), s, {}, missing="again") == first  # same shape: reused
+    second = w._open_uncertain(_ctx(env, _exec()), s, {})  # a review (no narrative flag): another shape
+    assert second != first and get_checkpoint(ps, first)["status"] == "superseded"

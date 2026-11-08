@@ -108,7 +108,11 @@ from rk.production.claims import (
     review_options,
 )
 from rk.production.extraction import usable_evidence
-from rk.production.synthesis import evidence_criteria, synthesis_claims
+from rk.production.synthesis import (
+    evidence_criteria,
+    reconcile_withdrawn_pools,
+    synthesis_claims,
+)
 from rk.production.vote import vote
 from rk.roles.policy import JUDGE_ROLES
 from rk.store.events import NewEvent
@@ -1545,6 +1549,7 @@ class ArgueWorker:
                 svc.withdraw_claim(cid, reason=f"withdrawn by you (checkpoint {cp['id']})"
                                               + (f": {comment}" if comment else ""), actor=by, actor_kind="human")
                 self._concede_gone(replace(ctx, actor=by), cid, f"conceded: the claim {cid} was withdrawn by you")
+        reconcile_withdrawn_pools(ctx, s.synth_attempt)  # a withdrawn stat_result takes its pool out of the synthesis
         main = cp["options"]["main_claim_id"]
         if not any(n.get("checkpoint_id") == cp["id"] for n in argue_notes(ps, ctx.attempt, kind="rq_check")):
             _note(ps, ctx.attempt, "rq_check", actor=by, main_claim_id=main,
@@ -1759,6 +1764,7 @@ class ArgueWorker:
             done.append(f"the narrowed main claim {main} " + ("does not answer the research question"
                                                                if out is not None else "answers the research question"))
         what = "; ".join(done) or "nothing to narrow, withdraw, drop or concede"
+        reconcile_withdrawn_pools(ctx, s.synth_attempt)
         record_degraded(ps, stage=ctx.stage, attempt=attempt, removed=removed,
                         reason=f"argue at the edge limit: {what}", actor=ctx.actor)
         return StageOutcome("done", reason=f"degraded: {what}")

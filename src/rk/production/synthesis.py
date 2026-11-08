@@ -76,7 +76,7 @@ scoping review with category fields has its evidence map."""
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -93,8 +93,10 @@ from rk.argument import (
 from rk.checkpoints import (
     answered_by_actor,
     create_checkpoint,
+    get_checkpoint,
     opened_for_attempt,
     opened_in_place_of,
+    supersede_open,
 )
 from rk.discovery.store import intake_of
 from rk.llm.vendors import vendor_of
@@ -570,7 +572,7 @@ def _back_problem(s: _Inputs, answer: dict) -> str:
     read_extract's passed attempt and ``fields`` fields of the extraction schema."""
     usable = [u["item_id"] for u in s.usable]
     schema = [f.name for f in s.protocol.extraction_schema]
-    studies, fields = answer.get("studies", []), answer.get("fields", [])
+    studies = answer.get("studies", [])
     if not isinstance(studies, list) or not all(isinstance(x, str) for x in studies):
         return 'give "studies" as a list of item ids of the included studies'
     if bad := [x for x in studies if x not in usable]:
@@ -763,6 +765,12 @@ class SynthesizeWorker:
         return {(x["item_id"], tuple(x["fields"])) for n in notes if n.get("version") == version
                 for x in n.get("studies") or []}
 
+    @staticmethod
+    def _asked(requested: set[tuple[str, tuple[str, ...]]], item_id: str, fields: list[str]) -> bool:
+        """Whether a request in ``requested`` already covers the study's ``fields``: the same study, read for these
+        fields or more, or read in full (your ``back`` naming the study without fields)."""
+        return any(i == item_id and (not asked or set(fields) <= set(asked)) for i, asked in requested)
+
     def _gaps(self, ps: ProjectStore, s: _Inputs, groups: list[dict],
               requested: set[tuple[str, tuple[str, ...]]] = frozenset()) -> list[dict]:
         """The per-study gaps (``_absent``) of the plan's groups of a pre-specified outcome and measure that could be
@@ -777,7 +785,7 @@ class SynthesizeWorker:
             if unknown:
                 continue
             out += [{"item_id": i, "label": study_label(ps, i), "fields": f, "outcome": _group_label(g)}
-                    for i, f in gaps.items() if (i, tuple(f)) not in requested]
+                    for i, f in gaps.items() if not self._asked(requested, i, f)]
         return out
 
     def _gap_studies(self, ps: ProjectStore, attempt: int, s: _Inputs) -> list[dict]:
@@ -837,7 +845,7 @@ class SynthesizeWorker:
             elif missing:
                 why = f"no included study has a usable value for {', '.join(missing)}" + (
                     "; synthesize already asked to go back to read_extract for them"
-                    if all((i, tuple(f)) in requested for i, f in gaps.items()) else "")
+                    if all(self._asked(requested, i, f) for i, f in gaps.items()) else "")
             else:
                 if g.get("left_out"):
                     self._left_out(ctx, s, g)
@@ -1039,6 +1047,7 @@ class SynthesizeWorker:
             narrative = _last(ps, ctx.attempt, "narrative")
         self._store_findings(ctx, s, narrative)
         self._verify(ctx)
+        self._reconcile(ctx, s)  # a resumed attempt finishes what a crash after a withdrawal left undone
         if s.mode == "collab" and (listing := review_listing(ps, synthesis_claims(ps, ctx.attempt))):
             return StageOutcome("waiting_human", checkpoint_id=self._open_uncertain(ctx, s, listing),
                                 reason="synthesis claims that fail the claim gate await your decision")
@@ -1052,7 +1061,8 @@ class SynthesizeWorker:
         ends (``narrow_or_withdraw``; once each: a claim the attempt already narrowed is passed over), instead of
         failing the gate and running the whole stage again; noted ``narrowed``. Each claim is checked again when its
         turn comes (``claim_problems``): narrowing one may withdraw another (a rewrite an interrupted attempt left
-        undecided), which is then passed over. A withdrawn ``stat_result`` takes its pool out (``_unpool``). Returns
+        undecided), which is then passed over. Withdrawn ``stat_result`` claims take their pools out (``_reconcile``).
+        Returns
         the notes it wrote."""
         ps = ctx.ps
         noted = {n["claim_id"] for n in synthesis_notes(ps, ctx.attempt, kind="narrowed")}
@@ -1061,23 +1071,35 @@ class SynthesizeWorker:
             if cid in noted or not claim_problems(ps, cid):
                 continue
             r = narrow_or_withdraw(ctx, cid)
-            SynthesizeWorker._unpool(ctx, s, cid, r.reason)
+            # its pool, if it was a stat_result, is taken out by _reconcile below
             n = {"claim_id": cid, "status": r.status, "new_claim_id": r.new_claim_id, "reason": r.reason}
             _note(ps, ctx.attempt, "narrowed", actor=ctx.actor, **n)
             out.append(n)
+        SynthesizeWorker._reconcile(ctx, s)
         return out
 
     @staticmethod
-    def _unpool(ctx: StageContext, s: _Inputs, cid: str, why: str) -> None:
-        """When ``cid`` is a pooled group's ``stat_result`` claim and was withdrawn: the group falls back to the
-        narrative synthesis (an analysis deviation and a limitation) and the gate no longer checks its artifacts."""
-        if ArgumentService(ctx.ps).get_claim(cid)["status"] != "withdrawn":
-            return
-        for n in synthesis_notes(ctx.ps, ctx.attempt, kind="pooled"):
-            if n["claim_id"] == cid:
+    def _reconcile(ctx: StageContext, s: _Inputs) -> None:
+        """Every pooled group of the attempt whose ``stat_result`` claim is withdrawn (by your review, P1 narrowing or
+        argue, whatever its status before) falls back to the narrative synthesis once: its fallback note with an
+        analysis deviation (a limitation); the gate then no longer checks its artifacts. In P1 the withdrawal is also
+        noted ``narrowed`` once. Idempotent, so it runs again after a crash between a withdrawal and this."""
+        ps = ctx.ps
+        svc = ArgumentService(ps)
+        fell = _by_group(ps, ctx.attempt, "fallback")
+        noted = {n["claim_id"] for n in synthesis_notes(ps, ctx.attempt, kind="narrowed")}
+        for n in synthesis_notes(ps, ctx.attempt, kind="pooled"):
+            c = svc.get_claim(n["claim_id"])
+            if c["status"] != "withdrawn":
+                continue
+            why = c.get("withdrawn_reason") or "no reason recorded"
+            if n["group"] not in fell:
                 SynthesizeWorker._fallback(ctx, s, f"pooling of {_group_label(n)} withdrawn: its statistical result "
-                                                   f"{cid} was withdrawn ({why})",
+                                                   f"{c['id']} was withdrawn ({why})",
                                            group=n["group"], outcome=n["outcome"], measure=n["measure"])
+            if s.mode == "auto" and c["id"] not in noted:
+                _note(ps, ctx.attempt, "narrowed", actor=ctx.actor, claim_id=c["id"], status="withdrawn",
+                      new_claim_id=None, reason=why)
 
     def _narrative(self, ctx: StageContext, s: _Inputs) -> str | None:
         ps = ctx.ps
@@ -1157,7 +1179,10 @@ class SynthesizeWorker:
         if replaces is not None and (existing := opened_in_place_of(ctx.ps, UNCERTAIN, replaces)) is not None:
             return existing
         if replaces is None and (existing := opened_for_attempt(ctx.ps, UNCERTAIN, STAGE, ctx.attempt)) is not None:
-            return existing
+            opts = get_checkpoint(ctx.ps, existing).get("options") or {}
+            if bool(opts.get("narrative_missing")) == bool(missing) and opts.get("claim_ids") == list(listing):
+                return existing
+            supersede_open(ctx.ps, STAGE, ctx.attempt, actor=ctx.actor)  # another shape: a new review replaces it
         ps = ctx.ps
         svc = ArgumentService(ps)
         left = [c for c in synthesis_claims(ps, ctx.attempt)
@@ -1305,7 +1330,7 @@ class SynthesizeWorker:
             elif answer["claims"][cid] == WITHDRAW and status != "withdrawn":
                 svc.withdraw_claim(cid, reason=f"withdrawn by you (checkpoint {cp['id']})"
                                               + (f": {comment}" if comment else ""), actor=by, actor_kind="human")
-                self._unpool(ctx, s, cid, f"withdrawn by you (checkpoint {cp['id']})")
+        self._reconcile(ctx, s)
         return StageOutcome("done", reason=self._summary(ps, ctx.attempt))
 
     # ---- gate and degrade ----
@@ -1335,7 +1360,11 @@ class SynthesizeWorker:
         if narrative is not None and not any(svc.get_claim(c)["status"] == "supported" for c in claims):
             failures.append("no supported synthesis finding")
         unpooled = {a for n in notes if n["kind"] == "pooled" and svc.get_claim(n["claim_id"])["status"] == "withdrawn"
-                    for a in (n["stt"], n["fig"])}  # a withdrawn statistical result took its pool out (_unpool)
+                    for a in (n["stt"], n["fig"])}  # a withdrawn statistical result took its pool out (_reconcile)
+        fell_groups = {n["group"] for n in notes if n["kind"] == "fallback" and n.get("group") is not None}
+        failures += [f"group {n['group']} {_group_label(n)}: its statistical result {n['claim_id']} was withdrawn, but "
+                     f"the group has no fallback with a deviation" for n in notes if n["kind"] == "pooled"
+                     and svc.get_claim(n["claim_id"])["status"] == "withdrawn" and n["group"] not in fell_groups]
         for a in artifacts(ps, STAGE, attempt):
             if a["id"] in unpooled:
                 continue
@@ -1413,3 +1442,11 @@ class SynthesizeWorker:
         record_degraded(ps, stage=ctx.stage, attempt=ctx.attempt, removed=removed,
                         reason=f"synthesize at the edge limit: {what}", actor=ctx.actor)
         return StageOutcome("done", reason=f"degraded: {what}")
+
+
+def reconcile_withdrawn_pools(ctx: StageContext, attempt: int) -> None:
+    """``SynthesizeWorker._reconcile`` on synthesize's ``attempt`` from another stage (argue withdrawing a
+    ``stat_result`` in your review or its P1 degrade): the withdrawn statistical result's group falls back, once."""
+    s = _load(ctx.ps)
+    if not isinstance(s, str):
+        SynthesizeWorker._reconcile(replace(ctx, stage=STAGE, attempt=attempt), s)
