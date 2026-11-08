@@ -27,8 +27,6 @@ from rk.production.argue import (
     argument_roles,
     conflict_checkpoint,
     conflict_counterparts,
-    dropped_links,
-    link_gone,
     main_claim,
     soundness_ids,
 )
@@ -78,7 +76,7 @@ from rk.verify.prisma import (
     prisma_notes,
 )
 from rk.verify.stats import StatsResult, check_stats
-from rk.verify.support import check_claim_hedge, claim_problems
+from rk.verify.support import check_claim_hedge, claim_problems, link_gone
 
 SEARCH_SCREEN, READ_EXTRACT = "search_screen", "read_extract"
 SYNTHESIZE, ARGUE, DESIGN = "synthesize", "argue", "design"
@@ -302,12 +300,13 @@ def argument_view(ps: ProjectStore, attempt: int | None = None, claim_id: str | 
     question, the main claim and the Arguer's self-check; the synthesize attempt it argued on
     (``argued_synthesis_attempt``); every claim (``claim_view``) with its role (``argument_roles``: ``main``,
     ``reason``, ``response``, ``warrant`` or ``synthesis``), where the findings are that synthesize attempt's supported
-    findings and, out of the argument, its withdrawn ones; the edges (``argument_edge_ids``; ``out``: ``link_gone``,
-    ``dropped``: ``dropped_links``); the warrants with the Skeptic's tests; the objections (``argument_objection_ids``)
-    with their answer and response claim (``soundness``: a failed warrant test; ``counterpart``: the claim a conflict
-    objection says contradicts its target); the conflicts with their decision; the RQ checks; how the rounds ended;
-    the limitations input and the gate. With ``claim_id`` only that claim, the edges into or out of it or its
-    evidence, their warrants, and the objections on it, its evidence or those edges."""
+    findings and, out of the argument, its withdrawn ones; the edges (``argument_edge_ids``; ``out``: ``link_gone``;
+    ``dropped`` and ``dropped_reason``: the attempt's ``dropped_link`` notes); the warrants with the Skeptic's tests;
+    the objections (``argument_objection_ids``) with their answer and response claim (``soundness``: a failed warrant
+    test; ``counterpart``: the claim a conflict objection says contradicts its target); the conflicts with their
+    decision; the RQ checks; how the rounds ended; the limitations input and the gate. With ``claim_id`` only that
+    claim, the edges into or out of it or its evidence, their warrants, and the objections on it, its evidence or
+    those edges."""
     if attempt is None:
         attempt = shown_attempt(ps, ARGUE)
     out = {"attempt": attempt, "question": _question(ps), "synthesis_attempt": None, "main_claim_id": None,
@@ -324,7 +323,7 @@ def argument_view(ps: ProjectStore, attempt: int | None = None, claim_id: str | 
     findings = [c for c in (synthesis_claims(ps, synth) if synth else [])
                 if svc.get_claim(c)["status"] in ("supported", "withdrawn")]
     roles = argument_roles(ps, attempt, findings)
-    dropped = dropped_links(ps, attempt)
+    dropped = {n["edge_id"]: n["reason"] for n in notes if n["kind"] == "dropped_link"}
     counterparts = conflict_counterparts(ps, attempt)
     soundness = soundness_ids(ps, attempt)
     edges = [_row(ps, "edges", e) for e in argument_edge_ids(ps, attempt)]
@@ -355,7 +354,8 @@ def argument_view(ps: ProjectStore, attempt: int | None = None, claim_id: str | 
         self_check=drafts[0].get("answers_rq") if drafts else None,
         claims=[claim_view(ps, c, role=r, titles=titles) for c, r in sorted(roles.items(), key=lambda x: order[x[1]])],
         edges=[{k: e.get(k) for k in ("id", "type", "from_id", "to_id", "warrant", "warrant_tests")}
-               | {"out": link_gone(ps, e["id"]), "dropped": e["id"] in dropped} for e in edges],
+               | {"out": link_gone(ps, e["id"]), "dropped": e["id"] in dropped, "dropped_reason": dropped.get(e["id"])}
+               for e in edges],
         warrants=[{"edge_id": e["id"], "claim_id": e["from_id"], "text": _row(ps, "claims", e["from_id"])["text"],
                    "licenses": e["to_id"], "warrant": e["warrant"], "tests": e.get("warrant_tests"),
                    "dropped": e["to_id"] in dropped} for e in edges if e["type"] == "warrant_of"],

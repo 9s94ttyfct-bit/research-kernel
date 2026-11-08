@@ -1200,10 +1200,21 @@ def test_conceded_priority1_objection_reaches_your_review_in_p2(env):
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
 
 
-def test_conceded_objection_on_a_link_from_a_withdrawn_claim_does_not_fail_its_target(env):
-    """A conceded priority-1 objection on a reason link into a claim fails the claim, but not once the link's reason
-    left the argument (withdrawn: its objections are conceded with it)."""
-    from rk.verify.support import claim_problems
+def _on_link(priority: int, text: str):
+    """An objection on the reason link into the main claim."""
+    def o(inputs):
+        (main,) = role(inputs, "main")
+        (e,) = [e for e in inputs["argument"]["edges"] if e["type"] == "reason_of" and e["to_id"] == main]
+        return {"target_id": e["id"], "category": "problem", "priority": priority, "text": text}
+    return o
+
+
+def test_objections_on_a_link_out_of_the_argument_fail_no_claim(env):
+    """I6 on links: an open priority-1 objection on a reason link fails the link's destination while the link is in
+    the argument; a conceded one fails neither claim (conceding it drops the link); a link argue dropped is out of
+    the argument for every claim problem (``link_gone``, the one helper argue and the claim gate share)."""
+    from rk.production.argue import _note
+    from rk.verify.support import claim_problems, link_gone
 
     _, ps, _ = env
     _synthesize(env)
@@ -1214,10 +1225,111 @@ def test_conceded_objection_on_a_link_from_a_withdrawn_claim_does_not_fail_its_t
     (link,) = svc.list_edges(to_id=main, type="reason_of")
     oid = svc.add_objection(ObjectionIn(target_id=link["id"], category="problem", priority=1,
                                         text="The trial does not support the claim."), actor="skeptic")
+    assert [p.kind for p in claim_problems(ps, main)] == ["objection"]
     svc.respond_objection(oid, response_claim_id=None, status="conceded", note="It holds.", actor="arguer")
-    assert [p.kind for p in claim_problems(ps, main)] == ["conceded"]
-    svc.withdraw_claim(link["from_id"], reason="dropped", actor="tester")
-    assert claim_problems(ps, main) == []
+    assert claim_problems(ps, main) == [] and claim_problems(ps, link["from_id"]) == []
+    svc.add_objection(ObjectionIn(target_id=link["id"], category="problem", priority=1,
+                                  text="The trial enrolled no older people."), actor="skeptic")
+    assert [p.kind for p in claim_problems(ps, main)] == ["objection"] and not link_gone(ps, link["id"])
+    _note(ps, 1, "dropped_link", actor="tester", edge_id=link["id"], warrant_edge_id=None, objection_ids=[],
+          reason="dropped by the test")
+    assert link_gone(ps, link["id"]) and claim_problems(ps, main) == []
+    (wr,) = svc.list_edges(to_id=link["id"], type="warrant_of")
+    assert link_gone(ps, wr["id"])  # a warrant leaves with the link it licenses
+
+
+def test_conceded_priority1_objection_on_a_reason_link_drops_it_in_p1(env):
+    """I6 on links (P1): the Arguer concedes a priority-1 objection on the reason link into the main claim. The link
+    is dropped (noted like a failed warrant's, with the other objections on it and its warrant conceded), neither
+    claim fails, the attempt passes without a degrade and the main claim is not narrowed."""
+    from rk.verify.support import claim_problems
+
+    _, ps, _ = env
+    _synthesize(env)
+    ex = _exec([draft(), responses("conceded"), responses()],
+               [critique(objections=[_on_link(1, "The trial does not bear on the claim.")]), critique()])
+    w = ArgueWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    (o,) = _objections(ps)
+    main = main_claim(ps, 1)
+    (dropped,) = argue_notes(ps, 1, kind="dropped_link")
+    assert dropped["edge_id"] == o["target_id"] and o["id"] in dropped["objection_ids"]
+    (reason,) = [e["from_id"] for e in ArgumentService(ps).list_edges(type="reason_of") if e["id"] == o["target_id"]]
+    assert claim_problems(ps, main) == [] and claim_problems(ps, reason) == []
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    assert main == next(n["main_claim_id"] for n in argue_notes(ps, 1, kind="draft"))  # not narrowed
+    assert ex.of("arguer", "NarrowedClaim") == []
+    assert dropped["edge_id"] in {d["edge_id"] for d in argue_limitations(ps, 1)["dropped_links"]}
+
+
+def test_unanswered_priority1_objection_on_a_reason_link_drops_it_at_the_edge_limit(env):
+    """I6 on links (P1 degrade): a priority-1 objection on a reason link left unanswered is conceded at the edge limit
+    with the link, which is dropped; the link's destination, the main claim, is not narrowed for it."""
+    _, ps, _ = env
+    _synthesize(env)
+    ex = _exec([draft(), responses(), responses()],
+               [critique(objections=[_on_link(1, "The trial does not bear on the claim.")]), critique()])
+    w = ArgueWorker()
+    ctx = _ctx(env, ex)
+    assert w.run(ctx).status == "done"
+    (o,) = _objections(ps)
+    main = main_claim(ps, 1)
+    g = w.gate(ps, 1)
+    assert not g.ok
+    assert w.degrade(ctx, g.failures).status == "done"
+    (dropped,) = argue_notes(ps, 1, kind="dropped_link")
+    assert dropped["edge_id"] == o["target_id"] and o["id"] in dropped["objection_ids"]
+    assert _objections(ps)[0]["status"] == "conceded"
+    assert main_claim(ps, 1) == main and ex.of("arguer", "NarrowedClaim") == []
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_conceded_priority1_objection_on_a_reason_link_drops_it_in_p2(env):
+    """I6 on links (P2): once the conceded link objection dropped the link, your final review lists nothing and the
+    main claim has no problem of its own: no forced rerun; the review and the gate pass."""
+    _, ps, _ = env
+    _synthesize(env)
+    ex = _exec([draft(), responses("conceded"), responses()],
+               [critique(objections=[_on_link(1, "The trial does not bear on the claim.")]), critique()])
+    w = ArgueWorker()
+    out = w.run(_ctx(env, ex))
+    assert out.status == "waiting_human", out.reason
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    assert cp["options"]["claim_ids"] == [] and cp["options"]["main_problems"] == []
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"claims": {}, "answers_rq": "yes"}))
+    assert out.status == "done", out.reason
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_an_earlier_attempts_concession_failing_a_finding_is_carried_into_the_rerun(env):
+    """A priority-1 objection conceded on an in-scope finding in attempt 1 still fails it in attempt 2 (you asked to
+    argue again): attempt 2 carries it (``conceded_in_scope``), so it is among its objections and its limitations,
+    and your review lists the finding (withdraw only)."""
+    _, ps, _ = env
+    a, _ = _synthesize(env)
+    ex = _exec([draft(), responses("conceded"), responses()],
+               [critique(objections=[{"target_id": a, "category": "problem", "priority": 1,
+                                      "text": "The trial was small."}]), critique()])
+    w = ArgueWorker()
+    out = w.run(_ctx(env, ex))
+    assert out.status == "waiting_human", out.reason
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    assert cp["options"]["claim_choices"][a] == ["withdraw"]
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decision": "rerun", "comment": "Argue it again."}))
+    assert out.status == "rerun", out.reason
+    (o,) = _objections(ps)
+    assert o["status"] == "conceded"
+    out = w.run(_ctx(env, _exec([draft()], [critique()]), 2))
+    assert out.status == "waiting_human", out.reason
+    (imp,) = argue_notes(ps, 2, kind="imported")
+    assert imp["conceded_in_scope"] == [o["id"]] and o["id"] in imp["objection_ids"]
+    assert o["id"] in argument_objection_ids(ps, 2)
+    assert [x["objection_id"] for x in argue_limitations(ps, 2)["claims"]["conceded"]] == [o["id"]]
+    cp2 = get_checkpoint(ps, out.checkpoint_id)
+    assert cp2["options"]["claim_choices"][a] == ["withdraw"]
+    assert any(o["id"] in p for p in cp2["options"]["problems"][a])
 
 
 def test_limitations_list_the_attempts_conceded_objections_once(env):
