@@ -40,7 +40,7 @@ from rk.verify.hedge import (
 from rk.verify.judge import JudgeOpinion, JudgeRunner, run_judges
 from rk.verify.numbers import Num, NumResult, check_bound_numbers, check_numbers
 from rk.verify.records import record_verification
-from rk.verify.stats import check_stats
+from rk.verify.stats import StatsResult, check_stats
 
 Verdict = Literal["supported", "uncertain", "unsupported", "contradicted"]
 
@@ -228,11 +228,13 @@ def _support_reason(ps, claim_id: str) -> str:
     return f" ({reason})" if reason else ""
 
 
-def claim_problems(ps, claim_id: str) -> list[ClaimProblem]:
+def claim_problems(ps, claim_id: str, *, hedge: HedgeResult | None = None,
+                   stats: dict[str, StatsResult] | None = None) -> list[ClaimProblem]:
     """Why the claim fails the claim gate, the one definition ``gate_claims`` formats: its status is not
     ``supported`` (with V-SUPPORT's recorded reason); V-HEDGE, rerun now, is not ``pass``; for a ``stat_result``,
     V-STATS, rerun now on each of its artifacts, finds a mismatch; or a priority-1 objection is still open against it,
-    its evidence or an edge into it. The reruns record nothing and call no model. ``[]`` for a withdrawn claim (out of
+    its evidence or an edge into it. The reruns record nothing and call no model; a caller that already reran V-HEDGE
+    (``hedge``) or V-STATS (``stats``: artifact id -> result) passes them in. ``[]`` for a withdrawn claim (out of
     the argument); an unknown id is a ``KeyError``. Edges and objections are read with their legacy shapes tolerated
     (no typed warrant, hand-added ``response_to`` edges, objections without a priority: priority 1)."""
     svc = ArgumentService(ps)
@@ -243,13 +245,15 @@ def claim_problems(ps, claim_id: str) -> list[ClaimProblem]:
     if claim["status"] != "supported":
         out.append(ClaimProblem("status", f"status {claim['status']} (not supported)",
                                 f"V-SUPPORT {claim['status']}{_support_reason(ps, claim_id)}"))
-    hedge = check_claim_hedge(ps, claim_id, record=False)
+    hedge = hedge if hedge is not None else check_claim_hedge(ps, claim_id, record=False)
     if not hedge.ok:
         out.append(ClaimProblem("hedge", "V-HEDGE overstated",
                                 "V-HEDGE overstated: " + "; ".join(hedge.problems or [hedge.reason or "overstated"])))
     if claim.get("kind") == "stat_result":
+        stats = stats or {}
         out += [ClaimProblem("stats", f"V-STATS mismatch {a}", f"V-STATS mismatch {a}", (a,))
-                for a in claim.get("artifact_ids") or [] if not check_stats(ps, a, record=False).ok]
+                for a in claim.get("artifact_ids") or []
+                if not (stats[a] if a in stats else check_stats(ps, a, record=False)).ok]
     targets = [claim_id, *(e["id"] for e in claim["evidence"]), *(e.get("id") for e in svc.list_edges(to_id=claim_id))]
     open_p1 = [o for t in targets if t for o in svc.list_objections(target_id=t)
                if o.get("status", "open") == "open" and o.get("priority", 1) == 1]

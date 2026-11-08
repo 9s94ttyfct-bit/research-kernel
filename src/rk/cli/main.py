@@ -1117,11 +1117,13 @@ def _gate_text(gate: dict | None) -> str:
     return "gate failed: " + "; ".join(gate["failures"]) if gate["failures"] else "not passed yet"
 
 
-def _claim_line(c: dict, indent: str = "") -> str:
+def _claim_line(c: dict) -> str:
+    """A claim on one line: id, role, status, contested, V-HEDGE (claims still in the argument), V-STATS, text."""
     flags = [c["status"], *(["contested"] if c["contested"] else []),
-             f"hedge {c['hedge']['verdict'] or 'not checked'}", *([f"V-STATS {c['v_stats']}"] if "v_stats" in c else [])]
+             *([f"hedge {c['hedge']['verdict']}"] if c["hedge"]["verdict"] else []),
+             *([f"V-STATS {c['v_stats']}"] if "v_stats" in c else [])]
     role = f" {c['role']}" if c.get("role") else ""
-    return f"{indent}{c['id']}{role} [{', '.join(flags)}] {c['text']}"
+    return f"{c['id']}{role} [{', '.join(flags)}] {c['text']}"
 
 
 @synthesis_app.command("show")

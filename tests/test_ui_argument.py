@@ -28,7 +28,13 @@ from rk.orchestrator.state import (
     stages_of,
 )
 from rk.production import store
-from rk.production.argue import ArgueWorker, argue_notes, argument_claims, main_claim
+from rk.production.argue import (
+    ArgueWorker,
+    argue_notes,
+    argument_claims,
+    argument_roles,
+    main_claim,
+)
 from rk.production.artifacts import artifacts
 from rk.production.design import DesignWorker, design_notes, feasibility_claims
 from rk.production.synthesis import SynthesizeWorker, synthesis_claims, synthesis_notes
@@ -48,7 +54,9 @@ from tests.test_argue import (
     REASON,
     RESPONSE,
     WARRANT,
+    _judges,
     _o,
+    _synth_narrative,
     _synthesize,
     claim,
     critique,
@@ -67,9 +75,11 @@ from tests.test_synthesis import (
     FINDING,
     META,
     META2,
+    Exec,
     _enable_stats,
     _setup,
     _two,
+    assess,
     narrative,
 )
 from tests.test_synthesis import _exec as synth_exec
@@ -231,8 +241,9 @@ def test_argument_tool_shows_claims_edges_warrants_and_objections(api):
     got = api.reg.call("rk_argument_get", {"project": "demo"}, _cli())
     ps = api.ps
     assert got["attempt"] == 1 and got["main_claim_id"] == main_claim(ps, 1) and got["gate"]["passed"]
+    assert got["synthesis_attempt"] == 1
     roles = {c["id"]: c["role"] for c in got["claims"]}
-    assert roles[got["main_claim_id"]] == "main" and roles[a] == roles[b] == "finding"
+    assert roles[got["main_claim_id"]] == "main" and roles[a] == roles[b] == "synthesis"
     assert {"reason", "response", "warrant"} <= set(roles.values())
     by_id = {c["id"]: c for c in got["claims"]}
     assert by_id[a]["contested"] and by_id[a]["status"] == "supported" and by_id[a]["hedge"]["verdict"] == "pass"
@@ -244,6 +255,7 @@ def test_argument_tool_shows_claims_edges_warrants_and_objections(api):
     contested = [o for o in got["objections"] if o["target_id"] in (a, b)]
     assert len(contested) == 2 and all(o["status"] == "responded" and o["response"]["status"] == "supported"
                                        for o in contested)
+    assert all(o["counterpart"] in (a, b) for o in contested)
     (c,) = got["conflicts"]
     assert (c["claim_a"], c["claim_b"], c["why"], c["decision"]["decision"]) == (a, b, WHY, "both_contested")
     assert got["question"] and got["rq_checks"][-1]["decision"] == "answers"
@@ -251,6 +263,82 @@ def test_argument_tool_shows_claims_edges_warrants_and_objections(api):
     assert [c["id"] for c in one["claims"]] == [a] and [o["target_id"] for o in one["objections"]] == [a]
     assert _get(api, "/ui/api/argument", claim_id=a).json()["result"]["claims"] == one["claims"]
     assert _get(api, "/ui/api/argument", claim_id="clm_nope").status_code == 404
+
+
+def _argue_directly(env, drafts, critiques, *, attempt: int = 1):
+    """Run argue attempt ``attempt`` with the scripted rounds (P2: the final review says the main claim answers the
+    RQ, no claim to decide) and record it run and passed."""
+    k, ps, lib = env
+    w = ArgueWorker()
+    record_attempt(ps, "argue", attempt, run_id=None, guidance="", requested=None, actor="tester")
+    ctx = production_ctx(k, ps, lib, argue_exec(drafts, critiques), stage="argue", attempt=attempt)
+    out = w.run(ctx)
+    if out.status == "waiting_human":
+        answer_checkpoint(ps, out.checkpoint_id, {"claims": {}, "answers_rq": "yes"}, answered_by="human",
+                          actor="researcher")
+        out = w.on_answer(ctx, get_checkpoint(ps, out.checkpoint_id))
+    assert out.status == "done", out.reason
+    record_ran(ps, "argue", attempt, out.status, out.reason, actor="tester")
+    record_passed(ps, "argue", attempt, actor="tester")
+
+
+@pytest.mark.parametrize("api", [{"paper_type": "critical_review", "production_mode": "collab"}], indirect=True)
+def test_argument_view_roles_are_argues_own(api):
+    """A finding reused as a reason (round 1) and as a response (round 2) keeps argue's role for it."""
+    ps = api.ps
+    a, b = _synthesize(api.env)
+
+    def reasons(inputs):
+        return [{"ref": "r1", "claim_id": a, "supports": "main", "warrant": WARRANT}]
+
+    def answer_with_b(inputs):
+        return {"responses": [{"objection_id": o["id"], "status": "responded", "claim_id": b}
+                              for o in inputs["open_objections"]]}
+
+    _argue_directly(api.env, [draft(reasons=reasons), answer_with_b, responses()],
+                    [critique(objections=[_o("main", 2, "Too broad.")]), critique()])
+    got = api.reg.call("rk_argument_get", {"project": "demo"}, _cli())
+    roles = {c["id"]: c["role"] for c in got["claims"]}
+    assert roles == argument_roles(ps, 1, synthesis_claims(ps, 1))
+    assert roles[a] == roles[b] == "synthesis"
+    assert any(e["type"] == "reason_of" and e["from_id"] == a for e in got["edges"])
+    (o,) = got["objections"]
+    assert o["response"]["id"] == b and o["status"] == "responded"
+
+
+@pytest.mark.parametrize("api", [{"paper_type": "critical_review", "production_mode": "collab"}], indirect=True)
+def test_older_argue_attempt_shows_its_own_synthesis_findings(api):
+    k, ps, lib = api.env
+    a, b = _synthesize(api.env)
+    _argue_directly(api.env, [draft()], [critique()])
+    # synthesize runs again (attempt 2, passed) with another finding; argue attempt 1 still argued on attempt 1
+    later = "Aspirin was studied in very old people."
+    ex = Exec({("arguer", "AssessmentOut"): [assess()], ("arguer", "NarrativeSynthesis"): [_synth_narrative([later])],
+               **_judges()})
+    record_attempt(ps, "synthesize", 2, run_id=None, guidance="", requested=None, actor="tester")
+    out = SynthesizeWorker().run(production_ctx(k, ps, lib, ex, stage="synthesize", attempt=2))
+    assert out.status == "done", out.reason
+    record_ran(ps, "synthesize", 2, out.status, out.reason, actor="tester")
+    record_passed(ps, "synthesize", 2, actor="tester")
+    got = api.reg.call("rk_argument_get", {"project": "demo", "attempt": 1}, _cli())
+    findings = {c["id"] for c in got["claims"] if c["role"] == "synthesis"}
+    assert got["synthesis_attempt"] == 1 and findings == {a, b}
+    assert later not in {c["text"] for c in got["claims"]}
+
+
+@pytest.mark.parametrize("api", [{"paper_type": "critical_review", "production_mode": "collab"}], indirect=True)
+def test_withdrawn_findings_are_kept_apart_and_unsupported_ones_left_out(api):
+    ps = api.ps
+    a, b = _synthesize(api.env)
+    _argue_directly(api.env, [draft()], [critique()])
+    svc = ArgumentService(ps)
+    svc.withdraw_claim(b, reason="contradicted", actor="tester")
+    svc.set_claim_status(a, "uncertain", verification_id=None, actor="tester")  # no longer a supported finding
+    got = api.reg.call("rk_argument_get", {"project": "demo"}, _cli())
+    by_id = {c["id"]: c for c in got["claims"]}
+    assert a not in by_id
+    assert by_id[b]["role"] == "synthesis" and by_id[b]["status"] == "withdrawn"
+    assert by_id[b]["hedge"]["verdict"] is None and by_id[b]["problems"] == []
 
 
 @pytest.mark.parametrize("api", [{"paper_type": "research_proposal", "production_mode": "collab"}], indirect=True)
@@ -311,6 +399,38 @@ def test_cli_5b_commands(serve_rk):
     assert r.exit_code == 0 and MAIN in r.output and REASON not in r.output, r.output
     r = run.invoke(app, ["design", "show", "--project", "demo"])
     assert r.exit_code == 0 and "no design yet" in r.output, r.output
+    # a design awaiting approval, then frozen
+    k = client.kernel
+    ex = design_exec([plan()])
+    w = DesignWorker()
+    record_attempt(ps, "design", 1, run_id=None, guidance="", requested=None, actor="tester")
+    out = w.run(production_ctx(k, ps, lib, ex, stage="design"))
+    record_ran(ps, "design", 1, out.status, out.reason, actor="tester")
+    r = run.invoke(app, ["design", "show", "--project", "demo"])
+    assert r.exit_code == 0 and "design:1: awaiting approval" in r.output, r.output
+    assert "hypothesis h_new (new): " + NEW_H in r.output and "falsified by M2" in r.output
+    assert "item D1 (experiment)" in r.output and "measurement M1: stroke rate M1 by registry" in r.output
+    answer_checkpoint(ps, out.checkpoint_id, {"decision": "approve"}, answered_by="human", actor="researcher")
+    assert w.on_answer(production_ctx(k, ps, lib, ex, stage="design"), get_checkpoint(ps, out.checkpoint_id)).status \
+        == "done"
+    r = run.invoke(app, ["design", "show", "--project", "demo"])
+    (approved,) = design_notes(ps, 1, kind="approved")
+    assert f"design:1: frozen, frozen hash {approved['frozen_hash']}" in r.output, r.output
+    # a pooled systematic review
+    client.call("rk_project_create", {"slug": "pooled", "title": "Pooled", "paper_type": "systematic_review"},
+                write=True)
+    ps2, lib2 = k.project("pooled")
+    record_intake(ps2, Intake(**{**DEFAULT_INTAKE, "paper_type": "systematic_review", "production_mode": "auto"}),
+                  actor="t", actor_kind="human")
+    freeze_an_rq(ps2)
+    _seed_pooled((k, ps2, lib2))
+    r = run.invoke(app, ["synthesis", "show", "--project", "pooled"])
+    assert r.exit_code == 0, r.output
+    (stt,) = [a for a in artifacts(ps2, "synthesize", 1) if a["kind"] == "stt"]
+    assert "pool options: model DL, HKSJ auto, prediction interval df k-2" in r.output
+    assert "group 0: tuberculosis (RR), 3 studies; pooled (stt_" in r.output
+    assert f"{stt['id']} rk.stats.meta:pool: V-STATS pass" in r.output
+    assert "Pooled RR" in r.output and "[supported, hedge pass, V-STATS pass]" in r.output
     r = run.invoke(app, ["argument", "show", "--project", "demo", "--json"])
     assert r.exit_code == 0 and '"warrants"' in r.output
     r = run.invoke(app, ["eval", "stats", "--help"])
@@ -418,8 +538,6 @@ def test_pooling_card_answers_reach_the_worker(page, served):
 @pytest.mark.parametrize("served", [{"paper_type": "critical_review"}], indirect=True)
 def test_uncertain_support_card_answers_reach_the_worker(page, served):
     from rk.production.models import SynthesisPlan
-    from tests.test_argue import _judges
-    from tests.test_synthesis import Exec, assess
 
     ps = served.ps
     _setup(served.env, {"A": {"design": "rct"}, "B": {"design": "cohort"}}, schema=[DESIGN],
@@ -475,7 +593,9 @@ def test_final_review_card_answers_reach_the_worker(page, served):
 
 @pytest.mark.browser
 @pytest.mark.parametrize("served", [{"paper_type": "critical_review"}], indirect=True)
-def test_conflict_card_answers_reach_the_worker(page, served):
+@pytest.mark.parametrize(("button", "decision"), [("Claim a holds", "a_holds"), ("Claim b holds", "b_holds"),
+                                                  ("Both stand, contested", "both_contested")])
+def test_conflict_card_answers_reach_the_worker(page, served, button, decision):
     ps = served.ps
     a, b = _synthesize(served.env)
     conflict = {"claim_a": a, "claim_b": b, "why": WHY}
@@ -483,13 +603,11 @@ def test_conflict_card_answers_reach_the_worker(page, served):
                     [critique(conflicts=[conflict]), critique(conflicts=[conflict])])
     run_id = _start(served, "argue", ex)
     cp, card = _show(page, ps, "evidence_conflict")
-    for text in (F1, F2, "The design was rct.", "The design was cohort.", WHY):
+    for text in (F1, F2, "The design was rct.", "The design was cohort.", WHY, "Claim a", "Claim b"):
         assert card.get_by_text(text, exact=False).count() >= 1, text
     assert card.locator(".card-body b").count() == 0  # the Skeptic's text is shown as text
-    for name in ("Finding a holds", "Finding b holds"):
-        assert card.get_by_role("button", name=name).count() == 1
-    card.get_by_role("button", name="Both stand, contested").click()
-    assert _answer_of(ps, cp["id"]) == {"decision": "both_contested"}
+    card.get_by_role("button", name=button).click()
+    assert _answer_of(ps, cp["id"]) == {"decision": decision}
     # the rounds go on to the final review: no claim to decide, only whether the main claim answers the RQ
     final, card = _show(page, ps, "uncertain_support")
     assert final["options"]["claim_ids"] == []
@@ -498,7 +616,51 @@ def test_conflict_card_answers_reach_the_worker(page, served):
     assert _answer_of(ps, final["id"]) == {"claims": {}, "answers_rq": "yes"}
     until(lambda: run_row(ps, run_id)["status"] == "done")
     svc = ArgumentService(ps)
-    assert all(svc.get_claim(c)["contested"] for c in (a, b))
+    if decision == "both_contested":
+        assert all(svc.get_claim(c)["contested"] for c in (a, b))
+    else:
+        kept, gone = (a, b) if decision == "a_holds" else (b, a)
+        assert svc.get_claim(gone)["status"] == "withdrawn" and svc.get_claim(kept)["status"] == "supported"
+        page.goto_route("argument")
+        page.locator(".claim-tree").wait_for()
+        heading = page.get_by_role("heading", name="Withdrawn findings")
+        assert heading.count() == 1
+        assert page.locator(f'.argument [data-claim="{gone}"]').count() == 1
+    assert page.errors == []
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("served", [{"paper_type": "critical_review"}], indirect=True)
+def test_uncertain_support_rerun_form_reaches_the_worker(page, served):
+    from rk.production.models import SynthesisPlan
+
+    ps = served.ps
+    _setup(served.env, {"A": {"design": "rct"}, "B": {"design": "cohort"}}, schema=[DESIGN],
+           plan=SynthesisPlan(method="thematic"))
+    ex = Exec({("arguer", "AssessmentOut"): [assess(), assess()],
+               ("arguer", "NarrativeSynthesis"): [narrative(), narrative()], **_judges(uncertain=(FINDING,))})
+    _start(served, "synthesize", ex)
+    cp, card = _show(page, ps, "uncertain_support")
+    card.get_by_label("What should change (synthesize runs again with your comment)").fill("Group by design.")
+    card.get_by_role("button", name="Ask for a revision").click()
+    assert _answer_of(ps, cp["id"]) == {"decision": "rerun", "comment": "Group by design."}
+    until(lambda: stage_row(ps, "synthesize")["attempt"] == 2)
+    until(lambda: len(ex.of("arguer", "NarrativeSynthesis")) == 2)
+    assert ex.of("arguer", "NarrativeSynthesis")[1]["inputs"]["guidance"].endswith("Group by design.")
+    assert page.errors == []
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("served", [{"paper_type": "research_proposal"}], indirect=True)
+def test_design_card_back_reaches_the_worker(page, served):
+    ps = served.ps
+    _argued(served.env)
+    _start(served, "design", design_exec([plan()]))
+    cp, card = _show(page, ps, "design_approval")
+    card.get_by_label("Why go back (optional)").fill("The argument needs a dose claim.")
+    card.get_by_role("button", name="Back to argue").click()
+    assert _answer_of(ps, cp["id"]) == {"decision": "back", "comment": "The argument needs a dose claim."}
+    until(lambda: stage_row(ps, "argue")["attempt"] == 2)
     assert page.errors == []
 
 

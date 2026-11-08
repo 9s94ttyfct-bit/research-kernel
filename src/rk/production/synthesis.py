@@ -355,7 +355,7 @@ def _item(ps: ProjectStore, item_id: str) -> dict:
     return json.loads(r["data"]) if r else {}
 
 
-def _label(ps: ProjectStore, item_id: str) -> str:
+def study_label(ps: ProjectStore, item_id: str) -> str:
     """A study's short label: first author and year, else its title, else its id."""
     it = _item(ps, item_id)
     creators = it.get("creators") or []
@@ -403,7 +403,7 @@ def _computable_ids(s: _Inputs, measure: str, field_map: dict[str, str] | None) 
 def _study_input(ps: ProjectStore, study: dict) -> dict:
     it = _item(ps, study["item_id"])
     notes = [n for n in (_note_data(ps, i) for i in study["notes"]) if n is not None]
-    return {"item_id": study["item_id"], "label": _label(ps, study["item_id"]), "title": it.get("title"),
+    return {"item_id": study["item_id"], "label": study_label(ps, study["item_id"]), "title": it.get("title"),
             "year": it.get("year"), "sufficient": study["sufficient"],
             "values": [{"field": r["field"], "value": r["value"]} for r in _usable_rows(study)],
             "notes": [{"id": n["id"], "kind": n["kind"], "text": n["text"]} for n in notes]}
@@ -731,10 +731,10 @@ class SynthesizeWorker:
     @staticmethod
     def _vote(ctx: StageContext, s: _Inputs, g: dict, vendor: str | None) -> None:
         inputs = {"outcome": g["outcome"], "measure": g["measure"],
-                  "studies": [_label(ctx.ps, i) for i in g["item_ids"]], "comparability": g["comparability"],
+                  "studies": [study_label(ctx.ps, i) for i in g["item_ids"]], "comparability": g["comparability"],
                   "planner_reason": g["reason"],
-                  "added_by_kernel": [_label(ctx.ps, i) for i in g.get("added_by_kernel") or []],
-                  "left_out": [{"study": _label(ctx.ps, x["item_id"]), "reason": x["reason"]}
+                  "added_by_kernel": [study_label(ctx.ps, i) for i in g.get("added_by_kernel") or []],
+                  "left_out": [{"study": study_label(ctx.ps, x["item_id"]), "reason": x["reason"]}
                                for x in g.get("left_out") or []],
                   "note": ("The kernel added the studies in added_by_kernel because their effects are computable and "
                            "the plan left them out without a reason: they were not assessed for comparability by the "
@@ -763,15 +763,15 @@ class SynthesizeWorker:
         lines.append(f"Pool options pre-specified by the protocol: {options_text(pool_options(s.plan))}.")
         for g in pending:
             lines += ["", f"Group {g['group']}: outcome {_group_label(g)}, {len(g['item_ids'])} studies: "
-                          + ", ".join(_label(ctx.ps, i) for i in g["item_ids"]),
+                          + ", ".join(study_label(ctx.ps, i) for i in g["item_ids"]),
                       *(f"- {c}: {v['score']}/2, {v['reason']}" for c, v in g["comparability"].items()),
                       f"- the Arguer: {g['reason']}"]
             if g.get("added_by_kernel"):
                 lines.append("- added by the kernel (the plan left them out without a reason; their effects are "
-                             "computable): " + ", ".join(_label(ctx.ps, i) for i in g["added_by_kernel"]))
+                             "computable): " + ", ".join(study_label(ctx.ps, i) for i in g["added_by_kernel"]))
             if g.get("left_out"):
                 lines.append("- left out by the plan (recorded as a deviation): " + ", ".join(
-                    f"{_label(ctx.ps, x['item_id'])} ({x['reason']})" for x in g["left_out"]))
+                    f"{study_label(ctx.ps, x['item_id'])} ({x['reason']})" for x in g["left_out"]))
         lines += ["", ('Answer {"decisions": {"<group>": "pool" or "no_pool", ...}} for every group, optionally with '
                       'a "comment".')]
         return create_checkpoint(ctx.ps, KIND, "\n".join(lines),
@@ -782,7 +782,7 @@ class SynthesizeWorker:
     def _left_out(ctx: StageContext, s: _Inputs, g: dict) -> None:
         """The studies with a computable effect the plan leaves out of a group it pools, with its reasons: an analysis
         deviation and the attempt's ``left_out`` note (the limitations input)."""
-        studies = [f"{_label(ctx.ps, x['item_id'])} ({x['reason']})" for x in g["left_out"]]
+        studies = [f"{study_label(ctx.ps, x['item_id'])} ({x['reason']})" for x in g["left_out"]]
         SynthesizeWorker._fallback(
             ctx, s, f"the pooling plan leaves out of {_group_label(g)} {', '.join(studies)}, which "
                     f"{'has a computable effect' if len(studies) == 1 else 'have computable effects'}",
@@ -828,14 +828,14 @@ class SynthesizeWorker:
         options = pool_options(s.plan)
         kw = {"item_ids": ids, "stage": STAGE, "attempt": ctx.attempt, "actor": ctx.actor, "field_map": field_map}
         stt = make_stats_artifact(ps, rows, g["measure"], options, **kw)
-        fig = make_forest_artifact(ps, rows, g["measure"], options, labels={i: _label(ps, i) for i in ids}, **kw)
+        fig = make_forest_artifact(ps, rows, g["measure"], options, labels={i: study_label(ps, i) for i in ids}, **kw)
         a = artifact(ps, stt)
         text, bindings = stat_claim_text(a)
         claim = ClaimIn(text=text, kind="stat_result", artifact_ids=[stt, fig],
                         number_bindings=[NumberBinding(**b) for b in bindings],
                         scope_limits=[f"outcome: {g['outcome']}", f"effect measure: {g['measure']}",
                                       f"extraction fields: {', '.join(fields)}",
-                                      "studies: " + ", ".join(_label(ps, x["item_id"]) for x in a["values"]["studies"])])
+                                      "studies: " + ", ".join(study_label(ps, x["item_id"]) for x in a["values"]["studies"])])
         cid = ArgumentService(ps).add_claim(claim, generator_vendor=None, actor=ctx.actor, actor_kind="kernel",
                                             origin="synthesis")
         check_stats(ps, fig, actor=ctx.actor)
@@ -1085,7 +1085,7 @@ class SynthesizeWorker:
         notes = synthesis_notes(ps, attempt)
         failures = []
         assessed = {n["item_id"] for n in notes if n["kind"] == "assessment"}
-        failures += [f"study {u['item_id']} ({_label(ps, u['item_id'])}) was not assessed" for u in s.usable
+        failures += [f"study {u['item_id']} ({study_label(ps, u['item_id'])}) was not assessed" for u in s.usable
                      if u["item_id"] not in assessed]
         narrative = _last(ps, attempt, "narrative")
         if narrative is None:

@@ -624,7 +624,7 @@ const inOrder = (obj, order) => Object.entries(obj).sort(([a], [b]) => {
 });
 const CLAIM_STATUS = { supported: "ok", uncertain: "warn", draft: "neutral", unsupported: "bad", contradicted: "bad", withdrawn: "neutral" };
 const TESTS = { true: "True", limited: "Limited as it should be", circumstance_fits: "Circumstance fits", consequence_fits: "Consequence fits", accepted: "Accepted in the field" };
-const ROLE_NAMES = { main: "Main claim", reason: "Reason", response: "Response", warrant: "Warrant", finding: "Synthesis finding" };
+const ROLE_NAMES = { main: "Main claim", reason: "Reason", response: "Response", warrant: "Warrant", synthesis: "Synthesis finding" };
 const artifactUrl = (id) => `/ui/api/artifacts/${encodeURIComponent(state.project)}/${encodeURIComponent(id)}`;
 
 function claimBadges(c) {
@@ -691,7 +691,7 @@ async function poolingCard(c, answer) {
   } }, "Submit pooling decisions");
   const update = () => {
     status.textContent = `${chosen.size} of ${count(listed.length, "group")} decided`;
-    submit.disabled = chosen.size !== listed.length;  // every group needs your decision
+    submit.disabled = chosen.size !== (o.groups || []).length;  // every group of the checkpoint needs your decision
   };
   update();
   const p = d.pool_options || {};
@@ -775,16 +775,16 @@ async function conflictCard(c, answer) {
   const conflict = d.conflicts.find((x) => x.index === o.index) || {};
   const comment = optionalComment();
   const decide = (decision) => { const text = comment.value(); answer({ decision, ...(text ? { comment: text } : {}) }); };
-  const side = (name, id) => el("div", { class: "finding" }, el("h3", {}, `Finding ${name}`),
+  const side = (name, id) => el("div", { class: "finding" }, el("h3", {}, `Claim ${name}`),
     byId.has(id) ? claimBlock(byId.get(id), { open: true }) : el("p", { class: "error" }, `Claim ${id} was not found.`));
   return [
     el("div", { class: "conflict-pair" }, side("a", o.claim_a), side("b", o.claim_b)),
     el("h4", {}, "Why they contradict each other (the Skeptic)"), el("p", {}, conflict.why || ""),
-    el("p", { class: "hint" }, "A holds over B withdraws B from the argument (and B over A withdraws A). Both contested keeps both, marked contested, each with an objection the Arguer answers."),
+    el("p", { class: "hint" }, "If claim a holds, claim b is withdrawn from the argument (and the other way round). Both contested keeps both, marked contested, each with an objection the Arguer answers."),
     comment.field,
     el("div", { class: "toolbar" },
-      el("button", { type: "button", onclick: () => decide("a_holds") }, "Finding a holds"),
-      el("button", { type: "button", onclick: () => decide("b_holds") }, "Finding b holds"),
+      el("button", { type: "button", onclick: () => decide("a_holds") }, "Claim a holds"),
+      el("button", { type: "button", onclick: () => decide("b_holds") }, "Claim b holds"),
       el("button", { type: "button", class: "secondary", onclick: () => decide("both_contested") }, "Both stand, contested")),
   ];
 }
@@ -865,7 +865,7 @@ const KINDS = { topic_review: "Topic review", rq_approval: "Research question ap
   significance_novelty: "Already answered? The judges split", stage_blocked: "Stage blocked at its back-edge limit",
   protocol_approval: "Protocol approval", screening_disagreements: "Screening disagreements",
   pooling_approval: "Pooling approval", uncertain_support: "Supported? The judges split",
-  evidence_conflict: "Contradicting findings", design_approval: "Design approval" };
+  evidence_conflict: "Contradicting claims", design_approval: "Design approval" };
 
 const DECIDED_BY = { agreement: "both screeners", single: "one screener", human: "you", vote: "the P1 vote (not reviewed by a human)", rule: "the language rule" };
 const PHASE_NAMES = { title_abstract: "Title and abstract", full_text: "Full text" };
@@ -1003,7 +1003,9 @@ pages.checkpoints = async (root) => {
       return li;
     }
     const answer = async (body) => {
-      li.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+      // a failed answer gives each button back the state it had (a gated Submit stays disabled)
+      const had = [...li.querySelectorAll("button")].map((b) => [b, b.disabled]);
+      had.forEach(([b]) => { b.disabled = true; });
       try {
         await api(`/ui/api/checkpoints/${c.id}/answer`, { method: "POST", body: { project: state.project, answer: body } });
         toast("Answer recorded");
@@ -1014,7 +1016,7 @@ pages.checkpoints = async (root) => {
         li.append(el("p", { class: "hint" }, "Answer recorded."));
         notice.hidden = false;
       } catch (err) {
-        li.querySelectorAll("button").forEach((b) => { b.disabled = false; });
+        had.forEach(([b, disabled]) => { b.disabled = disabled; });
         toast(err.message, "error");
       }
     };
@@ -1247,7 +1249,7 @@ function objectionList(list) {
     el("div", { class: "badges" }, el("span", { class: `badge ${OBJECTION_STATUS[o.status] || "neutral"}` }, `Objection: ${words(o.status)}`),
       el("span", { class: "badge neutral" }, `Priority ${o.priority}`), el("span", { class: "badge neutral" }, words(o.category)),
       o.soundness ? el("span", { class: "badge bad" }, "Failed warrant test") : null,
-      o.conflict ? el("span", { class: "badge warn" }, "Contradiction") : null),
+      o.counterpart ? el("span", { class: "badge warn" }, "Contradiction") : null),
     el("p", {}, o.text),
     o.response ? el("div", { class: "response" }, el("span", { class: "hint" }, `Response (${words(o.response.status)}): `), o.response.text) : null,
     o.note ? el("p", { class: "hint" }, "Note: ", o.note) : null)));
@@ -1279,11 +1281,15 @@ function argumentPanel(d) {
       })) : null);
   };
   const tree = d.main_claim_id ? el("ul", { class: "claim-tree" }, node(d.main_claim_id, new Set())) : el("p", { class: "empty" }, "No main claim yet.");
-  const findings = d.claims.filter((c) => c.role === "finding" && !shown.has(c.id));
+  const unshown = (c) => c.role === "synthesis" && !shown.has(c.id);
+  const findings = d.claims.filter((c) => unshown(c) && c.status !== "withdrawn");
+  const withdrawnFindings = d.claims.filter((c) => unshown(c) && c.status === "withdrawn");
   const responses = new Set(d.objections.map((o) => o.response_claim_id).filter(Boolean));
-  const loose = d.claims.filter((c) => !shown.has(c.id) && !["finding", "warrant"].includes(c.role) && !responses.has(c.id));
-  const findingBlocks = findings.map((c) => el("li", {}, claimBlock(c), objectionList(on([c.id, ...c.evidence.map((e) => e.id)]))));
-  const looseBlocks = loose.map((c) => el("li", {}, claimBlock(c), objectionList(on([c.id, ...c.evidence.map((e) => e.id)]))));
+  const loose = d.claims.filter((c) => !shown.has(c.id) && !["synthesis", "warrant"].includes(c.role) && !responses.has(c.id));
+  const block = (c) => el("li", {}, claimBlock(c), objectionList(on([c.id, ...c.evidence.map((e) => e.id)])));
+  const findingBlocks = findings.map(block);
+  const withdrawnBlocks = withdrawnFindings.map(block);
+  const looseBlocks = loose.map(block);
   const other = d.objections.filter((o) => !shown.has(o.target_id));
   const lim = d.limitations || {};
   const conceded = lim.conceded || [];
@@ -1296,8 +1302,9 @@ function argumentPanel(d) {
       d.rq_checks.map((r) => `${r.decision === "answers" ? "yes" : "no"}, by ${DECIDED_BY[r.by] || r.by}${r.reason ? ` (${r.reason})` : ""}`).join("; ")) : null,
     el("h3", {}, "Claims"), tree,
     looseBlocks.length ? [el("h3", {}, "Other claims"), el("ul", { class: "claims" }, looseBlocks)] : null,
-    findingBlocks.length ? [el("h3", {}, "Synthesis findings it rests on"), el("ul", { class: "claims" }, findingBlocks)] : null,
-    d.conflicts.length ? [el("h3", {}, "Contradicting findings"), el("ul", { class: "conflicts" }, d.conflicts.map((c) => el("li", {},
+    findingBlocks.length ? [el("h3", {}, `Synthesis findings it rests on${d.synthesis_attempt ? ` (synthesize attempt ${d.synthesis_attempt})` : ""}`), el("ul", { class: "claims" }, findingBlocks)] : null,
+    withdrawnBlocks.length ? [el("h3", {}, "Withdrawn findings"), el("ul", { class: "claims" }, withdrawnBlocks)] : null,
+    d.conflicts.length ? [el("h3", {}, "Contradicting claims"), el("ul", { class: "conflicts" }, d.conflicts.map((c) => el("li", {},
       el("p", {}, el("strong", {}, "a: "), name(c.claim_a)), el("p", {}, el("strong", {}, "b: "), name(c.claim_b)),
       el("p", { class: "hint" }, "The Skeptic: ", c.why),
       el("p", { class: "hint" }, c.decision ? `Decided: ${words(c.decision.decision)}, by ${DECIDED_BY[c.decision.by] || c.decision.by}` : "Awaiting your decision"))))] : null,

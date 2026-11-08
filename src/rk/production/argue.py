@@ -270,7 +270,7 @@ def argue_notes(ps: ProjectStore, attempt: int, *, kind: str | None = None) -> l
     Skeptic round: its objections, warrant tests and conflicts), ``conflict`` and ``conflict_decision``, ``closing``
     (the Arguer's last answers), ``end`` (``fixed_point`` or ``budget``), ``back_edge``, ``rq_check``, ``final`` (the
     P2 checkpoint), ``dropped_link``, and from the P1 degrade ``rewrite`` and ``recheck``. Each role round notes the
-    ``tasks`` it used."""
+    ``tasks`` it used; each Arguer round (``draft``, ``closing``) the ``synthesis_attempt`` it argued on."""
     rows = ps.db.execute("SELECT payload FROM events WHERE type='argue.noted' AND json_extract(payload, '$.attempt')=? "
                          "ORDER BY seq", (attempt,))
     notes = [json.loads(r["payload"]) for r in rows]
@@ -368,12 +368,16 @@ def main_claim(ps: ProjectStore, attempt: int) -> str | None:
     return cid
 
 
-def _edges(ps: ProjectStore, attempt: int) -> list[str]:
+def argument_edge_ids(ps: ProjectStore, attempt: int) -> list[str]:
+    """The attempt's argument edges, in order: the ``evidence_of``, ``reason_of`` and ``warrant_of`` edges its Arguer
+    rounds and the P1 rewrites stored (some may since have left the argument: ``link_gone``, ``dropped_links``)."""
     return list(dict.fromkeys(e for n in argue_notes(ps, attempt) if n["kind"] in ("draft", "closing", "rewrite")
                               for e in n.get("edge_ids") or []))
 
 
-def _objection_ids(ps: ProjectStore, attempt: int) -> list[str]:
+def argument_objection_ids(ps: ProjectStore, attempt: int) -> list[str]:
+    """The attempt's objections, in order: the Skeptic's, the soundness objections of failed warrant tests, the
+    conflict objections and those it imported."""
     ids = []
     for n in argue_notes(ps, attempt):
         ids += n.get("objection_ids") or []
@@ -381,8 +385,39 @@ def _objection_ids(ps: ProjectStore, attempt: int) -> list[str]:
     return list(dict.fromkeys(ids))
 
 
-def _dropped(ps: ProjectStore, attempt: int) -> set[str]:
+def dropped_links(ps: ProjectStore, attempt: int) -> set[str]:
+    """The reason edges dropped from the attempt's argument (their warrant failed and was conceded or left untested)."""
     return {n["edge_id"] for n in argue_notes(ps, attempt, kind="dropped_link")}
+
+
+def argued_synthesis_attempt(ps: ProjectStore, attempt: int) -> int | None:
+    """The synthesize attempt the argue attempt argued on (its drafts record it); for an attempt drafted before that
+    was recorded, synthesize's passed attempt; ``None`` when there is neither."""
+    recorded = next((n["synthesis_attempt"] for n in _drafts(ps, attempt) if n.get("synthesis_attempt")), None)
+    if recorded is not None:
+        return recorded
+    row = stage_row(ps, "synthesize")
+    return row["passed_attempt"] if row and row["passed_attempt"] else None
+
+
+def argument_roles(ps: ProjectStore, attempt: int, findings: list[str]) -> dict[str, str]:
+    """claim id -> its role in the attempt's argument: ``synthesis`` (the ``findings`` it rests on), then per Arguer
+    round, a later round's role winning, ``reason``, ``response``, ``warrant`` and ``main``; a narrower rewrite takes
+    its original's role. Withdrawn claims included."""
+    roles: dict[str, str] = dict.fromkeys(findings, "synthesis")
+    for n in _drafts(ps, attempt):
+        roles.update(dict.fromkeys(n.get("reason_claim_ids") or [], "reason"))
+        roles.update(dict.fromkeys(n.get("response_claim_ids") or [], "response"))
+        roles.update(dict.fromkeys(n.get("warrant_claim_ids") or [], "warrant"))
+        if n.get("main_claim_id"):
+            roles[n["main_claim_id"]] = "main"
+    for cid in argument_claims(ps, attempt):
+        if cid not in roles:
+            root = cid
+            while root not in roles and (up := _claim(ps, root).get("narrowed_from")):
+                root = up
+            roles[cid] = roles.get(root, "reason")
+    return roles
 
 
 def _claim_end(ps: ProjectStore, id_: str) -> str:
@@ -390,11 +425,11 @@ def _claim_end(ps: ProjectStore, id_: str) -> str:
     return _row(ps, "evidence", id_)["claim_id"] if id_.startswith("evd_") else id_
 
 
-def _link_gone(ps: ProjectStore, edge_id: str) -> bool:
+def link_gone(ps: ProjectStore, edge_id: str) -> bool:
     """An edge with a withdrawn claim at either end (a warrant's: at either end of the edge it licenses) is out of the
     argument."""
     e = _row(ps, "edges", edge_id)
-    return any(_link_gone(ps, end) if end.startswith("edg_") else _withdrawn(ps, _claim_end(ps, end))
+    return any(link_gone(ps, end) if end.startswith("edg_") else _withdrawn(ps, _claim_end(ps, end))
                for end in (e["from_id"], e["to_id"]))
 
 
@@ -407,7 +442,7 @@ def _target_claims(ps: ProjectStore, target_id: str) -> set[str]:
     return {_claim_end(ps, target_id)}
 
 
-def _counterparts(ps: ProjectStore, attempt: int) -> dict[str, str]:
+def conflict_counterparts(ps: ProjectStore, attempt: int) -> dict[str, str]:
     """conflict objection id -> the claim it says contradicts its target, for the attempt's conflict objections (its
     own and those it imported)."""
     out: dict[str, str] = {}
@@ -417,7 +452,7 @@ def _counterparts(ps: ProjectStore, attempt: int) -> dict[str, str]:
     return out
 
 
-def _soundness_ids(ps: ProjectStore, attempt: int) -> set[str]:
+def soundness_ids(ps: ProjectStore, attempt: int) -> set[str]:
     """The attempt's objections that record a failed warrant test."""
     return {o for n in argue_notes(ps, attempt) for o in n.get("soundness_ids") or []}
 
@@ -438,10 +473,10 @@ class _Answers:
 
     def __init__(self, ps: ProjectStore, attempt: int, s: _Inputs):
         self.ps, self.attempt = ps, attempt
-        self.counterpart = _counterparts(ps, attempt)
-        self.soundness = _soundness_ids(ps, attempt)
+        self.counterpart = conflict_counterparts(ps, attempt)
+        self.soundness = soundness_ids(ps, attempt)
         self.scope = {*argument_claims(ps, attempt), *s.synthesis}
-        self.dropped = _dropped(ps, attempt)
+        self.dropped = dropped_links(ps, attempt)
 
     def own(self, o: dict) -> set[str]:
         """The claims that may not answer the objection: its target's and a conflict's counterpart."""
@@ -450,7 +485,7 @@ class _Answers:
 
     def _target_live(self, o: dict) -> bool:
         t = o["target_id"]
-        return not _link_gone(self.ps, t) if t.startswith("edg_") else not _withdrawn(self.ps, _claim_end(self.ps, t))
+        return not link_gone(self.ps, t) if t.startswith("edg_") else not _withdrawn(self.ps, _claim_end(self.ps, t))
 
     def why(self, o: dict) -> str | None:
         """Why the objection is not answered (``None`` when it is)."""
@@ -539,7 +574,7 @@ def argue_limitations(ps: ProjectStore, attempt: int) -> dict:
     s = _load(ps)
     synth = [] if isinstance(s, str) else synthesis_claims(ps, s.synth_attempt)
     svc = ArgumentService(ps)
-    objections = [_row(ps, "objections", o) for o in _objection_ids(ps, attempt)]
+    objections = [_row(ps, "objections", o) for o in argument_objection_ids(ps, attempt)]
     scope = [*argument_claims(ps, attempt), *synth]
     end = argue_notes(ps, attempt, kind="end")
     return {
@@ -715,22 +750,8 @@ class ArgueWorker:
 
     # ---- views ----
     def _roles(self, ps: ProjectStore, attempt: int, s: _Inputs) -> dict[str, str]:
-        """claim id -> its role in the argument (``main``, ``reason``, ``response``, ``warrant``, ``synthesis``), for
-        the claims not withdrawn; a rewrite takes its original's role."""
-        roles: dict[str, str] = dict.fromkeys(s.synthesis, "synthesis")
-        for n in _drafts(ps, attempt):
-            roles.update(dict.fromkeys(n.get("reason_claim_ids") or [], "reason"))
-            roles.update(dict.fromkeys(n.get("response_claim_ids") or [], "response"))
-            roles.update(dict.fromkeys(n.get("warrant_claim_ids") or [], "warrant"))
-            if n.get("main_claim_id"):
-                roles[n["main_claim_id"]] = "main"
-        for cid in argument_claims(ps, attempt):
-            if cid not in roles:
-                root = cid
-                while root not in roles and (up := _claim(ps, root).get("narrowed_from")):
-                    root = up
-                roles[cid] = roles.get(root, "reason")
-        return {c: r for c, r in roles.items() if not _withdrawn(ps, c)}
+        """``argument_roles`` of the claims not withdrawn."""
+        return {c: r for c, r in argument_roles(ps, attempt, s.synthesis).items() if not _withdrawn(ps, c)}
 
     def _view(self, ps: ProjectStore, attempt: int, s: _Inputs) -> dict:
         svc = ArgumentService(ps)
@@ -741,14 +762,14 @@ class ArgueWorker:
                            "origin": c.get("origin"), "contested": bool(c.get("contested")),
                            "scope_limits": c.get("scope_limits") or [], "evidence": _evidence_view(c)})
         edges = []
-        for eid in _edges(ps, attempt):
-            if _link_gone(ps, eid):
+        for eid in argument_edge_ids(ps, attempt):
+            if link_gone(ps, eid):
                 continue
             e = _row(ps, "edges", eid)
             edges.append({k: e[k] for k in ("id", "type", "from_id", "to_id", "warrant", "warrant_tests") if e.get(k)})
         objections = [{k: o.get(k) for k in ("id", "target_id", "category", "text", "priority", "source_id", "status",
                                              "response_claim_id", "note")}
-                      for o in (_row(ps, "objections", i) for i in _objection_ids(ps, attempt))]
+                      for o in (_row(ps, "objections", i) for i in argument_objection_ids(ps, attempt))]
         return {"main_claim_id": main_claim(ps, attempt), "claims": claims, "edges": edges, "objections": objections}
 
     def _answerable(self, ps: ProjectStore, attempt: int, s: _Inputs) -> list[dict]:
@@ -756,23 +777,23 @@ class ArgueWorker:
         supported, or not allowed to); not those on a target that left the argument (they are conceded with it)."""
         answers = self._answers(ps, attempt, s)
         out = []
-        for oid in _objection_ids(ps, attempt):
+        for oid in argument_objection_ids(ps, attempt):
             o = _row(ps, "objections", oid)
             if not _concedable(ps, o) or answers.why(o) is None:
                 continue
             t = o["target_id"]
-            if (t.startswith("edg_") and _link_gone(ps, t)) or (not t.startswith("edg_")
+            if (t.startswith("edg_") and link_gone(ps, t)) or (not t.startswith("edg_")
                                                                  and _withdrawn(ps, _claim_end(ps, t))):
                 continue
             out.append(o)
         return out
 
     def _untested(self, ps: ProjectStore, attempt: int) -> list[dict]:
-        dropped = _dropped(ps, attempt)
+        dropped = dropped_links(ps, attempt)
         out = []
-        for eid in _edges(ps, attempt):
+        for eid in argument_edge_ids(ps, attempt):
             e = _row(ps, "edges", eid)
-            if e["type"] != "warrant_of" or e.get("warrant_tests") or e["to_id"] in dropped or _link_gone(ps, eid):
+            if e["type"] != "warrant_of" or e.get("warrant_tests") or e["to_id"] in dropped or link_gone(ps, eid):
                 continue
             lic = _row(ps, "edges", e["to_id"])
             out.append({"edge_id": eid, "warrant": e["warrant"], "warrant_claim": _claim(ps, e["from_id"])["text"],
@@ -785,7 +806,7 @@ class ArgueWorker:
         svc = ArgumentService(ps)
         claims = list(self._roles(ps, attempt, s))
         return {*claims, *(e["id"] for c in claims for e in svc.list_evidence(c)),
-                *(e for e in _edges(ps, attempt) if not _link_gone(ps, e))}
+                *(e for e in argument_edge_ids(ps, attempt) if not link_gone(ps, e))}
 
     def _inputs(self, ps: ProjectStore, attempt: int, s: _Inputs, r: int, guidance: str) -> dict:
         svc = ArgumentService(ps)
@@ -818,7 +839,7 @@ class ArgueWorker:
             if r == 1 and not closing:
                 return StageOutcome("rerun", reason=f"the arguer gave no argument ({res.error})")
             _note(ps, attempt, kind, actor=ctx.actor, round=r, error=res.error or "no output", claim_ids=[],
-                  tasks=counter.n)
+                  tasks=counter.n, synthesis_attempt=s.synth_attempt)
             return None
         d, vendor = res.output, vendor_of(res.provider, res.model)
         if not closing:
@@ -839,7 +860,8 @@ class ArgueWorker:
         fields = self._store(cctx, s, d, vendor, r, closing=closing)
         # noted before verifying: a round interrupted while its claims are verified resumes with the verification
         _note(ps, attempt, kind, actor=ctx.actor, round=r, vendor=vendor, error=None, tasks=counter.n,
-              answers_rq=d.answers_rq.model_dump() if (r == 1 and not closing and d.answers_rq) else None, **fields)
+              answers_rq=d.answers_rq.model_dump() if (r == 1 and not closing and d.answers_rq) else None,
+              synthesis_attempt=s.synth_attempt, **fields)
         self._verify_pending(ctx, r)
         return None
 
@@ -934,9 +956,9 @@ class ArgueWorker:
                 refs[rd.ref] = cid
             stored.append((rd, cid))
         supports: dict[str, set[str]] = {}  # the argument's reason links, to refuse a cycle
-        for eid in _edges(ctx.ps, ctx.attempt):
+        for eid in argument_edge_ids(ctx.ps, ctx.attempt):
             e = _row(ctx.ps, "edges", eid)
-            if e["type"] == "reason_of" and not _link_gone(ctx.ps, eid):
+            if e["type"] == "reason_of" and not link_gone(ctx.ps, eid):
                 supports.setdefault(e["from_id"], set()).add(e["to_id"])
 
         def reaches(start: str, goal: str) -> bool:
@@ -1052,7 +1074,7 @@ class ArgueWorker:
         c, vendor = res.output, vendor_of(res.provider, res.model)
         targets = self._targets(ps, attempt, s)
         seen = {(o["target_id"], _norm(o["text"])) for o in (_row(ps, "objections", i)
-                                                             for i in _objection_ids(ps, attempt))}
+                                                             for i in argument_objection_ids(ps, attempt))}
         f = dict(empty)
         f["objection_ids"], f["dropped"], f["sources_dropped"] = [], [], []
         for o in c.objections:
@@ -1287,7 +1309,7 @@ class ArgueWorker:
     @staticmethod
     def _summary(ps: ProjectStore, attempt: int) -> str:
         claims = [_claim(ps, c) for c in argument_claims(ps, attempt)]
-        objections = [_row(ps, "objections", o) for o in _objection_ids(ps, attempt)]
+        objections = [_row(ps, "objections", o) for o in argument_objection_ids(ps, attempt)]
         end = argue_notes(ps, attempt, kind="end")
         rounds = len(argue_notes(ps, attempt, kind="draft"))
         return (f"{len(claims)} argument claims ({sum(c['status'] == 'supported' for c in claims)} supported), "
@@ -1309,7 +1331,7 @@ class ArgueWorker:
         for c in dict.fromkeys([*argument_claims(ps, attempt), *s.synthesis]):
             if c not in withdrawable:
                 out += [f"{c}: {p.line}" for p in claim_problems(ps, c) if p.kind not in ("status", "objection")]
-        for oid in _objection_ids(ps, attempt):
+        for oid in argument_objection_ids(ps, attempt):
             o = _row(ps, "objections", oid)
             if ((why := answers.why(o)) is not None and not self._mendable(answers, o, listed)
                     and not _target_claims(ps, o["target_id"]) & withdrawable):
@@ -1403,7 +1425,7 @@ class ArgueWorker:
             failures.append(f"the main claim {main} was withdrawn: the argument has no main claim")
         failures += self._warrant_failures(ps, attempt, s)
         open_p1 = []
-        for oid in _objection_ids(ps, attempt):
+        for oid in argument_objection_ids(ps, attempt):
             o = _row(ps, "objections", oid)
             if (why := answers.why(o)) is not None:
                 failures.append(f"objection {oid} (priority {o.get('priority', 1)}, on {o['target_id']}) {why}")
@@ -1439,7 +1461,7 @@ class ArgueWorker:
         """Whether one of the attempt's objections on ``target_id`` (among ``only``, if given) is responded by a claim
         that answers it, or would once you support it (``mendable``)."""
         answers = self._answers(ps, attempt, s)
-        for oid in _objection_ids(ps, attempt):
+        for oid in argument_objection_ids(ps, attempt):
             o = _row(ps, "objections", oid)
             if o["target_id"] != target_id or o["status"] != "responded" or (only is not None and oid not in only):
                 continue
@@ -1452,11 +1474,11 @@ class ArgueWorker:
                           withdrawable: frozenset[str] | set[str] = frozenset()) -> list[str]:
         """Every warrant of a link still in the argument has its tests, and each failed test is answered by a
         supported response claim (or the link was dropped). Links with a ``withdrawable`` end are skipped."""
-        dropped = _dropped(ps, attempt)
+        dropped = dropped_links(ps, attempt)
         out = []
-        for eid in _edges(ps, attempt):
+        for eid in argument_edge_ids(ps, attempt):
             e = _row(ps, "edges", eid)
-            if e["type"] != "warrant_of" or e["to_id"] in dropped or _link_gone(ps, e["to_id"]) \
+            if e["type"] != "warrant_of" or e["to_id"] in dropped or link_gone(ps, e["to_id"]) \
                     or _target_claims(ps, e["to_id"]) & set(withdrawable):
                 continue
             tests = e.get("warrant_tests")
@@ -1474,7 +1496,7 @@ class ArgueWorker:
         """Every contested claim of the argument has one of the attempt's conflict objections answered by a supported
         response claim of the argument (the structural V-BALANCE input). A contested finding with no recorded
         ``both_contested`` decision (``imported`` ``untraced``) has nothing to answer and fails by name."""
-        conflicts = set(_counterparts(ps, attempt))
+        conflicts = set(conflict_counterparts(ps, attempt))
         untraced = {c for n in argue_notes(ps, attempt, kind="imported") for c in n.get("untraced") or []}
         out = []
         for cid in self._roles(ps, attempt, s):
@@ -1559,7 +1581,7 @@ class ArgueWorker:
                 removed.append(cid)
                 done.append(f"contested {cid} withdrawn")
         answers = self._answers(ps, attempt, s)
-        for oid in _objection_ids(ps, attempt):
+        for oid in argument_objection_ids(ps, attempt):
             o = _row(ps, "objections", oid)
             if _concedable(ps, o) and answers.why(o) is not None:
                 svc.respond_objection(oid, response_claim_id=None, status="conceded",
@@ -1583,7 +1605,7 @@ class ArgueWorker:
         ps, attempt = ctx.ps, ctx.attempt
         svc = ArgumentService(ps)
         copied = []
-        for eid in _edges(ps, attempt):
+        for eid in argument_edge_ids(ps, attempt):
             e = _row(ps, "edges", eid)
             if e["type"] != "reason_of" or old not in (e["from_id"], e["to_id"]):
                 continue
@@ -1598,7 +1620,7 @@ class ArgueWorker:
         for ev in svc.list_evidence(new):
             copied.append(svc.add_edge(EdgeIn(from_id=ev["id"], to_id=new, type="evidence_of"), actor=ctx.actor,
                                        actor_kind="kernel"))
-        for oid in _objection_ids(ps, attempt):
+        for oid in argument_objection_ids(ps, attempt):
             o = _row(ps, "objections", oid)
             if o["status"] == "responded" and o.get("response_claim_id") == old:
                 svc.respond_objection(oid, response_claim_id=new, status="responded",
@@ -1660,9 +1682,9 @@ class ArgueWorker:
         ps, attempt = ctx.ps, ctx.attempt
         svc = ArgumentService(ps)
         done = []
-        for eid in _edges(ps, attempt):
+        for eid in argument_edge_ids(ps, attempt):
             e = _row(ps, "edges", eid)
-            if e["type"] != "warrant_of" or e["to_id"] in _dropped(ps, attempt) or _link_gone(ps, e["to_id"]):
+            if e["type"] != "warrant_of" or e["to_id"] in dropped_links(ps, attempt) or link_gone(ps, e["to_id"]):
                 continue
             tests = e.get("warrant_tests")
             bad = [k for k, t in (tests or {}).items() if not t["ok"]]

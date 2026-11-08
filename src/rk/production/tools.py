@@ -21,10 +21,17 @@ from rk.orchestrator.state import attempt_ran, shown_attempt, stage_row
 from rk.production.argue import (
     argue_limitations,
     argue_notes,
-    argument_claims,
+    argued_synthesis_attempt,
+    argument_edge_ids,
+    argument_objection_ids,
+    argument_roles,
+    conflict_counterparts,
+    dropped_links,
+    link_gone,
     main_claim,
+    soundness_ids,
 )
-from rk.production.artifacts import artifacts
+from rk.production.artifacts import ARTIFACT_MEDIA_TYPES, artifacts
 from rk.production.design import design_notes, design_problems, feasibility_claims
 from rk.production.extraction import (
     extraction_limitations,
@@ -52,8 +59,8 @@ from rk.production.store import (
     records,
 )
 from rk.production.synthesis import (
-    _label,
     pool_options,
+    study_label,
     synthesis_claims,
     synthesis_limitations,
     synthesis_notes,
@@ -68,13 +75,11 @@ from rk.verify.prisma import (
     prisma_counts,
     prisma_notes,
 )
-from rk.verify.stats import check_stats
-from rk.verify.support import claim_problems
+from rk.verify.stats import StatsResult, check_stats
+from rk.verify.support import check_claim_hedge, claim_problems
 
 SEARCH_SCREEN, READ_EXTRACT = "search_screen", "read_extract"
 SYNTHESIZE, ARGUE, DESIGN = "synthesize", "argue", "design"
-# How the Workbench serves an artifact file, by its suffix (rk.ui.api's artifact route)
-ARTIFACT_MEDIA_TYPES = {".svg": "image/svg+xml", ".md": "text/plain; charset=utf-8", ".json": "application/json"}
 
 
 class ProtocolGet(BaseModel):
@@ -162,41 +167,48 @@ def _evidence_note(ps: ProjectStore, note_id: str, titles: dict[str, str]) -> di
     if n is None:
         return {"id": note_id, "missing": True}
     item = json.loads(ps.db.execute("SELECT data FROM notes WHERE id=?", (note_id,)).fetchone()["data"])["item_id"]
-    return {**n, "item_id": item, "label": _label(ps, item), "title": titles.get(item, "")}
+    return {**n, "item_id": item, "label": study_label(ps, item), "title": titles.get(item, "")}
 
 
-def claim_view(ps: ProjectStore, claim_id: str, *, role: str | None = None,
-               titles: dict[str, str] | None = None) -> dict:
+def claim_view(ps: ProjectStore, claim_id: str, *, role: str | None = None, titles: dict[str, str] | None = None,
+               stats: dict[str, StatsResult] | None = None) -> dict:
     """A claim as the views show it: its text, kind, origin and status (``support_reason``: V-SUPPORT's recorded
-    reason), why it was withdrawn or is contested, V-HEDGE (its wording's level and the recorded verdict), for a
-    ``stat_result`` its artifacts and V-STATS rerun now (``pass`` / ``mismatch``), its evidence with the criteria and
-    the quoted notes, and ``problems``: why it fails the claim gate now (``claim_problems``)."""
+    reason), why it was withdrawn or is contested, V-HEDGE rerun now (the wording's level, the verdict and its
+    problems; ``None`` for a withdrawn claim, which is out of the argument), for a ``stat_result`` its artifacts and
+    V-STATS rerun now (``pass`` / ``mismatch``; ``stats``: the artifacts' results already rerun for this read), its
+    evidence with the criteria and the quoted notes, and ``problems``: why it fails the claim gate now
+    (``claim_problems``, with the same V-HEDGE and V-STATS results)."""
     titles = _titles(ps) if titles is None else titles
     c = ArgumentService(ps).get_claim(claim_id)
-    problems = claim_problems(ps, claim_id)
-    hedge = _latest(ps, claim_id, "V-HEDGE")
+    live = c["status"] != "withdrawn"
+    hedge = check_claim_hedge(ps, claim_id, record=False) if live else None
+    mine = {}
+    if c["kind"] == "stat_result":
+        given = stats or {}
+        mine = {a: given[a] if a in given else check_stats(ps, a, record=False) for a in c.get("artifact_ids") or []}
+    problems = claim_problems(ps, claim_id, hedge=hedge, stats=mine) if live else []
     support = _latest(ps, claim_id, "V-SUPPORT")
     out = {"id": claim_id, "text": c["text"], "kind": c["kind"], "origin": c.get("origin") or "argument",
            "role": role, "status": c["status"], "support_reason": (support or {}).get("details", {}).get("reason"),
            "scope_limits": c.get("scope_limits") or [], "narrowed_from": c.get("narrowed_from"),
            "withdrawn_reason": c.get("withdrawn_reason"), "contested": bool(c.get("contested")),
            "contested_reason": c.get("contested_reason"),
-           "hedge": {"level": c.get("hedge_level"), "verdict": hedge["verdict"] if hedge else None,
-                     "problems": hedge["details"].get("problems", []) if hedge else []},
+           "hedge": {"level": hedge.claim_level if hedge else c.get("hedge_level"),
+                     "verdict": None if hedge is None else "pass" if hedge.ok else "overstated",
+                     "problems": list(hedge.problems) if hedge else []},
            "evidence": [{"id": e["id"], "criteria": e.get("criteria") or {},
                          "interpretation": e.get("interpretation") or "",
                          "notes": [_evidence_note(ps, n, titles) for n in e["note_ids"]]} for e in c["evidence"]],
            "problems": [p.line for p in problems]}
     if c["kind"] == "stat_result":
-        out["artifact_ids"] = list(c.get("artifact_ids") or [])
-        out["v_stats"] = "mismatch" if any(p.kind == "stats" for p in problems) else "pass"
+        out["artifact_ids"] = list(mine)
+        out["v_stats"] = "pass" if all(r.ok for r in mine.values()) else "mismatch"
     return out
 
 
-def _artifact_view(ps: ProjectStore, a: dict) -> dict:
-    """An artifact with its file's media type and V-STATS: ``verdict`` rerun now (``pass`` / ``mismatch``, with the
-    ``mismatches``; nothing is recorded) and the ``recorded`` verdict."""
-    now = check_stats(ps, a["id"], record=False)
+def _artifact_view(ps: ProjectStore, a: dict, now: StatsResult) -> dict:
+    """An artifact with its file's media type and V-STATS: ``verdict`` rerun now (``now``: ``pass`` / ``mismatch``,
+    with the ``mismatches``; nothing is recorded) and the ``recorded`` verdict."""
     recorded = _latest(ps, a["id"], "V-STATS")
     return {k: a[k] for k in ("id", "kind", "code_path", "code_version", "values", "path", "sha256")} | {
         "media_type": ARTIFACT_MEDIA_TYPES.get(Path(a["path"]).suffix, "application/octet-stream"),
@@ -231,7 +243,7 @@ def synthesis_view(ps: ProjectStore, attempt: int | None = None) -> dict:
     notes = synthesis_notes(ps, attempt)
 
     def study(item_id: str) -> dict:
-        return {"item_id": item_id, "label": _label(ps, item_id), "title": titles.get(item_id, "")}
+        return {"item_id": item_id, "label": study_label(ps, item_id), "title": titles.get(item_id, "")}
 
     plans = [n for n in notes if n["kind"] == "plan"]
     decided, fell, pooled = (_by_group(notes, k) for k in ("decision", "fallback", "pooled"))
@@ -255,12 +267,13 @@ def synthesis_view(ps: ProjectStore, attempt: int | None = None) -> dict:
     narrative = [n for n in notes if n["kind"] == "narrative"]
     maps = [n for n in notes if n["kind"] == "map"]
     made = {a["id"]: a for a in artifacts(ps, SYNTHESIZE, attempt)}
+    stats = {aid: check_stats(ps, aid, record=False) for aid in made}  # V-STATS once per read
     out.update(
         assessments=[study(a["item_id"]) | {"criteria": a["criteria"], "capped": a["capped"],
                                             "note_ids": a["note_ids"]}
                      for a in notes if a["kind"] == "assessment"],
-        groups=groups, artifacts=[_artifact_view(ps, a) for a in made.values()],
-        findings=[claim_view(ps, c, titles=titles) for c in synthesis_claims(ps, attempt)],
+        groups=groups, artifacts=[_artifact_view(ps, a, stats[aid]) for aid, a in made.items()],
+        findings=[claim_view(ps, c, titles=titles, stats=stats) for c in synthesis_claims(ps, attempt)],
         narrative={**narrative[-1]["output"], "included_k": narrative[-1]["included_k"],
                    "selection_basis": narrative[-1]["selection_basis"]} if narrative else None,
         map={"stt": maps[-1]["stt"], "fig": maps[-1]["fig"], "fields": maps[-1]["fields"],
@@ -280,85 +293,48 @@ def _row(ps: ProjectStore, table: str, id_: str) -> dict:
     return json.loads(ps.db.execute(f"SELECT data FROM {table} WHERE id=?", (id_,)).fetchone()["data"])
 
 
-def _edge_out(ps: ProjectStore, edge: dict, dropped: set[str]) -> bool:
-    """Whether the edge left the argument: dropped (a link whose warrant failed), or a withdrawn claim at either end
-    (a warrant's: at either end of the edge it licenses)."""
-    if edge["id"] in dropped:
-        return True
-    for end in (edge["from_id"], edge["to_id"]):
-        if end.startswith("edg_"):
-            if _edge_out(ps, _row(ps, "edges", end), dropped):
-                return True
-            continue
-        claim = _row(ps, "evidence", end)["claim_id"] if end.startswith("evd_") else end
-        if end.startswith(("clm_", "evd_")) and _row(ps, "claims", claim)["status"] == "withdrawn":
-            return True
-    return False
-
-
 def argument_view(ps: ProjectStore, attempt: int | None = None, claim_id: str | None = None) -> dict:
-    """The argument of an ``argue`` attempt (default: the one it shows): the frozen RQ's question and the main claim;
-    every claim (``claim_view``) with its ``role``: ``main``, ``reason``, ``response`` (rewrites take their original's
-    role), ``warrant`` (a reason edge's warrant, origin ``warrant``) or ``finding`` (the synthesis findings it rests
-    on); the edges (``out``: left the argument); the warrants with the Skeptic's tests; the objections with their
-    answer and response claim; the conflicts with their decision; the RQ checks (the Arguer's self-check and yours or
-    the vote's); how the rounds ended; the limitations input and the gate. With ``claim_id`` only that claim, the
-    edges into or out of it or its evidence, their warrants, and the objections on it, its evidence or those edges."""
+    """The argument of an ``argue`` attempt (default: the one it shows), in argue's own terms: the frozen RQ's
+    question, the main claim and the Arguer's self-check; the synthesize attempt it argued on
+    (``argued_synthesis_attempt``); every claim (``claim_view``) with its role (``argument_roles``: ``main``,
+    ``reason``, ``response``, ``warrant`` or ``synthesis``), where the findings are that synthesize attempt's supported
+    findings and, out of the argument, its withdrawn ones; the edges (``argument_edge_ids``; ``out``: ``link_gone``,
+    ``dropped``: ``dropped_links``); the warrants with the Skeptic's tests; the objections (``argument_objection_ids``)
+    with their answer and response claim (``soundness``: a failed warrant test; ``counterpart``: the claim a conflict
+    objection says contradicts its target); the conflicts with their decision; the RQ checks; how the rounds ended;
+    the limitations input and the gate. With ``claim_id`` only that claim, the edges into or out of it or its
+    evidence, their warrants, and the objections on it, its evidence or those edges."""
     if attempt is None:
         attempt = shown_attempt(ps, ARGUE)
-    out = {"attempt": attempt, "question": _question(ps), "main_claim_id": None, "self_check": None, "claims": [],
-           "edges": [], "warrants": [], "objections": [], "conflicts": [], "rq_checks": [], "end": None,
-           "limitations": None, "gate": None}
+    out = {"attempt": attempt, "question": _question(ps), "synthesis_attempt": None, "main_claim_id": None,
+           "self_check": None, "claims": [], "edges": [], "warrants": [], "objections": [], "conflicts": [],
+           "rq_checks": [], "end": None, "limitations": None, "gate": None}
     if attempt is None:
         if claim_id is not None:
             raise ToolError("not_found", f"no claim {claim_id} in the argument: argue has not run", status=404)
         return out
+    svc = ArgumentService(ps)
     notes = argue_notes(ps, attempt)
     titles = _titles(ps)
-    roles: dict[str, str] = {}
-    for n in notes:
-        if n["kind"] not in ("draft", "closing"):
-            continue
-        if n.get("main_claim_id"):
-            roles[n["main_claim_id"]] = "main"
-        for key, role in (("reason_claim_ids", "reason"), ("response_claim_ids", "response")):
-            roles.update({c: role for c in n.get(key) or [] if c not in roles})
-    for cid in argument_claims(ps, attempt):
-        root = cid
-        while root not in roles and (up := _row(ps, "claims", root).get("narrowed_from")):
-            root = up
-        roles.setdefault(cid, roles.get(root, "reason"))
-    for n in notes:
-        roles.update({c: "warrant" for c in n.get("warrant_claim_ids") or [] if n["kind"] in ("draft", "closing")})
-    synth = stage_row(ps, SYNTHESIZE)
-    findings = synthesis_claims(ps, synth["passed_attempt"]) if synth and synth["passed_attempt"] else []
-    for n in notes:
-        findings += [c for c in n.get("reused") or [] if c not in roles and c not in findings]
-    roles.update({c: "finding" for c in findings if c not in roles})
-    dropped = {n["edge_id"] for n in notes if n["kind"] == "dropped_link"}
-    edge_ids = list(dict.fromkeys(e for n in notes if n["kind"] in ("draft", "closing", "rewrite")
-                                  for e in n.get("edge_ids") or []))
-    objection_ids = list(dict.fromkeys(o for n in notes for k in ("objection_ids", "soundness_ids")
-                                       for o in n.get(k) or []))
-    soundness = {o for n in notes for o in n.get("soundness_ids") or []}
-    conflict_objections = {o for n in notes if n["kind"] in ("conflict_decision", "imported")
-                           for o in n.get("conflict_objections") or {}}
-    objections = [_row(ps, "objections", o) for o in objection_ids]
-    edge_ids += [e["id"] for o in objections if o.get("response_claim_id")
-                 for e in ArgumentService(ps).list_edges(from_id=o["response_claim_id"], to_id=o["id"],
-                                                         type="response_to") if e["id"] not in edge_ids]
-    edges = [_row(ps, "edges", e) for e in edge_ids]
+    synth = argued_synthesis_attempt(ps, attempt)
+    findings = [c for c in (synthesis_claims(ps, synth) if synth else [])
+                if svc.get_claim(c)["status"] in ("supported", "withdrawn")]
+    roles = argument_roles(ps, attempt, findings)
+    dropped = dropped_links(ps, attempt)
+    counterparts = conflict_counterparts(ps, attempt)
+    soundness = soundness_ids(ps, attempt)
+    edges = [_row(ps, "edges", e) for e in argument_edge_ids(ps, attempt)]
+    objections = [_row(ps, "objections", o) for o in argument_objection_ids(ps, attempt)]
     if claim_id is not None:
         if claim_id not in roles:
             raise ToolError("not_found", f"no claim {claim_id} in argue attempt {attempt}", status=404)
-        ends = {claim_id, *(e["id"] for e in ArgumentService(ps).list_evidence(claim_id))}
-        edges = [e for e in edges if e["from_id"] in ends or e["to_id"] in ends]
-        edges += [e for e in (_row(ps, "edges", x) for x in edge_ids) if e["type"] == "warrant_of"
-                  and e["to_id"] in {x["id"] for x in edges}]
+        ends = {claim_id, *(e["id"] for e in svc.list_evidence(claim_id))}
+        touching = {e["id"] for e in edges if e["from_id"] in ends or e["to_id"] in ends}
+        edges = [e for e in edges if e["id"] in touching or (e["type"] == "warrant_of" and e["to_id"] in touching)]
         targets = ends | {e["id"] for e in edges}
         objections = [o for o in objections if o["target_id"] in targets]
         roles = {claim_id: roles[claim_id]}
-    order = {"main": 0, "reason": 1, "response": 2, "warrant": 3, "finding": 4}
+    order = {"main": 0, "reason": 1, "response": 2, "warrant": 3, "synthesis": 4}
     decisions = {n["index"]: n for n in notes if n["kind"] == "conflict_decision"}
     drafts = [n for n in notes if n["kind"] == "draft"]
     ends_notes = [n for n in notes if n["kind"] == "end"]
@@ -371,18 +347,18 @@ def argument_view(ps: ProjectStore, attempt: int | None = None, claim_id: str | 
         return {"id": rc, "text": c["text"], "status": c["status"]}
 
     out.update(
-        main_claim_id=main_claim(ps, attempt), self_check=drafts[0].get("answers_rq") if drafts else None,
-        claims=[claim_view(ps, c, role=r, titles=titles)
-                for c, r in sorted(roles.items(), key=lambda x: order[x[1]])],
+        synthesis_attempt=synth, main_claim_id=main_claim(ps, attempt),
+        self_check=drafts[0].get("answers_rq") if drafts else None,
+        claims=[claim_view(ps, c, role=r, titles=titles) for c, r in sorted(roles.items(), key=lambda x: order[x[1]])],
         edges=[{k: e.get(k) for k in ("id", "type", "from_id", "to_id", "warrant", "warrant_tests")}
-               | {"out": _edge_out(ps, e, dropped), "dropped": e["id"] in dropped} for e in edges],
+               | {"out": link_gone(ps, e["id"]), "dropped": e["id"] in dropped} for e in edges],
         warrants=[{"edge_id": e["id"], "claim_id": e["from_id"], "text": _row(ps, "claims", e["from_id"])["text"],
                    "licenses": e["to_id"], "warrant": e["warrant"], "tests": e.get("warrant_tests"),
                    "dropped": e["to_id"] in dropped} for e in edges if e["type"] == "warrant_of"],
         objections=[{k: o.get(k) for k in ("id", "target_id", "category", "text", "priority", "source_id", "status",
                                            "note", "response_claim_id")}
                     | {"response": response(o), "soundness": o["id"] in soundness,
-                       "conflict": o["id"] in conflict_objections} for o in objections],
+                       "counterpart": counterparts.get(o["id"])} for o in objections],
         conflicts=[{k: n.get(k) for k in ("round", "index", "claim_a", "claim_b", "why", "checkpoint_id")}
                    | {"decision": {k: decisions[n["index"]].get(k) for k in ("decision", "by", "reason", "comment")}
                       if n["index"] in decisions else None}

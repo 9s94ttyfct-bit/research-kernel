@@ -22,6 +22,8 @@ from rk.store.projections import projection
 from rk.store.query import query_rows
 
 ARTIFACTS_DIR = "artifacts"
+# The media type of an artifact file, by its suffix (the Workbench serves the files with it)
+ARTIFACT_MEDIA_TYPES = {".svg": "image/svg+xml", ".md": "text/plain; charset=utf-8", ".json": "application/json"}
 _JSON_COLS = ("input_hashes", "values")
 
 
