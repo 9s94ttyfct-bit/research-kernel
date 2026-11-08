@@ -78,6 +78,7 @@ from tests.test_synthesis import (
     META,
     META2,
     Exec,
+    NoNarrative,
     _enable_stats,
     _one_group,
     _setup,
@@ -700,13 +701,65 @@ def test_pooling_card_back_names_the_study_to_read_again(page, served):
     form = card.locator("form.back-read")
     assert form.get_by_text("Aronson 1950").count() == 1 and form.get_by_text("Ferguson 1951").count() == 1
     form.get_by_label("Read again: Ferguson 1951").check()
+    form.locator(".back-study", has_text="Ferguson 1951").get_by_text("Fields to look for (optional)").click()
+    form.get_by_label("Look for n_control in Ferguson 1951").check()
     form.get_by_label("Why go back", exact=False).fill("Table 3 gives the arm sizes.")
     form.get_by_role("button", name="Back to read_extract").click()
     assert _answer_of(ps, cp["id"]) == {"decision": "back", "studies": [ids["Ferguson"]],
+                                        "fields": {ids["Ferguson"]: ["n_control"]},
                                         "comment": "Table 3 gives the arm sizes."}
     until(lambda: stage_row(ps, "read_extract")["attempt"] == 2)
     assert reread_request(ps, 2) == {ids["Ferguson"]}
     assert "Table 3 gives the arm sizes." in attempt_guidance(ps, "read_extract", 2)
+    assert page.errors == []
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("served", [{"paper_type": "critical_review"}], indirect=True)
+def test_missing_narrative_card_offers_rerun_and_back(page, served):
+    """Fix round 1 (I-2): no narrative synthesis in P2: the card has no review to submit, only rerun and back."""
+    from rk.production.models import SynthesisPlan
+
+    ps = served.ps
+    _setup(served.env, {"A": {"design": "rct"}, "B": {"design": "cohort"}}, schema=[DESIGN],
+           plan=SynthesisPlan(method="thematic"))
+    ex = NoNarrative(synth_exec(narratives=[narrative(), narrative()]).script)
+    _start(served, "synthesize", ex)
+    cp, card = _show(page, ps, "uncertain_support")
+    assert cp["options"]["narrative_missing"]
+    assert card.get_by_text("gave no narrative synthesis", exact=False).count() >= 1
+    assert card.get_by_role("button", name="Submit your review").count() == 0
+    assert card.locator("form.back-read").count() == 1
+    card.get_by_label("What should change (synthesize runs again with your comment)").fill("Group by design.")
+    card.get_by_role("button", name="Ask for a revision").click()
+    assert _answer_of(ps, cp["id"]) == {"decision": "rerun", "comment": "Group by design."}
+    until(lambda: stage_row(ps, "synthesize")["attempt"] == 2)
+    assert page.errors == []
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("served", [{"paper_type": "critical_review"}], indirect=True)
+def test_final_review_card_lists_a_finding_withdraw_only(page, served):
+    """Minor 8: argue's review lists a finding left with an unanswered objection; the card offers only Withdraw."""
+    ps = served.ps
+    a, _ = _synthesize(served.env)
+
+    def on_finding(inputs):
+        return {"target_id": a, "category": "problem", "priority": 2, "text": "The trial enrolled people under 65."}
+
+    ex = argue_exec([draft(), responses(), responses()], [critique(objections=[on_finding]), critique()])
+    run_id = _start(served, "argue", ex)
+    cp, card = _show(page, ps, "uncertain_support")
+    assert cp["options"]["claim_ids"] == [a]
+    row = card.locator(f'[data-claim-review="{a}"]')
+    assert row.get_by_text(F1, exact=False).count() >= 1
+    assert row.get_by_text("under 65", exact=False).count() >= 1
+    assert row.get_by_label(f"Supported: {F1}").count() == 0
+    row.get_by_label(f"Withdraw: {F1}").check()
+    card.get_by_label("Yes, it answers the research question").check()
+    card.get_by_role("button", name="Submit your review").click()
+    assert _answer_of(ps, cp["id"]) == {"claims": {a: "withdraw"}, "answers_rq": "yes"}
+    until(lambda: run_row(ps, run_id)["status"] == "done")
     assert page.errors == []
 
 

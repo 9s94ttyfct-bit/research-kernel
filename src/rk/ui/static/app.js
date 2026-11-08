@@ -683,21 +683,34 @@ const studyNames = (list) => list.map((s) => s.label).join(", ");
 // optional comment, the guidance read_extract gets. Offered when the checkpoint lists `back` among its decisions.
 function backToReadForm(o, answer) {
   const studies = o.studies || [];
+  const fields = o.fields || [];
   const picked = new Set();
+  const look = new Map();  // study id -> the fields to look for in it (optional)
   const why = el("textarea", { name: "back_comment" });
+  const study = (s) => el("div", { class: "back-study" },
+    el("label", { class: "choice" },
+      el("input", { type: "checkbox", value: s.item_id, "aria-label": `Read again: ${s.label}`,
+        onchange: (e) => (e.target.checked ? picked.add(s.item_id) : picked.delete(s.item_id)) }), s.label),
+    fields.length ? el("details", { class: "back-fields" }, el("summary", {}, "Fields to look for (optional)"),
+      el("div", { class: "choices" }, fields.map((f) => el("label", { class: "choice" },
+        el("input", { type: "checkbox", value: f, "aria-label": `Look for ${f} in ${s.label}`, onchange: (e) => {
+          const set = look.get(s.item_id) || new Set();
+          if (e.target.checked) set.add(f); else set.delete(f);
+          look.set(s.item_id, set);
+        } }), f)))) : null);
   const form = el("form", { class: "revise back-read" },
     studies.length ? el("fieldset", { class: "back-studies" },
       el("legend", {}, "Studies to read again (none ticked: those missing a value the pooling needs, else every study)"),
-      studies.map((s) => el("label", { class: "choice" },
-        el("input", { type: "checkbox", value: s.item_id, "aria-label": `Read again: ${s.label}`,
-          onchange: (e) => (e.target.checked ? picked.add(s.item_id) : picked.delete(s.item_id)) }), s.label))) : null,
+      studies.map(study)) : null,
     el("label", { class: "field" }, "Why go back (optional; what to look for, e.g. a table)", why),
     el("button", { type: "submit", class: "secondary" }, "Back to read_extract"));
   form.addEventListener("submit", (e) => {
     e.preventDefault();
     const comment = why.value.trim();
     const named = studies.map((s) => s.item_id).filter((id) => picked.has(id));
-    answer({ decision: "back", ...(named.length ? { studies: named } : {}), ...(comment ? { comment } : {}) });
+    const per = Object.fromEntries(named.filter((id) => look.get(id)?.size).map((id) => [id, fields.filter((f) => look.get(id).has(f))]));
+    answer({ decision: "back", ...(named.length ? { studies: named } : {}), ...(Object.keys(per).length ? { fields: per } : {}),
+      ...(comment ? { comment } : {}) });
   });
   return el("div", { class: "other-answers" }, el("h4", {}, "Or read studies again"), form);
 }
@@ -788,6 +801,7 @@ async function uncertainCard(c, answer) {
   return [
     rqAsked ? [el("h4", {}, "Research question"), el("p", { class: "rq-sentence" }, d.question || ""),
       el("h4", {}, "Main claim"), main ? claimBlock(main) : el("p", { class: "error" }, "The main claim was not found."),
+      (o.main_problems || []).length ? el("p", { class: "hint warn" }, "No answer here mends the main claim's own problems above: say whether it answers the research question, and argue again with your comment so the Arguer revises it.") : null,
       el("h4", {}, "Does the main claim answer the research question?"),
       choices(`rq-${c.id}`, "Does the main claim answer the research question?",
         [["yes", "Yes, it answers the research question", "Yes, it answers the research question"],
@@ -796,8 +810,9 @@ async function uncertainCard(c, answer) {
       el("p", { class: "hint" }, "Withdraw each, or call it supported when its only problem is that the judges did not find it supported. Withdrawing a claim takes it out and lists it in the limitations."),
       o.no_supported_left ? el("p", { class: "hint warn" }, "No other finding is supported: withdrawing every listed claim leaves the synthesis without one, and its gate fails. You may synthesize again, or read studies again, instead.") : null,
       el("ol", { class: "review-claims" }, o.claim_ids.map(row))] : null,
-    comment.field,
-    el("div", { class: "toolbar" }, submit, status),
+    o.narrative_missing ? el("p", { class: "hint warn" }, `The Arguer gave no narrative synthesis (${o.narrative_missing}), so there is nothing to review: synthesize again with your comment, or read studies again.`) : null,
+    o.narrative_missing ? null : comment.field,
+    o.narrative_missing ? null : el("div", { class: "toolbar" }, submit, status),
     el("div", { class: "other-answers" }, el("h4", {}, `Or ${rqAsked ? "argue" : "synthesize"} again`),
       reviseForm(`What should change (${rqAsked ? "argue" : "synthesize"} runs again with your comment)`, (text) => answer({ decision: "rerun", comment: text }))),
     !rqAsked && offersBack(o) ? backToReadForm(o, answer) : null,
@@ -1076,6 +1091,7 @@ pages.checkpoints = async (root) => {
   // (text written, a choice made, a record cap typed): then a notice offers it.
   const unfinished = (skip = null) => [...document.querySelectorAll("#page .checkpoints > li:not(.answered)")].some((x) => x !== skip && (
     [...x.querySelectorAll("textarea, input[type='number']")].some((t) => t.value.trim())
+    || x.querySelector(".card-body input[type='checkbox']:checked") !== null
     || x.querySelector(".card-body input[type='radio']:checked") !== null));
   const shown = new Set(open.checkpoints.map((c) => c.id));
   const notice = el("p", { class: "notice", role: "status", hidden: true }, "Checkpoints changed. ",

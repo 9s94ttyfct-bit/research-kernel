@@ -170,7 +170,9 @@ def review_listing(ps, claim_ids: list[str], extra: dict[str, list[str]] | None 
         problems, more = claim_problems(ps, cid), extra.get(cid) or []
         if problems or more:
             out[cid] = {"problems": [p.detail for p in problems] + more,
-                        "choices": review_choices(problems, structural=bool(more))}
+                        # a kernel-written statistical result is never marked supported over its kernel checks
+                        "choices": review_choices(problems, structural=bool(more)
+                                                  or svc.get_claim(cid).get("kind") == "stat_result")}
     return out
 
 

@@ -16,9 +16,11 @@ from rk.config import load_settings, save_settings
 from rk.discovery.executor import RateCapped
 from rk.fulltext import latest_snapshot
 from rk.library.models import Creator, Ids, ItemIn
+from rk.llm.types import TaskResult
 from rk.notes import NoteIn, add_note
 from rk.orchestrator.state import (
     current_stage,
+    degradations,
     edge_rows,
     latest_attempt,
     record_attempt,
@@ -28,7 +30,8 @@ from rk.orchestrator.state import (
 )
 from rk.production import store
 from rk.production.artifacts import artifact, artifacts
-from rk.production.claims import narrow_or_withdraw
+from rk.production.claims import narrow_or_withdraw, review_listing
+from rk.production.extraction import reread_request
 from rk.production.models import ExtractionField, OutcomeSpec, SynthesisPlan
 from rk.production.protocol import protocol_prereg_ok
 from rk.production.synthesis import (
@@ -1410,3 +1413,165 @@ def test_p1_narrows_a_failing_finding_at_once(env):
     assert (n["claim_id"], n["status"]) == (by_text[overstated]["id"], "narrowed")
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
     assert w.run(_ctx(env, ex)).status == "done" and len(ex.of("arguer", "NarrowedClaim")) == 1  # once each
+
+
+# ---- fix wave 2, fix round 1 ----
+class NoNarrative(Exec):
+    """``Exec`` whose first ``n`` narrative tasks give no output (a failed task)."""
+
+    def __init__(self, script, *, n: int = 1, **kw):
+        super().__init__(script, **kw)
+        self.n = n
+
+    def run(self, role, instructions, inputs, output_schema, **kw):
+        if output_schema.__name__ == "NarrativeSynthesis" and self.n > 0:
+            self.n -= 1
+            self.calls.append({"role": role, "schema": output_schema.__name__, "inputs": inputs})
+            return TaskResult("tsk_x", False, None, "", "claude_cli", "x", 0.0, "invalid_output")
+        return super().run(role, instructions, inputs, output_schema, **kw)
+
+
+def _uncertain_judge(*words: str, n: int = 12) -> dict:
+    def judge(inputs):
+        label = "partial" if any(w in inputs["claim"] for w in words) else "supported"
+        return {"label": label, "quoted_spans": [inputs["evidence"].split("\n\n")[0]]}
+    return {("judge", "JudgeVerdict"): [judge] * n, ("judge_2", "JudgeVerdict"): [judge] * n}
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "critical_review"}], indirect=True)
+def test_p1_narrowing_resumes_after_a_rate_cap_in_the_rewrites_verification(env):
+    """I-1: a rate cap while the judges verify the rewrite interrupts the attempt; the resumed attempt decides that
+    rewrite (both withdrawn: it is not supported either) without a ValueError and asks for no second rewrite."""
+    _, ps, _ = env
+    _setup(env, {"A": {"design": "rct"}, "B": {"design": "cohort"}}, schema=[DESIGN],
+           plan=SynthesisPlan(method="thematic"))
+    narrower = "Aspirin was studied in some older people."
+    ex = CapOnce({("arguer", "AssessmentOut"): [assess()], ("arguer", "NarrativeSynthesis"): [narrative()],
+                  ("arguer", "NarrowedClaim"): [{"text": narrower, "kind": "fact"}],
+                  **_uncertain_judge("older people")}, at=("judge", "JudgeVerdict"), n=2)
+    w = SynthesizeWorker()
+    with pytest.raises(RateCapped):
+        w.run(_ctx(env, ex))
+    assert w.run(_ctx(env, ex)).status == "done"
+    old, new = _claims(ps)
+    assert old["status"] == new["status"] == "withdrawn" and new["narrowed_from"] == old["id"]
+    assert len(ex.of("arguer", "NarrowedClaim")) == 1
+    assert [n["claim_id"] for n in synthesis_notes(ps, 1, kind="narrowed")] == [old["id"]]
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "critical_review", "production_mode": "collab"}], indirect=True)
+def test_p2_missing_narrative_asks_you_to_rerun_or_go_back(env):
+    """I-2: in P2 a failed narrative task opens uncertain_support with no claim: a claims answer is refused, rerun
+    needs a comment, back goes to read_extract."""
+    _, ps, _ = env
+    _setup(env, {"A": {"design": "rct"}, "B": {"design": "cohort"}}, schema=[DESIGN],
+           plan=SynthesisPlan(method="thematic"))
+    ex = NoNarrative(_exec().script)
+    w = SynthesizeWorker()
+    out = w.run(_ctx(env, ex))
+    assert out.status == "waiting_human", out.reason
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    assert cp["options"]["claim_ids"] == [] and cp["options"]["narrative_missing"]
+    assert set(cp["options"]["decisions"]) == {"rerun", "back"} and "no narrative synthesis" in cp["prompt"]
+    for bad in ({"claims": {}}, {"decision": "rerun"}):
+        out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], bad))
+        assert out.status == "waiting_human", bad
+        cp = get_checkpoint(ps, out.checkpoint_id)
+        assert cp["options"]["narrative_missing"] and "could not be applied" in cp["prompt"]
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decision": "rerun", "comment": "Group by design."}))
+    assert (out.status, out.reason) == ("rerun", "Group by design.")
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "critical_review"}], indirect=True)
+def test_p1_missing_narrative_reruns_and_degrade_reports_the_narrowings_of_finish(env):
+    """I-2 (P1 keeps the rerun) and minor 7: at the edge limit degrade finishes the synthesis, and the narrowings
+    ``_finish`` does are in what degrade reports."""
+    _, ps, _ = env
+    _setup(env, {"A": {"design": "rct"}, "B": {"design": "cohort"}}, schema=[DESIGN],
+           plan=SynthesisPlan(method="thematic"))
+    narrower = "Aspirin was studied in some older people."
+    ex = NoNarrative(_exec(narratives=[narrative(text="Aspirin was always studied in older people.")],
+                           narrowed=[{"text": narrower, "kind": "fact"}]).script)
+    w = SynthesizeWorker()
+    ctx = _ctx(env, ex)
+    out = w.run(ctx)
+    assert out.status == "rerun" and "no synthesis" in out.reason
+    out = w.degrade(ctx, [out.reason])
+    old, _new = _claims(ps)
+    assert out.status == "done" and f"{old['id']} narrowed to" in out.reason, out.reason
+    (deg,) = [d for d in degradations(ps) if d["stage"] == "synthesize"]
+    assert old["id"] in deg["removed"]
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review", "production_mode": "collab"}], indirect=True)
+def test_withdrawing_a_mismatched_stat_result_falls_back_and_passes_the_gate(env):
+    """Minor 1: a stat_result is withdraw-only in your review (any problem); withdrawing it falls the group back
+    (an analysis deviation) and the gate no longer checks its artifacts. P1: the narrowing does the same."""
+    import rk.production.synthesis as mod
+
+    _, ps, _ = env
+    _enable_stats()
+    _setup(env, dict(list(BCG.items())[:3]), schema=BINARY, plan=META)
+    ex = _exec(plans=[_one_group])
+    w = SynthesizeWorker()
+    cp = get_checkpoint(ps, w.run(_ctx(env, ex)).checkpoint_id)
+    assert w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decisions": {"0": "pool"}})).status == "done"
+    (stat,) = [c for c in _claims(ps) if c["kind"] == "stat_result"]
+    stt = next(a for a in artifacts(ps, "synthesize", 1) if a["kind"] == "stt")
+    store.mark_extraction(ps, stt["values"]["row_ids"][0], "missing: changed", actor="tester")
+    assert any(f"V-STATS mismatch {stt['id']}" in f for f in w.gate(ps, 1).failures)
+    listing = review_listing(ps, [stat["id"]])
+    assert listing[stat["id"]]["choices"] == ["withdraw"]
+    s = mod._load(ps)
+    cid = w._open_uncertain(_ctx(env, ex), s, listing, replaces=cp["id"])
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cid, {"claims": {stat["id"]: "supported"}}))
+    assert out.status == "waiting_human"  # supported is not one of its answers
+    out = w.on_answer(_ctx(env, ex), _answer(ps, out.checkpoint_id, {"claims": {stat["id"]: "withdraw"}}))
+    assert out.status == "done"
+    assert any("pooling of 'tuberculosis' (RR) withdrawn" in r for r in _analysis_deviations(ps))
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review", "production_mode": "collab"}], indirect=True)
+def test_your_back_keeps_the_fields_you_name(env):
+    """Minor 6: fields you name per study reach that study's re-read; fields you name without studies are added to
+    the kernel's gap studies; a fields map naming a study you did not name is refused."""
+    _, ps, _ = env
+    _enable_stats()
+    studies, _ = _no_control("Ferguson")
+    ids = _setup(env, studies, schema=BINARY, plan=META)
+    w = SynthesizeWorker()
+    assert w.run(_ctx(env, _exec(plans=[_one_group]))).to == "read_extract"  # the kernel asked once already
+    ex = _exec(plans=[_one_group])
+    cp = get_checkpoint(ps, w.run(_ctx(env, ex, 2)).checkpoint_id)
+    assert cp["kind"] == "pooling_approval" and "n_control" in cp["options"]["fields"]
+    out = w.on_answer(_ctx(env, ex, 2), _answer(ps, cp["id"], {"decision": "back", "studies": [ids["Aronson"]],
+                                                                 "fields": {ids["Ferguson"]: ["n_control"]}}))
+    assert out.status == "waiting_human"
+    out = w.on_answer(_ctx(env, ex, 2), _answer(ps, out.checkpoint_id, {"decision": "back",
+                                                                          "fields": ["events_control"]}))
+    assert out.to == "read_extract"
+    (note,) = synthesis_notes(ps, 2, kind="back_edge")
+    assert note["studies"] == [{"item_id": ids["Ferguson"], "label": "Ferguson 1951",
+                                "fields": ["n_control", "events_control"], "outcome": "'tuberculosis' (RR)"}]
+    assert "events_control" in out.reason
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_an_interrupted_targeted_reread_is_replaced_with_the_same_request(env):
+    """Minor 8: the attempt reading only the named study is interrupted (a rate cap); the attempt that replaces it
+    keeps the request and reads only that study."""
+    k, ps, lib = env
+    _enable_stats()
+    studies, text_only = _no_control("Ferguson")
+    ids = _setup(env, studies, schema=BINARY, plan=META, text_only=text_only)
+    ex = CapOnce({**_exec(plans=[_one_group, _one_group], votes=_votes_pool()).script,
+                  ("reader", "ExtractOut"): [_reader({"Ferguson": BCG["Ferguson"]})]}, at=("reader", "ExtractOut"))
+    o, run_id = stage_run(k, ps, lib, "synthesize", ex)
+    assert o.step("demo", run_id, actor="tester") == "running"
+    assert o.step("demo", run_id, actor="tester") == "waiting_rate"  # read_extract attempt 2 interrupted
+    assert o.step("demo", run_id, actor="tester") == "running"  # attempt 3 replaces it
+    assert stage_row(ps, "read_extract")["passed_attempt"] == 3
+    assert reread_request(ps, 3) == {ids["Ferguson"]}
+    assert [c["inputs"]["study"]["title"] for c in ex.of("reader")] == ["Ferguson trial"]
+    assert {r["carried_from"] for r in store.extractions(ps, 3, item_id=ids["Aronson"])} == {1}
