@@ -307,7 +307,7 @@ P2 asks you at the weak spots; P1 votes and records "not reviewed by a human".
   - `src/rk/orchestrator/engine.py`;
   - `src/rk/roles/ideator.md` (design section);
   - `src/rk/checkpoints.py` (`design_approval` in `HARD_HUMAN_KINDS`);
-  - `src/rk/tools/builtin.py` and `src/rk/roles/policy.py` (`rk_hypothesis_add` and `rk_design_set` for the Ideator).
+  - No Ideator write tools (`rk_hypothesis_add`, `rk_design_set`). Controller ruling during Task 6: the Ideator returns structured output, so the kernel's reference checks and the `falsified_by` it fills in stay authoritative.
 
 **Interfaces:**
 - Consumes:
