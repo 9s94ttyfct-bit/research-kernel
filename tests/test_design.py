@@ -587,6 +587,34 @@ def test_p1_ideator_untestable_is_decided_by_a_vote(env):
     assert w.gate(ps, 3).ok, w.gate(ps, 3).failures
 
 
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_untestable_draft_survives_a_crash_in_storing_it(env, monkeypatch):
+    """Fix round (I5 design): the ``untestable`` note keeps the Ideator's draft, so a crash while storing it loses
+    nothing: resumed, the attempt stores that draft (the Ideator is not asked again) and your design_approval still
+    offers the approval."""
+    _, ps, _ = env
+    _argued(env)
+    w = DesignWorker()
+    ex = _exec([plan(rq_untestable=UNTESTABLE)])
+    real = DesignWorker._store
+
+    def crash(self, *args, **kw):
+        raise RuntimeError("crash while storing the draft")
+
+    monkeypatch.setattr(DesignWorker, "_store", crash)
+    with pytest.raises(RuntimeError, match="storing the draft"):
+        w.run(_ctx(env, ex))
+    monkeypatch.setattr(DesignWorker, "_store", real)
+    assert design_notes(ps, 1, kind="untestable") and not design_notes(ps, 1, kind="draft")
+    out = w.run(_ctx(env, ex))
+    assert out.status == "waiting_human", out.reason
+    assert len(ex.of("ideator", "DesignDraft")) == 1
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    assert cp["options"]["choices"] == ["approve", "revise", "question"] and cp["options"]["draft_id"] == "design:1"
+    assert len(design_notes(ps, 1, kind="draft")) == 1
+
+
+
 def test_interrupted_attempt_neither_duplicates_nor_orphans(env):
     """A rate cap after the draft is stored (its feasibility claim being verified) interrupts the attempt; its new
     hypothesis was never added, so the next attempt neither duplicates it nor fails on an orphan."""

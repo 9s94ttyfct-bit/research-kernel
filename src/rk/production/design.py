@@ -180,8 +180,8 @@ def design_notes(ps: ProjectStore, attempt: int, *, kind: str | None = None) -> 
     the design ``body`` as the Ideator wrote it, its items naming a hypothesis by id or, for a new one, by its ref; the
     ``hypotheses`` with their links, each by ``key``: its id, or for a new one its ref with the ``new`` text; the
     dropped hypotheses; the feasibility claims), ``refused`` (a draft that could not be noted), ``untestable`` (the
-    Ideator's ``rq_untestable``: its ``reason``, its ``vendor`` and the ``draft_problems`` of a draft that could not
-    be kept; noted before the draft),
+    Ideator's ``rq_untestable``: its ``reason``, its ``vendor``, the ``draft_problems`` of a draft that could not
+    be kept, else that ``draft`` as the Ideator gave it, stored right after; noted before the draft),
     ``rq_vote`` (P1: the judges' testable/untestable vote on it), ``narrowed`` (P1: a feasibility claim narrowed or
     withdrawn), ``back_edge``, ``approval`` (the P2 checkpoint), ``vote``, ``approving`` (written before an approval's
     first write: the ids already resolved and the new hypotheses to add) and ``approved`` (the stored design, its
@@ -452,18 +452,20 @@ class DesignWorker:
                 return StageOutcome("back_edge", to="argue", reason=why)
             problems = self._refusals(ps, s, d)
             if why := d.rq_untestable.strip():  # an input only (I5): your approval or the P1 vote decides
+                # the note keeps a draft that can be kept, so a crash while storing it loses nothing (stored below)
                 _note(ps, ctx.attempt, "untestable", actor=ctx.actor, reason=why, vendor=vendor,
-                      draft_problems=problems)
-                if not problems:
-                    self._store(ctx, s, d, vendor)
+                      draft_problems=problems, draft=None if problems else d.model_dump(mode="json"))
             elif problems:
                 _note(ps, ctx.attempt, "refused", actor=ctx.actor, problems=problems)
                 return StageOutcome("rerun", reason="the design draft cannot be stored: " + "; ".join(problems))
             else:
                 self._store(ctx, s, d, vendor)
-        if (untestable := design_notes(ps, ctx.attempt, kind="untestable")) and (
-                out := self._untestable(ctx, s, untestable[-1])) is not None:
-            return out
+        if untestable := design_notes(ps, ctx.attempt, kind="untestable"):
+            u = untestable[-1]
+            if u.get("draft") is not None and _draft(ps, ctx.attempt) is None:  # noted, not stored yet (or interrupted)
+                self._store(ctx, s, DesignDraft.model_validate(u["draft"]), u.get("vendor"))
+            if (out := self._untestable(ctx, s, u)) is not None:
+                return out
         self._verify(ctx)
         if s.mode == "auto":
             self._narrow(ctx)
