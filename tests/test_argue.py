@@ -1284,6 +1284,51 @@ def test_unanswered_priority1_objection_on_a_reason_link_drops_it_at_the_edge_li
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
 
 
+@pytest.mark.parametrize("skeptic_says", ["clear", "link_holds"])
+def test_degrade_keeps_a_dropped_link_out_of_the_narrowed_main_claim(env, skeptic_says):
+    """Fix round (I6 edges, P1 degrade): an unanswered priority-1 objection on the reason link into the main claim and
+    one on the main claim itself. The degrade drops the link, then narrows the main claim: the rewrite does not take
+    the dropped link over (``_take_over``), and the Skeptic re-checks it against the main claim's objection only, not
+    the link's (``_recheck``). Whatever the Skeptic says of the link objection, the rewrite is not withdrawn for it,
+    the link stays out and the gate passes."""
+    from rk.verify.support import link_gone
+
+    _, ps, _ = env
+    _synthesize(env)
+    narrower = "Aspirin was studied in some older people."
+    seen: list[list[str]] = []
+
+    def recheck(inputs):
+        seen.append([o["id"] for o in inputs["conceded_objections"]])
+        (link_o,) = [o for o in _objections(ps) if o["target_id"].startswith("edg_")]
+        held = [{"objection_id": link_o["id"], "reason": "The trial still does not bear on it."}]
+        return {"still_holds": held if skeptic_says == "link_holds" else [],
+                "warrant_tests": [{"edge_id": w["edge_id"], "tests": verdicts()} for w in inputs["untested_warrants"]]}
+
+    ex = _exec([draft(), responses(), responses()],
+               [critique(objections=[_on_link(1, "The trial does not bear on the claim."),
+                                     _o("main", 1, "It says nothing of people over 90.")]), critique()],
+               narrowed=[{"text": narrower, "kind": "fact"}], rechecks=[recheck])
+    w = ArgueWorker()
+    ctx = _ctx(env, ex)
+    assert w.run(ctx).status == "done"
+    link_o, main_o = sorted(_objections(ps), key=lambda o: not o["target_id"].startswith("edg_"))
+    link, main = link_o["target_id"], main_claim(ps, 1)
+    g = w.gate(ps, 1)
+    assert not g.ok
+    assert w.degrade(ctx, g.failures).status == "done"
+    new = _rewrite(ps, main)
+    assert main_claim(ps, 1) == new and ArgumentService(ps).get_claim(new)["status"] == "supported"
+    assert seen == [[main_o["id"]]]  # the dropped link's objection is not re-checked against the rewrite
+    (dropped,) = argue_notes(ps, 1, kind="dropped_link")
+    assert dropped["edge_id"] == link and link_gone(ps, link)
+    (reason,) = [e["from_id"] for e in ArgumentService(ps).list_edges(type="reason_of") if e["id"] == link]
+    assert not [e for e in ArgumentService(ps).list_edges(type="reason_of")
+                if (e["from_id"], e["to_id"]) == (reason, new)]  # the dropped link was not taken over
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
 def test_conceded_priority1_objection_on_a_reason_link_drops_it_in_p2(env):
     """I6 on links (P2): once the conceded link objection dropped the link, your final review lists nothing and the

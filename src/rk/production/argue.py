@@ -490,6 +490,14 @@ def _link_dropped_by(ps: ProjectStore, o: dict, soundness: set[str]) -> str | No
     return link if link is not None and not link_gone(ps, link) else None
 
 
+def _link_out(ps: ProjectStore, link: str, *, beside: str, dropped: set[str]) -> bool:
+    """Whether a reason link is out of the argument but for its end ``beside`` (the original a rewrite takes over
+    from, withdrawn once narrowed): argue dropped it, or its other end is withdrawn (``link_gone`` with ``beside``
+    standing for its live rewrite)."""
+    e = entity_row(ps, "edges", link)
+    return link in dropped or any(_withdrawn(ps, x) for x in (e["from_id"], e["to_id"]) if x != beside)
+
+
 def _target_claims(ps: ProjectStore, target_id: str) -> set[str]:
     """The claims an objection's target stands for: the claim; the claim an evidence item supports; an edge's end
     claims (a warrant's: the warrant claim and the end claims of the edge it licenses)."""
@@ -1815,19 +1823,20 @@ class ArgueWorker:
         return StageOutcome("done", reason=f"degraded: {what}")
 
     def _take_over(self, ctx: StageContext, s: _Inputs, old: str, new: str) -> list[str]:
-        """The rewrite ``new`` takes over the original's reason links (with their warrants, to be tested again), gets
-        ``evidence_of`` edges for the evidence it was given, and answers the objections the original answered; then
-        the Skeptic re-checks it."""
+        """The rewrite ``new`` takes over the original's reason links that are still in the argument (with their
+        warrants, to be tested again; a dropped link stays out: ``_link_out``), gets ``evidence_of`` edges for the
+        evidence it was given, and answers the objections the original answered; then the Skeptic re-checks it."""
         ps, attempt = ctx.ps, ctx.attempt
         svc = ArgumentService(ps)
+        dropped = dropped_links(ps)
         copied = []
         for eid in argument_edge_ids(ps, attempt):
             e = entity_row(ps, "edges", eid)
             if e["type"] != "reason_of" or old not in (e["from_id"], e["to_id"]):
                 continue
-            frm, to = (new, e["to_id"]) if e["from_id"] == old else (e["from_id"], new)
-            if _withdrawn(ps, frm) or _withdrawn(ps, to):
+            if _link_out(ps, eid, beside=old, dropped=dropped):
                 continue
+            frm, to = (new, e["to_id"]) if e["from_id"] == old else (e["from_id"], new)
             ne = svc.add_edge(EdgeIn(from_id=frm, to_id=to, type="reason_of"), actor=ctx.actor, actor_kind="kernel")
             copied.append(ne)
             for w in svc.list_edges(to_id=eid, type="warrant_of"):
@@ -1848,10 +1857,15 @@ class ArgueWorker:
     def _recheck(self, ctx: StageContext, s: _Inputs, old: str, new: str) -> list[str]:
         """The Skeptic re-checks a rewrite against the objections conceded on its original (one that still holds
         withdraws the rewrite: a rewrite never escapes a conceded objection) and tests the warrants it took over. A
-        failed re-check withdraws the rewrite too."""
+        failed re-check withdraws the rewrite too. An objection conceded on a reason link of the original that is out
+        of the argument (dropped, or its other end withdrawn), or on that link's warrant, went with the link: the
+        rewrite did not take the link over, so it is not re-checked against it."""
         ps, attempt = ctx.ps, ctx.attempt
         svc = ArgumentService(ps)
-        conceded = [o for t in self._targets_of(ps, old) for o in svc.list_objections(target_id=t, status="conceded")]
+        dropped = dropped_links(ps)
+        conceded = [o for t in self._targets_of(ps, old) for o in svc.list_objections(target_id=t, status="conceded")
+                    if (link := _link_of(ps, o["target_id"])) is None
+                    or not _link_out(ps, link, beside=old, dropped=dropped)]
         conceded = list({o["id"]: o for o in conceded}.values())
         untested = [w for w in self._untested(ps, attempt) if new in (w["licenses"]["from_id"], w["licenses"]["to_id"])]
         if not conceded and not untested:
