@@ -132,6 +132,29 @@ def test_freeze_hash_is_stable_and_logged(proj):
         store.freeze_rq(ps, rq_id, adopted_by="human", actor="tester")
 
 
+def test_an_older_hypotheses_table_learns_which_were_added_after_the_freeze(tmp_path):
+    """M9: ``added_after_freeze`` is added to an older hypotheses table and backfilled from the events: a hypothesis
+    ``hypothesis.added`` added (after the freeze) is 1, one that came with its RQ is 0."""
+    from rk.store.db import open_project_db
+
+    db = tmp_path / "old.sqlite"
+    conn = open_project_db(db)
+    conn.execute("DROP TABLE hypotheses")
+    conn.execute("CREATE TABLE hypotheses (id TEXT PRIMARY KEY, rq_id TEXT NOT NULL, statement TEXT NOT NULL, "
+                 "falsification TEXT NOT NULL, rival_of TEXT, status TEXT NOT NULL DEFAULT 'proposed', "
+                 "prereg_hash TEXT)")
+    conn.execute("INSERT INTO hypotheses(id, rq_id, statement, falsification) VALUES ('hyp_1', 'rq_1', 'H.', 'X.'), "
+                 "('hyp_2', 'rq_1', 'R.', 'Y.')")
+    conn.execute("INSERT INTO events(evt_id, ts, project_id, actor_kind, actor, type, entity_id, payload, hash) "
+                 "VALUES ('evt_1', 't', 'p', 'agent', 'a', 'hypothesis.added', 'hyp_2', ?, 'h')",
+                 (json.dumps({"rq_id": "rq_1", "statement": "R.", "falsification": "Y.", "rival_of": None}),))
+    conn.close()
+    conn = open_project_db(db)
+    assert [tuple(r) for r in conn.execute("SELECT id, added_after_freeze FROM hypotheses ORDER BY id")] == [
+        ("hyp_1", 0), ("hyp_2", 1)]
+    conn.close()
+
+
 def test_queries_read_one_attempt(proj):
     _, ps, _ = proj
     store.add_gap(ps, 1, _gap("first"), verified=True, checks={}, actor="gapminer")

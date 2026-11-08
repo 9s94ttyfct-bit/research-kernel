@@ -21,8 +21,10 @@ from rk.discovery.store import (
     add_hypothesis,
     add_rq,
     freeze_rq,
+    frozen_hypotheses,
     frozen_rq,
     hypotheses,
+    rq_text_hash,
     set_hypothesis_status,
 )
 from rk.orchestrator.engine import Orchestrator, default_workers
@@ -440,6 +442,26 @@ def test_previous_design_is_of_the_frozen_rq(env):
     out = w.run(_ctx(env, _exec([fresh]), attempt=2))
     assert out.status == "done", out.reason
     assert design_notes(ps, 2, kind="draft")[0]["rq_id"] == new
+
+
+def test_rq_text_hash_recomputes_after_an_approval_added_hypotheses(env):
+    """M9: a hypothesis the design approval adds is told apart from those frozen with the RQ (``added_after_freeze``),
+    so the RQ's text hash still recomputes over the frozen-with ones (``frozen_hypotheses``), also after a rebuild."""
+    from rk.store.projections import rebuild
+
+    _, ps, _ = env
+    _argued(env)
+    rq = frozen_rq(ps)
+    assert rq_text_hash(rq["body"], hypotheses(ps, rq["id"])) == rq["text_hash"]
+    out = DesignWorker().run(_ctx(env, _exec([plan()])))
+    assert out.status == "done", out.reason
+    for _ in range(2):  # as projected, then rebuilt from the events
+        rows = hypotheses(ps, rq["id"])
+        assert [(h["statement"], h["added_after_freeze"]) for h in rows] == [("H.", 0), (NEW_H, 1)]
+        assert [h["statement"] for h in frozen_hypotheses(ps, rq["id"])] == ["H."]
+        assert rq_text_hash(rq["body"], frozen_hypotheses(ps, rq["id"])) == rq["text_hash"]
+        assert rq_text_hash(rq["body"], rows) != rq["text_hash"]
+        rebuild(ps.db)
 
 
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)

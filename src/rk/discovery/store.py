@@ -141,9 +141,9 @@ _HYPOTHESIS_MOVES: dict[str, frozenset[str]] = {
 
 def add_hypothesis(ps: ProjectStore, rq_id: str, statement: str, falsification: str, *, rival_of: str | None = None,
                    actor: str, actor_kind: ActorKind = "agent") -> str:
-    """A hypothesis added to the frozen RQ (e.g. a rival the argue stage found), ``proposed``; ``rival_of`` the
-    hypothesis of the same RQ it rivals. The RQ keeps its stored text hash, that of the hypotheses it was frozen
-    with."""
+    """A hypothesis added to the frozen RQ (e.g. a rival the argue stage found, a new one a design approval adds),
+    ``proposed``, ``added_after_freeze``; ``rival_of`` the hypothesis of the same RQ it rivals. The RQ keeps its stored
+    text hash, that of the hypotheses it was frozen with (``frozen_hypotheses``)."""
     with ps.lock:
         if require_row(ps, "rqs", rq_id)["status"] != "frozen":
             raise ValueError(f"research question {rq_id} is not frozen: its hypotheses come with it")
@@ -194,7 +194,7 @@ def freeze_rq(ps: ProjectStore, rq_id: str, *, adopted_by: Literal["human", "age
         r = require_row(ps, "rqs", rq_id)
         if r["status"] == "frozen":
             raise ValueError("rq already frozen")
-        h = rq_text_hash(json.loads(r["body"]), hypotheses(ps, rq_id))
+        h = rq_text_hash(json.loads(r["body"]), frozen_hypotheses(ps, rq_id))
         ps.apply(NewEvent(type="rq.frozen", entity_id=rq_id, actor_kind=adopted_by, actor=actor,
                           payload={"text_hash": h, "adopted_by": adopted_by}))
     return h
@@ -280,6 +280,12 @@ def frozen_rq(ps: ProjectStore) -> dict | None:
 
 def hypotheses(ps: ProjectStore, rq_id: str) -> list[dict]:
     return query_rows(ps, "SELECT * FROM hypotheses WHERE rq_id=? ORDER BY rowid", (rq_id,))
+
+
+def frozen_hypotheses(ps: ProjectStore, rq_id: str) -> list[dict]:
+    """The hypotheses the RQ was frozen with (its text hash is over these), not those ``add_hypothesis`` added to the
+    frozen RQ later (``added_after_freeze``)."""
+    return query_rows(ps, "SELECT * FROM hypotheses WHERE rq_id=? AND added_after_freeze=0 ORDER BY rowid", (rq_id,))
 
 
 def rounds(ps: ProjectStore) -> list[dict]:
@@ -373,8 +379,8 @@ def _rq_frozen(conn: sqlite3.Connection, ev: Event) -> None:
 @projection("hypothesis.added")
 def _hypothesis(conn: sqlite3.Connection, ev: Event) -> None:
     p = ev.payload
-    conn.execute("INSERT OR REPLACE INTO hypotheses(id, rq_id, statement, falsification, rival_of) VALUES (?,?,?,?,?)",
-                 (ev.entity_id, p["rq_id"], p["statement"], p["falsification"], p["rival_of"]))
+    conn.execute("INSERT OR REPLACE INTO hypotheses(id, rq_id, statement, falsification, rival_of, added_after_freeze) "
+                 "VALUES (?,?,?,?,?,1)", (ev.entity_id, p["rq_id"], p["statement"], p["falsification"], p["rival_of"]))
 
 
 @projection("hypothesis.status_set")

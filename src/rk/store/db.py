@@ -16,12 +16,15 @@ _ADDED_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
     "screening": (("carried_from", "INTEGER"),),
     "screening_final": (("carried_from", "INTEGER"),),
     "extractions": (("carried_from", "INTEGER"),),
-    "hypotheses": (("rival_of", "TEXT"), ("status", "TEXT NOT NULL DEFAULT 'proposed'"), ("prereg_hash", "TEXT")),
+    "hypotheses": (("rival_of", "TEXT"), ("status", "TEXT NOT NULL DEFAULT 'proposed'"), ("prereg_hash", "TEXT"),
+                   ("added_after_freeze", "INTEGER NOT NULL DEFAULT 0")),
     "protocol_deviations": (("kind", "TEXT NOT NULL DEFAULT 'version'"),),
 }
 _BACKFILL: dict[str, str] = {
     "search_log": "UPDATE search_log SET after_year=(SELECT json_extract(e.payload, '$.after_year') FROM events e "
                   "WHERE e.type='search.logged' AND e.entity_id=search_log.id)",
+    "hypotheses": "UPDATE hypotheses SET added_after_freeze=1 WHERE id IN (SELECT entity_id FROM events "
+                  "WHERE type='hypothesis.added')",
 }
 
 

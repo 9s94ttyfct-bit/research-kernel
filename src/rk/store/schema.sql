@@ -238,7 +238,7 @@ CREATE TABLE IF NOT EXISTS rqs (
     created      TEXT NOT NULL
 );
 
--- (rival_of .. prereg_hash: Plan 5b; open_project_db adds them to an older hypotheses table)
+-- (rival_of .. added_after_freeze: Plan 5b; open_project_db adds them to an older hypotheses table)
 CREATE TABLE IF NOT EXISTS hypotheses (
     id            TEXT PRIMARY KEY,
     rq_id         TEXT NOT NULL,
@@ -246,7 +246,8 @@ CREATE TABLE IF NOT EXISTS hypotheses (
     falsification TEXT NOT NULL,
     rival_of      TEXT,                                -- the hypothesis this one rivals
     status        TEXT NOT NULL DEFAULT 'proposed',    -- proposed | tested_by_design | dropped
-    prereg_hash   TEXT                                 -- the frozen design that tests it
+    prereg_hash   TEXT,                                -- the frozen design that tests it
+    added_after_freeze INTEGER NOT NULL DEFAULT 0      -- 1: added to the frozen RQ (not in its text hash)
 );
 CREATE INDEX IF NOT EXISTS hypotheses_rq ON hypotheses(rq_id);
 
