@@ -55,6 +55,25 @@ def test_catalog_marks_ollama_models_not_in_ollama_list():
     assert not cloud.available and "ollama pull deepseek-v4.1-flash:cloud" in cloud.reason
 
 
+def test_catalog_marks_local_models(monkeypatch):
+    """Local models are marked, not hidden: an ``ollama:`` model unless Ollama Cloud's (``:cloud`` / ``-cloud``), and
+    omp's local Ollama host (``omp_gateway:ollama/…``); cloud and subscription drivers are not local."""
+    tags = ["gemma4:12b-it-qat", "gpt-oss:120b-cloud"]
+    models = {m.driver: m for m in list_models(Settings(), omp_runner=omp_ok, ollama_runner=lambda s: tags)}
+    assert models["ollama:gemma4:12b-it-qat"].local and models["ollama:gemma4:12b-it-qat"].as_dict()["local"]
+    assert not models["ollama:gpt-oss:120b-cloud"].local and not models["ollama:deepseek-v4.1-flash:cloud"].local
+    assert not any(models[d].local for d in GATEWAY) and not models["claude_cli:claude-haiku-5-5"].local
+    assert catalog.is_local(DriverSpec.parse("omp_gateway:ollama/gemma4:12b-it-qat"))
+    assert not catalog.is_local(DriverSpec.parse("omp_gateway:ollama/gemma4:31b-cloud"))  # omp's host proxies cloud
+    assert not catalog.is_local(DriverSpec.parse("omp_gateway:ollama-cloud/deepseek-v4.1-flash"))
+    assert not catalog.is_local(DriverSpec.parse("ollama"))  # the default ollama model is the cloud judge
+    monkeypatch.setattr(catalog, "default_omp_runner", omp_ok)
+    monkeypatch.setattr(catalog, "default_ollama_runner", lambda s: tags)
+    lines = {line.split()[0]: line for line in CliRunner().invoke(app, ["models"]).output.splitlines() if line.strip()}
+    assert "local model" in lines["ollama:gemma4:12b-it-qat"]
+    assert "local model" not in lines["ollama:gpt-oss:120b-cloud"]
+
+
 @pytest.mark.parametrize(("error", "why"), [
     (subprocess.TimeoutExpired(["omp", "models", "--json"], 10), "timed out after 10 s"),
     (FileNotFoundError("omp"), "omp is not installed"),

@@ -1485,6 +1485,7 @@ function modelsSection(s) {
       const judge = JUDGES.includes(role);
       const optionText = (m) => [m.label === m.driver ? m.driver : `${m.label} · ${m.driver}`,
         m.vendor || (judge ? "unknown vendor: cannot judge" : "unknown vendor"),
+        m.local ? "local model" : null,
         m.available ? null : `unavailable: ${m.reason}`].filter(Boolean).join(" — ");
       const select = el("select", { name: `driver:${role}`, id: `driver-${role}` },
         [...byProvider].map(([provider, list]) => el("optgroup", { label: provider },

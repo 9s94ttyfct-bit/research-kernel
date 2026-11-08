@@ -46,6 +46,7 @@ class ModelChoice:
     vendor: str | None
     available: bool
     reason: str | None
+    local: bool = False  # runs on this machine (``is_local``): marked in the catalog, never hidden
 
     @property
     def provider(self) -> str:
@@ -53,6 +54,19 @@ class ModelChoice:
 
     def as_dict(self) -> dict:
         return {**asdict(self), "provider": self.provider}
+
+
+def is_local(spec: DriverSpec) -> bool:
+    """Whether the driver runs a model on this machine: an Ollama model that is not Ollama Cloud's (``…:cloud``,
+    ``…-cloud``), through ``ollama:`` (no model is the default cloud judge) or omp's Ollama host
+    (``omp_gateway:ollama/<model>``, which also proxies cloud models)."""
+    if spec.provider == "ollama":
+        name = spec.model or "deepseek-v4.1-flash:cloud"
+    elif spec.provider == "omp_gateway" and (spec.model or "").startswith("ollama/"):
+        name = spec.model.removeprefix("ollama/")
+    else:
+        return False
+    return not name.endswith((":cloud", "-cloud"))
 
 
 def run_omp(argv: list[str], timeout: float) -> str:
@@ -223,7 +237,8 @@ def model_catalog(settings: Settings, *, omp_runner: OmpRunner | None = None,
         except ValueError:
             continue  # an unparsable driver (configured, or derived from a bad id): the Settings page shows "Other…"
         reason = _unavailable(spec, settings, selectors, omp.error, tags, ollama_error)
-        choice = ModelChoice(driver, label, vendor_of(spec.provider, spec.model), reason is None, reason)
+        choice = ModelChoice(driver, label, vendor_of(spec.provider, spec.model), reason is None, reason,
+                             local=is_local(spec))
         out.append((PROVIDERS.index(spec.provider), i, choice))
     if omp.error:
         status = f"omp gateway models are not listed: {omp.error}"

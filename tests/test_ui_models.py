@@ -30,7 +30,7 @@ def test_models_route_lists_choices_and_roles(ui, omp_catalog):
     r = ui.get("/ui/api/models").json()["result"]
     assert r["roles"] == list(ROLES)
     assert {m["driver"]: m["vendor"] for m in r["models"] if m["provider"] == "omp_gateway"} == GATEWAY
-    assert {"driver", "label", "vendor", "available", "reason", "provider"} == set(r["models"][0])
+    assert {"driver", "label", "vendor", "available", "reason", "provider", "local"} == set(r["models"][0])
     assert r["omp_status"] is None
 
 

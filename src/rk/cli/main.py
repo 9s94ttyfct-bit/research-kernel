@@ -640,7 +640,8 @@ def models(as_json: bool = JSON_OPT) -> None:
         for m in data["models"]:
             state = "ok" if m["available"] else f"UNAVAILABLE ({m['reason']})"
             judge = "" if m["vendor"] else "  (unknown vendor: cannot judge)"
-            typer.echo(f"{m['driver']:<52} vendor={m['vendor'] or '?':<9} {state}{judge}")
+            local = "  (local model)" if m["local"] else ""
+            typer.echo(f"{m['driver']:<52} vendor={m['vendor'] or '?':<9} {state}{judge}{local}")
         if data["omp_status"]:
             typer.secho(f"omp: {data['omp_status']}", fg="yellow")
 
