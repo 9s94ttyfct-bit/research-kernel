@@ -768,7 +768,9 @@ class SynthesizeWorker:
     @staticmethod
     def _asked(requested: set[tuple[str, tuple[str, ...]]], item_id: str, fields: list[str]) -> bool:
         """Whether a request in ``requested`` already covers the study's ``fields``: the same study, read for these
-        fields or more, or read in full (your ``back`` naming the study without fields)."""
+        fields or more, or read in full (your ``back`` naming the study without fields). Your ``back`` naming no study
+        when the kernel has no gap study (every study read again, noted without studies) covers no study here, so the
+        kernel may still ask once for a gap that remains after that full re-read (bounded by the edge limit)."""
         return any(i == item_id and (not asked or set(fields) <= set(asked)) for i, asked in requested)
 
     def _gaps(self, ps: ProjectStore, s: _Inputs, groups: list[dict],
@@ -1079,11 +1081,12 @@ class SynthesizeWorker:
         return out
 
     @staticmethod
-    def _reconcile(ctx: StageContext, s: _Inputs) -> None:
+    def _reconcile(ctx: StageContext, s: _Inputs, *, note_narrowed: bool = True) -> None:
         """Every pooled group of the attempt whose ``stat_result`` claim is withdrawn (by your review, P1 narrowing or
         argue, whatever its status before) falls back to the narrative synthesis once: its fallback note with an
         analysis deviation (a limitation); the gate then no longer checks its artifacts. In P1 the withdrawal is also
-        noted ``narrowed`` once. Idempotent, so it runs again after a crash between a withdrawal and this."""
+        noted ``narrowed`` once, unless another stage withdrew it (``note_narrowed=False``: synthesize narrowed
+        nothing). Idempotent, so it runs again after a crash between a withdrawal and this."""
         ps = ctx.ps
         svc = ArgumentService(ps)
         fell = _by_group(ps, ctx.attempt, "fallback")
@@ -1097,7 +1100,7 @@ class SynthesizeWorker:
                 SynthesizeWorker._fallback(ctx, s, f"pooling of {_group_label(n)} withdrawn: its statistical result "
                                                    f"{c['id']} was withdrawn ({why})",
                                            group=n["group"], outcome=n["outcome"], measure=n["measure"])
-            if s.mode == "auto" and c["id"] not in noted:
+            if note_narrowed and s.mode == "auto" and c["id"] not in noted:
                 _note(ps, ctx.attempt, "narrowed", actor=ctx.actor, claim_id=c["id"], status="withdrawn",
                       new_claim_id=None, reason=why)
 
@@ -1444,9 +1447,10 @@ class SynthesizeWorker:
         return StageOutcome("done", reason=f"degraded: {what}")
 
 
-def reconcile_withdrawn_pools(ctx: StageContext, attempt: int) -> None:
+def reconcile_withdrawn_pools(ctx: StageContext, attempt: int | None) -> None:
     """``SynthesizeWorker._reconcile`` on synthesize's ``attempt`` from another stage (argue withdrawing a
-    ``stat_result`` in your review or its P1 degrade): the withdrawn statistical result's group falls back, once."""
+    ``stat_result`` in your review, a conflict decision or its P1 degrade): the withdrawn statistical result's group
+    falls back, once. No ``narrowed`` note: synthesize did not narrow it. Nothing to do without an attempt."""
     s = _load(ctx.ps)
-    if not isinstance(s, str):
-        SynthesizeWorker._reconcile(replace(ctx, stage=STAGE, attempt=attempt), s)
+    if attempt is not None and not isinstance(s, str):
+        SynthesizeWorker._reconcile(replace(ctx, stage=STAGE, attempt=attempt), s, note_narrowed=False)

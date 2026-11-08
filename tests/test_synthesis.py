@@ -1642,6 +1642,28 @@ def test_argue_withdrawing_a_stat_result_takes_its_pool_out(env):
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
 
 
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_argue_conflict_decision_dropping_a_stat_result_takes_its_pool_out(env):
+    """Round 3: a conflict decided against the stat_result (P1 vote ``a_holds``) withdraws it in argue; the pool is
+    taken out of the synthesize attempt argue argued on at once (fallback with its deviation), so both gates agree,
+    and synthesize gets no ``narrowed`` note for a withdrawal it did not make."""
+    from rk.production.argue import ArgueWorker
+
+    k, ps, lib = env
+    w, stat, _ = _pooled(env, _exec(plans=[_one_group], votes=_votes_pool()))
+    record_ran(ps, "synthesize", 1, "done", "", actor="tester")
+    record_passed(ps, "synthesize", 1, actor="tester")
+    other = next(c for c in synthesis_claims(ps, 1) if c != stat["id"])
+    conflict = {"claim_a": other, "claim_b": stat["id"], "why": "They disagree.", "round": 1, "index": 0}
+    ctx = production_ctx(k, ps, lib, _exec(), stage="argue", attempt=1)
+    ArgueWorker()._apply_conflict(ctx, conflict, "a_holds", by="vote", actor_kind="kernel", via={})
+    assert ArgumentService(ps).get_claim(stat["id"])["status"] == "withdrawn"
+    (fb,) = [n for n in synthesis_notes(ps, 1, kind="fallback") if "withdrawn" in n["reason"]]
+    assert fb["group"] == 0 and fb["deviation_id"]
+    assert not [n for n in synthesis_notes(ps, 1, kind="narrowed") if n["claim_id"] == stat["id"]]
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
 def test_a_request_covers_the_same_study_read_for_its_fields_or_in_full():
     """Round 2 minor 2: your back naming a study (without fields: a full re-read) or the kernel's request for more
     fields covers a later gap of that study; another field does not."""

@@ -1274,6 +1274,8 @@ class ArgueWorker:
                 svc.withdraw_claim(drop, reason=f"contradicted by {keep}, which holds (decided {how}): {why}",
                                    actor=ctx.actor, actor_kind=actor_kind)
                 self._concede_gone(ctx, drop, f"conceded: the claim was withdrawn in favour of {keep}")
+                # a dropped stat_result takes its pool out of the synthesis argued on, at once
+                reconcile_withdrawn_pools(ctx, argued_synthesis_attempt(ctx.ps, ctx.attempt))
         else:
             for x, y in ((a, b), (b, a)):
                 if _withdrawn(ctx.ps, x):
@@ -1322,6 +1324,7 @@ class ArgueWorker:
     # ---- the end: does the main claim answer the RQ ----
     def _finish(self, ctx: StageContext, s: _Inputs) -> StageOutcome:
         ps = ctx.ps
+        reconcile_withdrawn_pools(ctx, s.synth_attempt)  # mends a crash after any withdrawal of a stat_result
         if s.mode == "collab":
             if hopeless := self._hopeless(ps, ctx.attempt, s):
                 return StageOutcome("done", reason="the gate will fail whatever your review says, so it is not asked: "
