@@ -47,9 +47,12 @@ artifact, as V-STATS requires) and the frozen protocol (``extraction_schema``, `
 4. **Representativeness.** The statement must name the k included studies (the kernel checks the number) and the
    selection basis (the PRISMA flow for systematic and scoping reviews, the selection reasons otherwise).
 
-P2: uncertain findings open one ``uncertain_support`` checkpoint (``{"claims": {claim_id: "supported" | "withdraw"}}``,
-attributed to you, or ``{"decision": "rerun", "comment"}``). P1 never asks: at the edge limit ``degrade`` narrows or
-withdraws every finding that fails the claim gate (``failing_claims``, ``narrow_or_withdraw``).
+P2: every synthesis claim that fails the claim gate (``failing_claims``: not supported, V-HEDGE overstated, V-STATS
+mismatch, an open priority-1 objection) is listed with its problems on one ``uncertain_support`` checkpoint
+(``review_listing``): ``{"claims": {claim_id: "supported" | "withdraw"}}`` (``supported`` only when its only problem is
+its V-SUPPORT status: ``review_choices``; attributed to you), or ``{"decision": "rerun", "comment"}``. P1 never asks: at
+the edge limit ``degrade`` narrows or withdraws every finding that fails the claim gate (``failing_claims``,
+``narrow_or_withdraw``).
 
 Answers to ``pooling_approval``: ``{"decisions": {"<group>": "pool" | "no_pool"}, "comment"?}``, one decision per
 listed group. An answer that cannot be applied opens the checkpoint again, saying why. Handling an answer again pools
@@ -89,7 +92,15 @@ from rk.llm.vendors import vendor_of
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.orchestrator.state import record_degraded, stage_row
 from rk.production.artifacts import artifact, artifacts
-from rk.production.claims import claim_limitations, failing_claims, narrow_or_withdraw
+from rk.production.claims import (
+    claim_limitations,
+    failing_claims,
+    narrow_or_withdraw,
+    review_answer_problem,
+    review_lines,
+    review_listing,
+    review_options,
+)
 from rk.production.extraction import (
     NOT_REPORTED,
     extraction_limitations,
@@ -928,12 +939,9 @@ class SynthesizeWorker:
             narrative = _last(ps, ctx.attempt, "narrative")
         self._store_findings(ctx, s, narrative)
         self._verify(ctx)
-        if s.mode == "collab":
-            svc = ArgumentService(ps)
-            uncertain = [c for c in synthesis_claims(ps, ctx.attempt) if svc.get_claim(c)["status"] == "uncertain"]
-            if uncertain:
-                return StageOutcome("waiting_human", checkpoint_id=self._open_uncertain(ctx, uncertain),
-                                    reason="uncertain findings await your decision")
+        if s.mode == "collab" and (listing := review_listing(ps, synthesis_claims(ps, ctx.attempt))):
+            return StageOutcome("waiting_human", checkpoint_id=self._open_uncertain(ctx, listing),
+                                reason="synthesis claims that fail the claim gate await your decision")
         return StageOutcome("done", reason=self._summary(ps, ctx.attempt))
 
     def _narrative(self, ctx: StageContext, s: _Inputs) -> str | None:
@@ -1006,26 +1014,38 @@ class SynthesizeWorker:
             check_claim_hedge(ps, cid, actor=ctx.actor)
 
     @staticmethod
-    def _open_uncertain(ctx: StageContext, claim_ids: list[str], *, replaces: str | None = None,
+    def _open_uncertain(ctx: StageContext, listing: dict[str, dict], *, replaces: str | None = None,
                         why: str = "") -> str:
+        """Your review of every synthesis claim that fails the claim gate (``review_listing``), each with its problems
+        and the answers it allows (``review_choices``)."""
         if replaces is not None and (existing := opened_in_place_of(ctx.ps, UNCERTAIN, replaces)) is not None:
             return existing
         if replaces is None and (existing := opened_for_attempt(ctx.ps, UNCERTAIN, STAGE, ctx.attempt)) is not None:
             return existing
-        svc = ArgumentService(ctx.ps)
+        ps = ctx.ps
+        svc = ArgumentService(ps)
+        left = [c for c in synthesis_claims(ps, ctx.attempt)
+                if c not in listing and svc.get_claim(c)["status"] == "supported"]
         lines = [why, ""] if why else []
-        lines.append("The judges could not agree that these synthesis findings are supported by their evidence. Is "
-                     "each supported?")
-        for cid in claim_ids:
-            c = svc.get_claim(cid)
-            lines += ["", f"{cid}: {c['text']}"]
-            for e in c["evidence"]:
-                lines += [f"- {n['text']}" for n in e["notes"] if n]
-        lines += ["", ('Answer {"claims": {"<claim id>": "supported" or "withdraw", ...}} for every claim, or '
-                      '{"decision": "rerun", "comment": ...} to synthesize again with your comment.')]
-        return create_checkpoint(ctx.ps, UNCERTAIN, "\n".join(lines),
-                                 {"attempt": ctx.attempt, "claim_ids": list(claim_ids),
-                                  "choices": [SUPPORTED, WITHDRAW], "replaces": replaces},
+        lines.append("These synthesis claims fail the claim gate: V-SUPPORT (the judges did not agree, or agreed the "
+                     "evidence does not support it), V-HEDGE (stated more strongly than its sources), V-STATS (the "
+                     "statistics do not reproduce) or an open priority-1 objection. Withdraw each, or support one whose "
+                     "only problem is its V-SUPPORT status. A withdrawn claim leaves the synthesis and is listed in "
+                     "the limitations.")
+        lines += review_lines(ps, listing)
+        if not left:
+            lines += ["", ("No other finding is supported: withdrawing every listed claim leaves the synthesis "
+                           "without a supported finding, and its gate fails. You may synthesize again with your "
+                           "comment instead.")]
+        lines += ["", ('Answer {"claims": {"<claim id>": "supported" or "withdraw", ...}} for every listed claim (one '
+                       'of its answers), optionally with a "comment", or {"decision": "rerun", "comment": ...} to '
+                       'synthesize again with your comment.')]
+        return create_checkpoint(ps, UNCERTAIN, "\n".join(lines),
+                                 {"attempt": ctx.attempt, "claim_ids": list(listing),
+                                  "problems": {c: e["problems"] for c, e in listing.items()},
+                                  "claim_choices": {c: e["choices"] for c, e in listing.items()},
+                                  "choices": [SUPPORTED, WITHDRAW], "decisions": ["rerun"],
+                                  "no_supported_left": not left, "replaces": replaces},
                                  stage=ctx.stage, actor=ctx.actor)
 
     @staticmethod
@@ -1082,21 +1102,20 @@ class SynthesizeWorker:
 
     def _on_uncertain(self, ctx: StageContext, cp: dict, answer: dict, by: str) -> StageOutcome:
         ps = ctx.ps
-        listed = cp["options"]["claim_ids"]
+        opts = cp["options"]
+        listed = opts["claim_ids"]
+        allowed = review_options(opts)
         comment = answer.get("comment").strip() if isinstance(answer.get("comment"), str) else ""
         if answer.get("decision") == "rerun":
             if comment:
                 return StageOutcome("rerun", reason=comment)
             why = "rerun needs a comment saying what to change"
         else:
-            claims = answer.get("claims")
-            if not isinstance(claims, dict):
-                why = 'give "claims": {"<claim id>": "supported" | "withdraw"} for every listed claim'
-            else:
-                bad = [f"{c}: {claims.get(c)!r}" for c in listed if claims.get(c) not in (SUPPORTED, WITHDRAW)]
-                why = f"every listed claim needs supported or withdraw ({'; '.join(bad)})" if bad else ""
+            why = review_answer_problem(answer, allowed)
         if why:
-            cid = self._open_uncertain(ctx, listed, replaces=cp["id"], why=f"Your answer could not be applied: {why}.")
+            listing = {c: {"problems": (opts.get("problems") or {}).get(c) or [], "choices": allowed[c]}
+                       for c in listed}
+            cid = self._open_uncertain(ctx, listing, replaces=cp["id"], why=f"Your answer could not be applied: {why}.")
             return StageOutcome("waiting_human", checkpoint_id=cid, reason=why)
         svc = ArgumentService(ps)
         for cid in listed:

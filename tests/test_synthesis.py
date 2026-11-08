@@ -1146,3 +1146,83 @@ def test_pool_cut_short_by_a_crash_is_finished_not_made_again(env, monkeypatch):
     assert len([c for c in _claims(ps) if c["kind"] == "stat_result"]) == 1
     stat = [c for c in ArgumentService(ps).list_claims(origin="synthesis") if c["kind"] == "stat_result"]
     assert len(stat) == 1 and w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+# ---- fix wave 2: the P2 review of every claim that fails the gate (I3, c) ----
+OTHER = "Aspirin was studied in children."
+
+
+def _two_findings(second: str):
+    """The narrative with FINDING (both studies' notes) and ``second`` (study A's notes)."""
+    def out(inputs):
+        n = narrative()(inputs)
+        n["findings"].append({"text": second, "kind": "fact",
+                              "evidence": [{"note_ids": [inputs["studies"][0]["notes"][0]["id"]]}]})
+        return n
+    return out
+
+
+def _judges_on(word: str, label: str, n: int = 6) -> dict:
+    """Judges labelling a claim containing ``word`` with ``label``, every other claim supported."""
+    def judge(inputs):
+        return {"label": label if word in inputs["claim"] else "supported",
+                "quoted_spans": [inputs["evidence"].split("\n\n")[0]]}
+    return {("judge", "JudgeVerdict"): [judge] * n, ("judge_2", "JudgeVerdict"): [judge] * n}
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "critical_review", "production_mode": "collab"}], indirect=True)
+def test_p2_unsupported_finding_is_withdrawable_and_the_gate_passes(env):
+    _, ps, _ = env
+    _setup(env, {"A": {"design": "rct"}, "B": {"design": "cohort"}}, schema=[DESIGN],
+           plan=SynthesisPlan(method="thematic"))
+    ex = _exec(narratives=[_two_findings(OTHER)], judges=_judges_on("children", "unsupported"))
+    w = SynthesizeWorker()
+    out = w.run(_ctx(env, ex))
+    assert out.status == "waiting_human", out.reason
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    bad = next(c["id"] for c in _claims(ps) if c["text"] == OTHER)
+    assert cp["kind"] == "uncertain_support" and cp["options"]["claim_ids"] == [bad]
+    assert cp["options"]["claim_choices"] == {bad: ["supported", "withdraw"]}  # only its V-SUPPORT status fails
+    assert any("V-SUPPORT unsupported" in p for p in cp["options"]["problems"][bad])
+    assert "V-SUPPORT unsupported" in cp["prompt"]
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"claims": {bad: "withdraw"}}))
+    assert out.status == "done", out.reason
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "critical_review", "production_mode": "collab"}], indirect=True)
+def test_p2_overstated_finding_can_only_be_withdrawn(env):
+    _, ps, _ = env
+    _setup(env, {"A": {"design": "rct"}, "B": {"design": "cohort"}}, schema=[DESIGN],
+           plan=SynthesisPlan(method="thematic"))
+    overstated = "Aspirin was proven safe in every older person."
+    ex = _exec(narratives=[_two_findings(overstated)])
+    w = SynthesizeWorker()
+    out = w.run(_ctx(env, ex))
+    assert out.status == "waiting_human", out.reason
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    bad = next(c["id"] for c in _claims(ps) if c["text"] == overstated)
+    assert ArgumentService(ps).get_claim(bad)["status"] == "supported"
+    assert cp["options"]["claim_choices"] == {bad: ["withdraw"]}
+    assert any("V-HEDGE overstated" in p for p in cp["options"]["problems"][bad])
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"claims": {bad: "supported"}}))
+    assert out.status == "waiting_human" and out.checkpoint_id != cp["id"]
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    assert "could not be applied" in cp["prompt"] and "withdraw" in cp["prompt"]
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"claims": {bad: "withdraw"}}))
+    assert out.status == "done", out.reason
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+def test_review_choices_follow_the_claim_problems():
+    from rk.production.claims import review_choices
+    from rk.verify.support import ClaimProblem
+
+    status = ClaimProblem("status", "status uncertain (not supported)", "V-SUPPORT uncertain")
+    hedge = ClaimProblem("hedge", "V-HEDGE overstated", "V-HEDGE overstated: level 3")
+    stats = ClaimProblem("stats", "V-STATS mismatch stt_1", "V-STATS mismatch stt_1", ("stt_1",))
+    objection = ClaimProblem("objection", "open priority-1 objection obj_1", "open priority-1 objection obj_1: x")
+    assert review_choices([status]) == ["supported", "withdraw"]
+    for problems in ([hedge], [stats], [status, stats], [objection], [status, hedge]):
+        assert review_choices(problems) == ["withdraw"], problems
+    assert review_choices([status], structural=True) == ["withdraw"]

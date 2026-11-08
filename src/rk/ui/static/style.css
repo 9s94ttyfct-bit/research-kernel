@@ -225,7 +225,8 @@ ul.objections p { margin: 0.2rem 0; }
 ol.pool-groups > li, ol.synthesis-groups > li { border-top: 1px solid var(--rule); padding: 0.6rem 0; }
 table.comparability, table.evidence-map { max-width: 46rem; margin: 0.3rem 0; }
 .pool-group .decide { margin-top: 0.5rem; }
-.pool-group .who { font-size: 0.8rem; color: var(--ink-soft); }
+.pool-group .who, .review-claim .who { font-size: 0.8rem; color: var(--ink-soft); }
+.hint.warn { color: var(--attention); }
 .choices { display: flex; flex-wrap: wrap; gap: 0.2rem 1.2rem; }
 figure.forest { margin: 0.5rem 0; max-width: 46rem; }
 figure.forest img { display: block; max-width: 100%; height: auto; background: #fff; border: 1px solid var(--rule); border-radius: var(--radius-control); }

@@ -1012,3 +1012,53 @@ def test_all_findings_withdrawn_in_p1_goes_back_to_synthesize(env):
     guidance = stage_row(ps, "synthesize")["guidance"]
     assert "every finding of synthesize attempt 1 was withdrawn in argue" in guidance
     assert a in guidance and b in guidance
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+@pytest.mark.parametrize("priority", [1, 2])
+def test_unanswered_objection_on_a_finding_reaches_your_review(env, priority):
+    """I3: an objection on a synthesis finding the Arguer never answers is not a forced rerun: the final review lists
+    the finding (withdraw only), and withdrawing it mends the gate."""
+    _, ps, _ = env
+    a, b = _synthesize(env)
+
+    def on_finding(inputs):
+        return {"target_id": role(inputs, "synthesis")[0], "category": "problem", "priority": priority,
+                "text": "The trial enrolled people under 65."}
+
+    ex = _exec([draft(), responses(), responses()], [critique(objections=[on_finding]), critique()])
+    w = ArgueWorker()
+    out = w.run(_ctx(env, ex))
+    assert out.status == "waiting_human", out.reason
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    assert cp["options"]["claim_ids"] == [a]
+    assert cp["options"]["claim_choices"] == {a: ["withdraw"]}
+    assert any("under 65" in p for p in cp["options"]["problems"][a])
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"claims": {a: "supported"}, "answers_rq": "yes"}))
+    assert out.status == "waiting_human"  # supported is not one of its answers
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"claims": {a: "withdraw"}, "answers_rq": "yes"}))
+    assert out.status == "done", out.reason
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    assert ArgumentService(ps).get_claim(b)["status"] == "supported"
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_withdrawing_every_finding_in_your_review_goes_back_to_synthesize(env):
+    _, ps, _ = env
+    a, b = _synthesize(env)
+
+    def on(i: int):
+        def o(inputs):
+            return {"target_id": role(inputs, "synthesis")[i], "category": "problem", "priority": 1,
+                    "text": f"Finding {i} misreads its study."}
+        return o
+
+    ex = _exec([draft(), responses(), responses()], [critique(objections=[on(0), on(1)]), critique()])
+    w = ArgueWorker()
+    cp = get_checkpoint(ps, w.run(_ctx(env, ex)).checkpoint_id)
+    assert cp["options"]["claim_ids"] == [a, b]
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"claims": {a: "withdraw", b: "withdraw"},
+                                                              "answers_rq": "yes"}))
+    assert (out.status, out.to) == ("back_edge", "synthesize")
+    assert "every finding of synthesize attempt 1 was withdrawn in argue" in out.reason

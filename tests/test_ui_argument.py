@@ -79,6 +79,7 @@ from tests.test_synthesis import (
     _enable_stats,
     _setup,
     _two,
+    _two_findings,
     assess,
     narrative,
 )
@@ -647,6 +648,37 @@ def test_uncertain_support_rerun_form_reaches_the_worker(page, served):
     until(lambda: stage_row(ps, "synthesize")["attempt"] == 2)
     until(lambda: len(ex.of("arguer", "NarrativeSynthesis")) == 2)
     assert ex.of("arguer", "NarrativeSynthesis")[1]["inputs"]["guidance"].endswith("Group by design.")
+    assert page.errors == []
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("served", [{"paper_type": "critical_review"}], indirect=True)
+def test_review_card_offers_only_withdraw_past_a_hedge_problem(page, served):
+    """I3: an overstated finding (V-HEDGE, supported by the judges) is listed with why; only Withdraw is offered, and
+    withdrawing it passes the gate."""
+    from rk.production.models import SynthesisPlan
+
+    ps = served.ps
+    _setup(served.env, {"A": {"design": "rct"}, "B": {"design": "cohort"}}, schema=[DESIGN],
+           plan=SynthesisPlan(method="thematic"))
+    overstated = "Aspirin was proven safe in every older person."
+    ex = Exec({("arguer", "AssessmentOut"): [assess()], ("arguer", "NarrativeSynthesis"): [_two_findings(overstated)],
+               **_judges()})
+    run_id = _start(served, "synthesize", ex)
+    cp, card = _show(page, ps, "uncertain_support")
+    (cid,) = cp["options"]["claim_ids"]
+    row = card.locator(f'[data-claim-review="{cid}"]')
+    for text in (overstated, "Why it is listed", "V-HEDGE overstated", "Only withdrawing it mends the gate"):
+        assert row.get_by_text(text, exact=False).count() >= 1, text
+    assert card.get_by_role("heading", name="Synthesis claims that fail the gate").count() == 1
+    assert row.get_by_label(f"Supported: {overstated}").count() == 0
+    submit = card.get_by_role("button", name="Submit your review")
+    assert submit.is_disabled()
+    row.get_by_label(f"Withdraw: {overstated}").check()
+    submit.click()
+    assert _answer_of(ps, cp["id"]) == {"claims": {cid: "withdraw"}}
+    until(lambda: run_row(ps, run_id)["status"] == "done")
+    assert ArgumentService(ps).get_claim(cid)["status"] == "withdrawn"
     assert page.errors == []
 
 

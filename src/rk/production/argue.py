@@ -40,8 +40,11 @@ An interrupted attempt (a rate cap, a budget or a crash) runs again in place: th
 is the open stage's per run session (§7.2): every task of the stage in the session counts, an earlier attempt's too.
 
 Finally P1 asks the judges whether the main claim answers the frozen RQ (conservative: it does not, back to question);
-P2 asks you on the final ``uncertain_support`` checkpoint, with every argument claim that is not supported, unless the
-gate is certain to fail anyway.
+P2 asks you on the final ``uncertain_support`` checkpoint (``_review``): every claim of the argument and every in-scope
+finding that fails the claim gate (``supported`` or ``withdraw``; only ``withdraw`` past a problem other than its
+V-SUPPORT status: ``review_choices``), and every other claim but the main one whose withdrawal takes an unanswered
+objection, a failed warrant or an unanswered contest out of the argument (``withdraw`` only). It is not asked when no
+answer can mend the gate (the main claim's own problems, an unreviewed argument): the stage argues again.
 
 The P1 degrade (at an edge limit) narrows or withdraws every claim that fails the claim gate (``narrow_or_withdraw``):
 a rewrite takes over the original's reason links, warrants and objection answers, and the Skeptic re-checks it against
@@ -87,7 +90,15 @@ from rk.llm.vendors import vendor_of
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.orchestrator.graph import STAGE_TASK_BUDGET
 from rk.orchestrator.state import record_degraded, run_row, stage_row, tasks_used
-from rk.production.claims import claim_limitations, failing_claims, narrow_or_withdraw
+from rk.production.claims import (
+    claim_limitations,
+    failing_claims,
+    narrow_or_withdraw,
+    review_answer_problem,
+    review_lines,
+    review_listing,
+    review_options,
+)
 from rk.production.extraction import usable_evidence
 from rk.production.synthesis import evidence_criteria, synthesis_claims
 from rk.production.vote import vote
@@ -468,6 +479,16 @@ def _target_claims(ps: ProjectStore, target_id: str) -> set[str]:
         e = _row(ps, "edges", target_id)
         return _target_claims(ps, e["from_id"]) | _target_claims(ps, e["to_id"])
     return {_claim_end(ps, target_id)}
+
+
+def _withdraw_target(ps: ProjectStore, target_id: str) -> str:
+    """The claim whose withdrawal takes an objection's target (or a reason link) out of the argument: the claim; the
+    claim an evidence item supports; a link's source claim (a reason link's reason), a warrant's: of the link it
+    licenses."""
+    if target_id.startswith("edg_"):
+        e = _row(ps, "edges", target_id)
+        return _withdraw_target(ps, e["to_id"] if e["type"] == "warrant_of" else e["from_id"])
+    return _claim_end(ps, target_id)
 
 
 def conflict_counterparts(ps: ProjectStore, attempt: int) -> dict[str, str]:
@@ -1295,7 +1316,7 @@ class ArgueWorker:
                                                    + "; ".join(hopeless))
             return StageOutcome("waiting_human", checkpoint_id=self._open_final(ctx, s),
                                 reason="the argument awaits your review: does its main claim answer the research "
-                                       "question, and are its claims that are not supported supported")
+                                       "question, and what becomes of the claims that fail its gate")
         if (out := self._rq_vote(ctx, s)) is not None:
             return out
         return StageOutcome("done", reason=self._summary(ps, ctx.attempt))
@@ -1337,25 +1358,27 @@ class ArgueWorker:
         svc = ArgumentService(ps)
         main = main_claim(ps, ctx.attempt)
         m = svc.get_claim(main)
-        listed = [c for c in argument_claims(ps, ctx.attempt)
-                  if svc.get_claim(c)["status"] not in ("supported", "withdrawn")]
+        listing = self._review(ps, ctx.attempt, s)
         lines = [why, ""] if why else []
         lines += ["The argument's red-team rounds ended. Does its main claim answer the research question?", "",
                   f"Research question: {s.question}", f"Main claim ({main}, {m['status']}): {m['text']}"]
-        if listed:
-            lines += ["", ("These argument claims are not supported by V-SUPPORT (uncertain: the judges did not "
-                           "agree; unsupported or contradicted: the judges agreed the evidence does not support it; "
-                           "draft: not verified). Is each supported by its evidence?")]
-            for cid in listed:
-                c = svc.get_claim(cid)
-                lines += ["", f"{cid} ({c['status']}): {c['text']}",
-                          *(f"- {n['text']}" for e in c["evidence"] for n in e["notes"] if n)]
+        if listing:
+            lines += ["", ("These claims of the argument and the findings it rests on fail its gate: a claim problem "
+                           "(V-SUPPORT: the judges did not agree or agreed the evidence does not support it, or it was "
+                           "not verified; V-HEDGE overstated; V-STATS mismatch; an open priority-1 objection), or an "
+                           "objection, a failed warrant or a contest left unanswered that withdrawing the claim takes "
+                           "out of the argument. Withdraw each, or support one whose only problem is its V-SUPPORT "
+                           "status. Withdrawing the main claim leaves the argument without one.")]
+            lines += review_lines(ps, listing)
         lines += ["", ('Answer {"answers_rq": "yes" or "no", "claims": {"<claim id>": "supported" or "withdraw", ...} '
-                       'for every listed claim, optionally with a "comment"}, or {"decision": "rerun", "comment": ...} '
-                       'to argue again with your comment.')]
+                       'for every listed claim (one of its answers), optionally with a "comment"}, or '
+                       '{"decision": "rerun", "comment": ...} to argue again with your comment.')]
         cid = create_checkpoint(ps, UNCERTAIN, "\n".join(lines),
-                                {"attempt": ctx.attempt, "claim_ids": listed, "main_claim_id": main,
-                                 "choices": [SUPPORTED, WITHDRAW], "answers_rq": [YES, NO], "replaces": replaces},
+                                {"attempt": ctx.attempt, "claim_ids": list(listing), "main_claim_id": main,
+                                 "problems": {c: e["problems"] for c, e in listing.items()},
+                                 "claim_choices": {c: e["choices"] for c, e in listing.items()},
+                                 "choices": [SUPPORTED, WITHDRAW], "answers_rq": [YES, NO], "decisions": ["rerun"],
+                                 "replaces": replaces},
                                 stage=ctx.stage, actor=ctx.actor)
         if replaces is None:
             _note(ps, ctx.attempt, "final", actor=ctx.actor, checkpoint_id=cid)
@@ -1371,14 +1394,47 @@ class ArgueWorker:
                 f"{len(objections)} objections ({sum(_concedable(ps, o) for o in objections)} open), {rounds} rounds, "
                 f"ended at {end[-1]['reason'] if end else 'no end'}")
 
-    def _hopeless(self, ps: ProjectStore, attempt: int, s: _Inputs) -> list[str]:
-        """The gate failures no answer to the final P2 review can mend. The review supports or withdraws each claim
-        that is not supported and says whether the main claim answers the RQ, so a failure is mendable when
-        supporting a listed claim answers it, or when it concerns a listed claim other than the main claim (withdrawn,
-        its objections are conceded with it and its links leave the argument)."""
-        listed = {c for c in argument_claims(ps, attempt) if _claim(ps, c)["status"] not in ("supported", "withdrawn")}
+    def _review(self, ps: ProjectStore, attempt: int, s: _Inputs) -> dict[str, dict]:
+        """The claims your final P2 review lists (``review_listing``: why, and the answers each allows): every claim of
+        the argument and every in-scope finding that fails the claim gate; and every other one but the main claim
+        whose withdrawal takes out of the argument an objection left unanswered (that you could not mend by
+        supporting its response claim), a failed or untested warrant, or an unanswered contest
+        (``_withdraw_target``). Those can only be withdrawn."""
+        scope = list(dict.fromkeys([*argument_claims(ps, attempt), *s.synthesis]))
         main = main_claim(ps, attempt)
-        withdrawable = listed - {main}
+        gate = review_listing(ps, scope)
+        supportable = {c for c, e in gate.items() if SUPPORTED in e["choices"]}
+        extra: dict[str, list[str]] = {}
+
+        def add(cid: str | None, line: str) -> None:
+            if cid is not None and cid != main and cid in scope and not _withdrawn(ps, cid):
+                extra.setdefault(cid, []).append(line)
+
+        answers = self._answers(ps, attempt, s)
+        for oid in argument_objection_ids(ps, attempt):
+            o = _row(ps, "objections", oid)
+            if (why := answers.why(o)) is None or self._mendable(answers, o, supportable):
+                continue
+            cid = _withdraw_target(ps, o["target_id"])
+            if cid in gate and any(oid in p for p in gate[cid]["problems"]):
+                continue  # an open priority-1 objection: one of its claim problems already
+            add(cid, f"objection {oid} (priority {o.get('priority', 1)}) {why}: {o['text']}")
+        for link, why in self._failing_warrants(ps, attempt, s, supportable):
+            add(_withdraw_target(ps, link), why)
+        for cid, why in self._failing_contests(ps, attempt, s, supportable):
+            add(cid, why)
+        return review_listing(ps, scope, extra)
+
+    def _hopeless(self, ps: ProjectStore, attempt: int, s: _Inputs) -> list[str]:
+        """The gate failures no answer to the final P2 review can mend. The review supports or withdraws each listed
+        claim (``_review``) and says whether the main claim answers the RQ, so a failure is mendable when supporting a
+        listed claim answers it, or when it concerns a listed claim other than the main claim (withdrawn, its
+        objections are conceded with it and its links leave the argument). What is left: the main claim's own
+        problems other than its V-SUPPORT status, a main claim already withdrawn, an unreviewed argument."""
+        listing = self._review(ps, attempt, s)
+        supportable = {c for c, e in listing.items() if SUPPORTED in e["choices"]}
+        main = main_claim(ps, attempt)
+        withdrawable = set(listing) - {main}
         answers = self._answers(ps, attempt, s)
         out = []
         if main is None or _withdrawn(ps, main):
@@ -1388,11 +1444,11 @@ class ArgueWorker:
                 out += [f"{c}: {p.line}" for p in claim_problems(ps, c) if p.kind not in ("status", "objection")]
         for oid in argument_objection_ids(ps, attempt):
             o = _row(ps, "objections", oid)
-            if ((why := answers.why(o)) is not None and not self._mendable(answers, o, listed)
+            if ((why := answers.why(o)) is not None and not self._mendable(answers, o, supportable)
                     and not _target_claims(ps, o["target_id"]) & withdrawable):
                 out.append(f"objection {oid} {why}")
-        out += self._warrant_failures(ps, attempt, s, mendable=listed, withdrawable=withdrawable)
-        out += self._contest_failures(ps, attempt, s, mendable=listed)
+        out += self._warrant_failures(ps, attempt, s, mendable=supportable, withdrawable=withdrawable)
+        out += self._contest_failures(ps, attempt, s, mendable=supportable, withdrawable=withdrawable)
         crit = argue_notes(ps, attempt, kind="critique")
         if not crit or crit[-1].get("failed"):
             out.append("the Skeptic did not review the argument")
@@ -1421,21 +1477,16 @@ class ArgueWorker:
         ps = ctx.ps
         answer = cp.get("answer") or {}
         listed = cp["options"]["claim_ids"]
+        allowed = review_options(cp["options"])
         comment = _comment(answer)
         if answer.get("decision") == "rerun":
             if comment:
                 return StageOutcome("rerun", reason=comment)
             why = "rerun needs a comment saying what to change"
         else:
-            claims = answer.get("claims", None if listed else {})
-            if not isinstance(claims, dict):
-                why = 'give "claims": {"<claim id>": "supported" | "withdraw"} for every listed claim'
-            elif bad := [f"{c}: {claims.get(c)!r}" for c in listed if claims.get(c) not in (SUPPORTED, WITHDRAW)]:
-                why = f"every listed claim needs supported or withdraw ({'; '.join(bad)})"
-            elif answer.get("answers_rq") not in (YES, NO):
+            why = review_answer_problem(answer, allowed)
+            if not why and answer.get("answers_rq") not in (YES, NO):
                 why = 'give "answers_rq": "yes" or "no"'
-            else:
-                why = ""
         if why:
             new = self._open_final(ctx, s, replaces=cp["id"], why=f"Your answer could not be applied: {why}.")
             return StageOutcome("waiting_human", checkpoint_id=new, reason=why)
@@ -1460,6 +1511,8 @@ class ArgueWorker:
             return StageOutcome("back_edge", to="question", reason=(
                 "you judged that the main claim does not answer the research question"
                 + (f": {comment}" if comment else "")))
+        if (gone := _no_finding_left(ps)) is not None:  # you withdrew every finding: synthesize again (I4)
+            return StageOutcome("back_edge", to="synthesize", reason=gone)
         return StageOutcome("done", reason=self._summary(ps, ctx.attempt))
 
     # ---- gate ----
@@ -1524,33 +1577,39 @@ class ArgueWorker:
                 return True
         return False
 
+    def _failing_warrants(self, ps: ProjectStore, attempt: int, s: _Inputs,
+                          mendable: frozenset[str] | set[str] = frozenset()) -> list[tuple[str, str]]:
+        """(the reason link, why) for each warrant of a link still in the argument that has no tests, or failed a test
+        no supported response claim answers (nor would once you support a ``mendable`` claim)."""
+        dropped = dropped_links(ps, attempt)
+        out = []
+        for eid in argument_edge_ids(ps, attempt):
+            e = _row(ps, "edges", eid)
+            if e["type"] != "warrant_of" or e["to_id"] in dropped or link_gone(ps, e["to_id"]):
+                continue
+            tests = e.get("warrant_tests")
+            if not tests:
+                out.append((e["to_id"], f"warrant {eid} (on {e['to_id']}) has no warrant tests"))
+                continue
+            bad = [k for k, t in tests.items() if not t["ok"]]
+            if bad and not self._answered_on(ps, attempt, s, eid, set(mendable)):
+                out.append((e["to_id"], (f"warrant {eid} (on {e['to_id']}) failed its tests ({', '.join(bad)}) and "
+                                         f"no supported response claim answers it")))
+        return out
+
     def _warrant_failures(self, ps: ProjectStore, attempt: int, s: _Inputs,
                           mendable: frozenset[str] | set[str] = frozenset(),
                           withdrawable: frozenset[str] | set[str] = frozenset()) -> list[str]:
         """Every warrant of a link still in the argument has its tests, and each failed test is answered by a
         supported response claim (or the link was dropped). Links with a ``withdrawable`` end are skipped."""
-        dropped = dropped_links(ps, attempt)
-        out = []
-        for eid in argument_edge_ids(ps, attempt):
-            e = _row(ps, "edges", eid)
-            if e["type"] != "warrant_of" or e["to_id"] in dropped or link_gone(ps, e["to_id"]) \
-                    or _target_claims(ps, e["to_id"]) & set(withdrawable):
-                continue
-            tests = e.get("warrant_tests")
-            if not tests:
-                out.append(f"warrant {eid} (on {e['to_id']}) has no warrant tests")
-                continue
-            bad = [k for k, t in tests.items() if not t["ok"]]
-            if bad and not self._answered_on(ps, attempt, s, eid, set(mendable)):
-                out.append(f"warrant {eid} (on {e['to_id']}) failed its tests ({', '.join(bad)}) and no supported "
-                           f"response claim answers it")
-        return out
+        return [why for link, why in self._failing_warrants(ps, attempt, s, mendable)
+                if not _target_claims(ps, link) & set(withdrawable)]
 
-    def _contest_failures(self, ps: ProjectStore, attempt: int, s: _Inputs,
-                          mendable: frozenset[str] | set[str] = frozenset()) -> list[str]:
-        """Every contested claim of the argument has one of the attempt's conflict objections answered by a supported
-        response claim of the argument (the structural V-BALANCE input). A contested finding with no recorded
-        ``both_contested`` decision (``imported`` ``untraced``) has nothing to answer and fails by name."""
+    def _failing_contests(self, ps: ProjectStore, attempt: int, s: _Inputs,
+                          mendable: frozenset[str] | set[str] = frozenset()) -> list[tuple[str, str]]:
+        """(claim, why) for each contested claim of the argument without one of the attempt's conflict objections
+        answered by a supported response claim of the argument (nor one you could support: ``mendable``). A contested
+        finding with no recorded ``both_contested`` decision (``imported`` ``untraced``) has nothing to answer."""
         conflicts = set(conflict_counterparts(ps, attempt))
         untraced = {c for n in argue_notes(ps, attempt, kind="imported") for c in n.get("untraced") or []}
         out = []
@@ -1559,12 +1618,20 @@ class ArgueWorker:
             if not c.get("contested"):
                 continue
             if cid in untraced:
-                out.append(f"the contested claim {cid} has no recorded conflict to answer (no both_contested decision; "
-                           f"contested: {c.get('contested_reason') or 'no reason recorded'})")
+                out.append((cid, (f"the contested claim {cid} has no recorded conflict to answer (no both_contested "
+                                  f"decision; contested: {c.get('contested_reason') or 'no reason recorded'})")))
             elif not self._answered_on(ps, attempt, s, cid, set(mendable), only=conflicts):
-                out.append(f"the contested claim {cid} has no conflict objection of this attempt answered by a "
-                           f"supported response claim")
+                out.append((cid, (f"the contested claim {cid} has no conflict objection of this attempt answered by "
+                                  f"a supported response claim")))
         return out
+
+    def _contest_failures(self, ps: ProjectStore, attempt: int, s: _Inputs,
+                          mendable: frozenset[str] | set[str] = frozenset(),
+                          withdrawable: frozenset[str] | set[str] = frozenset()) -> list[str]:
+        """Every contested claim of the argument has one of the attempt's conflict objections answered by a supported
+        response claim of the argument (the structural V-BALANCE input; ``_failing_contests``). ``withdrawable``
+        claims are skipped."""
+        return [why for cid, why in self._failing_contests(ps, attempt, s, mendable) if cid not in withdrawable]
 
     # ---- degrade ----
     def _targets_of(self, ps: ProjectStore, cid: str) -> list[str]:

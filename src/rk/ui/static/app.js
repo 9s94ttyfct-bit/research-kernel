@@ -649,9 +649,9 @@ function evidenceList(c) {
     Object.keys(e.criteria).length ? el("p", { class: "hint" }, CRITERIA.filter((k) => e.criteria[k]).map((k) => `${label(k)} ${e.criteria[k].score}/2`).join(" · ")) : null));
 }
 
-// A claim: its badges, text and scope; why it was withdrawn, is contested or fails the claim gate; its evidence
-// (folded unless `open`).
-function claimBlock(c, { open = false } = {}) {
+// A claim: its badges, text and scope; why it was withdrawn, is contested or fails the claim gate (unless `problems`
+// is false: a review card lists them itself); its evidence (folded unless `open`).
+function claimBlock(c, { open = false, problems = true } = {}) {
   return el("div", { class: `claim${c.status === "withdrawn" ? " withdrawn" : ""}`, "data-claim": c.id },
     claimBadges(c),
     el("p", { class: "claim-text" }, c.text),
@@ -659,7 +659,7 @@ function claimBlock(c, { open = false } = {}) {
     c.withdrawn_reason ? el("p", { class: "hint" }, "Withdrawn: ", c.withdrawn_reason) : null,
     c.contested_reason ? el("p", { class: "hint" }, "Contested: ", c.contested_reason) : null,
     c.narrowed_from ? el("p", { class: "hint" }, `Narrower rewrite of ${c.narrowed_from}.`) : null,
-    c.status !== "withdrawn" && c.problems.length ? el("ul", { class: "check bad" }, c.problems.map((p) => el("li", {}, p))) : null,
+    problems && c.status !== "withdrawn" && c.problems.length ? el("ul", { class: "check bad" }, c.problems.map((p) => el("li", {}, p))) : null,
     el("details", { class: "claim-evidence", open, "data-key": `evidence-${c.id}` }, el("summary", {}, `Evidence (${c.evidence.length})`), evidenceList(c)));
 }
 
@@ -720,8 +720,11 @@ async function poolingCard(c, answer) {
   ];
 }
 
-// uncertain_support of synthesize (its findings) and of argue's final review (its claims, and whether the main
-// claim answers the research question). An older uncertain_support without listed claims gets the plain card.
+// uncertain_support of synthesize (its claims that fail the gate) and of argue's final review (the claims of the
+// argument and the findings it rests on that fail its gate, and whether the main claim answers the research question).
+// Each claim offers the answers the checkpoint allows it (`claim_choices`: withdraw always, supported only when its
+// only problem is its V-SUPPORT status). An older uncertain_support without listed claims gets the plain card.
+const REVIEW_CHOICES = { supported: "Supported", withdraw: "Withdraw" };
 async function uncertainCard(c, answer) {
   const o = c.options;
   const rqAsked = Array.isArray(o.answers_rq);
@@ -740,14 +743,19 @@ async function uncertainCard(c, answer) {
     submit.disabled = chosen.size !== o.claim_ids.length || (rqAsked && !rq);
   };
   update();
+  const allowed = (cid) => (o.claim_choices && o.claim_choices[cid]) || o.choices || ["supported", "withdraw"];
   const row = (cid) => {
     const x = byId.get(cid);
     if (!x) return el("li", {}, el("p", { class: "error" }, `Claim ${cid} was not found.`));
-    return el("li", { class: "review-claim" }, claimBlock(x, { open: true }),
+    const why = (o.problems && o.problems[cid]) || x.problems;
+    const only = allowed(cid);
+    return el("li", { class: "review-claim", "data-claim-review": cid }, claimBlock(x, { open: true, problems: false }),
+      why.length ? [el("div", { class: "who" }, "Why it is listed"), el("ul", { class: "check bad" }, why.map((p) => el("li", {}, p)))] : null,
       x.support_reason ? el("p", { class: "hint" }, "The judges: ", x.support_reason) : null,
       rqAsked ? objectionList(d.objections.filter((ob) => [cid, ...x.evidence.map((e) => e.id)].includes(ob.target_id))) : null,
+      only.length === 1 && only[0] === "withdraw" ? el("p", { class: "hint" }, "Only withdrawing it mends the gate: its problem is not one the judges decide.") : null,
       choices(`claim-${c.id}-${cid}`, `Your decision: ${x.text}`,
-        [["supported", "Supported", `Supported: ${x.text}`], ["withdraw", "Withdraw", `Withdraw: ${x.text}`]],
+        only.map((v) => [v, REVIEW_CHOICES[v] || label(v), `${REVIEW_CHOICES[v] || label(v)}: ${x.text}`]),
         (v) => { chosen.set(cid, v); update(); }));
   };
   const main = rqAsked ? byId.get(o.main_claim_id) : null;
@@ -758,8 +766,9 @@ async function uncertainCard(c, answer) {
       choices(`rq-${c.id}`, "Does the main claim answer the research question?",
         [["yes", "Yes, it answers the research question", "Yes, it answers the research question"],
           ["no", "No: back to the question stage", "No: back to the question stage"]], (v) => { rq = v; update(); })] : null,
-    o.claim_ids.length ? [el("h4", {}, rqAsked ? "Claims not supported by V-SUPPORT" : "Findings the judges could not agree on"),
-      el("p", { class: "hint" }, "Is each supported by its evidence? Withdrawing a claim takes it out and lists it in the limitations."),
+    o.claim_ids.length ? [el("h4", {}, rqAsked ? "Claims that fail the argument's gate" : "Synthesis claims that fail the gate"),
+      el("p", { class: "hint" }, "Withdraw each, or call it supported when its only problem is that the judges did not find it supported. Withdrawing a claim takes it out and lists it in the limitations."),
+      o.no_supported_left ? el("p", { class: "hint warn" }, "No other finding is supported: withdrawing every listed claim leaves the synthesis without one, and its gate fails. You may synthesize again instead.") : null,
       el("ol", { class: "review-claims" }, o.claim_ids.map(row))] : null,
     comment.field,
     el("div", { class: "toolbar" }, submit, status),
@@ -864,7 +873,7 @@ const cardFor = (c) => (c.kind === "uncertain_support" && !Array.isArray(c.optio
 const KINDS = { topic_review: "Topic review", rq_approval: "Research question approval",
   significance_novelty: "Already answered? The judges split", stage_blocked: "Stage blocked at its back-edge limit",
   protocol_approval: "Protocol approval", screening_disagreements: "Screening disagreements",
-  pooling_approval: "Pooling approval", uncertain_support: "Supported? The judges split",
+  pooling_approval: "Pooling approval", uncertain_support: "Supported? Your review",
   evidence_conflict: "Contradicting claims", design_approval: "Design approval" };
 
 const DECIDED_BY = { agreement: "both screeners", single: "one screener", human: "you", vote: "the P1 vote (not reviewed by a human)", rule: "the language rule" };

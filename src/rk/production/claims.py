@@ -25,6 +25,7 @@ from rk.argument import AgentClaimKind, ArgumentService, ClaimDraft, ClaimIn, Ev
 from rk.llm.vendors import vendor_of
 from rk.orchestrator.engine import StageContext
 from rk.verify.support import (
+    ClaimProblem,
     check_claim_hedge,
     claim_problems,
     evidence_texts,
@@ -141,6 +142,68 @@ def narrow_or_withdraw(ctx: StageContext, claim_id: str, *, kind: AgentClaimKind
     svc.withdraw_claim(new, reason=f"narrower rewrite of {claim_id} not supported ({failed})", actor=ctx.actor)
     return withdraw(f"{why}; its narrower rewrite {new} was not supported either ({failed})",
                     f"conceded: the claim {claim_id} was withdrawn, and its rewrite {new} was not supported")
+
+
+# ---- P2: your review of the claims that fail the gate ----
+SUPPORTED, WITHDRAW = "supported", "withdraw"
+
+
+def review_choices(problems: list[ClaimProblem], *, structural: bool = False) -> list[str]:
+    """The answers your P2 review offers for a claim that fails the claim gate with ``problems`` (and, when
+    ``structural``, a failure of the argument around it: an unanswered objection, a failed warrant, a contest):
+    ``withdraw`` always; ``supported`` too only when every problem is its V-SUPPORT status (you may support what the
+    judges did not), never past V-HEDGE, V-STATS, an objection or a structural failure."""
+    supportable = bool(problems) and all(p.kind == "status" for p in problems) and not structural
+    return [SUPPORTED, WITHDRAW] if supportable else [WITHDRAW]
+
+
+def review_listing(ps, claim_ids: list[str], extra: dict[str, list[str]] | None = None) -> dict[str, dict]:
+    """claim id -> ``{"problems": lines, "choices": review_choices}`` for each claim of ``claim_ids`` (in order, once)
+    that fails the claim gate (``claim_problems``, each problem's full detail) or has ``extra`` lines (structural
+    failures); never a withdrawn claim."""
+    extra = extra or {}
+    svc = ArgumentService(ps)
+    out: dict[str, dict] = {}
+    for cid in dict.fromkeys(claim_ids):
+        if svc.get_claim(cid)["status"] == "withdrawn":
+            continue
+        problems, more = claim_problems(ps, cid), extra.get(cid) or []
+        if problems or more:
+            out[cid] = {"problems": [p.detail for p in problems] + more,
+                        "choices": review_choices(problems, structural=bool(more))}
+    return out
+
+
+def review_options(options: dict) -> dict[str, list[str]]:
+    """claim id -> the answers a review checkpoint's ``options`` allow for it: its ``claim_choices`` (a checkpoint
+    opened before them: ``choices`` for every listed claim)."""
+    per = options.get("claim_choices")
+    if isinstance(per, dict):
+        return {c: list(per.get(c) or []) for c in options.get("claim_ids") or []}
+    return {c: list(options.get("choices") or [SUPPORTED, WITHDRAW]) for c in options.get("claim_ids") or []}
+
+
+def review_answer_problem(answer: dict, allowed: dict[str, list[str]]) -> str:
+    """Why the ``claims`` of a review answer cannot be applied (``""`` when they can): every listed claim needs one
+    of the answers ``allowed`` for it (``review_options``)."""
+    claims = answer.get("claims", None if allowed else {})
+    if not isinstance(claims, dict):
+        return 'give "claims": {"<claim id>": "supported" | "withdraw"} for every listed claim'
+    bad = [f"{cid}: {claims.get(cid)!r} (choose {' or '.join(ok)})" for cid, ok in allowed.items()
+           if claims.get(cid) not in ok]
+    return f"every listed claim needs one of its answers ({'; '.join(bad)})" if bad else ""
+
+
+def review_lines(ps, listing: dict[str, dict]) -> list[str]:
+    """The checkpoint text of the listed claims: each with its status, text, problems, answers and evidence passages."""
+    svc = ArgumentService(ps)
+    lines: list[str] = []
+    for cid, entry in listing.items():
+        c = svc.get_claim(cid)
+        lines += ["", f"{cid} ({c['status']}): {c['text']}", *(f"- fails: {p}" for p in entry["problems"]),
+                  f"- your answer: {' or '.join(entry['choices'])}",
+                  *(f"- evidence: {n['text']}" for e in c["evidence"] for n in e["notes"] if n)]
+    return lines
 
 
 def claim_limitations(ps, claim_ids: list[str]) -> dict:
