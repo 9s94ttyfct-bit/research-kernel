@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from rk.argument import ArgumentService, ObjectionIn
 from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
-from rk.discovery.executor import RateCapped
+from rk.discovery.executor import BudgetExceeded, RateCapped
 from rk.orchestrator.engine import default_workers
 from rk.orchestrator.graph import BACK_EDGES
 from rk.orchestrator.state import (
@@ -19,8 +19,10 @@ from rk.orchestrator.state import (
     record_attempt,
     record_passed,
     record_ran,
+    record_run_session,
     record_run_task,
     start_run,
+    tasks_used,
 )
 from rk.production.argue import (
     SKEPTIC_TOOLS,
@@ -877,13 +879,51 @@ def test_p1_conflict_vote_interrupted_resumes_without_asking_the_skeptic_again(e
     assert decision["decision"] == "both_contested" and decision["by"] == "vote"
 
 
-def test_budget_counts_only_the_attempts_own_tasks(env):
-    """argue's budget counts the role tasks of its own attempt, not those an earlier (dead) attempt used in the same
-    run session."""
+class SessionBudget(Exec):
+    """``Exec`` that counts each task against the stage budget of run session 1 as ``KernelExecutor`` does: linked to
+    the run (``run.task``) and refused with ``BudgetExceeded`` once the session's tasks reach ``limit``."""
+
+    def __init__(self, script, *, ps, run_id: str, limit: int):
+        super().__init__(script)
+        self.ps, self.run_id, self.limit = ps, run_id, limit
+
+    def run(self, role, instructions, inputs, output_schema, **kw):
+        used = tasks_used(self.ps, self.run_id, 1, kw["stage"])
+        if used >= self.limit:
+            raise BudgetExceeded(kw["stage"], used, self.limit)
+        r = super().run(role, instructions, inputs, output_schema, **kw)
+        record_run_task(self.ps, task_id=r.task_id, run_id=self.run_id, session=1, stage=kw["stage"],
+                        attempt=kw["attempt"])
+        return r
+
+
+def test_rerun_in_the_same_session_plans_with_the_remaining_session_budget(env):
+    """argue's budget is the open stage's per run session (§7.2), as the executor counts it: a rerun in the same
+    session plans its rounds with what earlier attempts left, so it ends at ``budget`` instead of running into the
+    executor's ``BudgetExceeded`` (``paused_budget``) in the middle of a round."""
     _, ps, _ = env
+    _synthesize(env)
+    run_id = start_run(ps, until="argue", actor="tester", clock=lambda: 1.8e9)
+    for i in range(10):  # attempt 1's tasks in this session
+        record_run_task(ps, task_id=f"tsk_dead{i}", run_id=run_id, session=1, stage="argue", attempt=1)
+    ex = SessionBudget(_exec([draft(), responses(), responses(), responses()],
+                             [critique(objections=[_o("main", 1, f"Problem {i}.")]) for i in range(4)]).script,
+                       ps=ps, run_id=run_id, limit=20)
+    out = ArgueWorker(budget=20).run(replace(_ctx(env, ex, 2), run_id=run_id))
+    assert out.status in ("done", "back_edge"), out.reason
+    assert [n["reason"] for n in argue_notes(ps, 2, kind="end")] == ["budget"]
+    assert tasks_used(ps, run_id, 1, "argue") <= 20
+
+
+def test_attempt_resumed_in_a_new_session_gets_the_fresh_session_budget(env):
+    _, ps, _ = env
+    _synthesize(env)
+    ArgueWorker().run(_ctx(env, _exec([draft()], [critique()])))
+    assert sum(n.get("tasks") or 0 for n in argue_notes(ps, 1)) > 0
     run_id = start_run(ps, until="argue", actor="tester", clock=lambda: 1.8e9)
     for i in range(30):
-        record_run_task(ps, task_id=f"tsk_dead{i}", run_id=run_id, session=1, stage="argue", attempt=1)
-    for i in range(3):
-        record_run_task(ps, task_id=f"tsk_live{i}", run_id=run_id, session=1, stage="argue", attempt=2)
-    assert ArgueWorker()._used(replace(_ctx(env, _exec(), 2), run_id=run_id)) == 3
+        record_run_task(ps, task_id=f"tsk_old{i}", run_id=run_id, session=1, stage="argue", attempt=1)
+    w = ArgueWorker()
+    assert w._used(replace(_ctx(env, _exec()), run_id=run_id)) == 30
+    record_run_session(ps, run_id, 2, actor="tester", clock=lambda: 1.8e9)
+    assert w._used(replace(_ctx(env, _exec()), run_id=run_id)) == 0

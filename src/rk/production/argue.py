@@ -36,8 +36,8 @@ unanswered on the findings and raises again the conflict objection of every cont
 outside this attempt's argument does not count).
 
 An interrupted attempt (a rate cap, a budget or a crash) runs again in place: the rounds go on from the attempt's notes
-(the claims still to verify, the next Arguer or Skeptic task, a conflict still to decide, the end check), and the
-budget counts only the role tasks of this attempt, not those of earlier attempts in the run session.
+(the claims still to verify, the next Arguer or Skeptic task, a conflict still to decide, the end check). The budget
+is the open stage's per run session (§7.2): every task of the stage in the session counts, an earlier attempt's too.
 
 Finally P1 asks the judges whether the main claim answers the frozen RQ (conservative: it does not, back to question);
 P2 asks you on the final ``uncertain_support`` checkpoint, with every argument claim that is not supported, unless the
@@ -678,14 +678,13 @@ class ArgueWorker:
 
     # ---- the budget ----
     def _used(self, ctx: StageContext) -> int:
-        """Role tasks the attempt used (noted per round); in a run, the attempt's own count in the run session when
-        it is higher (tasks of a step interrupted before its note). Earlier attempts' tasks are not counted."""
-        local = sum(n.get("tasks") or 0 for n in argue_notes(ctx.ps, ctx.attempt))
+        """Role tasks the stage used: in a run, every task of the stage in the run session (§7.2, as the executor
+        counts them: earlier attempts of the session included, an attempt resumed in a new session starting from
+        the new session's); outside a run, the attempt's (noted per round)."""
         if ctx.run_id is None:
-            return local
+            return sum(n.get("tasks") or 0 for n in argue_notes(ctx.ps, ctx.attempt))
         row = run_row(ctx.ps, ctx.run_id)
-        return max(local, tasks_used(ctx.ps, ctx.run_id, row["session"] if row else None, ctx.stage,
-                                     attempt=ctx.attempt))
+        return tasks_used(ctx.ps, ctx.run_id, row["session"] if row else None, ctx.stage)
 
     @staticmethod
     def _reserve(s: _Inputs) -> int:

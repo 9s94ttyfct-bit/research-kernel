@@ -35,16 +35,14 @@ def record_run_task(ps: ProjectStore, *, task_id: str, run_id: str | None, sessi
                                     "attempt": attempt}, actor)
 
 
-def tasks_used(ps: ProjectStore, run_id: str, session: int | None, stage: str, *, attempt: int | None = None) -> int:
-    """Role tasks counted against the stage budget of one run session (with ``attempt``, only that attempt's). A task
-    that came back ``rate_capped`` made no model call, and one that came back ``session_limited`` did no work (its
-    driver's usage limit was reached): neither is counted."""
-    sql = ("SELECT COUNT(*) FROM run_tasks r LEFT JOIN tasks t ON t.id = r.task_id WHERE r.run_id=? AND r.session IS ? "
-           "AND r.stage=? AND COALESCE(t.error, '') NOT IN ('rate_capped', 'session_limited')")
-    params: tuple = (run_id, session, stage)
-    if attempt is not None:
-        sql, params = sql + " AND r.attempt=?", (*params, attempt)
-    return ps.db.execute(sql, params).fetchone()[0]
+def tasks_used(ps: ProjectStore, run_id: str, session: int | None, stage: str) -> int:
+    """Role tasks counted against the stage budget of one run session. A task that came back ``rate_capped`` made no
+    model call, and one that came back ``session_limited`` did no work (its driver's usage limit was reached): neither
+    is counted."""
+    return ps.db.execute(
+        "SELECT COUNT(*) FROM run_tasks r LEFT JOIN tasks t ON t.id = r.task_id WHERE r.run_id=? AND r.session IS ? "
+        "AND r.stage=? AND COALESCE(t.error, '') NOT IN ('rate_capped', 'session_limited')",
+        (run_id, session, stage)).fetchone()[0]
 
 
 # ---- stage events ----
