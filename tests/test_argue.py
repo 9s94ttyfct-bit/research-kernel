@@ -956,3 +956,24 @@ def test_p2_conflict_checkpoint_is_opened_once_after_its_note(env, monkeypatch):
     assert out.status == "waiting_human" and out.checkpoint_id == calls[0]
     assert [c["id"] for c in list_checkpoints(ps) if c["kind"] == "evidence_conflict"] == [calls[0]]
     assert len(ex.of("skeptic", "Critique")) == 1
+
+
+# ---- fix wave 2 ----
+def test_limitations_of_an_older_attempt_use_the_synthesis_it_argued_on(env):
+    """M7: argue_limitations of argue attempt 1 lists the limitations of synthesize attempt 1 (the one it argued on),
+    not of a later passed synthesize attempt."""
+    k, ps, lib = env
+    first = _synthesize(env)
+    ArgueWorker().run(_ctx(env, _exec([draft()], [critique()])))
+    ex = Exec({("arguer", "AssessmentOut"): [assess()], ("arguer", "NarrativeSynthesis"): [_synth_narrative((F1,))],
+               **_judges()})
+    record_attempt(ps, "synthesize", 2, run_id=None, guidance="", requested=None, actor="tester")
+    assert SynthesizeWorker().run(production_ctx(k, ps, lib, ex, stage="synthesize", attempt=2)).status == "done"
+    record_ran(ps, "synthesize", 2, "done", "", actor="tester")
+    record_passed(ps, "synthesize", 2, actor="tester")
+    (later,) = synthesis_claims(ps, 2)
+    svc = ArgumentService(ps)
+    svc.withdraw_claim(later, reason="a later synthesis", actor="tester")
+    svc.withdraw_claim(first[1], reason="the argued synthesis", actor="tester")
+    withdrawn = {c["claim_id"] for c in argue_limitations(ps, 1)["claims"]["withdrawn"]}
+    assert first[1] in withdrawn and later not in withdrawn

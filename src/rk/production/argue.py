@@ -584,10 +584,11 @@ def _runner(ctx: StageContext):
 # ---- limitations ----
 def argue_limitations(ps: ProjectStore, attempt: int) -> dict:
     """The limitations input of the attempt: the withdrawn and narrowed claims of the argument and of the synthesis it
-    rests on (``claim_limitations``), every conceded objection, the reason links dropped from the argument, the
-    contested claims, and the budget when the rounds stopped there."""
-    s = _load(ps)
-    synth = [] if isinstance(s, str) else synthesis_claims(ps, s.synth_attempt)
+    rests on (``claim_limitations``; the synthesize attempt it argued on: ``argued_synthesis_attempt``), every conceded
+    objection, the reason links dropped from the argument, the contested claims, and the budget when the rounds
+    stopped there."""
+    synth_attempt = argued_synthesis_attempt(ps, attempt)
+    synth = [] if synth_attempt is None else synthesis_claims(ps, synth_attempt)
     svc = ArgumentService(ps)
     objections = [_row(ps, "objections", o) for o in argument_objection_ids(ps, attempt)]
     scope = [*argument_claims(ps, attempt), *synth]
