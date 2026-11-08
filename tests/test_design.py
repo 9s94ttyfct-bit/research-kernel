@@ -24,6 +24,7 @@ from rk.discovery.store import (
 )
 from rk.orchestrator.engine import Orchestrator, default_workers
 from rk.orchestrator.state import (
+    latest_attempt,
     record_attempt,
     record_edge_taken,
     record_passed,
@@ -40,10 +41,15 @@ from rk.production.design import (
 from rk.production.models import DesignBody, DesignIn
 from rk.production.store import design, set_design
 from rk.roles.prompts import build_system_prompt
-from tests.production_fakes import make_frozen_project, production_ctx, votes_on
+from tests.production_fakes import (
+    make_frozen_project,
+    production_ctx,
+    stage_run,
+    votes_on,
+)
 from tests.test_argue import _exec as _argue_exec
 from tests.test_argue import _judges, _synthesize, critique, draft
-from tests.test_synthesis import Exec
+from tests.test_synthesis import CapOnce, Exec
 
 FEASIBLE = "Older people can be enrolled in a randomised trial."
 NARROWER = "Older people were enrolled in a randomised trial."
@@ -511,3 +517,71 @@ def test_new_hypotheses_are_the_ideators_and_never_twice(env):
         "SELECT type, actor, actor_kind FROM events WHERE entity_id=? ORDER BY seq", (new,))}
     assert rows == {"hypothesis.added": ("ideator", "agent"), "hypothesis.status_set": ("researcher", "human")}
     assert (_approved(ps, 2)["by"], _approved(ps, 2)["checkpoint_id"]) == ("human", cp)
+
+
+# ---- fix wave 1: resuming an interrupted attempt in place ----
+def _after(real, error: str):
+    """``real``, then a crash (the write is done, nothing after it is)."""
+    def wrapped(*args, **kw):
+        real(*args, **kw)
+        raise RuntimeError(error)
+    return wrapped
+
+
+def _feasibility_ids(ps) -> list[str]:
+    return sorted(c["id"] for c in ArgumentService(ps).list_claims() if c["kind"] == "feasibility")
+
+
+def test_interrupted_attempt_resumes_in_place(env):
+    """A rate cap at the P1 design vote (after the draft is noted and its feasibility claim verified) interrupts
+    attempt 1; the next step resumes that attempt: the Ideator is not asked again and no claim is orphaned."""
+    k, ps, lib = env
+    _argued(env)
+    ex = CapOnce(_exec([plan(), plan()]).script, at=("judge", "VoteOut"))
+    o, run_id = stage_run(k, ps, lib, "design", ex)
+    assert o.step("demo", run_id, actor="tester") == "waiting_rate"
+    assert o.step("demo", run_id, actor="tester") == "done"
+    assert latest_attempt(ps, "design") == 1 and len(ex.of("ideator", "DesignDraft")) == 1
+    assert _feasibility_ids(ps) == sorted(feasibility_claims(ps, 1))
+    assert _count(ps) == 2 and len(design_notes(ps, 1, kind="vote")) == 1
+
+
+def test_p1_crash_after_freezing_finishes_with_one_design(env, monkeypatch):
+    """T6: a crash right after the P1 approval froze the design; the next step finishes the approval in the same
+    attempt: one frozen design, the same hypothesis ids, the Ideator and the vote not asked again."""
+    import rk.production.design as mod
+
+    k, ps, lib = env
+    _argued(env)
+    ex = _exec([plan(), plan()])
+    o, run_id = stage_run(k, ps, lib, "design", ex)
+    monkeypatch.setattr(mod, "freeze_design", _after(mod.freeze_design, "crash after freeze_design"))
+    with pytest.raises(RuntimeError, match="crash after freeze_design"):
+        o.step("demo", run_id, actor="tester")
+    ids = sorted(h["id"] for h in hypotheses(ps, frozen_rq(ps)["id"]))
+    votes = len(ex.of("judge", "VoteOut"))
+    monkeypatch.undo()
+    assert o.step("demo", run_id, actor="tester") == "done"
+    assert latest_attempt(ps, "design") == 1 and len(ex.of("ideator", "DesignDraft")) == 1
+    assert len(ex.of("judge", "VoteOut")) == votes
+    assert sorted(h["id"] for h in hypotheses(ps, frozen_rq(ps)["id"])) == ids and len(ids) == 2
+    assert [tuple(r) for r in ps.db.execute("SELECT status, attempt FROM designs")] == [("frozen", 1)]
+    assert DesignWorker().gate(ps, 1).ok
+
+
+def test_interrupted_narrowing_resumes_with_its_rewrite(env):
+    """A rate cap while the judges verify the P1 rewrite of an uncertain feasibility claim: resumed, the rewrite is
+    decided as it is (the Arguer is not asked for another), so no second rewrite is left orphaned."""
+    _, ps, _ = env
+    _argued(env)
+    w = DesignWorker()
+    narrowed = [{"text": NARROWER, "kind": "fact"}] * 2
+    ex = CapOnce(_exec([plan()], uncertain=("can be",), narrowed=narrowed).script, at=("judge", "JudgeVerdict"), n=2)
+    with pytest.raises(RateCapped):
+        w.run(_ctx(env, ex))
+    assert w.run(_ctx(env, ex)).status == "done"
+    assert len(ex.of("arguer", "NarrowedClaim")) == 1
+    original, rewrite = feasibility_claims(ps, 1)
+    svc = ArgumentService(ps)
+    assert (svc.get_claim(original)["status"], svc.get_claim(rewrite)["status"]) == ("withdrawn", "supported")
+    assert _feasibility_ids(ps) == sorted([original, rewrite])

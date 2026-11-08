@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from rk.discovery.executor import RateCapped
-from rk.orchestrator.engine import StageContext
+from rk.orchestrator.engine import Orchestrator, StageContext
+from rk.orchestrator.graph import stages_of
+from rk.orchestrator.state import record_passed, stage_row, start_run
 from rk.production.models import (
     Criterion,
     Eligibility,
@@ -36,6 +38,19 @@ def production_ctx(k, ps, lib, executor, *, stage: str = "search_screen", attemp
     return StageContext(kernel=k, registry=None, ps=ps, lib=lib, project=project, stage=stage, attempt=attempt,
                         run_id=None, guidance="", executor=executor, sources=sources or FakeSources({}),
                         actor="tester")
+
+
+def stage_run(k, ps, lib, stage: str, executor, *, sources=None) -> tuple[Orchestrator, str]:
+    """A run up to ``stage`` (its default worker over ``executor``) with every earlier stage of the project marked
+    passed: ``(orchestrator, run id)``; drive it with ``orchestrator.step("demo", run_id, actor=...)``."""
+    stages = stages_of(ps)
+    for s in stages[:stages.index(stage)]:
+        row = stage_row(ps, s)
+        if row is None or row["status"] != "passed":
+            record_passed(ps, s, 1, actor="tester")
+    o = Orchestrator(k, None, executor_factory=lambda project, run_id, session: executor,
+                     sources_factory=lambda project: sources or FakeSources({}, lib=lib), clock=lambda: 1.8e9)
+    return o, start_run(ps, until=stage, actor="tester", clock=lambda: 1.8e9)
 
 
 def a_protocol(**overrides) -> Protocol:

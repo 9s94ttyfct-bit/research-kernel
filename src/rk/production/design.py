@@ -413,24 +413,33 @@ def _runner(ctx: StageContext):
 
 # ---- the worker ----
 class DesignWorker:
+    # An interrupted attempt runs again in place (rk.orchestrator.engine): ``run`` goes on from the attempt's notes
+    # (its draft, the claims narrowed, its vote, an approval begun) and asks the Ideator and the judges nothing twice.
+    resumes_in_place = True
+
     def run(self, ctx: StageContext) -> StageOutcome:
         ps = ctx.ps
         s = _load(ps)
         if isinstance(s, str):
             return StageOutcome("failed", reason=s)
-        res = ctx.executor.run(ROLE, DESIGN_TASK, self._inputs(ps, s, ctx.guidance), DesignDraft, stage=ctx.stage,
-                               attempt=ctx.attempt, tools=[])
-        if not res.ok or res.output is None:
-            return StageOutcome("rerun", reason=f"the ideator gave no design ({res.error})")
-        d, vendor = res.output, vendor_of(res.provider, res.model)
-        for flag, to in ((d.needs_argument, "argue"), (d.rq_untestable, "question")):
-            if why := flag.strip():
-                _note(ps, ctx.attempt, "back_edge", actor=ctx.actor, to=to, reason=why)
-                return StageOutcome("back_edge", to=to, reason=why)
-        if problems := self._refusals(ps, s, d):
-            _note(ps, ctx.attempt, "refused", actor=ctx.actor, problems=problems)
-            return self._retry(ctx, "the design draft cannot be stored: " + "; ".join(problems))
-        self._store(ctx, s, d, vendor)
+        if sent := design_notes(ps, ctx.attempt, kind="back_edge"):  # resumed after the back-edge was noted
+            return StageOutcome("back_edge", to=sent[-1]["to"], reason=sent[-1]["reason"])
+        if refused := design_notes(ps, ctx.attempt, kind="refused"):
+            return self._retry(ctx, "the design draft cannot be stored: " + "; ".join(refused[-1]["problems"]))
+        if _draft(ps, ctx.attempt) is None:
+            res = ctx.executor.run(ROLE, DESIGN_TASK, self._inputs(ps, s, ctx.guidance), DesignDraft,
+                                   stage=ctx.stage, attempt=ctx.attempt, tools=[])
+            if not res.ok or res.output is None:
+                return StageOutcome("rerun", reason=f"the ideator gave no design ({res.error})")
+            d, vendor = res.output, vendor_of(res.provider, res.model)
+            for flag, to in ((d.needs_argument, "argue"), (d.rq_untestable, "question")):
+                if why := flag.strip():
+                    _note(ps, ctx.attempt, "back_edge", actor=ctx.actor, to=to, reason=why)
+                    return StageOutcome("back_edge", to=to, reason=why)
+            if problems := self._refusals(ps, s, d):
+                _note(ps, ctx.attempt, "refused", actor=ctx.actor, problems=problems)
+                return self._retry(ctx, "the design draft cannot be stored: " + "; ".join(problems))
+            self._store(ctx, s, d, vendor)
         self._verify(ctx)
         if s.mode == "auto":
             self._narrow(ctx)
@@ -572,9 +581,13 @@ class DesignWorker:
 
     @staticmethod
     def _narrow(ctx: StageContext) -> dict[str, str]:
-        """P1: narrow or withdraw every feasibility claim that fails the claim gate; claim id -> what was done."""
+        """P1: narrow or withdraw every feasibility claim that fails the claim gate (once each: a claim the attempt
+        already narrowed is passed over); claim id -> what was done."""
         done = {}
+        noted = {n["claim_id"] for n in design_notes(ctx.ps, ctx.attempt, kind="narrowed")}
         for cid in failing_claims(ctx.ps, feasibility_claims(ctx.ps, ctx.attempt)):
+            if cid in noted:
+                continue
             r = narrow_or_withdraw(ctx, cid, kind="feasibility")
             _note(ctx.ps, ctx.attempt, "narrowed", actor=ctx.actor, claim_id=cid, status=r.status,
                   new_claim_id=r.new_claim_id, reason=r.reason)
@@ -634,30 +647,35 @@ class DesignWorker:
         return cid
 
     def _vote(self, ctx: StageContext, s: _Inputs) -> StageOutcome:
+        """P1: the judges' vote on the draft (once: the attempt's ``vote`` note is kept), then its approval."""
         ps = ctx.ps
         draft = _draft(ps, ctx.attempt)
-        svc = ArgumentService(ps)
-        rows = _hyps(ps, s.rq_id)
-        live = [svc.get_claim(c) for c in feasibility_claims(ps, ctx.attempt)]
-        live = [c for c in live if c["status"] != "withdrawn"]
-        inputs = {"research_question": s.question, "design": draft["body"],
-                  "hypotheses": [{"key": e["key"], "new": e["new"] is not None,
-                                  **{k: _text(rows, e)[k] for k in ("statement", "falsification")},
-                                  "tested_by": e["tested_by"], "falsified_by": e["falsified_by"]}
-                                 for e in draft["hypotheses"]],
-                  "dropped": draft["dropped"],
-                  "feasibility_claims": [{"claim_id": c["id"], "text": c["text"], "status": c["status"]}
-                                         for c in live]}
-        res = vote(ctx, "design", draft["draft_id"], VOTE_QUESTION, [APPROVE, NOT_APPROVED], NOT_APPROVED, inputs,
-                   generator_vendors={draft["vendor"], *(c.get("generator_vendor") for c in live)})
-        why = "; ".join(f"{o['role']} ({o['vendor']}): {o['reason']}" for o in res.opinions if o["reason"])
-        _note(ps, ctx.attempt, "vote", actor=ctx.actor, vote_id=res.id, decision=res.decision, reason=why)
-        if res.decision == APPROVE:
-            h = self._approve(ctx, by="vote", actor=ctx.actor, actor_kind="kernel", vote_id=res.id)
+        if noted := design_notes(ps, ctx.attempt, kind="vote"):
+            v = noted[-1]
+        else:
+            svc = ArgumentService(ps)
+            rows = _hyps(ps, s.rq_id)
+            live = [svc.get_claim(c) for c in feasibility_claims(ps, ctx.attempt)]
+            live = [c for c in live if c["status"] != "withdrawn"]
+            inputs = {"research_question": s.question, "design": draft["body"],
+                      "hypotheses": [{"key": e["key"], "new": e["new"] is not None,
+                                      **{k: _text(rows, e)[k] for k in ("statement", "falsification")},
+                                      "tested_by": e["tested_by"], "falsified_by": e["falsified_by"]}
+                                     for e in draft["hypotheses"]],
+                      "dropped": draft["dropped"],
+                      "feasibility_claims": [{"claim_id": c["id"], "text": c["text"], "status": c["status"]}
+                                             for c in live]}
+            res = vote(ctx, "design", draft["draft_id"], VOTE_QUESTION, [APPROVE, NOT_APPROVED], NOT_APPROVED, inputs,
+                       generator_vendors={draft["vendor"], *(c.get("generator_vendor") for c in live)}, reuse=True)
+            why = "; ".join(f"{o['role']} ({o['vendor']}): {o['reason']}" for o in res.opinions if o["reason"])
+            v = _note(ps, ctx.attempt, "vote", actor=ctx.actor, vote_id=res.id, decision=res.decision, reason=why,
+                      conservative_used=res.conservative_used, vote_reason=res.reason)
+        if v["decision"] == APPROVE:
+            h = self._approve(ctx, by="vote", actor=ctx.actor, actor_kind="kernel", vote_id=v["vote_id"])
             return StageOutcome("done", reason=f"design approved by the {NOT_HUMAN}; frozen {h}")
-        head = (f"the design vote did not approve it ({NOT_HUMAN}; {res.reason})" if res.conservative_used
-                else f"the judges did not approve the design ({NOT_HUMAN})")
-        return self._retry(ctx, f"{head}: {why}" if why else head)
+        head = (f"the design vote did not approve it ({NOT_HUMAN}; {v.get('vote_reason') or ''})"
+                if v.get("conservative_used") else f"the judges did not approve the design ({NOT_HUMAN})")
+        return self._retry(ctx, f"{head}: {v['reason']}" if v["reason"] else head)
 
     @staticmethod
     def _approve(ctx: StageContext, *, by: str, actor: str, actor_kind: ActorKind, **via) -> str:

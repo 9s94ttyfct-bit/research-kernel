@@ -389,6 +389,37 @@ def test_on_answer_runs_again_after_a_rate_cap_and_settles_once(project):
     assert [p["stage"] for p in _events(ps, "stage.passed")].count("topics") == 1
 
 
+def test_interrupted_attempt_of_a_resuming_worker_runs_again_in_place(project):
+    """A worker that resumes in place (``resumes_in_place``) gets its interrupted attempt again, not a new one: the
+    same attempt number and guidance, a ``stage.resumed`` event, and the attempt's open checkpoint left open (no
+    ``supersede_open``); no edge is used."""
+    k, ps = project
+    opened = {}
+
+    def open_then_cap(ctx):
+        opened["id"] = create_checkpoint(ctx.ps, "topics_review", "Pick.", {"choices": ["a"]}, stage=ctx.stage,
+                                         actor="tester")
+        raise RateCapped("claude_cli", 60.0)
+
+    landscape = FakeWorker(runs=[StageOutcome("rerun", reason="try harder"), open_then_cap,
+                                 RuntimeError("crash"), StageOutcome("done")])
+    landscape.resumes_in_place = True
+    o = _orch(k, _workers(landscape=landscape))
+    run_id = start_run(ps, until="landscape", actor="tester", clock=Clock())
+    assert o.step("demo", run_id, actor="tester") == "running"  # intake
+    assert o.step("demo", run_id, actor="tester") == "running"  # rerun: landscape->landscape
+    assert o.step("demo", run_id, actor="tester") == "waiting_rate"
+    with pytest.raises(RuntimeError, match="crash"):
+        o.step("demo", run_id, actor="tester")
+    assert o.step("demo", run_id, actor="tester") == "done"
+    assert [c[:3] for c in landscape.calls] == [("run", 1, ""), ("run", 2, "try harder"), ("run", 2, "try harder"),
+                                                ("run", 2, "try harder"), ("gate", 2)]
+    assert latest_attempt(ps, "landscape") == 2 and edge_count(ps, "landscape->landscape") == 1
+    assert [(e["stage"], e["attempt"]) for e in _events(ps, "stage.resumed")] == [("landscape", 2)] * 2
+    assert [e["attempt"] for e in _events(ps, "stage.attempt") if e["stage"] == "landscape"] == [1, 2]
+    assert get_checkpoint(ps, opened["id"])["status"] == "open"
+
+
 def test_run_stage_refuses_later_and_plan5_stages(project):
     k, ps = project
     o = _orch(k, _workers())

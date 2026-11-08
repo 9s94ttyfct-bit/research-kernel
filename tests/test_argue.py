@@ -4,6 +4,8 @@ claim, edge, warrant test and objection, resolves contradictions (P2 asks, P1 vo
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 from pydantic import ValidationError
 
@@ -12,7 +14,14 @@ from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
 from rk.discovery.executor import RateCapped
 from rk.orchestrator.engine import default_workers
 from rk.orchestrator.graph import BACK_EDGES
-from rk.orchestrator.state import record_attempt, record_passed, record_ran
+from rk.orchestrator.state import (
+    latest_attempt,
+    record_attempt,
+    record_passed,
+    record_ran,
+    record_run_task,
+    start_run,
+)
 from rk.production.argue import (
     SKEPTIC_TOOLS,
     ArgueWorker,
@@ -29,8 +38,13 @@ from rk.production.models import SynthesisPlan
 from rk.production.synthesis import SynthesizeWorker, synthesis_claims
 from rk.roles.policy import tool_roles
 from rk.roles.prompts import build_system_prompt
-from tests.production_fakes import make_frozen_project, production_ctx, votes_on
-from tests.test_synthesis import DESIGN, Exec, _setup, assess
+from tests.production_fakes import (
+    make_frozen_project,
+    production_ctx,
+    stage_run,
+    votes_on,
+)
+from tests.test_synthesis import DESIGN, CapOnce, Exec, _setup, assess
 
 F1 = "Aspirin was studied in a randomised trial of older people."
 F2 = "Aspirin was studied in a cohort of older people."
@@ -825,3 +839,51 @@ def test_p2_rate_cap_mid_verification_resumes_without_orphans(env):
     assert len(ex.of("arguer", "ArgumentDraft")) == 2
     claims = _claims(ps)
     assert len(claims) == 4 and all(c["status"] == "supported" for c in claims)
+
+
+# ---- fix wave 1: resuming an interrupted attempt in place ----
+def test_interrupted_attempt_resumes_in_place(env):
+    """A rate cap at the Skeptic's first critique (after round 1 is stored and verified) interrupts attempt 1; the next
+    step resumes that attempt from its notes: the Arguer is not asked for round 1 again and no claim is orphaned."""
+    k, ps, lib = env
+    _synthesize(env)
+    ex = CapOnce(_exec([draft(), draft()], [critique(), critique()]).script, at=("skeptic", "Critique"))
+    o, run_id = stage_run(k, ps, lib, "argue", ex)
+    assert o.step("demo", run_id, actor="tester") == "waiting_rate"
+    assert o.step("demo", run_id, actor="tester") == "done"
+    assert latest_attempt(ps, "argue") == 1
+    assert len(ex.of("arguer", "ArgumentDraft")) == 1 and len(ex.of("skeptic", "Critique")) == 1
+    every = [c["id"] for c in ArgumentService(ps).list_claims(origin="argument")]
+    assert sorted(every) == sorted(argument_claims(ps, 1))  # nothing orphaned
+
+
+def test_p1_conflict_vote_interrupted_resumes_without_asking_the_skeptic_again(env):
+    """A rate cap at the P1 conflict vote (after the Skeptic's critique raised the conflict) resumes with the vote:
+    the critique is not asked for again and the conflict is decided once."""
+    _, ps, _ = env
+    a, b = _synthesize(env)
+    conflict = {"claim_a": a, "claim_b": b, "why": "One says randomised, the other cohort."}
+    votes = _votes(["both_contested"], ["both_contested"])
+    ex = CapOnce(_exec([draft(), responses(RESPONSE, RESPONSE), responses()],
+                       [critique(conflicts=[conflict]), critique(), critique()], votes=votes).script,
+                 at=("judge", "VoteOut"))
+    w = ArgueWorker()
+    with pytest.raises(RateCapped):
+        w.run(_ctx(env, ex))
+    assert len(ex.of("skeptic", "Critique")) == 1
+    w.run(_ctx(env, ex))
+    assert len(ex.of("skeptic", "Critique")) == 2  # round 1's critique once, then round 2's
+    (decision,) = argue_notes(ps, 1, kind="conflict_decision")
+    assert decision["decision"] == "both_contested" and decision["by"] == "vote"
+
+
+def test_budget_counts_only_the_attempts_own_tasks(env):
+    """argue's budget counts the role tasks of its own attempt, not those an earlier (dead) attempt used in the same
+    run session."""
+    _, ps, _ = env
+    run_id = start_run(ps, until="argue", actor="tester", clock=lambda: 1.8e9)
+    for i in range(30):
+        record_run_task(ps, task_id=f"tsk_dead{i}", run_id=run_id, session=1, stage="argue", attempt=1)
+    for i in range(3):
+        record_run_task(ps, task_id=f"tsk_live{i}", run_id=run_id, session=1, stage="argue", attempt=2)
+    assert ArgueWorker()._used(replace(_ctx(env, _exec(), 2), run_id=run_id)) == 3

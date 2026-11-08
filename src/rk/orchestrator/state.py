@@ -35,12 +35,15 @@ def record_run_task(ps: ProjectStore, *, task_id: str, run_id: str | None, sessi
                                     "attempt": attempt}, actor)
 
 
-def tasks_used(ps: ProjectStore, run_id: str, session: int | None, stage: str) -> int:
-    """Role tasks counted against the stage budget of one run session. A task that came back ``rate_capped`` made no
-    model call and is not counted."""
-    return ps.db.execute(
-        "SELECT COUNT(*) FROM run_tasks r LEFT JOIN tasks t ON t.id = r.task_id WHERE r.run_id=? AND r.session IS ? "
-        "AND r.stage=? AND COALESCE(t.error, '') != 'rate_capped'", (run_id, session, stage)).fetchone()[0]
+def tasks_used(ps: ProjectStore, run_id: str, session: int | None, stage: str, *, attempt: int | None = None) -> int:
+    """Role tasks counted against the stage budget of one run session (with ``attempt``, only that attempt's). A task
+    that came back ``rate_capped`` made no model call and is not counted."""
+    sql = ("SELECT COUNT(*) FROM run_tasks r LEFT JOIN tasks t ON t.id = r.task_id WHERE r.run_id=? AND r.session IS ? "
+           "AND r.stage=? AND COALESCE(t.error, '') != 'rate_capped'")
+    params: tuple = (run_id, session, stage)
+    if attempt is not None:
+        sql, params = sql + " AND r.attempt=?", (*params, attempt)
+    return ps.db.execute(sql, params).fetchone()[0]
 
 
 # ---- stage events ----
@@ -54,14 +57,28 @@ def record_attempt(ps: ProjectStore, stage: str, attempt: int, *, run_id: str | 
 
 def record_ran(ps: ProjectStore, stage: str, attempt: int, status: str, reason: str, *, actor: str) -> None:
     """The worker's ``run`` of the attempt returned ``status`` (with ``reason``). An attempt without this event was
-    interrupted (a rate cap, a budget or a crash) and is rerun as a new attempt with the same guidance."""
+    interrupted (a rate cap, a budget or a crash) and is run again with the same guidance: in place
+    (``record_resumed``) when its worker resumes in place, else as a new attempt."""
     _emit(ps, "stage.ran", stage, {"stage": stage, "attempt": attempt, "status": status, "reason": reason}, actor)
+
+
+def record_resumed(ps: ProjectStore, stage: str, attempt: int, *, run_id: str | None, actor: str) -> None:
+    """The interrupted ``attempt`` (no ``stage.ran``) runs again in place: its worker resumes from what the attempt
+    stored (``Worker.resumes_in_place``)."""
+    _emit(ps, "stage.resumed", stage, {"stage": stage, "attempt": attempt, "run_id": run_id}, actor)
 
 
 def attempt_ran(ps: ProjectStore, stage: str, attempt: int) -> bool:
     """Whether the worker's ``run`` of the attempt returned (see ``record_ran``)."""
     return ps.db.execute("SELECT 1 FROM events WHERE type='stage.ran' AND json_extract(payload, '$.stage')=? AND "
                          "json_extract(payload, '$.attempt')=? LIMIT 1", (stage, attempt)).fetchone() is not None
+
+
+def attempt_guidance(ps: ProjectStore, stage: str, attempt: int) -> str:
+    """Everything the worker got as guidance for the attempt (``record_attempt``)."""
+    r = ps.db.execute("SELECT payload FROM events WHERE type='stage.attempt' AND json_extract(payload, '$.stage')=? "
+                      "AND json_extract(payload, '$.attempt')=? ORDER BY seq DESC LIMIT 1", (stage, attempt)).fetchone()
+    return (json.loads(r["payload"])["guidance"] or "") if r else ""
 
 
 def record_gate(ps: ProjectStore, stage: str, attempt: int, ok: bool, failures: list[str], *, actor: str) -> None:

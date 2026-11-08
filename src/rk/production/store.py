@@ -229,6 +229,16 @@ def add_vote(ps: ProjectStore, *, subject_type: str, subject_id: str, question: 
     return vid
 
 
+def recorded_vote(ps: ProjectStore, subject_type: str, subject_id: str, *, stage: str, attempt: int) -> dict | None:
+    """The latest vote recorded on the subject in the stage's attempt (its ``vote.decided`` payload with its ``id``),
+    else ``None``: an attempt resumed after an interruption takes it instead of asking the judges again."""
+    r = ps.db.execute("SELECT entity_id, payload FROM events WHERE type='vote.decided' "
+                      "AND json_extract(payload, '$.subject_type')=? AND json_extract(payload, '$.subject_id')=? "
+                      "AND json_extract(payload, '$.stage')=? AND json_extract(payload, '$.attempt')=? "
+                      "ORDER BY seq DESC LIMIT 1", (subject_type, subject_id, stage, attempt)).fetchone()
+    return {**json.loads(r["payload"]), "id": r["entity_id"]} if r else None
+
+
 # ---- queries ----
 def protocols(ps: ProjectStore, attempt: int) -> list[dict]:
     return query_rows(ps, "SELECT * FROM protocols WHERE attempt=? ORDER BY rowid", (attempt,), ("body",))

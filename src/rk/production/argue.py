@@ -35,6 +35,10 @@ Contests and objections belong to the attempt: a new attempt takes over the obje
 unanswered on the findings and raises again the conflict objection of every contested finding (an earlier answer
 outside this attempt's argument does not count).
 
+An interrupted attempt (a rate cap, a budget or a crash) runs again in place: the rounds go on from the attempt's notes
+(the claims still to verify, the next Arguer or Skeptic task, a conflict still to decide, the end check), and the
+budget counts only the role tasks of this attempt, not those of earlier attempts in the run session.
+
 Finally P1 asks the judges whether the main claim answers the frozen RQ (conservative: it does not, back to question);
 P2 asks you on the final ``uncertain_support`` checkpoint, with every argument claim that is not supported, unless the
 gate is certain to fail anyway.
@@ -591,6 +595,8 @@ def argue_limitations(ps: ProjectStore, attempt: int) -> dict:
 
 # ---- the worker ----
 class ArgueWorker:
+    resumes_in_place = True  # an interrupted attempt runs again in place, from its notes (rk.orchestrator.engine)
+
     def __init__(self, *, budget: int = STAGE_TASK_BUDGET):
         self.budget = budget
 
@@ -598,6 +604,8 @@ class ArgueWorker:
         s = _load(ctx.ps)
         if isinstance(s, str):
             return StageOutcome("failed", reason=s)
+        if sent := argue_notes(ctx.ps, ctx.attempt, kind="back_edge"):  # resumed after the back-edge was noted
+            return StageOutcome("back_edge", to=sent[-1]["to"], reason=sent[-1]["reason"])
         self._import(ctx, s)
         return self._rounds(ctx, s)
 
@@ -670,12 +678,14 @@ class ArgueWorker:
 
     # ---- the budget ----
     def _used(self, ctx: StageContext) -> int:
-        """Role tasks the attempt used (noted per round); in a run, the session's count when it is higher."""
+        """Role tasks the attempt used (noted per round); in a run, the attempt's own count in the run session when
+        it is higher (tasks of a step interrupted before its note). Earlier attempts' tasks are not counted."""
         local = sum(n.get("tasks") or 0 for n in argue_notes(ctx.ps, ctx.attempt))
         if ctx.run_id is None:
             return local
         row = run_row(ctx.ps, ctx.run_id)
-        return max(local, tasks_used(ctx.ps, ctx.run_id, row["session"] if row else None, ctx.stage))
+        return max(local, tasks_used(ctx.ps, ctx.run_id, row["session"] if row else None, ctx.stage,
+                                     attempt=ctx.attempt))
 
     @staticmethod
     def _reserve(s: _Inputs) -> int:
@@ -686,7 +696,7 @@ class ArgueWorker:
         """The next round's estimated tasks: the last round's, or an Arguer and a Skeptic task plus the V-SUPPORT
         judges of a response claim per objection still to answer, when that is more."""
         last = sum(n.get("tasks") or 0 for n in argue_notes(ps, attempt)
-                   if n.get("round") == r and n["kind"] in ("draft", "verified", "critique"))
+                   if n.get("round") == r and n["kind"] in ("draft", "verified", "critique", "conflict_decision"))
         pending = MIN_ROUND_TASKS + len(JUDGE_ROLES) * len(self._answerable(ps, attempt, s))
         return max(MIN_ROUND_TASKS, last, pending)
 
@@ -1126,9 +1136,9 @@ class ArgueWorker:
     # ---- step 3: conflicts ----
     def _conflicts(self, ctx: StageContext, s: _Inputs, r: int, drafts: list[ConflictDraft]) -> list[int]:
         """Note each new conflict between two supported claims of the argument or the findings (one per pair, ever):
-        P2 opens its ``evidence_conflict`` checkpoint, P1 votes and applies the decision."""
+        P2 opens its ``evidence_conflict`` checkpoint; P1 votes on it after the critique is noted
+        (``_pending_conflict``), so a vote interrupted by a rate cap never asks the Skeptic again."""
         ps, attempt = ctx.ps, ctx.attempt
-        svc = ArgumentService(ps)
         roles = self._roles(ps, attempt, s)
         supported = {c for c, role in roles.items() if role != "warrant" and _supported(ps, c)}
         noted = [n for n in argue_notes(ps, attempt, kind="conflict")]
@@ -1141,22 +1151,25 @@ class ArgueWorker:
                 continue
             pairs.add(pair)
             conflict = {"round": r, "index": len(noted) + len(out), "claim_a": a, "claim_b": b, "why": cd.why}
-            if s.mode == "collab":
-                _note(ps, attempt, "conflict", actor=ctx.actor, checkpoint_id=self._open_conflict(ctx, conflict),
-                      **conflict)
-            else:
-                _note(ps, attempt, "conflict", actor=ctx.actor, checkpoint_id=None, **conflict)
-                ca, cb = svc.get_claim(a), svc.get_claim(b)
-                res = vote(ctx, CONFLICT, f"{STAGE}:{attempt}:{a}:{b}", CONFLICT_QUESTION, CONFLICT_CHOICES, BOTH,
-                           {"finding_a": {"id": a, "text": ca["text"], "evidence": _evidence_view(ca)},
-                            "finding_b": {"id": b, "text": cb["text"], "evidence": _evidence_view(cb)},
-                            "why": cd.why},
-                           generator_vendors={ca.get("generator_vendor"), cb.get("generator_vendor")})
-                why = res.reason or "; ".join(f"{o['role']}: {o['reason']}" for o in res.opinions if o["reason"])
-                self._apply_conflict(ctx, conflict, res.decision, by="vote", actor_kind="kernel",
-                                     via={"vote_id": res.id, "reason": why})
+            cid = self._open_conflict(ctx, conflict) if s.mode == "collab" else None
+            _note(ps, attempt, "conflict", actor=ctx.actor, checkpoint_id=cid, **conflict)
             out.append(conflict["index"])
         return out
+
+    def _vote_conflict(self, ctx: StageContext, conflict: dict) -> None:
+        """P1: the judges' vote on a noted conflict (conservative: ``both_contested``), then its decision."""
+        cctx, counter = _counted(ctx)
+        svc = ArgumentService(ctx.ps)
+        a, b = conflict["claim_a"], conflict["claim_b"]
+        ca, cb = svc.get_claim(a), svc.get_claim(b)
+        res = vote(cctx, CONFLICT, f"{STAGE}:{ctx.attempt}:{a}:{b}", CONFLICT_QUESTION, CONFLICT_CHOICES, BOTH,
+                   {"finding_a": {"id": a, "text": ca["text"], "evidence": _evidence_view(ca)},
+                    "finding_b": {"id": b, "text": cb["text"], "evidence": _evidence_view(cb)},
+                    "why": conflict["why"]},
+                   generator_vendors={ca.get("generator_vendor"), cb.get("generator_vendor")}, reuse=True)
+        why = res.reason or "; ".join(f"{o['role']}: {o['reason']}" for o in res.opinions if o["reason"])
+        self._apply_conflict(ctx, conflict, res.decision, by="vote", actor_kind="kernel",
+                             via={"vote_id": res.id, "reason": why, "tasks": counter.n})
 
     @staticmethod
     def _open_conflict(ctx: StageContext, conflict: dict, *, replaces: str | None = None, why: str = "") -> str:
@@ -1207,12 +1220,17 @@ class ArgueWorker:
               conflict_objections=counterparts, **via)
 
     def _pending_conflict(self, ctx: StageContext, s: _Inputs) -> StageOutcome | None:
-        """P2: apply every answered conflict checkpoint of the attempt; wait on the first still open (or reopened
-        after an answer that could not be applied)."""
+        """Decide every conflict of the attempt not decided yet: P1 votes on it (``_vote_conflict``); P2 applies every
+        answered conflict checkpoint and waits on the first still open (or reopened after an answer that could not be
+        applied)."""
         ps = ctx.ps
         decided = {n["index"] for n in argue_notes(ps, ctx.attempt, kind="conflict_decision")}
         for n in argue_notes(ps, ctx.attempt, kind="conflict"):
-            if n["index"] in decided or not n.get("checkpoint_id"):
+            if n["index"] in decided:
+                continue
+            if not n.get("checkpoint_id"):
+                if s.mode != "collab":
+                    self._vote_conflict(ctx, n)
                 continue
             cid = _current(ps, CONFLICT, n["checkpoint_id"])
             cp = get_checkpoint(ps, cid)
@@ -1263,7 +1281,7 @@ class ArgueWorker:
                        NOT_ANSWERS, {"research_question": s.question, "rq": s.rq_body, "main_claim": c["text"],
                                      "scope_limits": c.get("scope_limits") or [],
                                      "arguer_self_check": first.get("answers_rq")},
-                       generator_vendors={c.get("generator_vendor")})
+                       generator_vendors={c.get("generator_vendor")}, reuse=True)
             why = res.reason or "; ".join(f"{o['role']}: {o['reason']}" for o in res.opinions if o["reason"])
             last = _note(ps, ctx.attempt, "rq_check", actor=ctx.actor, main_claim_id=main, decision=res.decision,
                          by="vote", vote_id=res.id, reason=why, tasks=counter.n)

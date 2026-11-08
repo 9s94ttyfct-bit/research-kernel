@@ -78,7 +78,12 @@ from rk.argument import (
     EvidenceIn,
     NumberBinding,
 )
-from rk.checkpoints import answered_by_actor, create_checkpoint, opened_in_place_of
+from rk.checkpoints import (
+    answered_by_actor,
+    create_checkpoint,
+    opened_for_attempt,
+    opened_in_place_of,
+)
 from rk.discovery.store import intake_of
 from rk.llm.vendors import vendor_of
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
@@ -539,6 +544,10 @@ def _decided(answer: dict, groups: list[int]) -> str:
 
 
 class SynthesizeWorker:
+    # An interrupted attempt runs again in place (rk.orchestrator.engine): ``run`` goes on from the attempt's notes
+    # (assessed studies, the plan, the decisions, the narrative, the findings) and asks for nothing twice.
+    resumes_in_place = True
+
     def run(self, ctx: StageContext) -> StageOutcome:
         s = _load(ctx.ps)
         if isinstance(s, str):
@@ -559,10 +568,13 @@ class SynthesizeWorker:
     # ---- step 1 ----
     @staticmethod
     def _assess(ctx: StageContext, s: _Inputs) -> str | None:
+        """Assess every usable study the attempt has not assessed yet, ``BATCH`` per task."""
         ps = ctx.ps
         by_id = {u["item_id"]: u for u in s.usable}
-        for start in range(0, len(s.usable), BATCH):
-            batch = s.usable[start:start + BATCH]
+        assessed = {n["item_id"] for n in synthesis_notes(ps, ctx.attempt, kind="assessment")}
+        todo = [u for u in s.usable if u["item_id"] not in assessed]
+        for start in range(0, len(todo), BATCH):
+            batch = todo[start:start + BATCH]
             inputs = {"question": s.protocol.question, "criteria": list(CRITERIA),
                       "studies": [_study_input(ps, u) for u in batch]}
             if ctx.guidance:
@@ -590,7 +602,10 @@ class SynthesizeWorker:
     # ---- step 2: meta-analysis ----
     @staticmethod
     def _plan(ctx: StageContext, s: _Inputs) -> str | None:
+        """The attempt's pooling plan (asked for once: a plan already noted is kept)."""
         ps = ctx.ps
+        if _last(ps, ctx.attempt, "plan") is not None:
+            return None
         inputs = {"question": s.protocol.question, "synthesis_plan": s.plan, "outcomes": s.outcomes,
                   "outcome_fields": {o: s.field_map(o, s.measure) for o in s.outcomes}, "effect_measure": s.measure,
                   "extraction_schema": [f.model_dump(mode="json", exclude_none=True)
@@ -667,6 +682,8 @@ class SynthesizeWorker:
         ps = ctx.ps
         plan = _last(ps, ctx.attempt, "plan")
         groups = plan["groups"] if plan else []
+        if back_edge and (sent := _last(ps, ctx.attempt, "back_edge")) is not None:  # resumed after it was noted
+            return StageOutcome("back_edge", to="read_extract", reason=sent.get("reason") or "")
         requested = self._requested(ps)
         if back_edge:
             wanted = []
@@ -677,12 +694,13 @@ class SynthesizeWorker:
                         and (g["measure"], tuple(missing)) not in requested):
                     wanted.append((g, missing))
             if wanted:
-                _note(ps, ctx.attempt, "back_edge", actor=ctx.actor,
-                      groups=[{"group": g["group"], "measure": g["measure"], "fields": m} for g, m in wanted])
-                return StageOutcome("back_edge", to="read_extract", reason="; ".join(
+                reason = "; ".join(
                     f"the pre-specified outcome {_group_label(g)} needs the fields {', '.join(m)}, which no "
                     f"included study has a usable value for: extract them where the studies report them"
-                    for g, m in wanted))
+                    for g, m in wanted)
+                _note(ps, ctx.attempt, "back_edge", actor=ctx.actor, reason=reason,
+                      groups=[{"group": g["group"], "measure": g["measure"], "fields": m} for g, m in wanted])
+                return StageOutcome("back_edge", to="read_extract", reason=reason)
         for o in s.outcomes:
             if not any(g["outcome"] == o and g["measure"] == s.measure for g in groups):
                 self._fallback(ctx, s, f"the pooling plan proposed no group for the pre-specified outcome {o!r} "
@@ -742,7 +760,7 @@ class SynthesizeWorker:
                            "for the reasons given, recorded as a deviation from the protocol."),
                   "pool_options": pool_options(s.plan).model_dump(), "synthesis_plan": s.plan}
         res = vote(ctx, "pooling_group", f"{STAGE}:{ctx.attempt}:{g['group']}", VOTE_QUESTION, [POOL, NO_POOL],
-                   NO_POOL, inputs, generator_vendors={vendor})
+                   NO_POOL, inputs, generator_vendors={vendor}, reuse=True)
         _note(ctx.ps, ctx.attempt, "decision", actor=ctx.actor, group=g["group"], decision=res.decision, by="vote",
               vote_id=res.id, reason=res.reason)
         if res.decision == NO_POOL:
@@ -755,6 +773,8 @@ class SynthesizeWorker:
     def _open_pooling(ctx: StageContext, s: _Inputs, pending: list[dict], *, replaces: str | None = None,
                       why: str = "") -> str:
         if replaces is not None and (existing := opened_in_place_of(ctx.ps, KIND, replaces)) is not None:
+            return existing
+        if replaces is None and (existing := opened_for_attempt(ctx.ps, KIND, STAGE, ctx.attempt)) is not None:
             return existing
         lines = [why, ""] if why else []
         lines.append("Pool these studies in a meta-analysis? The kernel computes every number from the extraction "
@@ -978,6 +998,8 @@ class SynthesizeWorker:
     def _open_uncertain(ctx: StageContext, claim_ids: list[str], *, replaces: str | None = None,
                         why: str = "") -> str:
         if replaces is not None and (existing := opened_in_place_of(ctx.ps, UNCERTAIN, replaces)) is not None:
+            return existing
+        if replaces is None and (existing := opened_for_attempt(ctx.ps, UNCERTAIN, STAGE, ctx.attempt)) is not None:
             return existing
         svc = ArgumentService(ctx.ps)
         lines = [why, ""] if why else []

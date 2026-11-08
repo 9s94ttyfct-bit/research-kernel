@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from rk.production.store import add_vote
+from rk.production.store import add_vote, recorded_vote
 from rk.verify.judge import admitted_judges
 
 if TYPE_CHECKING:
@@ -41,14 +41,19 @@ class VoteResult:
 
 
 def vote(ctx: StageContext, subject_type: str, subject_id: str, question: str, options: list[str], conservative: str,
-         inputs: dict, *, generator_vendors: Collection[str | None] = ()) -> VoteResult:
+         inputs: dict, *, generator_vendors: Collection[str | None] = (), reuse: bool = False) -> VoteResult:
     """Ask every admitted judge ``question`` about the subject (``inputs``, what they see of it) through
     ``ctx.executor``. ``generator_vendors`` are the vendors that generated the subject (e.g. the Ideator's and the
-    Scout's for a protocol), empty when it is no generated text (e.g. a screened record)."""
+    Scout's for a protocol), empty when it is no generated text (e.g. a screened record). With ``reuse``, a vote
+    already recorded on the subject in the attempt (one interrupted before its outcome was noted) is returned instead
+    of asking again."""
     if not options or len(set(options)) != len(options):
         raise ValueError(f"options must be distinct and non-empty: {options!r}")
     if conservative not in options:
         raise ValueError(f"the conservative option {conservative!r} is not one of {options!r}")
+    if reuse and (done := recorded_vote(ctx.ps, subject_type, subject_id, stage=ctx.stage,
+                                        attempt=ctx.attempt)) is not None:
+        return VoteResult(done["id"], done["decision"], done["conservative_used"], done["opinions"], done["reason"])
     admitted, skipped = admitted_judges(ctx, generator_vendors, None)
     opinions: list[dict] = []
     if len(admitted) < 2:

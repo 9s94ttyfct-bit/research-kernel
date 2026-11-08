@@ -38,6 +38,7 @@ from rk.orchestrator.graph import (
 )
 from rk.orchestrator.state import (
     TERMINAL_RUN_STATES,
+    attempt_guidance,
     attempt_ran,
     current_stage,
     edge_row,
@@ -50,6 +51,7 @@ from rk.orchestrator.state import (
     record_passed,
     record_ran,
     record_reopened,
+    record_resumed,
     record_run_session,
     record_run_status,
     record_waiting,
@@ -104,7 +106,11 @@ class StageContext:
 
 
 class Worker(Protocol):
-    def run(self, ctx: StageContext) -> StageOutcome: ...
+    def run(self, ctx: StageContext) -> StageOutcome:
+        """Run the attempt. A worker with a true ``resumes_in_place`` attribute gets an interrupted attempt (one whose
+        ``run`` never returned: a rate cap, a budget or a crash) again in place, so its ``run`` must be idempotent from
+        what the attempt stored, as ``on_answer`` is; a worker without it gets a new attempt instead."""
+        ...
 
     def on_answer(self, ctx: StageContext, checkpoint: dict) -> StageOutcome:
         """Apply the answer of the checkpoint the attempt waits on. Must be idempotent: after ``RateCapped``,
@@ -193,8 +199,9 @@ class Orchestrator:
         In D1 (no ``run_id``) running a stage whose last attempt finished is a rerun, a use of the edge ``X->X``,
         and a ``back_edge`` outcome uses its edge at once; both obey the per-project limit (§7.2): at the limit P2
         returns ``waiting_human`` on a ``stage_blocked`` checkpoint, P1 degrades (``done`` after the gate passes,
-        else ``failed``). An attempt that was interrupted (a rate cap or a crash) is not a rerun: it runs again as a
-        new attempt with the same guidance and uses no edge. With a ``run_id``, ``step`` settles every outcome."""
+        else ``failed``). An attempt that was interrupted (a rate cap or a crash) is not a rerun: it runs again with
+        the same guidance (in place when its worker resumes in place, else as a new attempt) and uses no edge. With a
+        ``run_id``, ``step`` settles every outcome."""
         ps, lib = self.kernel.project(project)
         worker = self.check_stage(project, stage)
         if run_id is None:
@@ -262,14 +269,22 @@ class Orchestrator:
     def _attempt(self, project: str, ps: ProjectStore, lib, stage: str, worker: Worker, *, run_id: str | None,
                  guidance: str | None, actor: str, session: int | None = None) -> tuple[StageContext, StageOutcome]:
         """Write ``stage.attempt`` (attempt + 1), run the worker, record that the run returned (``stage.ran``; an
-        attempt without it was interrupted and is replaced by a new one) and link a checkpoint wait to the attempt.
-        An open checkpoint of the stage left by an attempt this one replaces is superseded."""
+        attempt without it was interrupted) and link a checkpoint wait to the attempt. An open checkpoint of the stage
+        left by an attempt this one replaces is superseded. An interrupted attempt of a worker that resumes in place
+        (``resumes_in_place``; no guidance asked for) runs again instead, as the same attempt with its guidance
+        (``stage.resumed``): nothing is superseded, the worker goes on from what the attempt stored."""
         row = stage_row(ps, stage)
-        requested = guidance if guidance is not None else (row["guidance"] if row else None)
-        attempt = latest_attempt(ps, stage) + 1
-        composed = self._guidance(ps, stage, requested)
-        record_attempt(ps, stage, attempt, run_id=run_id, guidance=composed, requested=requested, actor=actor)
-        supersede_open(ps, stage, attempt, actor=actor)
+        latest = latest_attempt(ps, stage)
+        if (guidance is None and getattr(worker, "resumes_in_place", False) and row is not None
+                and row["status"] == "running" and latest > 0 and not attempt_ran(ps, stage, latest)):
+            attempt, composed = latest, attempt_guidance(ps, stage, latest)
+            record_resumed(ps, stage, attempt, run_id=run_id, actor=actor)
+        else:
+            requested = guidance if guidance is not None else (row["guidance"] if row else None)
+            attempt = latest + 1
+            composed = self._guidance(ps, stage, requested)
+            record_attempt(ps, stage, attempt, run_id=run_id, guidance=composed, requested=requested, actor=actor)
+            supersede_open(ps, stage, attempt, actor=actor)
         ctx = self._ctx(project, ps, lib, stage, attempt, run_id, composed, actor, session=session)
         outcome = worker.run(ctx)
         self._check(stage, outcome)
@@ -321,7 +336,8 @@ class Orchestrator:
         settle the outcome. Returns the run status, or ``waiting_rate`` when a driver is at its hourly cap, or
         ``waiting_source`` when a source failed in a way that may go away (HTTP 429, 5xx, a transport error, an
         unreadable body; the run's reason says which). In both the run stays ``running``; the next step runs the
-        interrupted attempt again as a new attempt with the same guidance, or applies the answer again. A stage budget
+        interrupted attempt again with the same guidance (in place when its worker resumes in place, else as a new
+        attempt), or applies the answer again. A stage budget
         (``BudgetExceeded``) or a source's API budget (``BudgetExhausted``, spec §11.3) running out pauses the run
         (``paused_budget``, the budget named in the reason); resuming it runs the interrupted attempt again."""
         ps, lib = self.kernel.project(project)

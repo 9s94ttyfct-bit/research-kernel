@@ -9,7 +9,9 @@ claim's actual problems. The kernel stores the rewrite with ``narrowed_from`` an
 (V-SUPPORT through the stage's task executor, its judges excluding both the rewrite's and the original's vendors, with
 V-NUM; then V-HEDGE) and withdraws the original either way: replaced by its supported rewrite, or, when the rewrite is
 not supported either, together with it. The original's open priority-1 objections are conceded (the claim was
-narrowed or withdrawn), so they reach the limitations input with the claims (``claim_limitations``).
+narrowed or withdrawn), so they reach the limitations input with the claims (``claim_limitations``). A rewrite left
+undecided by an interrupted call (a rate cap while its judges ran) is decided as it is when the claim is narrowed
+again: the Arguer is not asked for a second one.
 
 The rewrite gets the original's evidence only: argument edges (``reason_of``, ``warrant_of``, objections) into or out
 of the original are not moved to it; the argue stage (Plan 5b Task 5) re-links them where it needs them."""
@@ -96,36 +98,46 @@ def narrow_or_withdraw(ctx: StageContext, claim_id: str, *, kind: AgentClaimKind
     if claim.get("kind") == "stat_result":
         return withdraw(f"{why}; a kernel-written statistical result is never rewritten by a model",
                         f"conceded: the claim {claim_id} was withdrawn")
-    inputs = {"claim": {"text": claim["text"], "kind": claim["kind"], "scope_limits": claim.get("scope_limits") or []},
-              "evidence_passages": evidence_texts(claim), "why": why}
-    if ctx.guidance:
-        inputs["guidance"] = ctx.guidance
-    r = ctx.executor.run(ROLE, NARROW_TASK, inputs, NarrowedClaim, stage=ctx.stage, attempt=ctx.attempt, tools=[])
-    if not r.ok or r.output is None or _same(r.output.text, claim["text"]):
-        gave = ("no narrower rewrite" + (f" ({r.error})" if r.error else "") if not r.ok or r.output is None
-                else "the same text again")
-        return withdraw(f"{why}; the Arguer gave {gave}", f"conceded: the claim {claim_id} was withdrawn")
-    new = svc.add_claim(ClaimIn(text=r.output.text, kind=kind or r.output.kind, scope_limits=r.output.scope_limits,
-                                narrowed_from=claim_id),
-                        generator_vendor=vendor_of(r.provider, r.model), actor=ctx.actor,
-                        origin=claim.get("origin") or "argument")
-    for e in claim["evidence"]:
-        svc.link_evidence(EvidenceIn(claim_id=new, note_ids=e["note_ids"], criteria=e.get("criteria") or {},
-                                     interpretation=e.get("interpretation") or ""), actor=ctx.actor,
-                          actor_kind="kernel")
+    # a rewrite an interrupted call stored but never decided on (the original is still live): decided now, as it is
+    rows = ps.db.execute("SELECT id FROM claims WHERE json_extract(data, '$.narrowed_from')=? ORDER BY rowid",
+                         (claim_id,)).fetchall()
+    left = [r["id"] for r in rows if svc.get_claim(r["id"])["status"] != "withdrawn"]
+    if left:
+        new = left[-1]
+    else:
+        inputs = {"claim": {"text": claim["text"], "kind": claim["kind"],
+                            "scope_limits": claim.get("scope_limits") or []},
+                  "evidence_passages": evidence_texts(claim), "why": why}
+        if ctx.guidance:
+            inputs["guidance"] = ctx.guidance
+        r = ctx.executor.run(ROLE, NARROW_TASK, inputs, NarrowedClaim, stage=ctx.stage, attempt=ctx.attempt,
+                             tools=[])
+        if not r.ok or r.output is None or _same(r.output.text, claim["text"]):
+            gave = ("no narrower rewrite" + (f" ({r.error})" if r.error else "") if not r.ok or r.output is None
+                    else "the same text again")
+            return withdraw(f"{why}; the Arguer gave {gave}", f"conceded: the claim {claim_id} was withdrawn")
+        new = svc.add_claim(ClaimIn(text=r.output.text, kind=kind or r.output.kind,
+                                    scope_limits=r.output.scope_limits, narrowed_from=claim_id),
+                            generator_vendor=vendor_of(r.provider, r.model), actor=ctx.actor,
+                            origin=claim.get("origin") or "argument")
+        for e in claim["evidence"]:
+            svc.link_evidence(EvidenceIn(claim_id=new, note_ids=e["note_ids"], criteria=e.get("criteria") or {},
+                                         interpretation=e.get("interpretation") or ""), actor=ctx.actor,
+                              actor_kind="kernel")
 
     def run(*, role: str, instructions: str, inputs: dict, output_schema, **task):
         return ctx.executor.run(role, instructions, inputs, output_schema, stage=ctx.stage, attempt=ctx.attempt,
                                 **task)
 
-    res = verify_support(ctx.kernel, ctx.registry, ps, new, actor=ctx.actor, checkpoint=False, run=run,
-                         exclude_vendors={claim.get("generator_vendor")})
+    if (status := svc.get_claim(new)["status"]) == "draft":
+        status = verify_support(ctx.kernel, ctx.registry, ps, new, actor=ctx.actor, checkpoint=False, run=run,
+                                exclude_vendors={claim.get("generator_vendor")}).verdict
     hedge = check_claim_hedge(ps, new, actor=ctx.actor)
-    if res.verdict == "supported" and hedge.ok:
+    if status == "supported" and hedge.ok:
         svc.withdraw_claim(claim_id, reason=f"{why}; narrowed to {new}, which is supported", actor=ctx.actor)
         _concede(svc, objections, f"conceded: the claim was narrowed to {new}", actor=ctx.actor)
         return NarrowOutcome(claim_id, "narrowed", new, f"narrowed to {new}")
-    failed = res.verdict if res.verdict != "supported" else "V-HEDGE overstated"
+    failed = status if status != "supported" else "V-HEDGE overstated"
     svc.withdraw_claim(new, reason=f"narrower rewrite of {claim_id} not supported ({failed})", actor=ctx.actor)
     return withdraw(f"{why}; its narrower rewrite {new} was not supported either ({failed})",
                     f"conceded: the claim {claim_id} was withdrawn, and its rewrite {new} was not supported")

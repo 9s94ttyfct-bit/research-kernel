@@ -13,10 +13,16 @@ import pytest
 from rk.argument import CRITERIA, ArgumentService
 from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
 from rk.config import load_settings, save_settings
+from rk.discovery.executor import RateCapped
 from rk.fulltext import latest_snapshot
 from rk.library.models import Creator, Ids, ItemIn
 from rk.notes import NoteIn, add_note
-from rk.orchestrator.state import record_attempt, record_passed, record_ran
+from rk.orchestrator.state import (
+    latest_attempt,
+    record_attempt,
+    record_passed,
+    record_ran,
+)
 from rk.production import store
 from rk.production.artifacts import artifact, artifacts
 from rk.production.claims import narrow_or_withdraw
@@ -37,6 +43,7 @@ from tests.production_fakes import (
     a_protocol,
     make_frozen_project,
     production_ctx,
+    stage_run,
     votes_on,
 )
 
@@ -130,6 +137,21 @@ class Exec(ScriptedExecutor):
 
     def of(self, role: str, schema: str | None = None) -> list[dict]:
         return [c for c in self.calls if c["role"] == role and (schema is None or c["schema"] == schema)]
+
+
+class CapOnce(Exec):
+    """``Exec`` whose ``n``-th call of ``at`` (role, schema name) hits the driver's hourly cap (``RateCapped``), once."""
+
+    def __init__(self, script, *, at: tuple[str, str], n: int = 1, **kw):
+        super().__init__(script, **kw)
+        self.at: tuple[str, str] | None = at
+        self.n = n
+
+    def run(self, role, instructions, inputs, output_schema, **kw):
+        if self.at == (role, output_schema.__name__) and len(self.of(*self.at)) + 1 == self.n:
+            self.at = None
+            raise RateCapped("codex_cli", 60.0)
+        return super().run(role, instructions, inputs, output_schema, **kw)
 
 
 def assess(score: int = 2):
@@ -1070,3 +1092,27 @@ def test_conceded_objections_on_edges_into_the_claim_reach_the_limitations(env):
     assert narrow_or_withdraw(ctx, claim["id"]).status == "narrowed"
     assert [(c["objection_id"], c["target_id"]) for c in claim_limitations(ps, [claim["id"]])["conceded"]] == [
         (oid, edge)]
+
+
+# ---- fix wave 1: resuming an interrupted attempt in place ----
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_interrupted_attempt_resumes_in_place(env):
+    """A rate cap at the P1 pooling vote (after the assessments and the pooling plan) interrupts attempt 1; the next
+    step resumes that attempt: no study is assessed again, the plan is not asked for again, no claim is orphaned."""
+    k, ps, lib = env
+    _enable_stats()
+    _setup(env, dict(list(BCG.items())[:3]), schema=BINARY, plan=META)
+    pool = [{"choice": "pool", "reason": "same PICO"}] * 2
+    group = [lambda inputs: _group(s["item_id"] for s in inputs["studies"]) for _ in range(2)]
+    ex = CapOnce(_exec(plans=group, narratives=[narrative(), narrative()],
+                       votes={("judge", "VoteOut"): pool, ("judge_2", "VoteOut"): list(pool)}).script,
+                 at=("judge", "VoteOut"))
+    o, run_id = stage_run(k, ps, lib, "synthesize", ex)
+    assert o.step("demo", run_id, actor="tester") == "waiting_rate"
+    assert o.step("demo", run_id, actor="tester") == "done"
+    assert latest_attempt(ps, "synthesize") == 1
+    assert [len(ex.of("arguer", s)) for s in ("AssessmentOut", "PoolingPlan", "NarrativeSynthesis")] == [1, 1, 1]
+    assert len(synthesis_notes(ps, 1, kind="assessment")) == 3 and len(synthesis_notes(ps, 1, kind="plan")) == 1
+    every = [c["id"] for c in ArgumentService(ps).list_claims(origin="synthesis")]
+    assert sorted(every) == sorted(synthesis_claims(ps, 1))  # nothing orphaned
+    assert len(artifacts(ps, "synthesize", 1)) == 2 and len(ps.db.execute("SELECT * FROM votes").fetchall()) == 1

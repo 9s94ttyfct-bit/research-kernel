@@ -104,6 +104,16 @@ def opened_in_place_of(ps: ProjectStore, kind: str, chk_id: str) -> str | None:
     return r["id"] if r else None
 
 
+def opened_for_attempt(ps: ProjectStore, kind: str, stage: str, attempt: int) -> str | None:
+    """The first checkpoint of ``kind`` the stage's attempt opened itself (``options.attempt``; not one opened in
+    answer to another), if any: an attempt resumed in place after an interruption finds it here instead of opening a
+    second one."""
+    r = ps.db.execute("SELECT id FROM checkpoints WHERE kind=? AND stage=? AND json_extract(options, '$.attempt')=? "
+                      "AND json_extract(options, '$.replaces') IS NULL ORDER BY created, id LIMIT 1",
+                      (kind, stage, attempt)).fetchone()
+    return r["id"] if r else None
+
+
 @projection("checkpoint.created")
 def _created(conn: sqlite3.Connection, ev: Event) -> None:
     p = ev.payload
