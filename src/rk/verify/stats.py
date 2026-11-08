@@ -6,27 +6,34 @@ Artifacts are made only through the ``make_*`` helpers here, so each records wha
 * ``code_path``: one of ``CODE_PATHS`` (the code that made it; V-STATS runs the same code again);
 * ``code_version``: ``rk.stats.STATS_VERSION`` when it was made;
 * ``input_hashes``: per input extraction row, in order, the SHA-256 of the row's canonical JSON (``row_hash``: the
-  ``extractions`` row with its ``value`` decoded), and ``values.row_ids``: those rows' ids in the same order;
-* ``values``: the request (``measure`` and the pool ``options`` as requested, ``hksj="auto"`` included, or the map
-  ``fields``; a forest plot's study ``labels``) and the results.
+  ``extractions`` row with its ``value`` decoded), and ``values.row_ids``: those rows' ids in the same order; every
+  input row comes from one extraction attempt, ``values.extraction_attempt``;
+* ``values``: the request (``measure``, the pool ``options`` as requested, ``hksj="auto"`` included, and the group's
+  ``item_ids``; or the map ``fields``; a forest plot's study ``labels``) and the results.
 
 ``values`` of ``rk.stats.meta:pool`` (``stt``) and ``rk.stats.plots:forest_svg`` (``fig``, the SVG file):
-``{measure, options: {model, hksj, pi_df, level}, row_ids, studies: [{item_id, yi, vi}] (pooled, in row order),
-uncomputable: [{item_id, reason}], pooled: Pooled.as_dict() | None, display: {estimate, ci_low, ci_high,
+``{measure, options: {model, hksj, pi_df, level}, item_ids, row_ids, extraction_attempt, studies: [{item_id, yi, vi}]
+(pooled, in group order), uncomputable: [{item_id, reason}] (every group study without a computable effect, including
+one with no usable row: "missing: <fields>"), pooled: Pooled.as_dict() | None, display: {estimate, ci_low, ci_high,
 [pi_low, pi_high], k, i2_percent, ci_level_percent} | None}`` (``display``: RR and OR exponentiated, I² and the CI
-level in percent: the numbers a claim states; V-NUM matches them rounded as written), and for the figure ``labels``:
-``{item_id: label}``. The pool needs at least two computable studies (the figure draws no pooled row without them).
-``values`` of ``rk.stats.plots:map_table`` (``stt``) and ``rk.verify.stats:map_markdown`` (``fig``, a Markdown
-table): ``{fields, row_ids, table: map_table(...)}``.
+level in percent: the numbers a claim states), and for the figure ``labels``: ``{item_id: label}``. The pool needs at
+least two computable studies (the figure draws no pooled row without them). ``values`` of
+``rk.stats.plots:map_table`` (``stt``) and ``rk.verify.stats:map_markdown`` (``fig``, a Markdown table): ``{fields,
+row_ids, extraction_attempt, table: map_table(...)}``.
 
-The rows are grouped into studies by ``item_id`` in order of first appearance; a row with a ``problem`` (e.g. marked
-missing) gives no value, and two usable values for one field of a study are refused. Pass only the rows the analysis
-uses (for a pool: the measure's fields of the group's studies): every input row is checked.
+A row with a ``problem`` (e.g. marked missing) gives no value, and two usable values for one field of a study are
+refused. Pass only the rows the analysis uses (for a pool: the measure's fields of the group's studies): every input
+row is checked.
 
-``check_stats`` re-reads the rows by id and compares their hashes (a changed or missing row is a mismatch), requires
-``code_version == STATS_VERSION``, recomputes the values (equal to 1e-9) and, for a figure, the file's SHA-256; it also
-checks the stored file still has its recorded SHA-256. It never calls a model. The result is recorded on the artifact
-as ``V-STATS`` ``pass`` / ``mismatch``."""
+``stat_claim_text`` writes a pool's ``stat_result`` claim from its ``display`` values and binds each printed number
+to its display key; V-NUM checks the claim number by number against those bindings.
+
+``check_stats`` re-reads the rows by id and compares their hashes (a changed or missing row is a mismatch, as is an
+artifact with no input row), requires ``code_version == STATS_VERSION`` and that the inputs' extraction attempt is the
+one later stages read (``read_extract``'s passed attempt, else its latest that ran), recomputes the values (equal to
+1e-9) and, for a figure, the file's SHA-256; it also checks the stored file still has its recorded SHA-256. It never
+calls a model. The result is recorded on the artifact as ``V-STATS`` ``pass`` / ``mismatch`` (unless ``record`` is
+false: the gates recheck without recording)."""
 
 from __future__ import annotations
 
@@ -40,6 +47,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from rk.canon import canonical_json, sha256_hex
+from rk.orchestrator.state import shown_attempt
 from rk.production.artifacts import ArtifactIn, add_artifact, artifact
 from rk.stats import STATS_VERSION
 from rk.stats.effects import LOG_SCALE, MEASURES, Effect, Uncomputable, compute
@@ -47,9 +55,12 @@ from rk.stats.meta import pool
 from rk.stats.plots import forest_svg, map_table
 from rk.store.project import ProjectStore
 from rk.store.query import query_rows
+from rk.verify.numbers import extract_numbers
 from rk.verify.records import record_verification
 
 TOLERANCE = 1e-9
+READ_EXTRACT = "read_extract"
+POOL = "rk.stats.meta:pool"
 
 
 class PoolOptions(BaseModel):
@@ -87,10 +98,15 @@ def row_hash(row: dict) -> str:
 
 
 # ---- the code each code path runs ----
-def _studies(rows: list[dict]) -> dict[str, dict]:
-    """item id -> {field: value} from the rows without a problem, in order of first appearance."""
-    out: dict[str, dict] = {}
+def _studies(rows: list[dict], item_ids: list[str] | None = None) -> dict[str, dict]:
+    """item id -> {field: value} from the rows without a problem: the group's ``item_ids`` in order (a study without
+    a usable row has no field), else the rows' studies in order of first appearance."""
+    if item_ids is not None and len(set(item_ids)) != len(item_ids):
+        raise ValueError("a study is listed twice in the group (item_ids)")
+    out: dict[str, dict] = {i: {} for i in item_ids or ()}
     for r in rows:
+        if item_ids is not None and r["item_id"] not in out:
+            raise ValueError(f"extraction row {r['id']} is of study {r['item_id']}, not in the group (item_ids)")
         data = out.setdefault(r["item_id"], {})
         if r["problem"] is not None:
             continue
@@ -100,12 +116,13 @@ def _studies(rows: list[dict]) -> dict[str, dict]:
     return out
 
 
-def _pool_values(rows: list[dict], measure: str, options: dict) -> tuple[dict, list[str], list[Effect], object]:
+def _pool_values(rows: list[dict], measure: str, options: dict,
+                 item_ids: list[str]) -> tuple[dict, list[str], list[Effect], object]:
     if measure not in MEASURES:
         raise ValueError(f"unknown measure {measure!r}; expected one of {', '.join(MEASURES)}")
     opts = PoolOptions(**options)
     studies, uncomputable, ids, effects = [], [], [], []
-    for item_id, data in _studies(rows).items():
+    for item_id, data in _studies(rows, list(item_ids)).items():
         e = compute(measure, data)
         if isinstance(e, Uncomputable):
             uncomputable.append({"item_id": item_id, "reason": e.reason})
@@ -127,16 +144,16 @@ def _pool_values(rows: list[dict], measure: str, options: dict) -> tuple[dict, l
     return values, ids, effects, pooled
 
 
-def _pool(rows: list[dict], *, measure: str, options: dict) -> _Made:
-    values, _, effects, _ = _pool_values(rows, measure, options)
+def _pool(rows: list[dict], *, measure: str, options: dict, item_ids: list[str]) -> _Made:
+    values, _, effects, _ = _pool_values(rows, measure, options, item_ids)
     if values["pooled"] is None:
         raise ValueError(f"pooling needs at least two computable studies; {len(effects)} of "
                          f"{len(effects) + len(values['uncomputable'])} are")
     return _Made(values)
 
 
-def _forest(rows: list[dict], *, measure: str, options: dict, labels: dict) -> _Made:
-    values, ids, effects, pooled = _pool_values(rows, measure, options)
+def _forest(rows: list[dict], *, measure: str, options: dict, item_ids: list[str], labels: dict) -> _Made:
+    values, ids, effects, pooled = _pool_values(rows, measure, options, item_ids)
     if not effects:
         raise ValueError("a forest plot needs at least one computable study")
     svg = forest_svg([labels[i] for i in ids], effects, pooled, measure=measure)
@@ -174,8 +191,8 @@ def _map_table(rows: list[dict], *, fields: list) -> _Made:
 
 
 CODE_PATHS: dict[str, _Code] = {
-    "rk.stats.meta:pool": _Code("stt", ("measure", "options"), _pool),
-    "rk.stats.plots:forest_svg": _Code("fig", ("measure", "options", "labels"), _forest),
+    POOL: _Code("stt", ("measure", "options", "item_ids"), _pool),
+    "rk.stats.plots:forest_svg": _Code("fig", ("measure", "options", "item_ids", "labels"), _forest),
     "rk.stats.plots:map_table": _Code("stt", ("fields",), _map),
     "rk.verify.stats:map_markdown": _Code("fig", ("fields",), _map_table),
 }
@@ -202,8 +219,11 @@ def _make(ps: ProjectStore, code_path: str, rows: list[dict], params: dict, *, s
     missing = [i for i, r in zip(ids, stored, strict=True) if r is None]
     if missing:
         raise KeyError(f"no extraction rows {missing}")
+    attempts = sorted({r["attempt"] for r in stored})
+    if len(attempts) != 1:
+        raise ValueError(f"the input rows must come from one extraction attempt, not attempts {attempts}")
     made = code.make(stored, **params)
-    values = {**params, "row_ids": ids, **made.values}
+    values = {**params, "row_ids": ids, "extraction_attempt": attempts[0], **made.values}
     a = ArtifactIn(kind=code.kind, code_path=code_path, code_version=STATS_VERSION,
                    input_hashes=[row_hash(r) for r in stored], values=values, output_path=None)
     if made.output is None:
@@ -222,23 +242,24 @@ def _options(options: PoolOptions | dict | None) -> dict:
 
 
 def make_stats_artifact(ps: ProjectStore, rows: list[dict], measure: str, options: PoolOptions | dict | None = None,
-                        *, stage: str, attempt: int, actor: str, created_by_task: str | None = None) -> str:
-    """Pool the studies of ``rows`` (extraction rows) on ``measure`` with ``options``; returns the ``stt_`` id."""
-    return _make(ps, "rk.stats.meta:pool", rows, {"measure": measure, "options": _options(options)}, stage=stage,
-                 attempt=attempt, actor=actor, created_by_task=created_by_task)
+                        *, item_ids: list[str], stage: str, attempt: int, actor: str,
+                        created_by_task: str | None = None) -> str:
+    """Pool the group ``item_ids`` on ``measure`` with ``options`` from its extraction ``rows`` (each of a group
+    study; a group study without a usable row is uncomputable); returns the ``stt_`` id."""
+    return _make(ps, POOL, rows, {"measure": measure, "options": _options(options), "item_ids": list(item_ids)},
+                 stage=stage, attempt=attempt, actor=actor, created_by_task=created_by_task)
 
 
 def make_forest_artifact(ps: ProjectStore, rows: list[dict], measure: str, options: PoolOptions | dict | None = None,
-                         *, labels: dict[str, str] | None = None, stage: str, attempt: int, actor: str,
-                         created_by_task: str | None = None) -> str:
+                         *, item_ids: list[str], labels: dict[str, str] | None = None, stage: str, attempt: int,
+                         actor: str, created_by_task: str | None = None) -> str:
     """The forest plot of the same pool (``labels``: item id -> study label; the item id by default); returns the
     ``fig_`` id."""
     labels = labels or {}
-    by_item = {r["item_id"]: labels.get(r["item_id"], r["item_id"]) for r in _read_rows(ps, [r["id"] for r in rows])
-               if r is not None}
-    return _make(ps, "rk.stats.plots:forest_svg", rows,
-                 {"measure": measure, "options": _options(options), "labels": by_item}, stage=stage, attempt=attempt,
-                 actor=actor, created_by_task=created_by_task)
+    params = {"measure": measure, "options": _options(options), "item_ids": list(item_ids),
+              "labels": {i: labels.get(i, i) for i in item_ids}}
+    return _make(ps, "rk.stats.plots:forest_svg", rows, params, stage=stage, attempt=attempt, actor=actor,
+                 created_by_task=created_by_task)
 
 
 def make_map_artifact(ps: ProjectStore, rows: list[dict], fields: list[str], *, stage: str, attempt: int, actor: str,
@@ -253,6 +274,38 @@ def make_map_table_artifact(ps: ProjectStore, rows: list[dict], fields: list[str
     """The same evidence map as a Markdown table (``map_markdown``); ``fig_``."""
     return _make(ps, "rk.verify.stats:map_markdown", rows, {"fields": list(fields)}, stage=stage, attempt=attempt,
                  actor=actor, created_by_task=created_by_task)
+
+
+# ---- the stat_result claim template ----
+def _fmt(v: float, places: int) -> str:
+    """``v`` with at least ``places`` decimals, and enough that its last digit is no larger than ``|v|`` (so V-NUM
+    accepts it as ``v`` rounded)."""
+    if v == 0 or not math.isfinite(v):
+        return f"{v:.{places}f}"
+    return f"{v:.{max(places, -math.floor(math.log10(abs(v))))}f}"
+
+
+def stat_claim_text(a: dict) -> tuple[str, list[dict]]:
+    """The ``stat_result`` claim of a pool artifact (``artifact(ps, id)``), e.g. "Pooled RR 0.44 (95% CI 0.12 to 1.66;
+    4 studies; I² 76%; 95% prediction interval 0.03 to 7.14).", and its number bindings: one
+    ``{artifact_id, key, text}`` per printed number, in order, naming the ``display`` value it prints."""
+    if a["code_path"] != POOL:
+        raise ValueError(f"stat_claim_text writes the claim of a pool artifact ({POOL}), not of {a['code_path']}")
+    v = a["values"]
+    d = v["display"]
+    pieces: list[str | tuple[str, int | None]] = [
+        f"Pooled {v['measure']} ", ("estimate", 2), " (", ("ci_level_percent", 0), "% CI ", ("ci_low", 2), " to ",
+        ("ci_high", 2), "; ", ("k", None), " studies; I² ", ("i2_percent", 0), "%"]
+    if "pi_low" in d:
+        pieces += ["; ", ("ci_level_percent", 0), "% prediction interval ", ("pi_low", 2), " to ", ("pi_high", 2)]
+    pieces.append(").")
+    keys = [p[0] for p in pieces if isinstance(p, tuple)]
+    text = "".join(p if isinstance(p, str) else str(d[p[0]]) if p[1] is None else _fmt(d[p[0]], p[1])
+                   for p in pieces)
+    nums = extract_numbers(text)
+    if len(nums) != len(keys):
+        raise RuntimeError(f"the template printed {len(nums)} numbers for {len(keys)} values: {text!r}")
+    return text, [{"artifact_id": a["id"], "key": k, "text": n.text} for k, n in zip(keys, nums, strict=True)]
 
 
 # ---- V-STATS ----
@@ -299,6 +352,13 @@ def _mismatches(ps: ProjectStore, a: dict) -> list[str]:
     if not isinstance(ids, list) or len(ids) != len(a["input_hashes"]):
         out.append("the artifact does not name one extraction row per input hash (values.row_ids)")
         return out
+    if not ids:
+        out.append("the artifact names no input rows: there is nothing to recompute it from")
+        return out
+    made_from, current = values.get("extraction_attempt"), shown_attempt(ps, READ_EXTRACT)
+    if made_from != current:
+        out.append(f"the inputs come from extraction attempt {made_from}, but the read_extract attempt later stages "
+                   f"read is {'none' if current is None else f'attempt {current}'}")
     rows = _read_rows(ps, ids)
     for rid, h, row in zip(ids, a["input_hashes"], rows, strict=True):
         if row is None:
@@ -317,20 +377,25 @@ def _mismatches(ps: ProjectStore, a: dict) -> list[str]:
     except (ValueError, ArithmeticError, RuntimeError, KeyError, TypeError) as e:
         out.append(f"recomputation failed: {type(e).__name__}: {e}")
         return out
-    _compare("values", values, {**params, "row_ids": ids, **made.values}, out)
+    attempts = sorted({r["attempt"] for r in rows})
+    again = {**params, "row_ids": ids, "extraction_attempt": attempts[0] if len(attempts) == 1 else attempts,
+             **made.values}
+    _compare("values", values, again, out)
     if made.output is not None and sha256_hex(made.output) != a["sha256"]:
         out.append("the regenerated figure's sha256 differs from the stored one")
     return out
 
 
-def check_stats(ps: ProjectStore, artifact_id: str, *, actor: str = "kernel") -> StatsResult:
-    """V-STATS of one artifact (see the module docstring), recorded on it. ``KeyError`` for an unknown artifact."""
+def check_stats(ps: ProjectStore, artifact_id: str, *, actor: str = "kernel", record: bool = True) -> StatsResult:
+    """V-STATS of one artifact (see the module docstring), recorded on it unless ``record`` is false. ``KeyError``
+    for an unknown artifact."""
     a = artifact(ps, artifact_id)
     if a is None:
         raise KeyError(artifact_id)
     mismatches = _mismatches(ps, a)
     result = StatsResult(ok=not mismatches, mismatches=mismatches)
-    record_verification(ps, "artifact", artifact_id, "V-STATS", "pass" if result.ok else "mismatch",
-                        {**result.model_dump(), "code_path": a["code_path"], "code_version": a["code_version"],
-                         "stats_version": STATS_VERSION}, actor=actor)
+    if record:
+        record_verification(ps, "artifact", artifact_id, "V-STATS", "pass" if result.ok else "mismatch",
+                            {**result.model_dump(), "code_path": a["code_path"], "code_version": a["code_version"],
+                             "stats_version": STATS_VERSION}, actor=actor)
     return result

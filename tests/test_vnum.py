@@ -1,6 +1,6 @@
 import pytest
 
-from rk.verify.numbers import check_numbers, extract_numbers
+from rk.verify.numbers import check_bound_numbers, check_numbers, extract_numbers
 
 
 def values(text):
@@ -70,9 +70,28 @@ def test_vnum_matches_rounded_artifact_value():
     # rounded as written in the claim: the claim's last digit decides
     for ok in ("0.6", "0.621", "−0.48", "-0.476", "6.2e-1", "0.0123", "1.25 × 10^-3", "41.3%", "0.80"):
         assert check_numbers(f"x {ok} y", [], artifact_values=[ART]).ok, ok
-    for bad in ("0.63", "0.622", "0.47", "8 studies", "2", "0.0124", "42%", "0.6213 1.0"):
+    for bad in ("0.63", "0.622", "0.47", "8 studies", "2", "0.0124", "42%", "0.6213 1.0", "1", "0"):
         r = check_numbers(f"x {bad} y", [], artifact_values=[ART])
         assert not r.ok, bad
     # several artifacts pool their values; a bool is not a number
     assert check_numbers("k 7 and 3", [], artifact_values=[ART, {"n": [3]}]).ok
     assert not check_numbers("x 1", [], artifact_values=[{"hksj": True}]).ok
+    # a written digit larger than the value is no rounding of it ("1" is not 0.62); an exact value still matches
+    assert not check_numbers("RR 1", [], artifact_values=[{"estimate": 0.62}]).ok
+    assert check_numbers("RR 1", [], artifact_values=[{"estimate": 1.0}]).ok
+    assert check_numbers("I² 0%", [], artifact_values=[{"i2_percent": 0.0}]).ok
+
+
+def test_vnum_bound_numbers_follow_their_bindings():
+    text = "RR 0.62 (95% CI 0.48 to 0.80)"
+    bound = [("0.62", 0.6213), ("95%", 95.0), ("0.48", 0.4791), ("0.80", 0.8034)]
+    assert check_bound_numbers(text, bound).ok
+    r = check_bound_numbers("RR 0.62 (95% CI 0.80 to 0.48)", bound)
+    assert not r.ok and [n.text for n in r.ungrounded] == ["0.80", "0.48"]
+    r = check_bound_numbers(text, [*bound[:2], ("0.48", 0.8034), ("0.80", 0.4791)])
+    assert not r.ok and [n.text for n in r.ungrounded] == ["0.48", "0.80"]
+    r = check_bound_numbers(text, bound[:3])
+    assert not r.ok and [n.text for n in r.ungrounded] == ["0.80"]
+    r = check_bound_numbers("RR 0.62 (95% CI)", bound)
+    assert not r.ok and r.ungrounded == [] and r.problems
+    assert not check_bound_numbers("RR 0.62", [("0.62", None)]).ok  # a key the artifact lacks

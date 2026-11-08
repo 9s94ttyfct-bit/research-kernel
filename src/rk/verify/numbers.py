@@ -4,9 +4,12 @@ Format variants normalise to the same value: thousands separators (``,`` or thin
 minus, ``e``-notation and ``×10^n`` / superscript exponents, ``%`` / ``percent``. Digits glued to letters (``CO2``,
 ``COVID-19``), citation parentheticals and ``[[…]]`` source markers are not quantities and are ignored.
 
-A number may instead match a value of a kernel-made artifact (``artifact_values``: every number in their ``values``,
-at any depth; booleans are not numbers) rounded as the claim writes it: to the claim's last digit, so "0.62" matches
-0.6213 and "41%" matches 41.3. Artifact values carry no unit; the template that wrote the claim chose it."""
+A number may instead match a value of a kernel-made artifact (``artifact_values``: every number in the given dicts,
+at any depth; booleans are not numbers; V-SUPPORT passes a ``stat_result``'s artifacts' ``display`` values): exactly,
+or rounded as the claim writes it — to the claim's last digit, and only when that digit's step is no larger than the
+value — so "0.62" matches 0.6213 and "41%" matches 41.3, but "1" does not match 0.62. Artifact values carry no unit;
+the template that wrote the claim chose it. ``check_bound_numbers`` checks a templated claim number by number against
+the value each was bound to."""
 
 from __future__ import annotations
 
@@ -44,6 +47,7 @@ class Num(BaseModel):
 class NumResult(BaseModel):
     ok: bool
     ungrounded: list[Num]
+    problems: list[str] = []
 
 
 def _mask(text: str, pattern: re.Pattern) -> str:
@@ -97,10 +101,13 @@ def _same(a: Num, b: Num) -> bool:
     return a.unit == b.unit and abs(a.value - b.value) <= 1e-9 * max(1.0, abs(a.value))
 
 
-def _rounds_to(n: Num, value: float) -> bool:
-    """Whether ``value`` rounded to the claim number's last digit is that number."""
-    half = _step(n.text) / 2
-    return abs(value - n.value) <= half * (1 + 1e-9) + 1e-12 * max(1.0, abs(value))
+def matches_value(n: Num, value: float) -> bool:
+    """Whether the claim number ``n`` is ``value``: exactly, or ``value`` rounded to ``n``'s last written digit when
+    that digit's step is no larger than ``|value|``."""
+    if abs(value - n.value) <= 1e-9 * max(1.0, abs(value)):
+        return True
+    step = _step(n.text)
+    return 0 < step <= abs(value) and abs(value - n.value) <= step / 2 * (1 + 1e-9) + 1e-12 * abs(value)
 
 
 def _leaves(obj) -> list[float]:
@@ -121,5 +128,17 @@ def check_numbers(claim_text: str, evidence_texts: list[str], *,
     pool = [n for t in evidence_texts for n in extract_numbers(t)]
     computed = [x for v in artifact_values for x in _leaves(v)]
     ungrounded = [n for n in extract_numbers(claim_text)
-                  if not any(_same(n, e) for e in pool) and not any(_rounds_to(n, x) for x in computed)]
+                  if not any(_same(n, e) for e in pool) and not any(matches_value(n, x) for x in computed)]
     return NumResult(ok=not ungrounded, ungrounded=ungrounded)
+
+
+def check_bound_numbers(claim_text: str, bindings: Sequence[tuple[str, float | None]]) -> NumResult:
+    """A templated claim: its ``i``-th number must be written as ``bindings[i][0]`` and match the bound value
+    ``bindings[i][1]`` (``matches_value``; ``None``: the artifact lacks the bound key). A number without a binding is
+    ungrounded; a binding without its number is a problem."""
+    nums = extract_numbers(claim_text)
+    ungrounded = [n for i, n in enumerate(nums)
+                  if i >= len(bindings) or bindings[i][0] != n.text or bindings[i][1] is None
+                  or not matches_value(n, bindings[i][1])]
+    problems = [f"bound number {t!r} is not in the text" for t, _ in bindings[len(nums):]]
+    return NumResult(ok=not ungrounded and not problems, ungrounded=ungrounded, problems=problems)

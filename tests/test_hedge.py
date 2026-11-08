@@ -21,26 +21,44 @@ def env(tmp_home, replay_http):
     k.close()
 
 
-def _note(ps, text: str, *, kind: str = "quote") -> str:
-    """A verified note of ``text`` (a paraphrase: of the source span ``text``)."""
+def _note(ps, text: str, *, item: str | None = None, kind: str = "quote") -> str:
+    """A verified note of ``text`` (a paraphrase: of the source span ``text``) from ``item`` (a new source by
+    default)."""
     nid = new_id("nte")
-    ps.apply(NewEvent(type="note.added", entity_id="itm_A", actor_kind="agent", actor="reader", payload={"note": {
-        "id": nid, "item_id": "itm_A", "kind": kind, "text": text if kind == "quote" else "A rewording.",
+    item = item or "itm_" + nid.split("_", 1)[1]
+    ps.apply(NewEvent(type="note.added", entity_id=item, actor_kind="agent", actor="reader", payload={"note": {
+        "id": nid, "item_id": item, "kind": kind, "text": text if kind == "quote" else "A rewording.",
         "locator": None, "role_in_source": "main", "keywords": [], "source_span": None if kind == "quote" else text,
         "hedge_level": hedge_level(text), "snapshot_sha": None, "verified": {"quote": {"ok": True}}}}))
     return nid
 
 
-def _claim(ps, svc, text: str, *notes: str) -> str:
+def _claim(ps, svc, text: str, *notes: str | tuple[str, str]) -> str:
+    """A claim with one evidence link per note: ``text`` or ``(text, item id)``."""
     cid = svc.add_claim(ClaimIn(text=text), generator_vendor="openai", actor="arguer")
-    for t in notes:
-        svc.link_evidence(EvidenceIn(claim_id=cid, note_ids=[_note(ps, t)]), actor="arguer")
+    for n in notes:
+        t, item = (n, None) if isinstance(n, str) else n
+        svc.link_evidence(EvidenceIn(claim_id=cid, note_ids=[_note(ps, t, item=item)]), actor="arguer")
     return cid
 
 
 def _hedges(ps, cid: str) -> list[str]:
     return [r["verdict"] for r in ps.db.execute(
         "SELECT verdict FROM verifications WHERE target_id=? AND verifier='V-HEDGE' ORDER BY rowid", (cid,))]
+
+
+def test_universal_terms_skip_negated_hedged_and_idiomatic_uses():
+    assert universal_terms("Every catalyst; NONE failed, all of them, always, never.") == \
+        ["every", "none", "all", "always", "never"]
+    assert universal_terms("Overall, the allowed catalysts were nonetheless tested by everyone.") == []
+    for text in ("Not all catalysts worked.", "Almost every trial agreed.", "It nearly always works.",
+                 "Virtually none failed.", "It hardly ever fails, which is practically never.",
+                 "It doesn't always work.", "All-cause mortality fell.", "Never-smokers were excluded.",
+                 "In all, 12 trials were found.", "We found 12 trials in all.", "Doses were given every other day."):
+        assert universal_terms(text) == [], text
+    assert universal_terms("In all patients the dose was safe.") == ["all"]
+    assert universal_terms("No trial reported harm.", extra=("no",)) == ["no"]
+    assert universal_terms("No trial reported harm.") == []
 
 
 def test_hedge_overstated_and_universal_rule(env):
@@ -51,30 +69,46 @@ def test_hedge_overstated_and_universal_rule(env):
     assert not r.ok and (r.claim_level, r.source_level) == (3, 2) and _hedges(ps, strong) == ["overstated"]
     weak = _claim(ps, svc, "Copper catalysts may reduce CO2.", plain)
     assert check_claim_hedge(ps, weak, actor="kernel").ok and _hedges(ps, weak) == ["pass"]
-
-    assert universal_terms("Every catalyst; NONE failed, all of them, always, never.") == \
-        ["every", "none", "all", "always", "never"]
-    assert universal_terms("Overall, the allowed catalysts were nonetheless tested by everyone.") == []
+    assert check_claim_hedge(ps, weak, record=False).ok and _hedges(ps, weak) == ["pass"]  # not recorded
 
     every = "Every copper catalyst reduced CO2."
-    states = "All copper catalysts tested reduced CO2."
+    states = "Every copper catalyst tested reduced CO2."
     one = _claim(ps, svc, every, states)
     r = check_claim_hedge(ps, one, actor="kernel")
-    assert not r.ok and r.universal == ["every"] and any("at least two" in p for p in r.problems)
+    assert not r.ok and r.universal == ["every"] and any("at least two sources" in p for p in r.problems)
+    # two notes of one source are one source
+    same = _claim(ps, svc, every, (states, "itm_S"), ("Copper catalyst B reduced CO2.", "itm_S"))
+    r = check_claim_hedge(ps, same, actor="kernel")
+    assert not r.ok and any("at least two sources (it has 1)" in p for p in r.problems)
     silent = _claim(ps, svc, every, "Copper catalyst A reduced CO2.", "Copper catalyst B reduced CO2.")
     r = check_claim_hedge(ps, silent, actor="kernel")
     assert not r.ok and any("not stated" in p for p in r.problems) and _hedges(ps, silent) == ["overstated"]
     covered = _claim(ps, svc, every, "Copper catalyst A reduced CO2.", states)
     assert check_claim_hedge(ps, covered, actor="kernel").ok
-    # any universal in a note covers it; a paraphrase counts by its source span
-    none = _claim(ps, svc, "None of the catalysts failed.", "Catalyst B did not fail.")
+    # a note covers only the same universal, stated positively
+    other = _claim(ps, svc, every, "Copper catalyst A reduced CO2.", "All copper catalysts tested reduced CO2.")
+    assert not check_claim_hedge(ps, other, actor="kernel").ok
+    negated = _claim(ps, svc, "All copper catalysts reduced CO2.", "Copper catalyst A reduced CO2.",
+                     "Not all copper catalysts reduced CO2.")
+    assert not check_claim_hedge(ps, negated, actor="kernel").ok
+    # none / never / no are one declared synonym group; a paraphrase counts by its source span
+    none = _claim(ps, svc, "None of the catalysts failed.", "No catalyst failed in trial B.")
     svc.link_evidence(EvidenceIn(claim_id=none, note_ids=[_note(ps, "Catalysts never failed in the trials.",
                                                                  kind="paraphrase")]), actor="arguer")
     assert check_claim_hedge(ps, none, actor="kernel").ok
+    # a claim whose quantifier is negated or idiomatic states no universal (one note; the lexicon still scores the
+    # word "all" as categorical, so the note carries it too)
+    assert check_claim_hedge(ps, _claim(ps, svc, "Not all copper catalysts reduced CO2.",
+                                        "Not all copper catalysts reduced CO2 in the trials."), actor="k").ok
+    assert check_claim_hedge(ps, _claim(ps, svc, "All-cause mortality was reported.",
+                                        "All-cause mortality fell in the trial."), actor="k").ok
 
     bare = _claim(ps, svc, "Copper catalysts reduce CO2.")
     r = check_claim_hedge(ps, bare, actor="kernel")
     assert not r.ok and r.source_level is None and r.reason == "no_evidence"
+    svc.withdraw_claim(bare, reason="no evidence", actor="kernel")
+    with pytest.raises(ValueError, match="withdrawn"):
+        check_claim_hedge(ps, bare, actor="kernel")
 
     # a stat_result reports its artifact: a plain statement of the computed value, never a universal
     sid = add_artifact(ps, ArtifactIn(kind="stt", code_path="rk.stats.meta:pool", code_version="v", input_hashes=[],
@@ -117,7 +151,8 @@ def test_gate_claims_lists_each_problem(env):
     withdrawn = ready(status="uncertain")
     objection(withdrawn)
     svc.withdraw_claim(withdrawn, reason="uncertain in P1", actor="kernel")
-    unhedged = ready(hedge=False)
+    unhedged = ready(hedge=False)  # the gate reruns V-HEDGE itself
+    overstated_unrecorded = ready("Copper catalysts prove CO2 reduction.", hedge=False)
     on_evidence = ready()
     o_evd = objection(svc.list_evidence(on_evidence)[0]["id"])
     on_edge = ready()
@@ -133,18 +168,28 @@ def test_gate_claims_lists_each_problem(env):
     svc.add_edge(EdgeIn(from_id=good, to_id=o_open, type="response_to"), actor="a")
     everything = ready("Copper catalysts prove CO2 reduction.", status="draft")
     o_all = objection(everything)
+    # a supported stat_result whose artifact no longer recomputes (here: made by no known code)
+    sid = add_artifact(ps, ArtifactIn(kind="stt", code_path="rk.stats.pool:pool", code_version="v", input_hashes=[],
+                                      values={"k": 3}, output_path=None), stage="synthesize", attempt=1, actor="kernel")
+    stat = svc.add_claim(ClaimIn(text="Pooled RR 0.62 (3 studies).", kind="stat_result", artifact_ids=[sid]),
+                         generator_vendor=None, actor="kernel", actor_kind="kernel", origin="synthesis")
+    svc.set_claim_status(stat, "supported", verification_id="ver_X")
 
-    claims = [good, uncertain, overstated, objected, minor, withdrawn, unhedged, on_evidence, on_edge, everything]
+    claims = [good, uncertain, overstated, objected, minor, withdrawn, unhedged, overstated_unrecorded, on_evidence,
+              on_edge, everything, stat]
+    before = ps.db.execute("SELECT COUNT(*) FROM verifications").fetchone()[0]
     lines = gate_claims(ps, claims)
-    assert [x.split(":")[0] for x in lines] == [uncertain, overstated, objected, unhedged, on_evidence, on_edge,
-                                                everything]
+    assert ps.db.execute("SELECT COUNT(*) FROM verifications").fetchone()[0] == before  # the gate records nothing
+    assert [x.split(":")[0] for x in lines] == [uncertain, overstated, objected, overstated_unrecorded, on_evidence,
+                                                on_edge, everything, stat]
     by = {x.split(":")[0]: x for x in lines}
     assert "status uncertain" in by[uncertain] and "V-HEDGE" not in by[uncertain]
     assert "V-HEDGE overstated" in by[overstated] and "status" not in by[overstated]
+    assert "V-HEDGE overstated" in by[overstated_unrecorded]
     assert o_open in by[objected] and "priority-1" in by[objected]
-    assert "V-HEDGE not run" in by[unhedged]
     assert o_evd in by[on_evidence] and o_edge in by[on_edge]
     assert all(p in by[everything] for p in ("status draft", "V-HEDGE overstated", o_all))
-    assert gate_claims(ps, [good, minor, withdrawn]) == []
+    assert f"V-STATS mismatch {sid}" in by[stat] and "V-HEDGE" not in by[stat]
+    assert gate_claims(ps, [good, minor, withdrawn, unhedged]) == []
     with pytest.raises(KeyError):
         gate_claims(ps, ["clm_missing"])
