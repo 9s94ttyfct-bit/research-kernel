@@ -2,7 +2,7 @@
 retries (spec §7.2: at most 3 attempts) and writes every attempt to the project's event log (spec §8.2). A driver's
 usage-limit reply (``SESSION_LIMITED``, ``rk.llm.limits``) is not retried: it blocks the driver in the call caps until
 the limit resets. A chat API's HTTP 429 is one too: at once when its ``Retry-After`` or body says how long, else
-once every retry was a 429 as well (``DEFAULT_WAIT_S``)."""
+once every attempt was a plain 429 (``DEFAULT_WAIT_S``)."""
 
 from __future__ import annotations
 
@@ -58,6 +58,7 @@ def run_task(kernel, registry, *, project: str, role: str, instructions: str, in
     ctx = RunContext(kernel=kernel, registry=registry, task_token=token, actor=f"{role}@{spec_driver}")
     cap = settings.calls_per_hour.get(spec_driver.provider)
     result: TaskResult | None = None
+    plain_429s = 0  # attempts in a row that ended in a plain HTTP 429
     try:
         for n in range(1, MAX_ATTEMPTS + 1):
             if not kernel.caps.acquire(spec_driver.provider, cap):
@@ -69,11 +70,11 @@ def run_task(kernel, registry, *, project: str, role: str, instructions: str, in
                 except Exception as e:  # noqa: BLE001 - a driver bug becomes a failed attempt, recorded below
                     result = TaskResult(task_id, False, None, "", spec_driver.provider, spec_driver.model, 0.0,
                                         f"{type(e).__name__}: {e}")
-            if not result.ok and result.error and (limit := http_limit(result.error, time.time())) is not None:
-                # a chat API's 429: a usage limit at once when it says how long; a plain one after every retry
-                at_once, wait = limit
-                if at_once or n == MAX_ATTEMPTS:
-                    result = replace(result, error=SESSION_LIMITED, wait_s=wait, raw=result.raw or result.error)
+            limit = http_limit(result.error, time.time()) if not result.ok and result.error else None
+            plain_429s = plain_429s + 1 if limit is not None and not limit[0] else 0
+            if limit is not None and (limit[0] or plain_429s == MAX_ATTEMPTS):
+                # a chat API's 429: a usage limit at once when it says how long; a plain one when every attempt was one
+                result = replace(result, error=SESSION_LIMITED, wait_s=limit[1], raw=result.raw or result.error)
             ps.apply(NewEvent(type="task.attempt", entity_id=task_id, actor_kind="agent", actor=ctx.actor, payload={
                 "n": n, "ok": result.ok, "error": result.error, "raw": _clip(result.raw), "model": result.model,
                 "duration_s": result.duration_s, "tool_calls": result.tool_calls, "session_id": result.session_id,

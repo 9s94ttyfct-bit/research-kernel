@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import time
+from datetime import UTC
+from email.utils import parsedate_to_datetime
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field
@@ -45,13 +48,28 @@ class ChatBackend(Protocol):
     def complete(self, messages: list[Msg], tools: list[ToolDef], json_schema: dict | None) -> Turn: ...
 
 
+def _retry_after_s(value: str) -> float | None:
+    """A ``Retry-After`` header in seconds: delay seconds, or an HTTP date from now (``None`` when neither)."""
+    value = value.strip()
+    if value.replace(".", "", 1).isdigit():
+        return float(value)
+    try:
+        at = parsedate_to_datetime(value)
+    except (TypeError, ValueError, IndexError):
+        return None
+    if at is None:
+        return None
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=UTC)
+    return max(0.0, at.timestamp() - time.time())
+
+
 def http_error_message(r) -> str:
     """Server-provided error text for a non-2xx response (JSON ``error`` field when present); a 429 names its
-    ``Retry-After`` seconds (``rk.llm.limits.http_limit`` reads them)."""
+    ``Retry-After`` (seconds, or an HTTP date as seconds from now; ``rk.llm.limits.http_limit`` reads them)."""
     status = f"HTTP {r.status_code}"
-    after = (r.headers.get("retry-after") or "").strip()
-    if r.status_code == 429 and after.replace(".", "", 1).isdigit():
-        status += f" (retry-after {after})"
+    if r.status_code == 429 and (after := _retry_after_s(r.headers.get("retry-after") or "")) is not None:
+        status += f" (retry-after {after:.0f})"
     try:
         body = r.json()
     except ValueError:

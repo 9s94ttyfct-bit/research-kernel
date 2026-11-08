@@ -361,7 +361,8 @@ def argument_view(ps: ProjectStore, attempt: int | None = None, claim_id: str | 
                     | {"response": response(o), "soundness": o["id"] in soundness,
                        "counterpart": counterparts.get(o["id"])} for o in objections],
         conflicts=[{k: n.get(k) for k in ("round", "index", "claim_a", "claim_b", "why")}
-                   | {"checkpoint_id": conflict_checkpoint(ps, attempt, n), "decision": {k: decisions[n["index"]].get(k) for k in ("decision", "by", "reason", "comment")}
+                   | {"checkpoint_id": conflict_checkpoint(ps, attempt, n),
+                      "decision": {k: decisions[n["index"]].get(k) for k in ("decision", "by", "reason", "comment")}
                       if n["index"] in decisions else None}
                    for n in notes if n["kind"] == "conflict"],
         rq_checks=[{k: n.get(k) for k in ("main_claim_id", "decision", "by", "reason")}

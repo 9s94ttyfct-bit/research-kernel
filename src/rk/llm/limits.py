@@ -21,7 +21,7 @@ The wording, as the drivers give it (the CLIs' checked against their binaries):
   ``you have reached your monthly usage limit``).
 
 A reset time is read in the zone the reply names, else in local time. A reset time that already passed (the reply is
-stale: a time of day up to ``PASSED_S`` ago, or any past date) waits ``MIN_WAIT_S``; a reply without one waits
+stale: a time up to ``PASSED_S`` ago, or a past date with its year) waits ``MIN_WAIT_S``; a reply without one waits
 ``DEFAULT_WAIT_S``."""
 
 from __future__ import annotations
@@ -117,8 +117,9 @@ def _zone(name: str | None) -> tzinfo | None:
 
 
 def _next(m: re.Match, now: float) -> float | None:
-    """The unix time of the reset ``m`` names: that date (this year when none is given), or the next such time of day.
-    A reset that already passed (a past date, or a time of day up to ``PASSED_S`` ago) is ``MIN_WAIT_S`` from now."""
+    """The unix time of the reset ``m`` names: that date (without a year: this year's, or next year's when this year's
+    passed more than ``PASSED_S`` ago), or the next such time of day. A reset that already passed (a date with its
+    year, or a time up to ``PASSED_S`` ago) is ``MIN_WAIT_S`` from now."""
     hour, minute = int(m.group("hour")), int(m.group("minute") or 0)
     if ampm := (m.group("ampm") or "").lower().replace(".", ""):
         if not 1 <= hour <= 12:
@@ -133,6 +134,8 @@ def _next(m: re.Match, now: float) -> float | None:
             month, day = _MONTHS.index(m.group("mon").lower()[:3]) + 1, int(m.group("day"))
             at = current.replace(year=int(m.group("year") or current.year), month=month, day=day, hour=hour,
                                  minute=minute, second=0, microsecond=0)
+            if not m.group("year") and now - PASSED_S >= _ts(at):  # no year and long past: next year's
+                at = at.replace(year=at.year + 1)
         else:
             at = current.replace(hour=hour, minute=minute, second=0, microsecond=0)
             if now - PASSED_S >= _ts(at):

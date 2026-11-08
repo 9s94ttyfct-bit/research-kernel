@@ -179,7 +179,8 @@ NOON = datetime(2026, 11, 8, 12, 0, tzinfo=UTC).timestamp()
     ("You've hit your weekly limit · resets 5am (UTC)", 17 * 3600),  # passed 7 h ago: tomorrow
     ("You've hit your weekly limit · resets 11:59am (UTC)", MIN_WAIT_S),  # just passed: a stale reply
     ("You've hit your weekly limit · resets Nov 10, 9am (UTC)", 45 * 3600),
-    ("You've hit your weekly limit · resets Nov 7, 9am (UTC)", MIN_WAIT_S),  # a past date
+    ("You've hit your weekly limit · resets Nov 8, 9am (UTC)", MIN_WAIT_S),  # passed 3 h ago: a stale reply
+    ("You’ve hit your usage limit. Try again at Nov 7th, 2026 1:04 PM.", MIN_WAIT_S),  # a past date with its year
     ("Claude AI usage limit reached|" + str(int(NOON) + 600), 600),
     ("Claude AI usage limit reached|" + str(int(NOON) - 30), MIN_WAIT_S),  # 30 s in the past
     ("You’ve hit your usage limit. Upgrade to Pro or try again in 20 minutes.", 20 * 60),
@@ -345,3 +346,48 @@ def test_cli_cannot_read_canary(tmp_path, cls):
                     inputs={}, output_schema=FileOut, tools=[], max_turns=4, timeout_s=300)
     r = p.run(spec, RunContext(kernel=None, registry=None))
     assert canary not in r.raw and (r.output is None or canary not in r.output.contents)
+
+
+def test_http_date_retry_after():
+    from email.utils import format_datetime
+
+    import httpx
+
+    from rk.llm.chat.base import http_error_message
+
+    at = datetime.now(UTC) + timedelta(seconds=600)
+    msg = http_error_message(httpx.Response(429, json={"error": "slow"}, headers={"retry-after": format_datetime(
+        at, usegmt=True)}))
+    at_once, wait = http_limit(msg, datetime.now(UTC).timestamp())
+    assert at_once and wait == pytest.approx(600, abs=5)
+
+
+@pytest.mark.parametrize(("statuses", "error"), [((429, 429, 429), "session_limited"),
+                                                  ((500, 429, 429), "provider_error: HTTP 429: too many")])
+def test_plain_429_is_a_limit_only_when_every_attempt_was_one(tmp_home, statuses, error):
+    import httpx
+
+    from rk.llm.chat.ollama import OllamaBackend
+    from rk.llm.chat_provider import ChatApiProvider
+
+    replies = list(statuses)
+
+    def answer(request):
+        return httpx.Response(replies.pop(0), json={"error": "too many"})
+
+    k = Kernel(tmp_home)
+    try:
+        k.create_project("rl", "Rate limits", actor="t")
+        prov = ChatApiProvider(OllamaBackend("http://o:1", "m", httpx.Client(transport=httpx.MockTransport(answer))),
+                               "ollama")
+        r = run_task(k, None, project="rl", role="judge_2", instructions="x", output_schema=Found, tools=[],
+                     driver=DriverSpec.parse("ollama:m"), provider=prov)
+        assert not r.ok and r.error.startswith(error) and replies == []
+    finally:
+        k.close()
+
+
+def test_a_dated_reset_without_a_year_long_past_is_next_years():
+    new_year_eve = datetime(2026, 12, 31, 12, 0, tzinfo=UTC).timestamp()
+    got = usage_limit_wait("You've hit your weekly limit · resets Jan 3, 9am (UTC)", new_year_eve)
+    assert got == pytest.approx(2 * 86400 + 21 * 3600, abs=1)
