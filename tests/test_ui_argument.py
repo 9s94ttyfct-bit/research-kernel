@@ -928,7 +928,8 @@ def test_design_card_untestable_reaches_the_worker(page, served):
     card.get_by_role("button", name="Back to the research question").click()
     assert _answer_of(ps, cp["id"]) == {"decision": "question", "comment": "Measure stroke instead."}
     until(lambda: (edge_rows(ps).get("design->question") or {}).get("count") == 1)
-    assert "Measure stroke instead." in stage_row(ps, "question")["guidance"]
+    # the edge is counted before the reopened stage's guidance is written: wait for the guidance itself
+    until(lambda: "Measure stroke instead." in ((stage_row(ps, "question") or {}).get("guidance") or ""))
     assert page.errors == []
 
 
