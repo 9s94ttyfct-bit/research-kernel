@@ -440,7 +440,7 @@ def test_protocol_card_answers_reach_the_worker(page, served):
     card.get_by_role("button", name="Ask for a revision").click()
     assert _answer_of(ps, cp["id"]) == {"decision": "revise", "comment": "Add PubMed and narrow to trials."}
     until(lambda: stage_row(ps, "protocol")["attempt"] == 2)
-    assert len(served.ex.of("ideator", None)) == 2  # the rerun drafted again
+    until(lambda: len(served.ex.of("ideator", None)) == 2)  # the rerun drafted again (after record_attempt)
 
     cp2, card = _show(page, ps, "protocol_approval", n=2)
     assert cp2["options"]["version"] == 2

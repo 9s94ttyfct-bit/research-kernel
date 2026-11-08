@@ -431,7 +431,6 @@ def _computable_ids(s: _Inputs, measure: str, field_map: dict[str, str] | None) 
     return out
 
 
-
 def _study_input(ps: ProjectStore, study: dict) -> dict:
     it = _item(ps, study["item_id"])
     notes = [n for n in (_note_data(ps, i) for i in study["notes"]) if n is not None]
@@ -1391,12 +1390,14 @@ class SynthesizeWorker:
             failures += [f"group {i} was pooled for {n['outcome']!r}, not a pre-specified outcome"
                          for i, n in pooled.items() if n["outcome"] not in s.outcomes]
             for i, n in pooled.items():
-                made = (artifact(ps, n["stt"]) or {}).get("values", {}).get("field_map")
                 expected = s.field_map(n["outcome"], n["measure"])
-                if made != expected:
-                    failures.append(f"group {i} {_group_label(n)} was pooled from other fields than the frozen "
-                                    f"protocol maps to it ({_map_text(made, n['measure'])}; the protocol: "
-                                    f"{_map_text(expected, n['measure'])})")
+                for aid in (n["stt"], n["fig"]):  # the statistic and its forest plot, each from its own field_map
+                    made = (artifact(ps, aid) or {}).get("values", {}).get("field_map")
+                    why = (f"group {i} {_group_label(n)} was pooled from other fields than the frozen protocol maps "
+                           f"to it ({_map_text(made, n['measure'])}; the protocol: "
+                           f"{_map_text(expected, n['measure'])})")
+                    if made != expected and why not in failures:
+                        failures.append(why)
             whole = any(n["kind"] == "fallback" and n.get("group") is None and n.get("outcome") is None for n in notes)
             if plan is not None and not whole:
                 done = {n.get("outcome") for n in notes if n["kind"] in ("pooled", "fallback")}

@@ -476,8 +476,8 @@ def test_topic_review_answer_through_ui_resumes_run(wb):
     run_id = start(wb)
     cp = waiting(wb, run_id, "topic_review")
     answer(wb, cp, {"decision": "approve", "topic_id": "tpc_b"})
-    until(lambda: run_row(wb.ps, run_id)["status"] != "paused_waiting_human")
-    assert ("on_answer", 1, cp["id"], {"decision": "approve", "topic_id": "tpc_b"}) in wb.orch.workers["topics"].calls
+    call = ("on_answer", 1, cp["id"], {"decision": "approve", "topic_id": "tpc_b"})
+    until(lambda: call in wb.orch.workers["topics"].calls)  # the run is set running before on_answer is called
 
 
 def test_topic_review_card_approve_reaches_the_worker(wb):

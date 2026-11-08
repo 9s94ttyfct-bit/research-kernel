@@ -714,6 +714,7 @@ def test_outcome_numerators_are_not_shared():
                                                     "n_control": "n_control"})
     assert _outcome_failures(TB, shares_sizes) == []
 
+
 @pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
 def test_gate_checks_the_pooled_field_map_against_the_frozen_protocol(env):
     _, ps, _ = env
@@ -733,6 +734,25 @@ def test_gate_checks_the_pooled_field_map_against_the_frozen_protocol(env):
             "n_treatment = ae_n_treatment, events_control = ae_events_control, n_control = ae_n_control)"
             in w.gate(ps, 1).failures), w.gate(ps, 1).failures
 
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_gate_checks_the_figure_field_map_too(env):
+    """The forest plot's ``field_map`` is checked against the frozen protocol as the statistic's is."""
+    _, ps, _ = env
+    _enable_stats()
+    _setup(env, BCG_AE, schema=BINARY_AE, plan=META)
+    ex = _exec(plans=[lambda inputs: _group(s["item_id"] for s in inputs["studies"])], votes=_votes_pool())
+    w = SynthesizeWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    (fig,) = [a["id"] for a in artifacts(ps, "synthesize", 1) if a["kind"] == "fig"]
+    ps.db.execute("""UPDATE artifacts SET "values"=json_set("values", '$.field_map', json(?)) WHERE id=?""",
+                  (json.dumps(AE.fields), fig))
+    assert ("group 0 'tuberculosis' (RR) was pooled from other fields than the frozen protocol maps to it "
+            "(events_treatment = ae_events_treatment, n_treatment = ae_n_treatment, "
+            "events_control = ae_events_control, n_control = ae_n_control; the protocol: "
+            "events_treatment = events_treatment, n_treatment = n_treatment, events_control = events_control, "
+            "n_control = n_control)" in w.gate(ps, 1).failures), w.gate(ps, 1).failures
 
 
 def _two(item_ids, outcomes: list[str]) -> dict:
