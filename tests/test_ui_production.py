@@ -414,6 +414,9 @@ def _show(page, ps, kind: str, n: int = 1):
     """Open the Checkpoints page once ``n`` checkpoints of ``kind`` were opened; returns the open one's card."""
     until(lambda: len([c for c in list_checkpoints(ps) if c["kind"] == kind]) >= n and _open(ps, kind))
     (cp,) = _open(ps, kind)
+    # a fresh document: after a hash-only navigation the page drawn before (it may show this card already) is replaced
+    # by the new route's render a moment later, taking what the test typed into its card with it
+    page.goto("about:blank")
     page.goto_route(f"checkpoints?{cp['id']}")
     card = page.locator(f'.checkpoints li[data-kind="{kind}"]:not(.answered)')
     card.locator(".card-body").wait_for()
