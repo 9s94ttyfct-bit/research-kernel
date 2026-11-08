@@ -67,6 +67,33 @@ def record_resumed(ps: ProjectStore, stage: str, attempt: int, *, run_id: str | 
     _emit(ps, "stage.resumed", stage, {"stage": stage, "attempt": attempt, "run_id": run_id}, actor)
 
 
+MAX_STALLED_RESUMES = 3  # resumes in a row that stored nothing before an interrupted attempt is given up
+_NO_PROGRESS = ("stage.resumed", "run.status", "run.session")
+
+
+def stalled_resumes(ps: ProjectStore, stage: str, attempt: int) -> str | None:
+    """Why the interrupted ``attempt`` is not resumed again: its last ``MAX_STALLED_RESUMES`` resumes stored nothing
+    (no task, note or other event since the first of them: e.g. a crash at the same place every time); else ``None``.
+    A resume that ran a task (a rate-capped one too) or noted anything made progress."""
+    seqs = [r["seq"] for r in ps.db.execute(
+        "SELECT seq FROM events WHERE type='stage.resumed' AND json_extract(payload, '$.stage')=? AND "
+        "json_extract(payload, '$.attempt')=? ORDER BY seq", (stage, attempt))]
+    if len(seqs) < MAX_STALLED_RESUMES:
+        return None
+    marks = ",".join("?" * len(_NO_PROGRESS))
+    since = seqs[-MAX_STALLED_RESUMES]
+    if ps.db.execute(f"SELECT 1 FROM events WHERE seq>? AND type NOT IN ({marks}) LIMIT 1",
+                     (since, *_NO_PROGRESS)).fetchone() is not None:
+        return None
+    return (f"{stage!r} attempt {attempt} was resumed {MAX_STALLED_RESUMES} times in a row without storing anything "
+            f"(interrupted at the same place each time): a new attempt starts")
+
+
+def record_resume_abandoned(ps: ProjectStore, stage: str, attempt: int, reason: str, *, actor: str) -> None:
+    """The interrupted ``attempt`` is not resumed again (``stalled_resumes``); a new attempt replaces it."""
+    _emit(ps, "stage.resume_abandoned", stage, {"stage": stage, "attempt": attempt, "reason": reason}, actor)
+
+
 def attempt_ran(ps: ProjectStore, stage: str, attempt: int) -> bool:
     """Whether the worker's ``run`` of the attempt returned (see ``record_ran``)."""
     return ps.db.execute("SELECT 1 FROM events WHERE type='stage.ran' AND json_extract(payload, '$.stage')=? AND "

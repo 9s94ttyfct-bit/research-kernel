@@ -51,6 +51,7 @@ from rk.orchestrator.state import (
     record_passed,
     record_ran,
     record_reopened,
+    record_resume_abandoned,
     record_resumed,
     record_run_session,
     record_run_status,
@@ -58,6 +59,7 @@ from rk.orchestrator.state import (
     run_drives,
     run_row,
     stage_row,
+    stalled_resumes,
 )
 from rk.store.project import ProjectStore
 from rk.tools.registry import ToolError
@@ -272,11 +274,17 @@ class Orchestrator:
         attempt without it was interrupted) and link a checkpoint wait to the attempt. An open checkpoint of the stage
         left by an attempt this one replaces is superseded. An interrupted attempt of a worker that resumes in place
         (``resumes_in_place``; no guidance asked for) runs again instead, as the same attempt with its guidance
-        (``stage.resumed``): nothing is superseded, the worker goes on from what the attempt stored."""
+        (``stage.resumed``): nothing is superseded, the worker goes on from what the attempt stored. After
+        ``MAX_STALLED_RESUMES`` resumes that stored nothing (``stalled_resumes``: e.g. a crash at the same place each
+        time) the attempt is given up (``stage.resume_abandoned``, with why) and a new one starts."""
         row = stage_row(ps, stage)
         latest = latest_attempt(ps, stage)
-        if (guidance is None and getattr(worker, "resumes_in_place", False) and row is not None
-                and row["status"] == "running" and latest > 0 and not attempt_ran(ps, stage, latest)):
+        resume = (guidance is None and getattr(worker, "resumes_in_place", False) and row is not None
+                  and row["status"] == "running" and latest > 0 and not attempt_ran(ps, stage, latest))
+        if resume and (why := stalled_resumes(ps, stage, latest)):
+            record_resume_abandoned(ps, stage, latest, why, actor=actor)
+            resume = False
+        if resume:
             attempt, composed = latest, attempt_guidance(ps, stage, latest)
             record_resumed(ps, stage, attempt, run_id=run_id, actor=actor)
         else:

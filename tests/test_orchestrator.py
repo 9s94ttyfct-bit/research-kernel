@@ -432,6 +432,25 @@ def test_interrupted_attempt_of_a_resuming_worker_runs_again_in_place(project):
     assert get_checkpoint(ps, opened["id"])["status"] == "open"
 
 
+def test_resume_that_stores_nothing_three_times_starts_a_new_attempt(project):
+    """An attempt that crashes at the same place on every resume is given up after three resumes that stored nothing:
+    the reason is recorded (``stage.resume_abandoned``) and a new attempt starts."""
+    k, ps = project
+    landscape = FakeWorker(runs=[RuntimeError("crash")] * 4 + [StageOutcome("done")])
+    landscape.resumes_in_place = True
+    o = _orch(k, _workers(landscape=landscape))
+    run_id = start_run(ps, until="landscape", actor="tester", clock=Clock())
+    assert o.step("demo", run_id, actor="tester") == "running"  # intake
+    for _ in range(4):
+        with pytest.raises(RuntimeError, match="crash"):
+            o.step("demo", run_id, actor="tester")
+    assert o.step("demo", run_id, actor="tester") == "done"
+    assert [c[1] for c in landscape.calls if c[0] == "run"] == [1, 1, 1, 1, 2]
+    (gave_up,) = _events(ps, "stage.resume_abandoned")
+    assert gave_up["attempt"] == 1 and "resumed 3 times in a row without storing anything" in gave_up["reason"]
+    assert len(_events(ps, "stage.resumed")) == 3
+
+
 class _Found(BaseModel):
     found: bool
 
