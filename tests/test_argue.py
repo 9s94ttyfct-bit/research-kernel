@@ -1184,6 +1184,39 @@ def test_your_withdrawals_concede_their_objections_when_applied_again_after_a_cr
     assert [o["status"] for o in _objections(ps)] == ["conceded", "conceded"]
 
 
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+@pytest.mark.parametrize("rq", ["yes", "no"])
+def test_your_review_withdrawing_every_finding_applied_again_after_a_crash_goes_back(env, monkeypatch, rq):
+    """W3 re-apply gap: you withdraw every finding, the first concession crashes; the answer applied again (the engine
+    hands the answered checkpoint back) concedes every objection, notes your RQ check once and goes back — to
+    question if you said the main claim does not answer it, else to synthesize, as ``run`` does — instead of failing."""
+    _, ps, _ = env
+    a, b = _synthesize(env)
+    objections = [{"target_id": x, "category": "problem", "priority": 1, "text": f"Finding {x} misreads its study."}
+                  for x in (a, b)]
+    ex = _exec([draft(), responses(), responses()], [critique(objections=objections), critique()])
+    w = ArgueWorker()
+    cp = get_checkpoint(ps, w.run(_ctx(env, ex)).checkpoint_id)
+    listed = cp["options"]["claim_ids"]
+    assert {a, b} <= set(listed)
+    cp = _answer(ps, cp["id"], {"claims": dict.fromkeys(listed, "withdraw"), "answers_rq": rq})
+    real = ArgumentService.respond_objection
+
+    def crash(*args, **kw):
+        raise RuntimeError("crash in the first concession")
+
+    monkeypatch.setattr(ArgumentService, "respond_objection", crash)
+    with pytest.raises(RuntimeError, match="first concession"):
+        w.on_answer(_ctx(env, ex), cp)
+    monkeypatch.setattr(ArgumentService, "respond_objection", real)
+    out = w.on_answer(_ctx(env, ex), cp)
+    assert out.status == "back_edge" and out.to == ("synthesize" if rq == "yes" else "question"), out.reason
+    assert {o["status"] for o in _objections(ps)} == {"conceded"}
+    assert [n["checkpoint_id"] for n in argue_notes(ps, 1, kind="rq_check")] == [cp["id"]]
+    assert w.on_answer(_ctx(env, ex), cp).status == "back_edge"  # applied once more: nothing noted twice
+    assert len(argue_notes(ps, 1, kind="rq_check")) == 1
+
+
 # ---- fix wave 3 ----
 def test_conceded_priority1_objection_fails_its_target_in_p1_until_narrowed(env):
     """I6: the Arguer may concede a priority-1 objection, but its target then fails the claim gate (it is not withdrawn

@@ -510,7 +510,7 @@ const HKSJ = { auto: "auto (the Cochrane Handbook rule)", true: "always", false:
 const POOL_MODELS = { DL: "DerSimonian–Laird random effects", REML: "REML random effects", FE: "fixed effect (inverse variance)" };
 const PI_DF = { ci: "the confidence interval's (RevMan)", "k-2": "t with k−2 degrees of freedom (Higgins 2009)" };
 const minStudies = (n) => `at least ${n} studies with a computable effect (fewer: narrative synthesis)`;
-const POOL_LABELS = { pool_model: "Model", hksj: "HKSJ intervals", pi_df: "Prediction interval", min_studies: "Minimum studies" };
+const POOL_LABELS = { pool_model: "Pooling model", hksj: "HKSJ intervals", pi_df: "Prediction interval", min_studies: "Minimum studies" };
 
 async function protocolCard(c, answer) {
   const d = await api("/ui/api/protocol", { query: { project: state.project, protocol_id: c.options?.protocol_id } });

@@ -480,7 +480,7 @@ def test_protocol_card_shows_a_meta_analysis_plan_in_words(page, served):
         assert card.get_by_text(text, exact=False).count() >= 1, text
     # the pool options are worded as on the pooling card, not by their keys
     labels = card.locator("dt").all_text_contents()
-    for word in ("Model", "HKSJ intervals", "Prediction interval", "Minimum studies"):
+    for word in ("Pooling model", "HKSJ intervals", "Prediction interval", "Minimum studies"):
         assert word in labels, (word, labels)
     assert not {"Hksj", "Pi df", "Pool model", "Min studies"} & set(labels), labels
     assert page.errors == []

@@ -1561,10 +1561,40 @@ class ArgueWorker:
                                                  f"({checkpoint['kind']})")
         s = _load(ctx.ps)
         if isinstance(s, str):
+            if (why := _no_finding_left(ctx.ps)) is not None:  # every finding is withdrawn (your review, applied
+                return self._without_findings(ctx, checkpoint, why)  # again after a crash): as run does (I4)
             return StageOutcome("failed", reason=s)
         if checkpoint["kind"] == CONFLICT:
             return self._rounds(ctx, s)  # applies every answered conflict, then goes on
         return self._on_final(ctx, s, checkpoint)
+
+    def _without_findings(self, ctx: StageContext, cp: dict, why: str) -> StageOutcome:
+        """Your final review applied again after a crash, once it withdrew every finding (synthesize's passed attempt
+        has none left, so the inputs cannot load): finish what the interrupted application left, as ``_on_final``
+        does — concede the objections of every claim you withdrew, take withdrawn statistical results' pools out and
+        note your RQ check once — then go back to question if you said the main claim does not answer it, else to
+        synthesize (``run``'s I4 back-edge)."""
+        ps = ctx.ps
+        answer = cp.get("answer") or {}
+        claims = answer.get("claims") or {}
+        yours = cp["kind"] == UNCERTAIN and cp["status"] == "answered" and isinstance(claims, dict)
+        if yours:
+            by = answered_by_actor(ps, cp["id"]) or ctx.actor
+            for cid in cp["options"].get("claim_ids") or []:
+                if claims.get(cid) == WITHDRAW and _withdrawn(ps, cid):
+                    self._concede_gone(replace(ctx, actor=by), cid, f"conceded: the claim {cid} was withdrawn by you")
+        reconcile_withdrawn_pools(ctx, argued_synthesis_attempt(ps, ctx.attempt))
+        if yours and answer.get("answers_rq") in (YES, NO) and not any(
+                n.get("checkpoint_id") == cp["id"] for n in argue_notes(ps, ctx.attempt, kind="rq_check")):
+            _note(ps, ctx.attempt, "rq_check", actor=by, main_claim_id=cp["options"].get("main_claim_id"),
+                  decision=ANSWERS if answer["answers_rq"] == YES else NOT_ANSWERS, by="human",
+                  checkpoint_id=cp["id"], reason=answer_comment(answer))
+        if yours and answer.get("answers_rq") == NO:
+            comment = answer_comment(answer)
+            return StageOutcome("back_edge", to="question", reason=(
+                "you judged that the main claim does not answer the research question"
+                + (f": {comment}" if comment else "")))
+        return StageOutcome("back_edge", to="synthesize", reason=why)
 
     def _on_final(self, ctx: StageContext, s: _Inputs, cp: dict) -> StageOutcome:
         ps = ctx.ps
