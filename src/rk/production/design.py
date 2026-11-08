@@ -166,7 +166,8 @@ def design_notes(ps: ProjectStore, attempt: int, *, kind: str | None = None) -> 
     it, its items naming a hypothesis by id or, for a new one, by its ref; the ``hypotheses`` with their links, each
     by ``key``: its id, or for a new one its ref with the ``new`` text; the dropped hypotheses; the feasibility
     claims), ``refused`` (a draft that could not be noted), ``narrowed`` (P1: a feasibility claim narrowed or
-    withdrawn), ``back_edge``, ``approval`` (the P2 checkpoint), ``vote`` and ``approved`` (the stored design, its
+    withdrawn), ``back_edge``, ``approval`` (the P2 checkpoint), ``vote``, ``approving`` (written before an approval's
+    first write: the ids already resolved and the new hypotheses to add) and ``approved`` (the stored design, its
     frozen hash and the ids the new hypotheses got, by you or the vote)."""
     rows = ps.db.execute("SELECT payload FROM events WHERE type='design.noted' AND json_extract(payload, '$.attempt')=? "
                          "ORDER BY seq", (attempt,))
@@ -195,6 +196,29 @@ def _previous(ps: ProjectStore) -> dict | None:
 
 def _fold(text: str) -> str:
     return " ".join(text.split()).casefold()
+
+
+def _resolution(ps: ProjectStore, attempt: int, draft: dict) -> dict[str, str | None]:
+    """Write-free: each design hypothesis's key -> its hypothesis id: an existing one's id; a new one's from the
+    ``approved`` (else ``approving``) note; else the live hypothesis of the RQ with the same statement and
+    falsification (whitespace and case aside: one an approval added before it was interrupted); else ``None`` (not
+    added yet). ``design_problems``, the gate and ``_approve`` share it, so an interrupted approval applied again
+    finishes."""
+    known: dict[str, str] = {}
+    for kind in ("approving", "approved"):
+        for n in design_notes(ps, attempt, kind=kind):
+            known.update(n.get("ids") or n.get("hypothesis_ids") or {})
+    rq = frozen_rq(ps)
+    live = {(_fold(h["statement"]), _fold(h["falsification"])): h["id"]
+            for h in (hypotheses(ps, rq["id"]) if rq else []) if h["status"] != "dropped"}
+    out: dict[str, str | None] = {}
+    for e in draft["hypotheses"]:
+        if e["id"] is not None:
+            out[e["key"]] = e["id"]
+        else:
+            out[e["key"]] = known.get(e["key"]) or live.get((_fold(e["new"]["statement"]),
+                                                             _fold(e["new"]["falsification"])))
+    return out
 
 
 def feasibility_claims(ps: ProjectStore, attempt: int) -> list[str]:
@@ -291,8 +315,7 @@ def design_problems(ps: ProjectStore, attempt: int, *, review: bool = False) -> 
         return ["no design"]
     items = draft["body"]["items"]
     entries = {e["key"]: e for e in draft["hypotheses"]}
-    done = _approved(ps, attempt)  # once approved, the new hypotheses are the RQ's, with their ids
-    tested_ids = {e["id"] for e in draft["hypotheses"] if e["id"]} | set(done["hypothesis_ids"].values() if done else ())
+    tested_ids = {v for v in _resolution(ps, attempt, draft).values() if v}
     drops = {x["id"] for x in draft["dropped"]}
     item_ids = {i["id"] for i in items}
     measures = {i["id"]: {m["id"] for m in i["measurements"]} for i in items}
@@ -457,6 +480,7 @@ class DesignWorker:
             out.append("it names no hypothesis the design tests")
         keys: list[str] = []
         refs: list[str] = []
+        news: list[tuple[str, tuple[str, str]]] = []
         for hp in d.hypotheses:
             if hp.id is not None:
                 if hp.id not in live:
@@ -472,6 +496,10 @@ class DesignWorker:
                            f"question nor an earlier new hypothesis")
             if ref in refs:
                 out.append(f"the ref {ref!r} is given twice")
+            text = (_fold(hp.new.statement), _fold(hp.new.falsification))
+            out += [f"the new hypotheses {other!r} and {ref!r} state the same hypothesis"
+                    for other, t in news if t == text]
+            news.append((ref, text))
             refs.append(ref)
             keys.append(restated.get(ref, ref))
         out += [f"{x} is named twice among the hypotheses" + (" (a new hypothesis restates it)" if x in rows else "")
@@ -633,29 +661,29 @@ class DesignWorker:
 
     @staticmethod
     def _approve(ctx: StageContext, *, by: str, actor: str, actor_kind: ActorKind, **via) -> str:
-        """Apply the approval of the attempt's draft: add its new hypotheses to the RQ (a new one that a hypothesis of
-        the RQ already states, e.g. one added before an interruption, is that one), store the design with the real ids,
-        its falsification links and the text of each hypothesis it tests, freeze it, pre-register each hypothesis it
-        tests and drop the ones it drops. Applied again it changes nothing. Returns the frozen hash."""
+        """Apply the approval of the attempt's draft: note ``approving`` (the resolved ids and the hypotheses to add)
+        before the first write, add the new hypotheses to the RQ (written by the Ideator), store the design with the
+        real ids, its falsification links and the text of each hypothesis it tests, freeze it, pre-register each
+        hypothesis it tests and drop the ones it drops. Applied again, also after an interruption, it finishes what is
+        left and adds nothing twice (``_resolution``). Returns the frozen hash."""
         ps = ctx.ps
         draft = _draft(ps, ctx.attempt)
         rq_id = frozen_rq(ps)["id"]
         done = _approved(ps, ctx.attempt)
-        ids: dict[str, str] = dict(done["hypothesis_ids"]) if done else {}
+        resolved = _resolution(ps, ctx.attempt, draft)
+        if done is None and not design_notes(ps, ctx.attempt, kind="approving"):
+            _note(ps, ctx.attempt, "approving", actor=actor, draft_id=draft["draft_id"],
+                  ids={k: v for k, v in resolved.items() if v}, to_add=[k for k, v in resolved.items() if not v],
+                  by=by, **via)
+        ids: dict[str, str] = {}
         for e in draft["hypotheses"]:
-            if e["key"] in ids:
-                continue
-            if e["id"] is not None:
-                ids[e["key"]] = e["id"]
-                continue
-            n = e["new"]
-            same = [h for h, r in _hyps(ps, rq_id).items() if r["status"] != "dropped"
-                    and (_fold(r["statement"]), _fold(r["falsification"])) == (_fold(n["statement"]),
-                                                                               _fold(n["falsification"]))]
-            rival = n["rival_of"]
-            ids[e["key"]] = same[0] if same else add_hypothesis(
-                ps, rq_id, n["statement"], n["falsification"], rival_of=ids.get(rival, rival) if rival else None,
-                actor=actor, actor_kind=actor_kind)
+            if (hid := resolved[e["key"]]) is None:
+                n = e["new"]
+                rival = n["rival_of"]
+                hid = add_hypothesis(ps, rq_id, n["statement"], n["falsification"],
+                                     rival_of=ids.get(rival, rival) if rival else None, actor=ROLE,
+                                     actor_kind="agent")
+            ids[e["key"]] = hid
         rows = _hyps(ps, rq_id)
         body = DesignIn.model_validate({
             **draft["body"],

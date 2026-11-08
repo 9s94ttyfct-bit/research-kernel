@@ -445,3 +445,69 @@ def test_measurement_ids_unique_across_design(env):
             "alternative_explanations": []}
     with pytest.raises(ValueError, match=r"measurement ids used by more than one design item: \['M1'\]"):
         DesignBody.model_validate(body)
+
+
+def _once(real, error: str):
+    """``real``, except that its first call raises (a crash at that write)."""
+    calls = {"n": 0}
+
+    def wrapped(*args, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError(error)
+        return real(*args, **kw)
+    return wrapped
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+@pytest.mark.parametrize("crash_at", ["set_design", "set_hypothesis_status"])
+def test_crashed_approval_finishes_when_applied_again(env, monkeypatch, crash_at):
+    """A crash in the middle of applying your approval (after the new hypothesis is added; or after the design is
+    frozen) leaves the answer to be applied again: that finishes the approval, with no rerun and no duplicate."""
+    import rk.production.design as mod
+
+    _, ps, _ = env
+    _argued(env)
+    w = DesignWorker()
+    out = w.run(_ctx(env, _exec([plan()])))
+    answered = _answer(ps, out.checkpoint_id, {"decision": "approve"})
+    monkeypatch.setattr(mod, crash_at, _once(getattr(mod, crash_at), f"crash at {crash_at}"))
+    with pytest.raises(RuntimeError, match="crash at"):
+        w.on_answer(_ctx(env, _exec([])), answered)
+    assert _count(ps) == 2 and not design_notes(ps, 1, kind="approved")
+    (approving,) = design_notes(ps, 1, kind="approving")
+    assert approving["to_add"] == ["h_new"] and list(approving["ids"].values()) == [_h0(ps)]
+    # the hypothesis the crash left added is the draft's own: the structure still holds, only the approval is missing
+    assert w.gate(ps, 1).failures == [f"the design {approving['draft_id']} was not approved: no design is frozen"]
+    out = w.on_answer(_ctx(env, _exec([])), answered)
+    assert out.status == "done", out.reason
+    assert _count(ps) == 2
+    assert ps.db.execute("SELECT COUNT(*) FROM designs").fetchone()[0] == 1
+    assert len(design_notes(ps, 1, kind="approving")) == 1
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_new_hypotheses_are_the_ideators_and_never_twice(env):
+    _, ps, _ = env
+    _argued(env)
+    w = DesignWorker()
+    twice = plan(hypotheses=lambda i, h: [
+        {"id": h, "falsified_by": ["M1"], "tested_by": ["D1"]},
+        {"new": {"statement": NEW_H, "falsification": "No lower rate."}, "ref": "a", "falsified_by": ["M2"],
+         "tested_by": ["D2"]},
+        {"new": {"statement": f" {NEW_H.lower()}", "falsification": "no lower  rate."}, "ref": "b",
+         "falsified_by": ["M2"], "tested_by": ["D2"]}],
+        design=lambda i, h: {"items": [item("D1", ["M1"], [h]), item("D2", ["M2"], ["a", "b"])],
+                             "expected_results": "E.", "alternative_explanations": []})
+    out = w.run(_ctx(env, _exec([twice])))
+    assert out.status == "rerun" and "the new hypotheses 'a' and 'b' state the same hypothesis" in out.reason
+    assert not design_notes(ps, 1, kind="draft")
+    cp = w.run(_ctx(env, _exec([plan()]), attempt=2)).checkpoint_id
+    out = w.on_answer(_ctx(env, _exec([]), attempt=2), _answer(ps, cp, {"decision": "approve"}))
+    assert out.status == "done", out.reason
+    new = next(h["id"] for h in hypotheses(ps, frozen_rq(ps)["id"]) if h["statement"] == NEW_H)
+    rows = {r["type"]: (r["actor"], r["actor_kind"]) for r in ps.db.execute(
+        "SELECT type, actor, actor_kind FROM events WHERE entity_id=? ORDER BY seq", (new,))}
+    assert rows == {"hypothesis.added": ("ideator", "agent"), "hypothesis.status_set": ("researcher", "human")}
+    assert (_approved(ps, 2)["by"], _approved(ps, 2)["checkpoint_id"]) == ("human", cp)
