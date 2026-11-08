@@ -24,9 +24,20 @@ class TextLayer(BaseModel):
     source_kind: Literal["pdf", "jats", "bioc", "html", "abstract"]  # abstract: in memory only (rk.notes.abstract_layer)
     pages: list[Page]
     sha256: str
+    # Characters of the body (summed over the pages before a place, plus its offset): text appended after it (a JATS
+    # layer's tables) is not body. ``None``: the whole layer is body (every layer built before tables were read).
+    body_chars: int | None = None
 
     def full_text(self) -> str:
         return "\f".join(p.text for p in self.pages)
+
+    def body_position(self, page: int, start: int) -> float | None:
+        """Where ``start`` on ``page`` lies, as a share of the body; ``None`` past the body (in the appended text)."""
+        at = sum(len(p.text) for p in self.pages if p.n < page) + start
+        body = self.body_chars if self.body_chars is not None else sum(len(p.text) for p in self.pages)
+        if at >= body:
+            return None if self.body_chars is not None else 0.0
+        return at / body
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -1,6 +1,7 @@
 """Stated limitations: the GapMiner quotes limitations the authors state in the representative works; the kernel keeps
-the quote as a verified quote note (V-QUOTE), checks it starts in the last 40% of the text layer (Plan 4 deviation 3),
-searches for later work and has Triage judge whether any of it addressed the limitation, on verbatim evidence."""
+the quote as a verified quote note (V-QUOTE), checks it starts in the last 40% of the text layer's body (Plan 4
+deviation 3; text appended after the body, a JATS layer's tables, does not count), searches for later work and has
+Triage judge whether any of it addressed the limitation, on verbatim evidence."""
 
 from __future__ import annotations
 
@@ -48,12 +49,11 @@ LATER_TASK = (
     "count. When none does, return empty lists.")
 
 
-def _position(ps: ProjectStore, item_id: str, loc: Locator) -> float:
-    """Where the located quote starts, as a share of the whole text layer."""
+def _position(ps: ProjectStore, item_id: str, loc: Locator) -> float | None:
+    """Where the located quote starts, as a share of the text layer's body (a JATS layer's appended tables are not
+    body); ``None`` when it is past the body."""
     _, layer = latest_snapshot(ps, item_id)
-    before = sum(len(p.text) for p in layer.pages if p.n < loc.page)
-    total = sum(len(p.text) for p in layer.pages)
-    return (before + loc.start) / total if total else 0.0
+    return layer.body_position(loc.page, loc.start)
 
 
 def _judge_later(ctx: StageContext, it: LimitationOut, later: list[str], checks: Checks, details: dict) -> None:
@@ -107,8 +107,10 @@ def _check(ctx: StageContext, it: LimitationOut, cluster_of: dict[str, str]) -> 
         checks.passed("quote_note")
         evidence.note_ids = [note.note_id]
         share = _position(ctx.ps, it.source_id, note.locator)
-        details["position"] = round(share, 3)
-        if share >= POSITION_MIN:
+        details["position"] = None if share is None else round(share, 3)
+        if share is None:
+            checks.failed("position", "the quote is in a table or its notes, after the body text")
+        elif share >= POSITION_MIN:
             checks.passed("position")
         else:
             checks.failed("position", f"the quote starts at {share:.0%} of the text (need >= {POSITION_MIN:.0%})")

@@ -133,27 +133,71 @@ def jats_to_layer(xml: bytes, sha: str) -> TextLayer:
             t = _itertext(el)
             if t:
                 lines.append(t)
-    lines += _jats_tables(root)  # after the body, so layers built before tables were read keep their offsets
-    return TextLayer(source_kind="jats", pages=[Page(n=1, text=utf8_safe("\n\n".join(lines)))], sha256=sha)
+    text = utf8_safe("\n\n".join(lines))
+    tables = _jats_tables(root)  # after the body, so layers built before tables were read keep their offsets
+    full = text + utf8_safe("".join(f"\n\n{t}" for t in tables))
+    return TextLayer(source_kind="jats", pages=[Page(n=1, text=full)], sha256=sha, body_chars=len(text))
+
+
+_BLOCKS = frozenset({"p", "title", "label", "break", "list-item", "tr", "th", "td", "table"})
+
+
+def _spaced_text(el) -> str:
+    """The element's text with a space around each block child (paragraphs, titles, line breaks, cells), so words and
+    numbers of neighbouring blocks stay apart."""
+    out: list[str] = []
+
+    def walk(e) -> None:
+        block = isinstance(e.tag, str) and e.tag in _BLOCKS
+        if block:
+            out.append(" ")
+        if isinstance(e.tag, str) and e.text:
+            out.append(e.text)
+        for c in e:
+            walk(c)
+            if c.tail:
+                out.append(c.tail)
+        if block:
+            out.append(" ")
+
+    walk(el)
+    return _norm_ws("".join(out))
+
+
+def _inside(el, stop, tags: tuple[str, ...]) -> bool:
+    """Whether an ancestor of ``el`` below ``stop`` (or anywhere, with ``stop`` None) has one of ``tags``."""
+    for a in el.iterancestors():
+        if a is stop:
+            return False
+        if a.tag in tags:
+            return True
+    return False
 
 
 def _jats_tables(root) -> list[str]:
-    """Every ``table-wrap`` (body, floats-group, back): "<label>. <caption>", one line per row with the cells joined
-    by " | " (so numbers of neighbouring cells stay apart), then its footnotes."""
+    """Every ``table-wrap`` (body, floats-group, back) and ``table-wrap-group``: "<label>. <caption>", then for a table
+    one line per row with the cells joined by " | " (so numbers of neighbouring cells stay apart), then its footnotes.
+    A table nested in a cell is read once, as that cell's text. Captions and footnotes of tables inside the body are
+    also in the body text (its paragraphs and titles), as they were before tables were read."""
     out: list[str] = []
-    for tw in root.iter("table-wrap"):
-        label = tw.find("label")
-        caption = tw.find("caption")
-        head = ". ".join(t for t in (_itertext(label).rstrip(".:") if label is not None else "",
-                                     _itertext(caption) if caption is not None else "") if t)
+    for tw in root.iter("table-wrap-group", "table-wrap"):
+        if _inside(tw, None, ("td", "th")):
+            continue
+        label, caption = tw.find("label"), tw.find("caption")
+        head = ". ".join(t for t in (_spaced_text(label).rstrip(".:") if label is not None else "",
+                                     _spaced_text(caption) if caption is not None else "") if t)
         if head:
             out.append(head)
+        if tw.tag == "table-wrap-group":
+            continue
         for tr in tw.iter("tr"):
-            cells = [_itertext(c) for c in tr if c.tag in ("th", "td")]
+            if _inside(tr, tw, ("td", "th")):
+                continue
+            cells = [_spaced_text(c) for c in tr if c.tag in ("th", "td")]
             if any(cells):
                 out.append(" | ".join(cells))
         for foot in tw.iter("table-wrap-foot"):
-            out += [t for p in foot.iter("p") if (t := _itertext(p))]
+            out += [t for p in foot.iter("p") if (t := _spaced_text(p))]
     return out
 
 

@@ -113,6 +113,45 @@ def test_limitation_from_the_first_page_is_not_verified(env):
     assert note["kind"] == "quote" and gap["evidence"]["note_ids"] == [note["id"]]
 
 
+def _jats_source(ps, source: str, *, footnote: str) -> None:
+    """The source's latest text layer: a JATS body (the limitation at about 65% of it) followed by a large table whose
+    footnote is ``footnote``."""
+    from rk.fulltext import _record_snapshot
+    from rk.text.markup import jats_to_layer
+
+    rows = b"".join(b"<tr><td>Centre %d</td><td>%d</td></tr>" % (i, i) for i in range(300))
+    tail = "Aspirin was well tolerated. " * 11
+    xml = (b"<article><body><p>" + (INTRO + METHODS).encode() + b"</p><p>" + DISCUSSION.encode() + b"</p><p>"
+           + tail.encode() + b"</p></body><floats-group>"
+           b"<table-wrap><label>Table 1</label><table>" + rows + b"</table><table-wrap-foot><fn><p>"
+           + footnote.encode() + b"</p></fn></table-wrap-foot></table-wrap></floats-group></article>")
+    _record_snapshot(ps, source, xml, jats_to_layer(xml, ""), "jats", None, "tester")
+
+
+def test_limitation_position_is_measured_on_the_body_not_the_appended_tables(env):
+    """Tables appended after a JATS body (they make the layer several times longer) do not push a late limitation
+    out of the last 40%: the position is a share of the body."""
+    k, ps, lib = env
+    source, _, _, sources, script = _limitation_setup(lib, ps, quote=LIMITATION)
+    _jats_source(ps, source, footnote="Centres were grouped by region.")
+    script[("triage", "LaterWorkOut")] = [{"addressed": [], "basis": {}}]
+    _, [gap] = _run_limitation(k, ps, lib, sources, script)
+    assert gap["checks"]["quote_note"] == "pass" and gap["checks"]["position"] == "pass"
+    assert 0.6 <= gap["details"]["position"] < 0.7
+
+
+def test_a_table_footnote_is_not_late_text(env):
+    """A quote found only in the appended tables (here a table footnote, floats-group) is outside the body, so it is
+    not a limitation stated late in the text."""
+    k, ps, lib = env
+    footnote = "Data from two centres were incomplete and were excluded from the analysis."
+    source, _, _, sources, script = _limitation_setup(lib, ps, quote=footnote)
+    _jats_source(ps, source, footnote=footnote)
+    _, [gap] = _run_limitation(k, ps, lib, sources, script)
+    assert gap["checks"]["quote_note"] == "pass" and gap["checks"]["position"] == "fail"
+    assert "table" in gap["checks"]["reasons"]["position"] and gap["verified"] is False
+
+
 def test_limitation_already_addressed_later_is_not_verified(env):
     k, ps, lib = env
     _, later, earlier, sources, script = _limitation_setup(lib, ps, quote=LIMITATION)
