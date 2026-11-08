@@ -870,3 +870,22 @@ def test_pages_logged_without_hit_ids_and_no_records_are_asked_again(env, monkey
     _drop_hit_ids(ps)
     run_strategy(_ctx(env, src), protocol)
     assert len(src.search_args) == 7 and search_counts(ps, 1) == MERGED_COUNTS
+
+
+def test_legacy_alignment_of_a_long_log_falls_back_instead_of_crashing():
+    """Pages logged before ``hit_ids``: aligning thousands of them against the stored records neither overflows the
+    stack nor backtracks without end; it lines them up (or gives up, so they are asked for again)."""
+    from rk.production.search import _legacy_hits
+
+    pages = 3000
+    logged = {("openalex", "q", i, 1, None, None): {"source": "openalex", "query": "q", "offset": i, "limit": 1,
+                                                    "item_ids": [f"itm_{i}"]} for i in range(pages)}
+    stored = [f"itm_{i}" for i in range(pages)]
+    assert len(_legacy_hits(logged, stored)) == pages
+    # 40 pages of one repeated item whose sizes are unknown (no next page logged), then a page of an item no record
+    # has: no alignment exists, and trying every split would never end without remembering the dead ends
+    many = {("openalex", "q", i * 1000, 5, None, None): {"source": "openalex", "query": "q", "offset": i * 1000,
+                                                         "limit": 5, "item_ids": ["itm_x"]} for i in range(40)}
+    many[("openalex", "q", 99_000, 5, None, None)] = {"source": "openalex", "query": "q", "offset": 99_000,
+                                                      "limit": 5, "item_ids": ["itm_z"]}
+    assert _legacy_hits(many, ["itm_x"] * 200) == {}

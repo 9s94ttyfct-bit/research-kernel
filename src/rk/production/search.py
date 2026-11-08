@@ -50,6 +50,7 @@ send the stage back to ``protocol`` (the protocol's record-count probe is adviso
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 from rk.discovery.sources import log_and_search_hits
@@ -179,7 +180,8 @@ def _legacy_hits(logged: dict[tuple, dict], stored: list[str]) -> dict[tuple, li
     ``hit_ids`` exactly, a page without them as its distinct ids with later hits of an item on the page repeating it
     (``_slice_lengths``), each record used once; a page followed by the next page of its query and source was full
     (``limit`` hits less the dropped ones). ``{}`` when there is no such page or the records do not line up (those
-    pages are asked for again)."""
+    pages are asked for again). The search is iterative over (page, record position) and never retries a position
+    that could not reach the last page, so a long log neither overflows the stack nor backtracks without end."""
     pages = list(logged.values())
     if all(p.get("hit_ids") is not None for p in pages):
         return {}
@@ -189,22 +191,29 @@ def _legacy_hits(logged: dict[tuple, dict], stored: list[str]) -> dict[tuple, li
             return p["limit"] - (p.get("dropped") or 0)
         return None
 
-    def align(i: int, pos: int) -> list[list[str]] | None:
-        if i == len(pages):
-            return []
+    def lengths(i: int, pos: int) -> list[int]:
         p = pages[i]
         if (hits := p.get("hit_ids")) is not None:
-            lengths = [len(hits)] if stored[pos:pos + len(hits)] == hits else []
-        else:
-            lengths = _slice_lengths(p["item_ids"], stored, pos, known(p))
-        for m in lengths:
-            if (rest := align(i + 1, pos + m)) is not None:
-                return [stored[pos:pos + m], *rest]
-        return None
+            return [len(hits)] if stored[pos:pos + len(hits)] == hits else []
+        return _slice_lengths(p["item_ids"], stored, pos, known(p))
 
-    found = align(0, 0)
-    if found is None:
+    dead: set[tuple[int, int]] = set()  # (page, position) from which no alignment reaches the last page
+    stack: list[tuple[int, int, Iterator[int]]] = [(0, 0, iter(lengths(0, 0)))]
+    end = None
+    while stack:
+        i, pos, todo = stack[-1]
+        if (m := next(todo, None)) is None:
+            dead.add((i, pos))
+            stack.pop()
+        elif i + 1 == len(pages):
+            end = pos + m
+            break
+        elif (i + 1, pos + m) not in dead:
+            stack.append((i + 1, pos + m, iter(lengths(i + 1, pos + m))))
+    if end is None:
         return {}
+    starts = [pos for _, pos, _ in stack]
+    found = [stored[a:b] for a, b in zip(starts, [*starts[1:], end], strict=True)]
     return {_key(p): hits for p, hits in zip(pages, found, strict=True) if p.get("hit_ids") is None}
 
 
