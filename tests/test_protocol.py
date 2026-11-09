@@ -749,12 +749,17 @@ def test_probe_without_any_count_says_not_counted(env):
 
 
 class FailingCounts(FakeSources):
-    """A source whose count of the first query fails: an HTTP 400 on openalex, an exhausted budget on europepmc."""
+    """A source whose count of the first query fails with an HTTP 400 on openalex; with ``spent``, europepmc's API
+    budget is exhausted."""
+
+    def __init__(self, *a, spent: bool = False, **kw):
+        super().__init__(*a, **kw)
+        self.spent = spent
 
     def count(self, query: str, source: str, **years) -> int | None:
         if query == QUERIES[0] and source == "openalex":
             raise HttpError(400, "https://api.openalex.org/works")
-        if query == QUERIES[0] and source == "europepmc":
+        if self.spent and source == "europepmc":
             raise BudgetExhausted("europepmc", T0)
         return super().count(query, source, **years)
 
@@ -762,16 +767,23 @@ class FailingCounts(FakeSources):
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
 def test_failed_count_fails_nothing_and_is_recorded_in_the_probe(env):
     _, ps, _ = env
-    sources = FailingCounts({}, record_counts={(q, s): 10 for q in QUERIES for s in ("openalex", "europepmc")})
+    counts = {(q, s): 10 for q in QUERIES for s in ("openalex", "europepmc")}
     ex = _executor([_draft()])
-    out = ProtocolWorker().run(_ctx(env, ex, sources=sources))
-    assert out.status == "waiting_human"  # the approval opens: the advisory probe failed nothing
+    w = ProtocolWorker()
+    # an exhausted budget is no count: the run pauses until the reset, and nothing is shown to you yet
+    with pytest.raises(BudgetExhausted):
+        w.run(_ctx(env, ex, sources=FailingCounts({}, record_counts=counts, spent=True)))
     (row,) = store.protocols(ps, 1)
+    assert probe_of(ps, row["id"]) is None and not list_checkpoints(ps)
+    # after the reset the stage resumes in place: the version is probed, nothing is drafted again
+    out = w.run(_ctx(env, ScriptedExecutor({}), sources=FailingCounts({}, record_counts=counts)))
+    assert out.status == "waiting_human"  # the approval opens: the advisory probe's source error failed nothing
+    assert [c["role"] for c in ex.calls] == ["ideator", "scout"] and len(store.protocols(ps, 1)) == 1
     probe = probe_of(ps, row["id"])
     failed = {c["source"]: c for c in probe["counts"] if c["query"] == QUERIES[0]}
     assert failed["openalex"]["count"] is None and "HttpError" in failed["openalex"]["error"]
-    assert failed["europepmc"]["count"] is None and "BudgetExhausted" in failed["europepmc"]["error"]
-    assert probe["total"] == 40 and all("error" not in c for c in probe["counts"] if c["query"] != QUERIES[0])
+    assert probe["total"] == 50 and all("error" not in c for c in probe["counts"] if c["source"] != "openalex"
+                                        or c["query"] != QUERIES[0])
     prompt = get_checkpoint(ps, out.checkpoint_id)["prompt"]
     assert f"{QUERIES[0]!r} on openalex: no count (record count of" in prompt
 

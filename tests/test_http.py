@@ -105,6 +105,28 @@ def test_retry_after_and_budget(client, clock):
 
 
 @respx.mock
+def test_a_429_that_spends_the_budget_or_asks_for_a_long_wait_raises_instead_of_sleeping(client, clock):
+    """Task 9: OpenAlex's anonymous daily budget answers 429 with retry-after ~6 h; the request must not sleep for hours
+    (the run hung in landscape) but raise BudgetExhausted, which pauses the run until the reset."""
+    spent = {"Retry-After": "21529", "x-ratelimit-remaining": "0", "x-ratelimit-reset": "21529"}
+    respx.get("https://api.openalex.org/works").mock(return_value=httpx.Response(429, headers=spent))
+    with pytest.raises(BudgetExhausted) as ei:
+        client.get("https://api.openalex.org/works", params={"search": "x"}, budget_key="openalex", ttl_s=0)
+    assert ei.value.reset_at == pytest.approx(1000.0 + 21529) and max(clock.slept, default=0) < 60
+    # no budget header: a long Retry-After alone raises too, keyed by the host
+    respx.get("https://api.crossref.org/works/z").mock(return_value=httpx.Response(429, headers={"Retry-After": "7200"}))
+    with pytest.raises(BudgetExhausted) as ei:
+        client.get("https://api.crossref.org/works/z")
+    assert ei.value.budget_key == "api.crossref.org" and max(clock.slept, default=0) < 60
+    # a server error with a long Retry-After is no budget: retried with capped waits, then the transient HttpError
+    clock.slept.clear()
+    respx.get("https://api.crossref.org/works/down").mock(return_value=httpx.Response(503, headers={"Retry-After": "3600"}))
+    with pytest.raises(HttpError) as ei:
+        client.get("https://api.crossref.org/works/down")
+    assert ei.value.status == 503 and clock.slept and max(clock.slept) == 60.0
+
+
+@respx.mock
 def test_gives_up_after_retries(client):
     respx.get("https://api.crossref.org/works/y").mock(return_value=httpx.Response(503))
     with pytest.raises(HttpError) as ei:

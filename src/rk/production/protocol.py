@@ -78,12 +78,11 @@ from rk.checkpoints import (
     opened_in_place_of,
 )
 from rk.config import load_settings
-from rk.discovery.boundary import error_text, per_item
+from rk.discovery.boundary import per_item
 from rk.discovery.models import PaperType, RQBody
 from rk.discovery.sources import COUNTED_SOURCES
 from rk.discovery.store import frozen_rq, hypotheses, intake_of
 from rk.llm.vendors import vendor_of
-from rk.net.http import BudgetExhausted
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.production.models import (
     RECORD_CAP,
@@ -283,15 +282,13 @@ def counts_as_preregistration(paper_type: str) -> bool:
 
 # ---- the record-cap probe (advisory) ----
 def _count(ctx: StageContext, query: str, source: str, strategy: SearchStrategy) -> dict:
-    """One count of the probe, within the strategy's publication years, through the per-item boundary: a source
-    error, or an exhausted source API budget, gives ``count: None`` and the ``error`` (the probe is advisory: it never
-    fails or interrupts the stage)."""
+    """One count of the probe, within the strategy's publication years, through the per-item boundary: a source error
+    gives ``count: None`` and the ``error`` (the probe is advisory: a source error fails nothing). An exhausted source
+    API budget (``BudgetExhausted``) is not a count: it pauses the run until the reset, and the stage, which resumes in
+    place, probes the version then, so no vote is spent on a probe the budget cut short."""
     what = f"record count of {query!r} on {source}"
-    try:
-        n, err = per_item(what, lambda: ctx.sources.count(query, source, date_from=strategy.date_from,
-                                                          date_to=strategy.date_to))
-    except BudgetExhausted as e:
-        n, err = None, f"{what} failed ({error_text(e)})"
+    n, err = per_item(what, lambda: ctx.sources.count(query, source, date_from=strategy.date_from,
+                                                      date_to=strategy.date_to))
     return {"query": query, "source": source, "count": n} | ({"error": err} if err else {})
 
 
