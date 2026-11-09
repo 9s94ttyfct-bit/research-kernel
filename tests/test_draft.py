@@ -16,12 +16,14 @@ from rk.orchestrator.state import record_attempt, record_passed, record_ran
 from rk.production.argue import argument_claims, main_claim
 from rk.production.artifacts import ArtifactIn, add_artifact
 from rk.production.design import DesignWorker, approved_design
+from rk.production.disclosure import disclosure_problems, render_disclosure
 from rk.production.draft import (
     PRISMA_EVENT,
     DraftWorker,
     SectionDraft,
     draft_notes,
     prisma_event,
+    unmet_support,
 )
 from rk.production.draft import load_inputs as draft_inputs
 from rk.production.manuscript import (
@@ -244,9 +246,6 @@ def test_a_section_that_already_went_back_to_argue_writes_without_what_it_lacks(
     assert [v["verdict"]["ok"] for v in draft_versions(ps, "theme-1")] == [False, True]
     assert w.gate(ps, 2).ok
     # the kernel discloses the gap whatever the Writer wrote (the passing draft here states no limitation)
-    from rk.production.disclosure import disclosure_problems, render_disclosure
-    from rk.production.draft import unmet_support
-
     asked_u, still_u = unmet_support(ps)
     assert (asked_u["section"], still_u["section"]) == ("theme-1", "theme-1") and "asked" in asked_u
     assert still_u["needs"] == need["missing_support"]

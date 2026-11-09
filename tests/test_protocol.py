@@ -770,7 +770,7 @@ def test_failed_count_fails_nothing_and_is_recorded_in_the_probe(env):
     counts = {(q, s): 10 for q in QUERIES for s in ("openalex", "europepmc")}
     ex = _executor([_draft()])
     w = ProtocolWorker()
-    # an exhausted budget is no count: the run pauses until the reset, and nothing is shown to you yet
+    # an exhausted budget is no count: the run pauses (resumed after the reset), and nothing is shown to you yet
     with pytest.raises(BudgetExhausted):
         w.run(_ctx(env, ex, sources=FailingCounts({}, record_counts=counts, spent=True)))
     (row,) = store.protocols(ps, 1)

@@ -200,7 +200,7 @@ class HttpClient:
                 self._record_budget(budget_key, resp.headers)
             if status == 429 or status >= 500 or status == 0:
                 if status == 429:
-                    self._check_budget(budget_key)  # the 429 spent the recorded budget: pause until its reset
+                    self._check_budget(budget_key)  # the 429 spent the recorded budget: the run pauses (resume after it)
                 if attempt >= MAX_RETRIES:
                     raise HttpError(status, public_url)
                 delay = 2.0**attempt
