@@ -29,6 +29,7 @@ from rk.checkpoints import (
 from rk.discovery.models import Intake
 from rk.discovery.store import intake_of, record_intake
 from rk.discovery.tools import register_discovery_tools
+from rk.eval.sr_repro import register_sr_repro_tools
 from rk.flags import flag_injection
 from rk.fulltext import FulltextResult, attach_pdf, fulltext_with_fallback
 from rk.library.add import add_source
@@ -139,6 +140,7 @@ def build_registry(k: Kernel, browser: Callable[[], BrowserService | None] | Non
     register_browser_tools(tool, browser)
     register_discovery_tools(tool, k, runs or (lambda: None))
     register_production_tools(tool, k, runs or (lambda: None))
+    register_sr_repro_tools(tool, k, runs or (lambda: None))
 
     # ---- projects ----
     class ProjectCreate(BaseModel):

@@ -75,6 +75,9 @@ TOOL_ROLES: dict[str, frozenset[str]] = {
     # and the Reader work before them and read neither. Exporting starts a run: yours alone.
     **{name: _r(*_FULL_READERS) for name in ("rk_manuscript_get", "rk_audit_get")},
     "rk_export": _r(),
+    # the systematic-review reproduction set (spec §10): seeding and running its projects and scoring them is an
+    # evaluation you run (rk eval sr-repro)
+    **{name: _r() for name in ("rk_sr_repro_run", "rk_sr_repro_score")},
 }
 
 # Spec §5.3/§7.2: the P1/P2 checkpoints and the discovery path depend on these intake fields. The intake cannot change

@@ -1,0 +1,777 @@
+{
+ "version": 1,
+ "about": "The systematic-review reproduction set (spec §10, Plan 5c Task 8): six PMC open-access systematic reviews, at least one per domain, each with the studies it included (from the review's own full text: DOI and PMID where it gives them, the title always, and the review's reference id) and its main conclusion. Selected live and model-free from Europe PMC, PubMed and OpenAlex; see each entry's note.",
+ "entries": [
+  {
+   "id": "cade-colonoscopy",
+   "pmcid": "PMC7691740",
+   "doi": "10.1016/j.eclinm.2020.100622",
+   "title": "Real-time computer aided colonoscopy versus standard colonoscopy for improving adenoma detection rate: A meta-analysis of randomized-controlled trials",
+   "domain": "medicine",
+   "question": "whether real-time computer-aided detection with deep convolutional neural networks during colonoscopy changes the adenoma detection rate compared with standard colonoscopy",
+   "pico": {
+    "population": "adults undergoing colonoscopy in randomised controlled trials",
+    "intervention": "real-time deep-learning computer-aided detection (CADe) during colonoscopy",
+    "comparison": "standard colonoscopy without computer-aided detection",
+    "outcome": "adenoma detection rate"
+   },
+   "date_from": null,
+   "date_to": 2020,
+   "included": [
+    {
+     "title": "Efficacy of real-time computer-aided detection of colorectal neoplasia in a randomized trial",
+     "doi": "10.1053/j.gastro.2020.04.062",
+     "pmid": "32371116",
+     "ref": "bib0002"
+    },
+    {
+     "title": "Real-time automatic detection system increases colonoscopic polyp and adenoma detection rates: a prospective randomised controlled study",
+     "doi": "10.1136/gutjnl-2018-317500",
+     "pmid": "30814121",
+     "ref": "bib0003"
+    },
+    {
+     "title": "Detection of colorectal adenomas with a real-time computer-aided system (ENDOANGEL): a randomised controlled study",
+     "doi": "10.1016/S2468-1253(19)30413-3",
+     "pmid": "31981518",
+     "ref": "bib0004"
+    },
+    {
+     "title": "Study on detection rate of polyps and adenomas in artificial-intelligence-aided colonoscopy",
+     "doi": "10.4103/sjg.SJG_377_19",
+     "pmid": "31898644",
+     "ref": "bib0005"
+    },
+    {
+     "title": "Impact of a real-time automatic quality control system on colorectal polyp and adenoma detection: a prospective randomized controlled study (with videos)",
+     "doi": "10.1016/j.gie.2019.08.026",
+     "pmid": "31454493",
+     "ref": "bib0006"
+    },
+    {
+     "title": "Effect of a deep-learning computer-aided detection system on adenoma detection during colonoscopy (CADe-DB trial): a double-blind randomised study",
+     "doi": "10.1016/S2468-1253(19)30411-X",
+     "pmid": "31981517",
+     "ref": "bib0007"
+    }
+   ],
+   "main_conclusion": {
+    "outcome": "adenoma detection rate (CADe-assisted versus standard colonoscopy)",
+    "direction": "benefit"
+   },
+   "note": "Six RCTs, all with DOI and PMID; a single main outcome (adenoma detection rate) with a clear direction (RR 1.5 in favour of CADe); searched from inception to May 2020. Selection search (2026-11-09, model-free, the kernel's sources and query syntax, publication years inception–2020): europepmc: colonoscopy AND (\"computer-aided\" OR \"computer aided\" OR \"artificial intelligence\" OR \"deep learning\" OR \"convolutional neural network\") AND (adenoma OR polyp) AND (randomized OR randomised); pubmed: colonoscopy AND (\"computer-aided\" OR \"computer aided\" OR \"artificial intelligence\" OR \"deep learning\" OR \"convolutional neural network\") AND (adenoma OR polyp) AND (randomized OR randomised). 326 records, 295 after deduplication by DOI, PMID and title (budget 3,000); it finds 6 of the 6 included studies.",
+   "search": {
+    "searches": [
+     {
+      "source": "europepmc",
+      "query": "colonoscopy AND (\"computer-aided\" OR \"computer aided\" OR \"artificial intelligence\" OR \"deep learning\" OR \"convolutional neural network\") AND (adenoma OR polyp) AND (randomized OR randomised)"
+     },
+     {
+      "source": "pubmed",
+      "query": "colonoscopy AND (\"computer-aided\" OR \"computer aided\" OR \"artificial intelligence\" OR \"deep learning\" OR \"convolutional neural network\") AND (adenoma OR polyp) AND (randomized OR randomised)"
+     }
+    ],
+    "date_from": null,
+    "date_to": 2020,
+    "records": 326,
+    "deduplicated": 295,
+    "included_found": 6,
+    "retrieved": "2026-11-09"
+   },
+   "provenance": {
+    "review_url": "https://europepmc.org/article/PMC/PMC7691740",
+    "included_from": "the six RCTs the review analyses (Results: 'six prospective studies were included … [2–7]'; Table 1 study characteristics), references 2–7 of its reference list (Europe PMC full text: https://www.ebi.ac.uk/europepmc/webservices/rest/PMC7691740/fullTextXML)",
+    "retrieved": "2026-11-09"
+   }
+  },
+  {
+   "id": "ozone-bleaching",
+   "pmcid": "PMC8222366",
+   "doi": "10.1038/s41598-021-92733-8",
+   "title": "A meta-analysis of ozone effect on tooth bleaching",
+   "domain": "medicine",
+   "question": "whether ozone, alone or with hydrogen peroxide, changes tooth colour in in-office bleaching of vital teeth differently from conventional hydrogen peroxide bleaching",
+   "pico": {
+    "population": "patients receiving in-office bleaching of vital teeth in randomised clinical trials",
+    "intervention": "ozone, alone or combined with hydrogen peroxide",
+    "comparison": "hydrogen peroxide bleaching alone",
+    "outcome": "tooth colour change (CIELab ΔE)"
+   },
+   "date_from": null,
+   "date_to": 2020,
+   "included": [
+    {
+     "title": "Effects of combining ozone and hydrogren peroxide on tooth bleaching: A clinical study",
+     "doi": "10.1016/j.jdent.2016.08.002",
+     "pmid": "27498085",
+     "ref": "CR28"
+    },
+    {
+     "title": "Color assessment after bleaching with hydrogen peroxide versus ozone: A randomized controlled clinical trial",
+     "pmid": "28682289",
+     "ref": "CR32"
+    },
+    {
+     "title": "Randomized controlled clinical trial on bleaching sensitivity and whitening efficacy of hydrogen peroxide versus combinations of hydrogen peroxide and ozone",
+     "doi": "10.1038/s41598-018-20878-0",
+     "pmid": "29402954",
+     "ref": "CR30"
+    },
+    {
+     "title": "Randomized clinical trial on the comparison of bleaching outcomes using either ozone or hydrogen peroxide",
+     "doi": "10.3290/j.qi.a40783",
+     "pmid": "30027174",
+     "ref": "CR29"
+    }
+   ],
+   "main_conclusion": {
+    "outcome": "tooth colour change (ΔE) with ozone versus hydrogen peroxide bleaching",
+    "direction": "no_difference"
+   },
+   "note": "A small, clearly reported review (four RCTs, Table 2, each with PMID) whose main conclusion has no difference as its direction (ozone is not superior to hydrogen peroxide), so the set covers that direction; searched up to May 2020. Selection search (2026-11-09, model-free, the kernel's sources and query syntax, publication years inception–2020): europepmc: ozone AND (bleaching OR whitening) AND (tooth OR teeth OR dental); pubmed: ozone AND (bleaching OR whitening) AND (tooth OR teeth OR dental). 190 records, 160 after deduplication by DOI, PMID and title (budget 3,000); it finds 4 of the 4 included studies.",
+   "search": {
+    "searches": [
+     {
+      "source": "europepmc",
+      "query": "ozone AND (bleaching OR whitening) AND (tooth OR teeth OR dental)"
+     },
+     {
+      "source": "pubmed",
+      "query": "ozone AND (bleaching OR whitening) AND (tooth OR teeth OR dental)"
+     }
+    ],
+    "date_from": null,
+    "date_to": 2020,
+    "records": 190,
+    "deduplicated": 160,
+    "included_found": 4,
+    "retrieved": "2026-11-09"
+   },
+   "provenance": {
+    "review_url": "https://europepmc.org/article/PMC/PMC8222366",
+    "included_from": "Table 2 (summary of the main characteristics of the eligible studies) of the review (Europe PMC full text: https://www.ebi.ac.uk/europepmc/webservices/rest/PMC8222366/fullTextXML)",
+    "retrieved": "2026-11-09"
+   }
+  },
+  {
+   "id": "fructose-rats-sbp",
+   "pmcid": "PMC12721104",
+   "doi": "10.7717/peerj.20097",
+   "title": "Fructose consumption and metabolic hypertension in rats: a systematic review and meta-analysis",
+   "domain": "biology",
+   "question": "whether dietary fructose, in drinking water or in the diet, raises systolic blood pressure in rats compared with control feeding",
+   "pico": {
+    "population": "rats",
+    "intervention": "dietary fructose (10–30% solution or 60–75% diet)",
+    "comparison": "control feeding without added fructose",
+    "outcome": "systolic blood pressure"
+   },
+   "date_from": 2010,
+   "date_to": 2022,
+   "included": [
+    {
+     "title": "Diet-induced hypertension in rats is associated with increased renal vasoconstrictor response to angiotensin II after imitated endothelial dysfunction",
+     "doi": "10.1016/j.mvr.2022.104333",
+     "pmid": "35151723",
+     "ref": "ref-27"
+    },
+    {
+     "title": "Gastrodia elata ameliorates high-fructose diet-induced lipid metabolism and endothelial dysfunction",
+     "doi": "10.1155/2014/101624",
+     "pmid": "24719637",
+     "ref": "ref-31"
+    },
+    {
+     "title": "Direct renin inhibitor prevents and ameliorates insulin resistance, aortic endothelial dysfunction and vascular remodeling in fructose-fed hypertensive rats",
+     "doi": "10.1038/hr.2012.124",
+     "pmid": "22895064",
+     "ref": "ref-11"
+    },
+    {
+     "title": "Combination with Red ginseng and Polygoni Multiflori ameliorates high fructose diet induced metabolic syndrome",
+     "doi": "10.1186/s12906-016-1063-7",
+     "pmid": "26961224",
+     "ref": "ref-32"
+    },
+    {
+     "title": "Fermented red ginseng potentiates improvement of metabolic dysfunction in metabolic syndrome rat models",
+     "doi": "10.3390/nu8060369",
+     "pmid": "27322312",
+     "ref": "ref-33"
+    },
+    {
+     "title": "The role of the baroreflex and parasympathetic nervous system in fructose-induced cardiac and metabolic alterations",
+     "doi": "10.1038/s41598-018-29336-3",
+     "pmid": "30030527",
+     "ref": "ref-16"
+    },
+    {
+     "title": "Metabolic syndrome and hypertension resulting from fructose enriched diet in wistar rats",
+     "doi": "10.1155/2017/2494067",
+     "pmid": "28497040",
+     "ref": "ref-17"
+    },
+    {
+     "title": "Beneficial effect of genistein on lowering blood pressure and kidney toxicity in fructose-fed hypertensive rats",
+     "doi": "10.1017/S0007114512003819",
+     "pmid": "23116847",
+     "ref": "ref-46"
+    },
+    {
+     "title": "Ursodeoxycholic acid ameliorates fructose-induced metabolic syndrome in rats",
+     "doi": "10.1371/journal.pone.0106993",
+     "pmid": "25202970",
+     "ref": "ref-38"
+    },
+    {
+     "title": "Beneficial effects of calcitriol on hypertension, glucose intolerance, impairment of endothelium-dependent vascular relaxation, and visceral adiposity in fructose-fed hypertensive rats",
+     "doi": "10.1371/journal.pone.0119843",
+     "pmid": "25774877",
+     "ref": "ref-12"
+    },
+    {
+     "title": "Caffeine intake improves fructose-induced hypertension and insulin resistance by enhancing central insulin signaling",
+     "doi": "10.1161/HYPERTENSIONAHA.113.02272",
+     "pmid": "24366086",
+     "ref": "ref-66"
+    },
+    {
+     "title": "Effect of deuterium-depleted water on selected cardiometabolic parameters in fructose-treated rats",
+     "doi": "10.33549/physiolres.933440",
+     "pmid": "27775425",
+     "ref": "ref-50"
+    },
+    {
+     "title": "CX3CR1-microglia mediates neuroinflammation and blood pressure regulation in the nucleus tractus solitarii of fructose-induced hypertensive rats",
+     "doi": "10.1186/s12974-020-01857-7",
+     "pmid": "32532282",
+     "ref": "ref-23"
+    },
+    {
+     "title": "Anti-hypertensive effect of abelmoschus esculentus (Okra) seed extracts in fructose-induced hypertensive rats",
+     "ref": "ref-44"
+    },
+    {
+     "title": "Therapeutic effects of tender coconut water on oxidative stress in fructose fed insulin resistant hypertensive rats",
+     "doi": "10.1016/S1995-7645(12)60038-8",
+     "pmid": "22449517",
+     "ref": "ref-4"
+    },
+    {
+     "title": "Effect of the aqueous extract of Catharanthus roseus leaves against hypertention induced by fructose in rats",
+     "doi": "10.22271/tpi.2020.v9.i9a.5170",
+     "ref": "ref-67"
+    },
+    {
+     "title": "Hyperuricemia inhibition protects SD rats against fructose-induced obesity hypertension via modulation of inflammation and renin-angiotensin system in adipose tissue",
+     "doi": "10.1055/a-1023-6710",
+     "pmid": "31683330",
+     "ref": "ref-70"
+    },
+    {
+     "title": "Cardiovascular effects of high-fructose intake in rats with nitric oxide deficiency",
+     "doi": "10.2478/intox-2014-0022",
+     "pmid": "26109894",
+     "ref": "ref-69"
+    },
+    {
+     "title": "Effect of salix tetraspermaroxbugh on fructose induced hypertension in rats",
+     "doi": "10.22159/ijpps.2017v9i9.18232",
+     "ref": "ref-63"
+    },
+    {
+     "title": "An experimental model to induce metabolic syndrome in rats. The fructose-enriched diet",
+     "ref": "ref-20"
+    },
+    {
+     "title": "Pharmacokinetic and pharmacodynamic properties of carvedilol in fructose hypertensive rats",
+     "doi": "10.3109/00498254.2011.604746",
+     "pmid": "21892881",
+     "ref": "ref-3"
+    },
+    {
+     "title": "The establishment of metabolic syndrome model by induction of fructose drinking water in male wistar rats",
+     "doi": "10.1155/2014/263897",
+     "pmid": "25045660",
+     "ref": "ref-40"
+    },
+    {
+     "title": "Renin inhibition improves metabolic syndrome, and reduces angiotensin II levels and oxidative stress in visceral fat tissues in fructose-fed rats",
+     "doi": "10.1371/journal.pone.0180712",
+     "pmid": "28700686",
+     "ref": "ref-10"
+    },
+    {
+     "title": "Aqueous extract of large cardamom inhibits vascular damage, oxidative stress, and metabolic changes in fructose-fed hypertensive rats",
+     "doi": "10.1080/10641963.2021.1925682",
+     "pmid": "34281445",
+     "ref": "ref-29"
+    }
+   ],
+   "main_conclusion": {
+    "outcome": "systolic blood pressure of fructose-fed rats compared with controls",
+    "direction": "harm"
+   },
+   "note": "An animal-physiology review: 24 studies listed in Table 1 (22 with DOI), one outcome (systolic blood pressure) with a clear direction (raised by fructose); studies published 2010–2022. Selection search (2026-11-09, model-free, the kernel's sources and query syntax, publication years 2010–2022): europepmc: TITLE_ABS:(fructose AND (hypertension OR \"blood pressure\") AND (rat OR rats)); pubmed: fructose[tiab] AND (hypertension[tiab] OR \"blood pressure\"[tiab]) AND (rat[tiab] OR rats[tiab]). 919 records, 470 after deduplication by DOI, PMID and title (budget 3,000); it finds 19 of the 24 included studies; not found by it: “Anti-hypertensive effect of abelmoschus esculentus (Okra) seed extracts in fructose-induced hypertensive rats” (no DOI); “Effect of the aqueous extract of Catharanthus roseus leaves against hypertention induced by fructose in rats” (10.22271/tpi.2020.v9.i9a.5170); “Effect of salix tetraspermaroxbugh on fructose induced hypertension in rats” (10.22159/ijpps.2017v9i9.18232); “An experimental model to induce metabolic syndrome in rats. The fructose-enriched diet” (no DOI); “Renin inhibition improves metabolic syndrome, and reduces angiotensin II levels and oxidative stress in visceral fat tissues in fructose-fed rats” (10.1371/journal.pone.0180712).",
+   "search": {
+    "searches": [
+     {
+      "source": "europepmc",
+      "query": "TITLE_ABS:(fructose AND (hypertension OR \"blood pressure\") AND (rat OR rats))"
+     },
+     {
+      "source": "pubmed",
+      "query": "fructose[tiab] AND (hypertension[tiab] OR \"blood pressure\"[tiab]) AND (rat[tiab] OR rats[tiab])"
+     }
+    ],
+    "date_from": 2010,
+    "date_to": 2022,
+    "records": 919,
+    "deduplicated": 470,
+    "included_found": 19,
+    "retrieved": "2026-11-09"
+   },
+   "provenance": {
+    "review_url": "https://europepmc.org/article/PMC/PMC12721104",
+    "included_from": "Table 1 (summary of the 24 studies included in the systematic review and meta-analysis) (Europe PMC full text: https://www.ebi.ac.uk/europepmc/webservices/rest/PMC12721104/fullTextXML)",
+    "retrieved": "2026-11-09"
+   }
+  },
+  {
+   "id": "tfa-heated-oils",
+   "pmcid": "PMC9002916",
+   "doi": "10.3390/nu14071489",
+   "title": "Influence of Heating during Cooking on Trans Fatty Acid Content of Edible Oils: A Systematic Review and Meta-Analysis",
+   "domain": "chemistry",
+   "question": "how heating edible oils during cooking (heating, frying, baking) at different temperatures changes their trans fatty acid content",
+   "pico": {
+    "population": "edible cooking oils and fats in experimental studies",
+    "intervention": "heating or frying above 200 °C",
+    "comparison": "unheated oil or oil heated at common cooking temperatures (below 200 °C)",
+    "outcome": "trans fatty acid content (% of total fatty acids)"
+   },
+   "date_from": null,
+   "date_to": 2020,
+   "included": [
+    {
+     "title": "Monitoring of quality and stability characteristics and fatty acid compositions of refined olive and seed oils during repeated pan- and deep-frying using GC, FT-NIRS, and chemometrics",
+     "doi": "10.1021/jf503146f",
+     "pmid": "25264922",
+     "ref": "B11-nutrients-14-01489"
+    },
+    {
+     "title": "Analysis of trans fat in edible oils with cooking process",
+     "doi": "10.5487/TR.2015.31.3.307",
+     "pmid": "26483890",
+     "ref": "B13-nutrients-14-01489"
+    },
+    {
+     "title": "Determination of unsaturation grade and trans isomers generated during thermal oxidation of edible oils and fats by FTIR",
+     "doi": "10.1016/S0022-2860(98)00937-5",
+     "ref": "B16-nutrients-14-01489"
+    },
+    {
+     "title": "Formation of trans fatty acids in edible oils during the frying and heating process",
+     "doi": "10.1016/j.foodchem.2010.05.048",
+     "ref": "B17-nutrients-14-01489"
+    },
+    {
+     "title": "Formation of trans fatty acids during the frying of chicken fillet in corn oil",
+     "doi": "10.3109/09637486.2013.858237",
+     "pmid": "24575785",
+     "ref": "B18-nutrients-14-01489"
+    },
+    {
+     "title": "The impact of technical cashew nut shell liquid on thermally-induced trans isomers in edible oils",
+     "doi": "10.1007/s13197-015-2147-y",
+     "pmid": "27570273",
+     "ref": "B19-nutrients-14-01489"
+    },
+    {
+     "title": "Effect of traditional Chinese cooking methods on fatty acid profiles of vegetable oils",
+     "doi": "10.1016/j.foodchem.2017.04.084",
+     "pmid": "28530614",
+     "ref": "B20-nutrients-14-01489"
+    },
+    {
+     "title": "Factors affecting the formation of elaidic acid in syrian edible oils during frying with home conditions",
+     "doi": "10.5958/0974-360X.2019.00945.4",
+     "ref": "B21-nutrients-14-01489"
+    },
+    {
+     "title": "Analysis and formation of trans fatty acids in corn oil during the heating process",
+     "doi": "10.1007/s11746-011-1974-x",
+     "ref": "B22-nutrients-14-01489"
+    },
+    {
+     "title": "Fatty acid profile of mero (Epinephelus morio) raw and processed oil captured in the Yucatan Peninsula, Mexico",
+     "doi": "10.3305/nh.2015.31.2.7735",
+     "pmid": "25617583",
+     "ref": "B23-nutrients-14-01489"
+    },
+    {
+     "title": "Analysis and formation of trans fatty acids in hydrogenated soybean oil during heating",
+     "doi": "10.1016/j.foodchem.2006.10.069",
+     "ref": "B15-nutrients-14-01489"
+    },
+    {
+     "title": "Effect of heating/reheating of fats/oils, as used by Asian Indians, on trans fatty acid formation",
+     "doi": "10.1016/j.foodchem.2016.06.021",
+     "pmid": "27374582",
+     "ref": "B24-nutrients-14-01489"
+    },
+    {
+     "title": "Determination of thermally induced trans-fatty acids in soybean oil by attenuated total reflectance fourier transform infrared spectroscopy and gas chromatography analysis",
+     "doi": "10.1021/jf3033599",
+     "pmid": "23025355",
+     "ref": "B25-nutrients-14-01489"
+    },
+    {
+     "title": "Thermally induced isomerization of linoleic acid in soybean oil",
+     "doi": "10.1016/j.chemphyslip.2012.12.003",
+     "pmid": "23261796",
+     "ref": "B26-nutrients-14-01489"
+    },
+    {
+     "title": "Formation of trans fatty acids in chicken legs during frying",
+     "doi": "10.1080/09637480701580645",
+     "pmid": "18979617",
+     "ref": "B27-nutrients-14-01489"
+    },
+    {
+     "title": "Formation of fatty acid geometrical isomers and of cyclic fatty acid monomers during the finish frying of frozen prefried potatoes",
+     "doi": "10.1016/0963-9969(95)00024-0",
+     "ref": "B28-nutrients-14-01489"
+    },
+    {
+     "title": "Changes in the characteristics and composition of oils during deep-fat frying",
+     "doi": "10.1007/BF02523926",
+     "ref": "B29-nutrients-14-01489"
+    },
+    {
+     "title": "Influence of natural antioxidants on the formation of trans-fatty-acid isomers during heat treatment of sunflower oil",
+     "doi": "10.1002/ejlt.200900231",
+     "ref": "B30-nutrients-14-01489"
+    },
+    {
+     "title": "Quality changes in trans and trans free fats/oils and products during frying",
+     "doi": "10.1007/s00217-010-1225-7",
+     "ref": "B31-nutrients-14-01489"
+    },
+    {
+     "title": "Trans fatty acid production in deep fat frying of frozen foods with different oils and frying modalities",
+     "doi": "10.1016/S0271-5317(00)00150-0",
+     "ref": "B32-nutrients-14-01489"
+    },
+    {
+     "title": "Analysis of trans fatty acids in deep frying oils by three different approaches",
+     "doi": "10.1016/j.foodchem.2009.02.083",
+     "ref": "B33-nutrients-14-01489"
+    },
+    {
+     "title": "Olive oil stability under deep-frying conditions",
+     "doi": "10.1016/j.fct.2010.07.036",
+     "pmid": "20678538",
+     "ref": "B34-nutrients-14-01489"
+    },
+    {
+     "title": "Nonhydrogenated cottonseed oil can be used as a deep fat frying medium to reduce trans-fatty acid content in french fries",
+     "doi": "10.1016/j.jada.2005.09.029",
+     "pmid": "16321599",
+     "ref": "B35-nutrients-14-01489"
+    },
+    {
+     "title": "Effect of heating oils and fats in containers of different materials on their trans fatty acid content",
+     "doi": "10.1002/jsfa.5638",
+     "pmid": "22692828",
+     "ref": "B36-nutrients-14-01489"
+    },
+    {
+     "title": "Perfil de ácidos graxos trans de óleo e gordura hidrogenada de soja no processo de fritura",
+     "doi": "10.1590/S0101-20612004000100006",
+     "ref": "B37-nutrients-14-01489"
+    },
+    {
+     "title": "Nutritional quality of fresh and heated Aleppo pine (Pinus halepensis Mill.) seed oil: Trans-fatty acid isomers profiles and antioxidant properties",
+     "doi": "10.1007/s13197-012-0664-5",
+     "pmid": "25114334",
+     "ref": "B38-nutrients-14-01489"
+    },
+    {
+     "title": "Comparison of the stability of palm olein and a palm olein/canola oil blend during deep-fat frying of chicken nuggets and French fries",
+     "doi": "10.1111/j.1365-2621.2011.02627.x",
+     "ref": "B39-nutrients-14-01489"
+    },
+    {
+     "title": "Effect of frying conditions on the physico-chemical properties of rice bran oil and its blended oil",
+     "doi": "10.1007/s13197-011-0602-y",
+     "pmid": "24876639",
+     "ref": "B40-nutrients-14-01489"
+    },
+    {
+     "title": "Degradation and nutritional quality changes of oil during frying",
+     "doi": "10.1007/s11746-008-1328-5",
+     "ref": "B41-nutrients-14-01489"
+    },
+    {
+     "title": "Effects of frying oils’ fatty acids profile on the formation of polar lipids components and their retention in French fries over deep-frying process",
+     "doi": "10.1016/j.foodchem.2017.05.100",
+     "pmid": "28764095",
+     "ref": "B42-nutrients-14-01489"
+    },
+    {
+     "title": "Thermal deterioration of virgin olive oil monitored by ATR-FTIR analysis of trans content",
+     "doi": "10.1021/jf9012828",
+     "pmid": "19817451",
+     "ref": "B12-nutrients-14-01489"
+    },
+    {
+     "title": "The analysis of trans fatty acid profiles in deep frying palm oil and chicken fillets with an improved gas chromatography method",
+     "doi": "10.1016/j.foodcont.2014.04.010",
+     "ref": "B43-nutrients-14-01489"
+    },
+    {
+     "title": "Geometrical isomerization of linolenic acid during heat treatment of vegetable oils",
+     "doi": "10.1007/BF02541633",
+     "ref": "B44-nutrients-14-01489"
+    }
+   ],
+   "main_conclusion": {
+    "outcome": "trans fatty acid content of edible oils heated above 200 °C",
+    "direction": "harm"
+   },
+   "note": "The food-chemistry review: experimental studies of trans-fatty-acid formation in heated oils, every included study with a DOI; its main conclusion has a clear direction above 200 °C (heating raises trans fatty acids; below 200 °C no appreciable change). 33 studies, a little over the preferred 30: PMC holds few chemistry systematic reviews that list their included studies. Selection search (2026-11-09, model-free, the kernel's sources and query syntax, publication years inception–2020): europepmc: TITLE_ABS:((\"trans fatty acids\" OR \"trans fatty acid\" OR \"trans isomers\" OR \"trans fat\" OR elaidic OR isomerization) AND (frying OR fried OR heating OR heated OR cooking OR thermal) AND (oil OR oils OR fat OR fats)); openalex: (\"trans fatty acids\" OR \"trans isomers\" OR elaidic) AND (frying OR \"heat treatment\" OR heating) AND (\"vegetable oil\" OR \"edible oil\" OR \"frying oil\" OR \"cooking oil\"). 2476 records, 2336 after deduplication by DOI, PMID and title (budget 3,000); it finds 26 of the 33 included studies; not found by it: “Formation of fatty acid geometrical isomers and of cyclic fatty acid monomers during the finish frying of frozen prefried potatoes” (10.1016/0963-9969(95)00024-0); “Changes in the characteristics and composition of oils during deep-fat frying” (10.1007/BF02523926); “Trans fatty acid production in deep fat frying of frozen foods with different oils and frying modalities” (10.1016/S0271-5317(00)00150-0); “Olive oil stability under deep-frying conditions” (10.1016/j.fct.2010.07.036); “Comparison of the stability of palm olein and a palm olein/canola oil blend during deep-fat frying of chicken nuggets and French fries” (10.1111/j.1365-2621.2011.02627.x); “Effects of frying oils’ fatty acids profile on the formation of polar lipids components and their retention in French fries over deep-frying process” (10.1016/j.foodchem.2017.05.100); “Thermal deterioration of virgin olive oil monitored by ATR-FTIR analysis of trans content” (10.1021/jf9012828).",
+   "search": {
+    "searches": [
+     {
+      "source": "europepmc",
+      "query": "TITLE_ABS:((\"trans fatty acids\" OR \"trans fatty acid\" OR \"trans isomers\" OR \"trans fat\" OR elaidic OR isomerization) AND (frying OR fried OR heating OR heated OR cooking OR thermal) AND (oil OR oils OR fat OR fats))"
+     },
+     {
+      "source": "openalex",
+      "query": "(\"trans fatty acids\" OR \"trans isomers\" OR elaidic) AND (frying OR \"heat treatment\" OR heating) AND (\"vegetable oil\" OR \"edible oil\" OR \"frying oil\" OR \"cooking oil\")"
+     }
+    ],
+    "date_from": null,
+    "date_to": 2020,
+    "records": 2476,
+    "deduplicated": 2336,
+    "included_found": 26,
+    "retrieved": "2026-11-09"
+   },
+   "provenance": {
+    "review_url": "https://europepmc.org/article/PMC/PMC9002916",
+    "included_from": "the 33 studies of Supplementary Table S1 (characteristics of included studies), cited in the main text's Study Characteristics as references 11–13 and 15–44; reference 45 (Sebedio 1988), which the supplement's reference list names in error, is not one of them: its Table S1 row 'Sebedio 1996' (peanut and soybean oil, potatoes) is reference 28 (Europe PMC full text: https://www.ebi.ac.uk/europepmc/webservices/rest/PMC9002916/fullTextXML)",
+    "retrieved": "2026-11-09"
+   }
+  },
+  {
+   "id": "ai-pulmonary-hypertension",
+   "pmcid": "PMC12835279",
+   "doi": "10.3389/frai.2025.1709489",
+   "title": "Comparative accuracy of artificial intelligence versus manual interpretation in detecting pulmonary hypertension across chest imaging modalities: a diagnostic test accuracy meta-analysis",
+   "domain": "cs",
+   "question": "whether artificial intelligence detects pulmonary hypertension on chest imaging (chest radiographs, echocardiography, CT, cardiac MRI) more accurately than manual interpretation",
+   "pico": {
+    "population": "patients assessed for pulmonary hypertension with chest imaging",
+    "intervention": "artificial-intelligence (machine-learning or deep-learning) image interpretation",
+    "comparison": "manual interpretation by clinicians",
+    "outcome": "diagnostic accuracy (AUC, sensitivity, specificity) for pulmonary hypertension"
+   },
+   "date_from": null,
+   "date_to": 2025,
+   "included": [
+    {
+     "title": "A machine learning approach for the prediction of pulmonary hypertension",
+     "doi": "10.1371/journal.pone.0224453",
+     "ref": "ref21"
+    },
+    {
+     "title": "A promising approach for screening pulmonary hypertension based on frontal chest radiographs using deep learning: a retrospective study",
+     "doi": "10.1371/journal.pone.0236378",
+     "ref": "ref40"
+    },
+    {
+     "title": "A lung graph model for the radiological assessment of chronic thromboembolic pulmonary hypertension in CT",
+     "doi": "10.1016/j.compbiomed.2020.103962",
+     "ref": "ref15"
+    },
+    {
+     "title": "Deep learning to predict elevated pulmonary artery pressure in patients with suspected pulmonary hypertension using standard chest X ray",
+     "doi": "10.1038/s41598-020-76359-w",
+     "ref": "ref18"
+    },
+    {
+     "title": "A machine learning cardiac magnetic resonance approach to extract disease features and automate pulmonary arterial hypertension diagnosis",
+     "doi": "10.1093/ehjci/jeaa001",
+     "ref": "ref38"
+    },
+    {
+     "title": "Deep learning for detection of exercise-induced pulmonary hypertension using chest X-ray images",
+     "doi": "10.3389/fcvm.2022.891703",
+     "ref": "ref19"
+    },
+    {
+     "title": "Diagnostic accuracy of an automated artificial intelligence derived right ventricular to left ventricular diameter ratio tool on CT pulmonary angiography to predict pulmonary hypertension at right heart catheterisation",
+     "doi": "10.1016/j.crad.2022.03.009",
+     "ref": "ref10"
+    },
+    {
+     "title": "Artificial intelligence-assisted diagnosis of congenital heart disease and associated pulmonary arterial hypertension from chest radiographs: a multi-reader multi-case study",
+     "doi": "10.1016/j.ejrad.2023.111277",
+     "ref": "ref11"
+    },
+    {
+     "title": "Automatic echocardiographic evaluation of the probability of pulmonary hypertension using machine learning",
+     "doi": "10.1002/pul2.12272",
+     "ref": "ref23"
+    },
+    {
+     "title": "Explanatory deep learning to predict elevated pulmonary artery pressure in children with ventricular septal defects using standard chest x-rays: a novel approach",
+     "doi": "10.3389/fcvm.2024.1330685",
+     "ref": "ref22"
+    },
+    {
+     "title": "Deep learning to detect pulmonary hypertension from the chest X-ray images of patients with systemic sclerosis",
+     "doi": "10.1536/ihj.24-111",
+     "ref": "ref37"
+    },
+    {
+     "title": "Artificial intelligence-based model for predicting pulmonary arterial hypertension on chest x-ray images",
+     "doi": "10.1186/s12890-024-02891-4",
+     "ref": "ref13"
+    }
+   ],
+   "main_conclusion": {
+    "outcome": "diagnostic accuracy for pulmonary hypertension of AI versus manual interpretation",
+    "direction": "benefit"
+   },
+   "note": "A computing-method evaluation published in Frontiers in Artificial Intelligence: 12 studies comparing machine-learning image interpretation with human reading, one outcome (diagnostic accuracy) with a clear direction (AI better); searched up to April 2025. Selection search (2026-11-09, model-free, the kernel's sources and query syntax, publication years inception–2025): europepmc: TITLE_ABS:((\"pulmonary hypertension\" OR \"pulmonary arterial hypertension\" OR \"pulmonary artery pressure\") AND (\"artificial intelligence\" OR \"deep learning\" OR \"machine learning\" OR \"neural network\")); pubmed: (\"pulmonary hypertension\"[tiab] OR \"pulmonary arterial hypertension\"[tiab] OR \"pulmonary artery pressure\"[tiab]) AND (\"artificial intelligence\"[tiab] OR \"deep learning\"[tiab] OR \"machine learning\"[tiab] OR \"neural network\"[tiab]). 753 records, 417 after deduplication by DOI, PMID and title (budget 3,000); it finds 12 of the 12 included studies.",
+   "search": {
+    "searches": [
+     {
+      "source": "europepmc",
+      "query": "TITLE_ABS:((\"pulmonary hypertension\" OR \"pulmonary arterial hypertension\" OR \"pulmonary artery pressure\") AND (\"artificial intelligence\" OR \"deep learning\" OR \"machine learning\" OR \"neural network\"))"
+     },
+     {
+      "source": "pubmed",
+      "query": "(\"pulmonary hypertension\"[tiab] OR \"pulmonary arterial hypertension\"[tiab] OR \"pulmonary artery pressure\"[tiab]) AND (\"artificial intelligence\"[tiab] OR \"deep learning\"[tiab] OR \"machine learning\"[tiab] OR \"neural network\"[tiab])"
+     }
+    ],
+    "date_from": null,
+    "date_to": 2025,
+    "records": 753,
+    "deduplicated": 417,
+    "included_found": 12,
+    "retrieved": "2026-11-09"
+   },
+   "provenance": {
+    "review_url": "https://europepmc.org/article/PMC/PMC12835279",
+    "included_from": "Table 1 (baseline characteristics) of the review: 12 studies; DOIs read from the references' text (Europe PMC full text: https://www.ebi.ac.uk/europepmc/webservices/rest/PMC12835279/fullTextXML)",
+    "retrieved": "2026-11-09"
+   }
+  },
+  {
+   "id": "ai-prostate-mri",
+   "pmcid": "PMC12838035",
+   "doi": "10.3390/biomedicines14010020",
+   "title": "Comparison of Artificial Intelligence and Radiologists in MRI-Based Prostate Cancer Diagnosis: A Meta-Analysis of Accuracy and Effectiveness",
+   "domain": "cs",
+   "question": "how the diagnostic accuracy of artificial intelligence for clinically significant prostate cancer on MRI compares with that of radiologists",
+   "pico": {
+    "population": "men undergoing prostate MRI",
+    "intervention": "artificial-intelligence MRI reading",
+    "comparison": "radiologists reading with PI-RADS",
+    "outcome": "diagnostic accuracy (AUROC, sensitivity, specificity) for clinically significant prostate cancer"
+   },
+   "date_from": null,
+   "date_to": 2025,
+   "included": [
+    {
+     "title": "Artificial intelligence and radiologists in prostate cancer detection on MRI (PI-CAI): An international, paired, non-inferiority, confirmatory study",
+     "doi": "10.1016/S1470-2045(24)00220-1",
+     "pmid": "38876123",
+     "ref": "B9-biomedicines-14-00020"
+    },
+    {
+     "title": "Deep learning for fully automatic detection, segmentation, and Gleason grade estimation of prostate cancer in multiparametric magnetic resonance images",
+     "doi": "10.1038/s41598-022-06730-6",
+     "pmid": "35194056",
+     "ref": "B10-biomedicines-14-00020"
+    },
+    {
+     "title": "A multicenter study of artificial intelligence-aided software for detecting visible clinically significant prostate cancer on mpMRI",
+     "doi": "10.1186/s13244-023-01421-w",
+     "pmid": "37121983",
+     "ref": "B11-biomedicines-14-00020"
+    },
+    {
+     "title": "AI-powered prostate cancer detection: A multi-centre, multi-scanner validation study",
+     "doi": "10.1007/s00330-024-11323-0",
+     "pmid": "40016318",
+     "ref": "B12-biomedicines-14-00020"
+    },
+    {
+     "title": "Assessment of a fully-automated diagnostic AI software in prostate MRI: Clinical evaluation and histopathological correlation",
+     "doi": "10.1016/j.ejrad.2024.111790",
+     "pmid": "39520837",
+     "ref": "B13-biomedicines-14-00020"
+    },
+    {
+     "title": "Fully Automated Deep Learning Model to Detect Clinically Significant Prostate Cancer at MRI",
+     "doi": "10.1148/radiol.232635",
+     "pmid": "39105640",
+     "ref": "B14-biomedicines-14-00020"
+    },
+    {
+     "title": "Prostate cancer risk assessment and avoidance of prostate biopsies using fully automatic deep learning in prostate MRI: Comparison to PI-RADS and integration with clinical data in nomograms",
+     "doi": "10.1007/s00330-024-10818-0",
+     "pmid": "38955845",
+     "ref": "B15-biomedicines-14-00020"
+    },
+    {
+     "title": "Detection and PI-RADS classification of focal lesions in prostate MRI: Performance comparison between a deep learning-based algorithm (DLA) and radiologists with various levels of experience",
+     "doi": "10.1016/j.ejrad.2021.109894",
+     "pmid": "34388625",
+     "ref": "B16-biomedicines-14-00020"
+    },
+    {
+     "title": "PI-RADS(AI): Introducing a new human-in-the-loop AI model for prostate cancer diagnosis based on MRI",
+     "doi": "10.1038/s41416-022-02137-2",
+     "pmid": "36599915",
+     "ref": "B17-biomedicines-14-00020"
+    },
+    {
+     "title": "Predicting clinically significant prostate cancer with a deep learning approach: A multicentre retrospective study",
+     "doi": "10.1007/s00259-022-06036-9",
+     "pmid": "36409317",
+     "ref": "B18-biomedicines-14-00020"
+    }
+   ],
+   "main_conclusion": {
+    "outcome": "diagnostic accuracy for clinically significant prostate cancer of AI versus radiologists",
+    "direction": "no_difference"
+   },
+   "note": "A second computing-method evaluation with the other direction (AI comparable to radiologists): 10 studies, all with DOI and PMID, one outcome; the review searched PubMed only (to 14 March 2025), a kernel source. Selection search (2026-11-09, model-free, the kernel's sources and query syntax, publication years inception–2025): pubmed: (\"artificial intelligence\" OR \"machine learning\" OR \"deep learning\" OR algorithm) AND (\"prostatic neoplasms\" OR \"prostate cancer\") AND (\"magnetic resonance imaging\" OR MRI) AND (radiologist OR radiologists OR \"PI-RADS\"). 559 records, 559 after deduplication by DOI, PMID and title (budget 3,000); it finds 10 of the 10 included studies.",
+   "search": {
+    "searches": [
+     {
+      "source": "pubmed",
+      "query": "(\"artificial intelligence\" OR \"machine learning\" OR \"deep learning\" OR algorithm) AND (\"prostatic neoplasms\" OR \"prostate cancer\") AND (\"magnetic resonance imaging\" OR MRI) AND (radiologist OR radiologists OR \"PI-RADS\")"
+     }
+    ],
+    "date_from": null,
+    "date_to": 2025,
+    "records": 559,
+    "deduplicated": 559,
+    "included_found": 10,
+    "retrieved": "2026-11-09"
+   },
+   "provenance": {
+    "review_url": "https://europepmc.org/article/PMC/PMC12838035",
+    "included_from": "Table 1 (baseline characteristics of included studies) of the review: 10 studies (Europe PMC full text: https://www.ebi.ac.uk/europepmc/webservices/rest/PMC12838035/fullTextXML)",
+    "retrieved": "2026-11-09"
+   }
+  }
+ ]
+}

@@ -857,6 +857,41 @@ def eval_stats(write_config: bool = typer.Option(False, "--write-config", help="
         raise typer.Exit(1)
 
 
+@eval_app.command("sr-repro")
+def eval_sr_repro(entry: str | None = typer.Option(None, "--entry", help="One review of the set (default: all six)"),
+                  write_report: bool = typer.Option(False, "--write-report",
+                                                    help="Write sr-repro-<date>.md and .json to --out"),
+                  out: Path = EVAL_OUT_OPT) -> None:
+    """The systematic-review reproduction set (spec §10): seed each review's project srrepro-<id> in rk serve (its
+    question frozen as the RQ), run it until export or continue its run, and score it: recall of the review's
+    included studies, whether the main conclusion's direction agrees (the judges' vote) and the hard gates. Runs go
+    on in rk serve: run this again to follow them and to score."""
+    from rk.eval.sr_repro import load_manifest, report_row
+    from rk.eval.sr_repro import write_report as write
+
+    entries = load_manifest()
+    chosen = [e for e in entries if entry in (None, e.id)]
+    if not chosen:
+        typer.secho(f"no entry {entry!r} in the reproduction set; its entries: {', '.join(e.id for e in entries)}",
+                    fg="red", err=True)
+        raise typer.Exit(2)
+    rows = []
+    for e in chosen:
+        run = _call("rk_sr_repro_run", {"entry": e.id}, write=True)
+        got = _call("rk_sr_repro_score", {"entry": e.id}, write=True)
+        rows.append(report_row(e, run, got))
+        agrees = {True: "agrees", False: "disagrees", None: "not judged"}[got["conclusion_direction_agrees"]]
+        typer.echo(f"{e.id} ({e.domain}, {len(e.included)} included): {run['project']} {run['action']} "
+                   f"(run {run['run_id'] or '-'}: {run['run_status'] or '-'}, stage {run['stage'] or 'done'}); "
+                   f"recall {got['recall_included']:.2f} ({len(got['matched'])}/{got['included_total']}); "
+                   f"direction {got['expected_direction']} -> {got['direction'] or '-'} ({agrees}"
+                   f"{': ' + got['direction_note'] if got['direction_note'] else ''}); "
+                   f"gates {'passed' if got['gates_passed'] else 'not passed'}")
+    if write_report:
+        md, js = write(rows, out)
+        typer.echo(f"report: {md} and {js}")
+
+
 # ---------------- support check (runs inside rk serve; agentic CLIs reach their tools via rk mcp) ----------------
 support_app = typer.Typer(help="Claim support checks", no_args_is_help=True)
 app.add_typer(support_app, name="support")
