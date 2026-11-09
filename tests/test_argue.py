@@ -274,6 +274,42 @@ def test_argument_round_stores_claims_edges_and_verifies(env):
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
 
 
+def test_an_answer_to_an_objection_the_turn_already_conceded_is_refused_not_a_crash(env):
+    """Task 9 (melatonin): the Arguer answers objection A again with a new claim, which withdraws A's earlier response
+    claim P and concedes the objection B on P; the same turn also answers B. That answer is refused (noted), and the
+    stage goes on: it never crashes on the final concession."""
+    _, ps, _ = env
+    _synthesize(env)
+    first = "The trial enrolled people over 80."
+    again = "Older people were enrolled in a cohort of patients."
+    on_reason = {"category": "problem", "priority": 2, "text": "Which ages?"}
+
+    def a_on_reason(inputs):
+        (r,) = role(inputs, "reason")
+        return {"target_id": r, **on_reason}
+
+    def b_on_p(inputs):
+        (p,) = [c["id"] for c in inputs["argument"]["claims"] if c["text"] == first]
+        return {"target_id": p, "category": "problem", "priority": 2, "text": "Over 80 is not what the trial says."}
+
+    def round3(inputs, o):
+        if o["text"] == on_reason["text"]:
+            return {"objection_id": o["id"], "status": "responded", "claim": claim(inputs, again, "cohort")}
+        return {"objection_id": o["id"], "status": "conceded", "note": "It does not."}
+
+    ex = _exec([draft(), responses(first), answer_each(round3), answer_each(lambda i, o: None)],
+               [critique(objections=[a_on_reason]), critique(objections=[b_on_p]), critique(), critique()],
+               uncertain=(first,))
+    w = ArgueWorker()
+    w.run(_ctx(env, ex))  # no ValueError from the final concession
+    by_text = {o["text"]: o for o in _objections(ps)}
+    b = by_text["Over 80 is not what the trial says."]
+    assert b["status"] == "conceded" and "replaced and withdrawn" in b["note"]  # the kernel's concession stands
+    refused = [r for n in argue_notes(ps, 1, kind="draft") for r in n["refused"]]
+    assert any(b["id"] in r and "not an open objection" in r for r in refused), refused
+    assert by_text[on_reason["text"]]["status"] == "responded"
+
+
 def test_failed_warrant_test_becomes_priority1_objection(env):
     _, ps, _ = env
     _synthesize(env)

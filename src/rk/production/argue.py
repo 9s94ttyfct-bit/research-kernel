@@ -1229,7 +1229,9 @@ class ArgueWorker:
             if previous and previous != cid and previous in before and not _withdrawn(ps, previous):
                 svc.withdraw_claim(previous, reason=f"replaced by the Arguer's new answer to {o['id']} "
                                                     f"({cid or rsp.status})", actor=ctx.actor)
-                self._concede_gone(ctx, previous, f"conceded: the claim {previous} was replaced and withdrawn")
+                gone = self._concede_gone(ctx, previous, f"conceded: the claim {previous} was replaced and withdrawn")
+                for x in gone:  # settled here: a later answer to them in this turn is refused, as not open
+                    answerable.pop(x, None)
 
     def _drop_link(self, ctx: StageContext, link: str, objection_ids: list[str], why: str) -> list[str]:
         """Drop the reason link ``link`` from the argument (``why``, with the ``objection_ids`` that drop it): every
