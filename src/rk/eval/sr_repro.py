@@ -455,8 +455,9 @@ def final_main_claim(ps: ProjectStore) -> dict | None:
 
 
 def objection_sources(ps: ProjectStore) -> set[str]:
-    """The library items any objection of the project cites as its ``source_id``, in any argue attempt: one conceded
-    in an earlier attempt is not carried into the next (argue imports only open ones), yet it shaped the claim."""
+    """The library items any objection of the project cites as its ``source_id`` (argue's, in any attempt, or one
+    added in a chat with ``rk_objection_add``): one conceded in an earlier attempt is not carried into the next (argue
+    imports only open ones), yet it shaped the claim."""
     out = set()
     for r in ps.db.execute("SELECT data FROM objections"):
         src = json.loads(r["data"]).get("source_id")
@@ -481,7 +482,8 @@ def score(ps: ProjectStore, entry: Entry, *, ctx: StageContext | None = None) ->
     the direction decided and why none was, whether export passed and the protocol's search window. Leakage:
     ``review_included`` (the reproduced review is one of the project's included studies), ``claim_from_review``
     (an evidence note of the main claim or of its reasons comes from it) and ``objection_from_review`` (an objection
-    of the project, in any argue attempt, cites it as its source: the Skeptic may search outside the window) each make
+    of the project, argue's in any attempt or one added in a chat, cites it as its source: the Skeptic may search
+    outside the window) each make
     ``direction_compromised`` the reason the direction does not count; ``review_in_library`` (retrieved, perhaps
     unused) is information only. The
     direction is judged only with ``ctx`` (the judges' executor; its ``stage`` and ``attempt`` key the recorded
