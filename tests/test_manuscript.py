@@ -97,6 +97,9 @@ def test_et_al_ends_a_sentence_before_a_capitalised_start():
     out = parse_section("This was shown by Smith et al. Melatonin cures delirium [[clm:clm_A]].")
     assert [s.text for s in out] == ["This was shown by Smith et al.", "Melatonin cures delirium [[clm:clm_A]]."]
     assert len(parse_section("Smith et al. found it, as did Li et al. (2020) [[clm:clm_A]].")) == 1
+    # a sentence that starts with a digit splits after et al. too (as everywhere else)
+    assert [s.text for s in parse_section("Shown by Smith et al. 12 trials ran [[clm:clm_A]].")] == [
+        "Shown by Smith et al.", "12 trials ran [[clm:clm_A]]."]
 
 
 # ---- fix round 1: tables and captions, markers in the source ----
