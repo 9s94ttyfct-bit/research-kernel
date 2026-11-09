@@ -121,10 +121,14 @@ def _cite_key(item: Item | ItemIn, used: set[str]) -> str:
     return key
 
 
-def export_bibtex(items: Sequence[Item | ItemIn]) -> str:
+def export_bibtex(items: Sequence[Item | ItemIn], *, keys: Sequence[str] | None = None) -> str:
+    """BibTeX of ``items``. ``keys``: each item's cite key, in order (the export passes the item ids, so ``refs.bib``
+    matches the citations of ``paper.md``); by default author, year and the first title word."""
+    if keys is not None and len(keys) != len(items):
+        raise ValueError("one key per item")
     lib = bibtexparser.Library()
     used: set[str] = set()
-    for it in items:
+    for n, it in enumerate(items):
         fields: list[Field] = [Field("title", it.title)]
         if it.creators:
             fields.append(Field("author", " and ".join(f"{c.family}, {c.given}" if c.given else c.family for c in it.creators)))
@@ -143,7 +147,7 @@ def export_bibtex(items: Sequence[Item | ItemIn]) -> str:
         entry_type = _BIB_TYPE[it.item_type]
         if it.item_type == "dataset":
             fields.append(Field("type", "dataset"))
-        lib.add(Entry(entry_type, _cite_key(it, used), fields))
+        lib.add(Entry(entry_type, keys[n] if keys is not None else _cite_key(it, used), fields))
     return bibtexparser.write_string(lib)
 
 

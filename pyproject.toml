@@ -52,5 +52,6 @@ markers = [
     "live: hits the real network",
     "llm: calls a language model (default test model: omp_gateway openai-codex/gpt-6-luna)",
     "browser: launches headless Playwright Chromium against local fixture sites (skipped when Chromium is missing)",
+    "binaries: runs pandoc and tectonic (skipped when one is missing or tectonic's package bundle is not cached)",
 ]
 addopts = "-m 'not live and not llm' -q"

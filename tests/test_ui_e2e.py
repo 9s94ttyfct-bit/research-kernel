@@ -340,7 +340,7 @@ def test_run_controls_follow_state(page, workbench_env):
     chips = page.locator("ol.stages > li")
     chips.first.wait_for()
     assert chips.count() == len(stages_for("critical_review"))
-    assert page.locator('ol.stages > li[data-status="plan5"]').count() == 1  # every stage after audit
+    assert page.locator('ol.stages > li[data-status="plan5"]').count() == 0  # every stage has a worker
     assert page.get_by_role("button", name="Pause run").count() == 0
     page.get_by_role("button", name="Start D2 run until topics").click()
     page.get_by_role("button", name="Pause run").wait_for()
