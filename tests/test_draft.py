@@ -224,6 +224,27 @@ def test_missing_support_takes_draft_to_argue(env):
     assert (out2.status, out2.to, out2.reason) == ("back_edge", "argue", out.reason) and not again.calls
 
 
+def test_a_section_that_already_went_back_to_argue_writes_without_what_it_lacks(env):
+    """Task 9: argue cannot always give what a section asks for (the included evidence has none). A section that
+    already sent the stage back to argue does not send it back again: its new missing_support is refused (noted, a
+    failed try), and the Writer is told what argue was already asked for and to state the gap as a limitation."""
+    _, ps, _ = env
+    _ready(env)
+    need = {"markdown": "", "missing_support": ["a claim on the bleeding risk of aspirin in older people"]}
+    w = DraftWorker()
+    assert w.run(_ctx(env, _writer([writes(), need]))).to == "argue"  # attempt 1: theme-1 asks argue once
+    ex = _writer([writes(), need, writes(), writes(), writes()])
+    out = w.run(_ctx(env, ex, attempt=2))  # argue ran again (it could not give the claim); draft attempt 2
+    assert out.status == "done", out.reason
+    assert _writer_sections(ex)[:3] == ["introduction", "theme-1", "theme-1"]
+    asked, retried = ex.of("writer", "SectionDraft")[1:3]
+    assert "bleeding risk" in asked["inputs"]["asked_of_argue"][0]
+    assert any("already asked argue" in f for f in retried["inputs"]["retry"]["failures"])
+    assert not draft_notes(ps, 2, kind="back_edge")
+    assert [v["verdict"]["ok"] for v in draft_versions(ps, "theme-1")] == [False, True]
+    assert w.gate(ps, 2).ok
+
+
 @pytest.mark.parametrize("env", [{"paper_type": "research_proposal"}], indirect=True)
 def test_proposal_missing_design_takes_draft_to_design(env):
     _ready(env)
