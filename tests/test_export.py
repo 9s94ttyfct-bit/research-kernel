@@ -7,13 +7,17 @@ tectonic's cached package bundle) is missing; the conversion and the package are
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
+import time
+import unicodedata
 import zipfile
 import zlib
 from dataclasses import replace
@@ -23,10 +27,12 @@ import pytest
 
 from rk.orchestrator.engine import default_workers
 from rk.orchestrator.graph import BACK_EDGES
+from rk.orchestrator.state import record_attempt
 from rk.production import export as export_mod
+from rk.production import figures
 from rk.production.artifacts import artifact
 from rk.production.audit import AuditWorker, cited_items
-from rk.production.draft import DraftWorker
+from rk.production.draft import DraftWorker, load_inputs
 from rk.production.export import (
     ExportWorker,
     build_package,
@@ -34,13 +40,14 @@ from rk.production.export import (
     export,
     to_pandoc_markdown,
 )
+from rk.production.figures import forest_tikz
 from rk.production.manuscript import latest_draft, write_draft
 from rk.production.revise import ReviseWorker
 from rk.production.sections import SectionSpec
 from rk.production.store import add_extraction, extractions
 from rk.production.synthesis import synthesis_claims
+from rk.stats import plots, version_files
 from rk.stats.effects import BINARY_FIELDS
-from rk.stats.plots import forest_tikz
 from rk.store.events import NewEvent
 from rk.verify.stats import make_forest_artifact, make_stats_artifact
 from tests.production_fakes import make_frozen_project, production_ctx
@@ -87,13 +94,14 @@ def _pool(env) -> tuple[str, str]:
     return stt, fig
 
 
-def audited(env) -> tuple[str, str]:
+def audited(env, note: str = "") -> tuple[str, str]:
     """argue passed; the pooled RR and its forest plot made; every section drafted (each ending with a sentence citing
-    both), revised without questions; the audit passed, approved by the P1 vote. Returns ``(stt, fig)``."""
+    both, with ``note`` before its markers), revised without questions; the audit passed, approved by the P1 vote.
+    Returns ``(stt, fig)``."""
     k, ps, lib = env
     _ready(env)
     stt, fig = _pool(env)
-    extra = f"The pooled risk ratio and its forest plot are shown [[stat:{stt}]] [[fig:{fig}]]."
+    extra = f"The pooled risk ratio and its forest plot are shown{note} [[stat:{stt}]] [[fig:{fig}]]."
     ex = Exec({("writer", "SectionDraft"): [writes(extra=extra)] * 10})
     out = DraftWorker().run(replace(production_ctx(k, ps, lib, ex, stage="draft"), guidance=""))
     assert out.status == "done", out.reason
@@ -110,6 +118,21 @@ def audited(env) -> tuple[str, str]:
 
 def _spec(sid: str, title: str) -> SectionSpec:
     return SectionSpec(id=sid, title=title, purpose="")
+
+
+def _crafted(env, monkeypatch, sections: list, question: str | None = None) -> None:
+    """The export reads ``sections`` (and ``question`` as the research question) as the audited manuscript."""
+    _, ps, _ = env
+    _ready(env)
+    s = load_inputs(ps)
+    if question is not None:
+        s = replace(s, question=question)
+    monkeypatch.setattr(export_mod, "audited_manuscript", lambda ps: (s, {}, sections))
+
+
+def _escaped(s: str) -> str:
+    """``s`` with markdown's markup characters backslash-escaped (the kernel's rule for free text)."""
+    return "".join(f"\\{c}" if c in "\\`*_[]{}<>|@$~^#&" else c for c in s)
 
 
 def _fake_render(out_dir: Path, refmap: dict) -> tuple[list[str], list[str]]:
@@ -230,6 +253,17 @@ def test_latex_and_docx_targets_carry_only_their_own_figure(env):
     pooled = next(t for t in texts if t.startswith("Pooled ("))
     assert pooled in tikz
     assert forest_tikz(a["values"]) == tikz  # deterministic
+    # the same axis: the tick labels and the axis label, in order
+    svg_ticks = re.findall(r'text-anchor="middle">([^<]+)</text>', svg)
+    tikz_ticks = re.findall(r"\\node\[anchor=north\] at \([^)]*\) \{([^}]*)\}", tikz)
+    assert len(svg_ticks) >= 3 and svg_ticks == tikz_ticks, (svg_ticks, tikz_ticks)
+
+
+def test_the_tikz_rendering_lives_outside_the_stats_version():
+    """``STATS_VERSION`` hashes ``rk/stats``: the export's rendering (it computes nothing) lives in
+    ``rk.production.figures``, so adding it leaves the validated stats version and every artifact as they were."""
+    assert not hasattr(plots, "forest_tikz")
+    assert Path(figures.__file__).resolve() not in {p.resolve() for p in version_files()}
 
 
 def test_inf_and_ck_markers_are_removed(env):
@@ -244,9 +278,11 @@ def test_inf_and_ck_markers_are_removed(env):
     assert "[[" not in md and [c["id"] for c in csl] == list(cited_items(ps, [f1]))
 
 
-def test_raw_output_in_a_section_is_refused(env):
+def test_raw_output_in_a_section_or_the_title_is_refused_or_escaped(env, monkeypatch):
     """Only the kernel's figures are raw LaTeX: a Writer's raw block or span (which the reader would pass to LaTeX,
-    e.g. to read a local file into the PDF) is refused, naming the section; a backslash in prose stays text."""
+    e.g. to read a local file into the PDF) is refused, naming the section; a backslash in prose stays text. The title
+    (the research question, which an agent may have proposed) goes only into the kernel's metadata, every markup
+    character escaped."""
     _, ps, _ = env
     for raw in ("```{=latex}\n\\input{/etc/hosts}\n```\n", "See `\\input{x}`{= latex} here [[ck]].\n"):
         with pytest.raises(ValueError, match="section discussion holds a raw"):
@@ -254,6 +290,43 @@ def test_raw_output_in_a_section_is_refused(env):
     md, _, _ = to_pandoc_markdown(ps, [(_spec("discussion", "Discussion"), "A \\textbf{b} c [[ck]].\n")],
                                   target="latex")
     assert "A \\textbf{b} c." in md  # the reader (markdown-raw_tex) keeps it text
+    title = "Q `\\input{/etc/hosts}`{=latex} and $\\input{/etc/hosts}$ <b>x</b>"
+    monkeypatch.setattr(export_mod, "_render", _fake_render)
+    _crafted(env, monkeypatch, [(_spec("discussion", "Discussion"), "Text [[ck]].\n")], question=title)
+    res = export(ps)
+    assert res.ok, res.failures
+    out = ps.root / "artifacts/export"
+    for name in ("paper.md", "paper-latex.md"):
+        assert "input{" not in (out / name).read_text(encoding="utf-8"), name
+    meta = json.loads((out / "metadata.yaml").read_text(encoding="utf-8"))  # JSON is YAML
+    assert meta["title"] == _escaped(title)
+    assert set(meta) == {"title", "lang", "reference-section-title", "link-citations"}
+
+
+def test_the_ast_allow_list():
+    """Before pandoc renders, its AST may hold no math, no raw output but the kernel's own figure blocks, no image but
+    the kernel's figures and no metadata but the kernel's keys."""
+    def para(*inlines):
+        return {"t": "Para", "c": list(inlines)}
+
+    def image(src):
+        return {"t": "Image", "c": [["", [], []], [], [src, ""]]}
+
+    math = {"t": "Math", "c": [{"t": "InlineMath"}, "\\input{x}"]}
+    ast = {"pandoc-api-version": [1, 23],
+           "meta": {"title": {"t": "MetaInlines", "c": [{"t": "Str", "c": "T"}, math]},
+                    "csl": {"t": "MetaInlines", "c": [{"t": "Str", "c": "/etc/x.csl"}]}},
+           "blocks": [para(math), {"t": "RawBlock", "c": ["latex", "\\input{x}"]},
+                      {"t": "RawBlock", "c": ["latex", "KERNEL FIGURE"]}, para(image("/etc/hosts")),
+                      para(image("figures/fig_a.svg")), para({"t": "RawInline", "c": ["html", "<x>"]})]}
+    problems = export_mod.ast_problems(ast, raw={"KERNEL FIGURE"}, images={"figures/fig_a.svg"})
+    assert len(problems) == 6, problems
+    assert sum("math" in p for p in problems) == 2 and sum("raw" in p for p in problems) == 2
+    assert any("/etc/hosts" in p for p in problems) and any("csl" in p for p in problems)
+    assert not any("fig_a" in p or "KERNEL" in p for p in problems)
+    clean = {"meta": {"title": {"t": "MetaInlines", "c": [{"t": "Str", "c": "T"}]}},
+             "blocks": [{"t": "RawBlock", "c": ["latex", "KERNEL FIGURE\n"]}, para(image("figures/fig_a.svg"))]}
+    assert export_mod.ast_problems(clean, raw={"KERNEL FIGURE"}, images={"figures/fig_a.svg"}) == []
 
 
 def test_export_refuses_item_without_csl_metadata(env, monkeypatch):
@@ -296,6 +369,39 @@ def test_export_refuses_a_manuscript_changed_since_the_audit_or_not_approved(env
     res = export(ps)
     assert not res.ok and "manuscript changed since audit" in res.failures[0]
     assert f"conclusion v{v + 1}" in res.failures[0] and f"v{v}" in res.failures[0]
+
+
+def test_export_needs_the_audit_passed_now_and_removes_earlier_packages(env, monkeypatch):
+    _, ps, _ = env
+    monkeypatch.setattr(export_mod, "_render", _fake_render)
+    audited(env)
+    assert export(ps).ok
+    first = build_package(ps)
+    first.with_name("package-00000000.zip").write_bytes(b"an earlier package")
+    assert export(ps).ok
+    assert list((ps.root / "artifacts/export").glob("package-*.zip")) == []  # none looks current before packaging
+    # an audit run again (here: a new attempt, still running) keeps its old passed attempt, which no longer counts
+    record_attempt(ps, "audit", 2, run_id=None, guidance="", requested=None, actor="tester")
+    res = export(ps)
+    assert not res.ok and "audit has not passed" in res.failures[0], res.failures
+
+
+def test_a_timed_out_command_is_killed_with_the_processes_it_started(tmp_path):
+    r, err = export_mod._run(["sh", "-c", "sleep 30 & echo $! > child.pid; wait"], tmp_path, "sh", 1)
+    assert r is None and "timed out" in err, err
+    pid = int((tmp_path / "child.pid").read_text())
+    deadline = time.monotonic() + 5
+    try:
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.05)
+        pytest.fail(f"the child {pid} of the timed-out command still runs")
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
 
 
 # ---- pandoc + citeproc + tectonic ----
@@ -353,6 +459,67 @@ def test_pdf_docx_tex_are_produced(env, tmp_path):
     assert build_package(ps).is_file()
 
 
+SECRET = "SECRETLEAKTOKEN"
+
+
+def _pdf_text(pdf: Path, tex: Path) -> str:
+    """The PDF's text (``pdftotext``), else the LaTeX it was compiled from, NFKC-normalised and without whitespace
+    (math italic letters typeset a word as 𝑆𝐸𝐶 … with spaces)."""
+    tool = shutil.which("pdftotext")
+    text = tex.read_text(encoding="utf-8") if tool is None else subprocess.run(
+        [tool, str(pdf), "-"], capture_output=True, text=True, timeout=60, check=True).stdout
+    return "".join(unicodedata.normalize("NFKC", text).split())
+
+
+@pytest.mark.binaries
+@pytest.mark.parametrize("case", ["math", "title", "image", "yaml"])
+def test_writer_text_and_the_title_cannot_read_a_local_file_into_the_outputs(env, tmp_path, monkeypatch, case):
+    """Critical 1 of the review: dollar math, a raw attribute or math in the title, an image path and a YAML metadata
+    block in a section are rendered as inert text or refused; the file's content reaches no output."""
+    _binaries(tmp_path)
+    _, ps, _ = env
+    secret = tmp_path / "secret.tex"
+    secret.write_text(SECRET + "\n")
+    body, question = "Plain text [[ck]].\n", None
+    if case == "math":
+        body = f"Hello $\\input{{{secret}}}$ and $$\\input{{{secret}}}$$ world [[ck]].\n"
+    elif case == "title":
+        question = f"Q `\\input{{{secret}}}`{{=latex}} and $\\input{{{secret}}}$"
+    elif case == "image":
+        body = f"See ![x]({secret}) here [[ck]].\n"
+    else:
+        body = (f"---\nheader-includes: '$\\input{{{secret}}}$'\nreference-section-title: $\\input{{{secret}}}$\n"
+                f"csl: {secret}\n---\n\nPlain text [[ck]].\n")
+    _crafted(env, monkeypatch, [(_spec("discussion", "Discussion"), body)], question=question)
+    res = export(ps)
+    out = ps.root / "artifacts/export"
+    if case == "image":
+        assert not res.ok and any("image" in f and str(secret) in f for f in res.failures), res.failures
+        assert not any((out / n).exists() for n in OUTPUTS)
+    else:
+        assert res.ok, res.failures
+        assert SECRET not in _pdf_text(out / "paper.pdf", out / "paper.tex")
+    for name in OUTPUTS:
+        if (out / name).is_file():
+            for text in _texts((out / name).read_bytes()):
+                assert SECRET.encode() not in text, name
+
+
+@pytest.mark.binaries
+def test_a_path_written_in_a_section_is_refused_through_the_pdf_sources(marked, tmp_path):
+    """Review Important 2: a real PDF's body text is not plain bytes, so a path typeset into it is caught in the
+    sources the PDF is compiled from (``paper-latex.md``, ``paper.tex``, LaTeX-escaped there)."""
+    _binaries(tmp_path)
+    _, ps, _ = marked
+    audited(marked, note=f" (stored under `{ps.root}`)")
+    res = export(ps)
+    assert res.ok, res.failures
+    with pytest.raises(ValueError) as e:
+        build_package(ps)
+    for name in ("export/paper-latex.md", "export/paper.tex", "export/paper.md", "export/paper.docx"):
+        assert name in str(e.value), (name, str(e.value))
+
+
 # ---- the reproducible package ----
 def test_package_manifest_hashes_match_and_contains_no_secrets_or_paths(marked, monkeypatch):
     _, ps, _ = marked
@@ -373,7 +540,8 @@ def test_package_manifest_hashes_match_and_contains_no_secrets_or_paths(marked, 
         for name, sha in manifest["files"].items():
             assert hashlib.sha256(z.read(name)).hexdigest() == sha, name
         files = {n: z.read(n) for n in names}
-    assert {f"export/{n}" for n in ("paper.md", "paper-latex.md", "refs.json", "refs.bib", *OUTPUTS)} <= set(files)
+    assert {f"export/{n}" for n in ("paper.md", "paper-latex.md", "metadata.yaml", "preamble.tex", "refs.json",
+                                    "refs.bib", *OUTPUTS)} <= set(files)
     assert f"export/figures/{fig}.svg" in files
     assert {"disclosure.md", "protocol.json", "extraction.csv"} <= set(files)
     assert any(re.fullmatch(r"audit/report\.v\d+\.md", n) for n in files)
@@ -394,14 +562,13 @@ def test_package_manifest_hashes_match_and_contains_no_secrets_or_paths(marked, 
         for text in _texts(data):
             for needle in needles:
                 assert needle.encode() not in text, (name, needle)
-    # a rendered output that holds the project's path is refused, naming the file (also inside a docx or a PDF stream)
-    for out, leak in (("paper.tex", str(ps.root).encode()),
-                      ("paper.pdf", b"%PDF-1.5\nstream\n" + zlib.compress(str(ps.root).encode()) + b"\nendstream\n")):
-        good = (ps.root / "artifacts/export" / out).read_bytes()
-        (ps.root / "artifacts/export" / out).write_bytes(leak)
-        with pytest.raises(ValueError, match=re.escape(out)):
-            build_package(ps)
-        (ps.root / "artifacts/export" / out).write_bytes(good)
+    # a rendered output that holds the project's path is refused, naming the file (also inside a docx); a real PDF's
+    # body text is checked through the sources it is compiled from (test_a_path_written_in_a_section_…)
+    good = (ps.root / "artifacts/export/paper.tex").read_bytes()
+    (ps.root / "artifacts/export/paper.tex").write_bytes(str(ps.root).encode())
+    with pytest.raises(ValueError, match=re.escape("paper.tex")):
+        build_package(ps)
+    (ps.root / "artifacts/export/paper.tex").write_bytes(good)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("word/document.xml", f"<w:t>{Path.home()}</w:t>")
@@ -438,3 +605,17 @@ def test_export_worker_packages_and_gates_on_the_manifest(env, monkeypatch):
     out = w.run(replace(ctx, attempt=2))
     assert (out.status, out.to) == ("failed", None) and "bad input" in out.reason, (out.status, out.reason)
     assert w.degrade(ctx, ["x"]).status == "failed"
+
+
+def test_the_export_gate_fails_once_the_manuscript_changes_after_the_export(env, monkeypatch):
+    k, ps, lib = env
+    monkeypatch.setattr(export_mod, "_render", _fake_render)
+    audited(env)
+    w = ExportWorker()
+    assert w.run(replace(production_ctx(k, ps, lib, Exec({}), stage="export"), guidance="")).status == "done"
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    _, md = latest_draft(ps, "conclusion")
+    write_draft(ps, "conclusion", md + "\nA new sentence.\n", stage="revise", attempt=2, round=1, by_task=None,
+                actor="tester")
+    gate = w.gate(ps, 1)
+    assert not gate.ok and any("manuscript changed since audit" in f for f in gate.failures), gate.failures

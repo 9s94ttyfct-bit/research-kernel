@@ -12,8 +12,9 @@ and packs a reproducible package. No role task, no model.
      ``rk.library.formats.to_csl`` gives the item;
    - ``[[stat:]]``/``[[fig:]]`` → ``@tbl:<id>`` / ``@fig:<id>``: a forest plot is a figure, a pool or an evidence map
      a table. Each is emitted once, at the end of Results (where the paper type has no Results: of the section that
-     cites it first). ``docx`` shows the stored SVG; ``latex`` the TikZ picture ``rk.stats.plots.forest_tikz`` draws
-     from the same values, as a raw LaTeX block (no SVG converter is installed). A pool's table cites its studies;
+     cites it first). ``docx`` shows the stored SVG; ``latex`` the TikZ picture ``rk.production.figures.forest_tikz``
+     draws from the same values, as a raw LaTeX block (no SVG converter is installed). A pool's table cites its
+     studies;
    - ``[[run:]]``/``[[plan:]]`` → a reference to the Methods section (``[Methods](#methods)``; the Disclosure, which
      records what ran, where the paper type has no Methods), dropped inside that section itself and in the Disclosure
      (its sentences cite the events they report; ``disclosure.md`` in the package keeps the markers);
@@ -22,34 +23,45 @@ and packs a reproducible package. No role task, no model.
 3. **Bibliography** (``check_csl``): every cited item needs a title, an issued year and an author or editor; one that
    lacks them is named before pandoc runs, never printed as "n.d." or "???" (Review Focus 4). ``refs.json`` is the
    items' CSL JSON (``to_csl``), ``refs.bib`` their BibTeX keyed by the same ids.
-4. **Pandoc** (``_render``; argv lists, never a shell, in a temporary directory, each with a timeout): the reader is
-   ``markdown-raw_tex`` (a backslash in the prose is text, only the kernel's raw ``{=latex}`` blocks are LaTeX; a
-   section holding a raw ``{=format}`` block or span is refused before conversion); the
-   kernel's ``crossref.lua`` filter resolves ``@fig:``/``@tbl:`` before ``--citeproc`` (pandoc-crossref is not
-   installed). ``paper.md`` → ``paper.docx`` (``docx+native_numbering``, so the captions are numbered as the
-   references); ``paper-latex.md`` → ``paper.tex`` (standalone) and ``paper.pdf`` (``--pdf-engine=tectonic``,
-   ``--untrusted``). The round trip: for each markdown, the citation keys pandoc reads equal the bibliography
-   entries citeproc rendered, and a citeproc or crossref warning on stderr is a failure; other warnings (e.g. no
-   PNG fallback for the SVG in Word) are reported.
+4. **Pandoc** (``_render``; argv lists, never a shell, in a temporary directory, each with a timeout that kills the
+   process group, tectonic included). The reader is ``markdown-raw_tex-tex_math_dollars-yaml_metadata_block``: a
+   backslash, ``$…$`` and a ``---`` block in the prose are text. The document's metadata is the kernel's alone,
+   given on the command line (``--metadata-file metadata.yaml``: the title, the research question with every markup
+   character escaped, and the language and reference settings; ``--include-in-header preamble.tex`` for LaTeX).
+   Before anything is rendered, each markdown's AST is checked against an allow-list (``ast_problems``): no math, no
+   raw output but the kernel's own figure blocks, no image but the kernel's ``figures/<id>.svg``, no metadata key but
+   the kernel's; a section holding a raw ``{=format}`` block or span is refused even earlier, at conversion. So the
+   Writer's text or the RQ can neither run LaTeX nor make pandoc or tectonic read a local file. The kernel's
+   ``crossref.lua`` filter resolves ``@fig:``/``@tbl:`` before ``--citeproc`` (pandoc-crossref is not installed).
+   ``paper.md`` → ``paper.docx`` (``docx+native_numbering``, so the captions are numbered as the references);
+   ``paper-latex.md`` → ``paper.tex`` (standalone) and ``paper.pdf`` (``--pdf-engine=tectonic``, ``--untrusted``).
+   The round trip: for each markdown, the citation keys pandoc reads equal the bibliography entries citeproc
+   rendered, and a citeproc or crossref warning on stderr is a failure; other warnings (e.g. no PNG fallback for the
+   SVG in Word) are reported.
 5. **Package** (``build_package``): ``artifacts/export/package-<sha8>.zip`` with the exports (checked to be the export
    of the audited manuscript), ``disclosure.md``, the audit report, the frozen protocol (JSON), read_extract's
    extraction table (CSV), every cited artifact (its file and its record: code path and version, input hashes,
    values) and ``MANIFEST.json`` (sha256 per file, the event log's head hash; ``sha8`` is its own hash). It is built
-   from that list only, so ``config.toml``, keys and the browser profile are never in it, and it is refused when any
-   file's content (a docx's parts and a PDF's streams included) holds the project root, the home directory, RK_HOME
-   or the temporary directory.
+   from that list only, so ``config.toml``, keys and the browser profile are never in it, and it is refused when a
+   file's content holds the project root, the home directory, RK_HOME or the temporary directory (as written, and as
+   LaTeX escapes it). The scan reads a docx's parts and a PDF's inflated streams, but a PDF's typeset text is glyph
+   codes, not bytes: for the PDF it covers the metadata, and its body is covered by the sources it is compiled from
+   (``paper-latex.md``, ``paper.tex``), which are scanned, and by the AST allow-list. A new export removes the
+   earlier export's files and packages first.
 
 The worker has no back-edge: an export failure is a defect, reported as ``failed`` with pandoc's error. Its gate: the
 attempt's package exists, its files match its manifest, and the manuscript is still the audited one."""
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import io
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import zipfile
@@ -71,11 +83,11 @@ from rk.production.audit import audit_notes, audit_reports, cited_items
 from rk.production.disclosure import DISCLOSURE_PATH
 from rk.production.disclosure import SECTION as DISCLOSURE
 from rk.production.draft import DraftInputs, latest_version, load_inputs
+from rk.production.figures import forest_tikz, interval_rows, pooled_name, tex_escape
 from rk.production.manuscript import Marker, source_markers
 from rk.production.sections import SectionSpec
 from rk.production.store import extractions, frozen_protocol
 from rk.stats.meta import Pooled
-from rk.stats.plots import forest_tikz, interval_rows, pooled_name, tex_escape
 from rk.store.events import NewEvent
 from rk.store.project import ProjectStore
 from rk.verify.stats import POOL
@@ -85,19 +97,19 @@ EXPORT_DIR = "artifacts/export"
 FIGURES = "figures"
 BUILT = "export.built"
 TARGETS = ("latex", "docx")
-SOURCES = ("paper.md", "paper-latex.md", "refs.json", "refs.bib")
+SOURCES = ("paper.md", "paper-latex.md", "metadata.yaml", "preamble.tex", "refs.json", "refs.bib")
 OUTPUTS = ("paper.docx", "paper.tex", "paper.pdf")
 FOREST = "rk.stats.plots:forest_svg"
 MAP_TABLES = ("rk.stats.plots:map_table", "rk.verify.stats:map_markdown")
-READER = "markdown-raw_tex"
+READER = "markdown-raw_tex-tex_math_dollars-yaml_metadata_block"
 FILTER = Path(__file__).with_name("crossref.lua")
 TIMEOUT, PDF_TIMEOUT = 120, 600  # seconds; tectonic may fetch its package bundle on first use
 METHODS = "methods"
 MANIFEST = "MANIFEST.json"
 _MARKUP = frozenset("\\`*_[]{}<>|@$~^#&")
 _RAW = re.compile(r"\{\s*=\s*[A-Za-z]")  # a raw attribute: ```{=latex} or `...`{=latex}
-_LATEX_PREAMBLE = ("header-includes:\n  - |\n    ```{=latex}\n    \\usepackage{tikz}\n    \\usepackage{graphicx}\n"
-                   "    ```\n")
+PREAMBLE = "\\usepackage{tikz}\n\\usepackage{graphicx}\n"  # what the kernel's TikZ figures need (LaTeX only)
+META_KEYS = frozenset({"title", "lang", "reference-section-title", "link-citations"})
 
 
 class ExportResult(BaseModel):
@@ -114,7 +126,8 @@ def audited_manuscript(ps: ProjectStore) -> tuple[DraftInputs, dict, list[tuple[
     """The manuscript the passed audit attempt audited: the draft inputs, the attempt's latest report and every
     required section with its markdown; else why it cannot be exported."""
     row = stage_row(ps, "audit")
-    attempt = row["passed_attempt"] if row is not None and row["passed_attempt"] else None
+    # an audit run again (reopened, a new attempt, failed) keeps its old passed attempt, which no longer counts
+    attempt = row["passed_attempt"] if row is not None and row["status"] == "passed" else None
     if attempt is None:
         return ("audit has not passed: only a manuscript that passed the audit and that the final review approved is "
                 "exported")
@@ -183,6 +196,7 @@ class _Paper:
         self.claims: dict[str, list[str]] = {}
         self.xrefs: dict[str, str] = {}  # artifact id -> "fig:<id>" / "tbl:<id>"
         self.placed: dict[str, list[str]] = {}  # section id -> the artifacts emitted at its end
+        self.raw: list[str] = []  # the kernel's raw LaTeX blocks (its figures): the only raw output allowed
 
     def _key(self, item_id: str) -> str:
         if item_id not in self.keys:
@@ -253,8 +267,10 @@ class _Paper:
         caption = f"Forest plot of the {v['measure']}: each study's estimate with its 95% CI{pooled}."
         if self.target == "docx":
             return f"![{_md(caption)}]({FIGURES}/{aid}.svg){{#{xref}}}"
-        return ("```{=latex}\n\\begin{figure}[htbp]\n\\centering\n\\resizebox{\\linewidth}{!}{%\n"
-                f"{forest_tikz(v)}}}\n\\caption{{{tex_escape(caption)}}}\n\\label{{{xref}}}\n\\end{{figure}}\n```")
+        raw = (f"\\begin{{figure}}[htbp]\n\\centering\n\\resizebox{{\\linewidth}}{{!}}{{%\n{forest_tikz(v)}}}\n"
+               f"\\caption{{{tex_escape(caption)}}}\n\\label{{{xref}}}\n\\end{{figure}}")
+        self.raw.append(raw)
+        return f"```{{=latex}}\n{raw}\n```"
 
     def _pool_table(self, v: dict, xref: str) -> str:
         lines = [f"| Study | {_md(v['measure'])} \\[95% CI\\] |", "|---|---|"]
@@ -286,21 +302,16 @@ class _Paper:
 def to_pandoc_markdown(ps: ProjectStore, sections: list[tuple[SectionSpec, str]], *,
                        target: Literal["latex", "docx"]) -> tuple[str, list[dict], dict]:
     """The manuscript ``sections`` (each spec with its markdown, in order) as one pandoc markdown document for
-    ``target`` (see the module docstring), its bibliography as CSL JSON items (keyed by item id, in order of first
-    citation) and ``refmap``: ``claims`` (claim id → its citation keys), ``figures`` / ``tables`` (artifact id → its
-    cross-reference id) and ``keys`` (every citation key). ``ValueError`` names a marker without its artifact."""
+    ``target`` (see the module docstring; no front matter: the metadata is the kernel's, ``metadata``), its
+    bibliography as CSL JSON items (keyed by item id, in order of first citation) and ``refmap``: ``claims`` (claim
+    id → its citation keys), ``figures`` / ``tables`` (artifact id → its cross-reference id), ``keys`` (every
+    citation key) and ``raw`` (the kernel's raw LaTeX figure blocks, ``latex`` only). ``ValueError`` names a marker
+    without its artifact or a section holding raw output."""
     if target not in TARGETS:
         raise ValueError(f"unknown export target {target!r}; expected one of {', '.join(TARGETS)}")
     paper = _Paper(ps, sections, target)
     bodies = [(spec, paper.section(spec, md)) for spec, md in sections]
-    s = load_inputs(ps)
-    head = ["---"]
-    if not isinstance(s, str):
-        head.append(f"title: {json.dumps(s.question)}")
-    head += ["lang: en", "reference-section-title: References", "link-citations: true"]
-    if target == "latex":
-        head.append(_LATEX_PREAMBLE.rstrip("\n"))
-    out = ["\n".join([*head, "---"])]
+    out = []
     for spec, body in bodies:
         out.append(f"# {_md(spec.title)} {{#{spec.id}}}")
         if body.strip():
@@ -311,8 +322,50 @@ def to_pandoc_markdown(ps: ProjectStore, sections: list[tuple[SectionSpec, str]]
     refmap = {"claims": paper.claims,
               "figures": {a: x for a, x in paper.xrefs.items() if x.startswith("fig:")},
               "tables": {a: x for a, x in paper.xrefs.items() if x.startswith("tbl:")},
-              "keys": list(paper.keys)}
+              "keys": list(paper.keys), "raw": list(paper.raw)}
     return markdown, [to_csl(i) for i in items], refmap
+
+
+def metadata(question: str) -> str:
+    """The document's metadata (``--metadata-file``; JSON, which is YAML): the title, the research question with
+    every markup character escaped (an RQ an agent proposed is free text, never markup), and the language and
+    reference settings; exactly ``META_KEYS``."""
+    meta = {"title": _md(question), "lang": "en", "reference-section-title": "References", "link-citations": True}
+    return json.dumps(meta, ensure_ascii=False, indent=2) + "\n"
+
+
+def _problem_walk(node, out: list[str], raw: set[str], images: set[str]) -> None:
+    if isinstance(node, list):
+        for v in node:
+            _problem_walk(v, out, raw, images)
+        return
+    if not isinstance(node, dict):
+        return
+    t, c = node.get("t"), node.get("c")
+    if t == "Math":
+        out.append(f"math is not allowed (it is LaTeX): {c[1][:120]!r}")
+        return
+    if t in ("RawInline", "RawBlock"):
+        if not (t == "RawBlock" and c[0] == "latex" and c[1].strip("\n") in raw):
+            out.append(f"raw {c[0]} output is not the kernel's: {c[1][:120]!r}")
+        return
+    if t == "Image" and c[2][0] not in images:
+        out.append(f"an image of {c[2][0]} is not one of the kernel's figures")
+    for v in node.values():
+        _problem_walk(v, out, raw, images)
+
+
+def ast_problems(ast: dict, *, raw: set[str], images: set[str]) -> list[str]:
+    """What the allow-list refuses in a pandoc JSON AST before anything is rendered: any ``Math``; a ``RawInline`` or
+    ``RawBlock`` other than one of the kernel's figure blocks ``raw``; an ``Image`` whose source is not one of the
+    kernel's ``images``; a metadata key not in ``META_KEYS`` (the metadata's values are walked too)."""
+    out: list[str] = []
+    allowed = {r.strip("\n") for r in raw}
+    meta = ast.get("meta") or {}
+    out += [f"the metadata key {k} is not the kernel's" for k in meta if k not in META_KEYS]
+    _problem_walk(meta, out, allowed, images)
+    _problem_walk(ast.get("blocks") or [], out, allowed, images)
+    return out
 
 
 def check_csl(items: list[dict]) -> list[str]:
@@ -343,12 +396,21 @@ def _clean(text: str, work: Path) -> str:
 
 
 def _run(argv: list[str], work: Path, what: str, timeout: int) -> tuple[subprocess.CompletedProcess | None, str | None]:
+    """Run ``argv`` (a list, never a shell) in ``work`` in a session of its own; on timeout the whole process group
+    is killed (pandoc and the tectonic it started)."""
     try:
-        r = subprocess.run(argv, cwd=work, capture_output=True, text=True, timeout=timeout, check=False)
-    except subprocess.TimeoutExpired:
-        return None, f"{what} timed out after {timeout} s"
+        proc = subprocess.Popen(argv, cwd=work, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                start_new_session=True)
     except OSError as e:
         return None, f"{what} could not run: {e.strerror or e}"
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+        return None, f"{what} timed out after {timeout} s"
+    r = subprocess.CompletedProcess(argv, proc.returncode, out, err)
     if r.returncode != 0:
         return r, f"{what} failed (exit {r.returncode}): {_clean(r.stderr, work) or 'no error output'}"
     return r, None
@@ -408,23 +470,34 @@ def _render(out_dir: Path, refmap: dict) -> tuple[list[str], list[str]]:
     warnings: list[str] = []
     with tempfile.TemporaryDirectory(prefix="rk-export-") as d:
         work = Path(d)
-        for name in ("paper.md", "paper-latex.md", "refs.json"):
+        for name in ("paper.md", "paper-latex.md", "metadata.yaml", "preamble.tex", "refs.json"):
             shutil.copyfile(out_dir / name, work / name)
         if (out_dir / FIGURES).is_dir():
             shutil.copytree(out_dir / FIGURES, work / FIGURES)
         shutil.copyfile(FILTER, work / FILTER.name)
-        opts = ["--from", READER, "--lua-filter", FILTER.name, "--citeproc", "--bibliography", "refs.json"]
-        # the round trip: the keys pandoc reads are the entries citeproc renders, without a warning
+        reader = ["--from", READER, "--metadata-file", "metadata.yaml"]
+        opts = [*reader, "--lua-filter", FILTER.name, "--citeproc", "--bibliography", "refs.json"]
+        latex = ["--include-in-header", "preamble.tex"]
+        raw, images = set(refmap.get("raw") or []), {f"{FIGURES}/{aid}.svg" for aid in refmap["figures"]}
         for src in ("paper.md", "paper-latex.md"):
-            plain, err = _run([pandoc, src, "--from", READER, "--to", "json"], work, f"pandoc ({src} → AST)", TIMEOUT)
-            full, err2 = _run([pandoc, src, *opts, "--to", "json"], work, f"pandoc ({src} → citeproc)", TIMEOUT)
-            if err or err2:
-                failures += [e for e in (err, err2) if e]
+            # the allow-list, before anything is rendered or citeproc reads anything
+            plain, err = _run([pandoc, src, *reader, "--to", "json"], work, f"pandoc ({src} → AST)", TIMEOUT)
+            if err:
+                failures.append(err)
+                continue
+            ast = json.loads(plain.stdout)
+            if problems := ast_problems(ast, raw=raw, images=images):
+                failures += [f"{src}: {p} (only the kernel's figures and metadata are allowed)" for p in problems]
+                continue
+            # the round trip: the keys pandoc reads are the entries citeproc renders, without a warning
+            full, err = _run([pandoc, src, *opts, "--to", "json"], work, f"pandoc ({src} → citeproc)", TIMEOUT)
+            if err:
+                failures.append(err)
                 continue
             f, w = _warnings(full.stderr, f"{src} (citeproc)", work)
             failures += f
             warnings += w
-            cited, rendered = _cited(json.loads(plain.stdout)), _rendered(json.loads(full.stdout))
+            cited, rendered = _cited(ast), _rendered(json.loads(full.stdout))
             if cited != rendered or cited != set(refmap["keys"]):
                 failures.append(f"{src}: the citation keys do not round-trip: cited {sorted(cited)}, rendered by "
                                 f"citeproc {sorted(rendered)}, in refs.json {sorted(refmap['keys'])}")
@@ -432,8 +505,8 @@ def _render(out_dir: Path, refmap: dict) -> tuple[list[str], list[str]]:
             return failures, warnings
         steps = [("paper.docx", [pandoc, "paper.md", *opts, "--to", "docx+native_numbering", "-o", "paper.docx"],
                   TIMEOUT),
-                 ("paper.tex", [pandoc, "paper-latex.md", *opts, "--standalone", "-o", "paper.tex"], TIMEOUT),
-                 ("paper.pdf", [pandoc, "paper-latex.md", *opts, f"--pdf-engine={tectonic}",
+                 ("paper.tex", [pandoc, "paper-latex.md", *opts, *latex, "--standalone", "-o", "paper.tex"], TIMEOUT),
+                 ("paper.pdf", [pandoc, "paper-latex.md", *opts, *latex, f"--pdf-engine={tectonic}",
                                 "--pdf-engine-opt=--untrusted", "-o", "paper.pdf"], PDF_TIMEOUT)]
         for name, argv, timeout in steps:
             r, err = _run(argv, work, f"pandoc ({name})", timeout)
@@ -480,20 +553,23 @@ def _failed(why: str) -> ExportResult:
 
 def export(ps: ProjectStore) -> ExportResult:
     """Export the audited manuscript (see the module docstring): ``artifacts/export/`` gets ``paper.md`` (the docx
-    target, the human-readable markdown), ``paper-latex.md``, ``refs.json``, ``refs.bib``, the figures' SVGs and pandoc's
-    ``paper.docx``, ``paper.tex`` and ``paper.pdf``. An earlier export's files are removed first, so a failed export
-    leaves none that look current."""
+    target, the human-readable markdown), ``paper-latex.md``, ``metadata.yaml``, ``preamble.tex``, ``refs.json``,
+    ``refs.bib``, the figures' SVGs and pandoc's ``paper.docx``, ``paper.tex`` and ``paper.pdf``. An earlier export's
+    files and packages are removed first, so a failed export leaves none that look current."""
     out_dir = ps.root / EXPORT_DIR
     for name in (*SOURCES, *OUTPUTS):
         (out_dir / name).unlink(missing_ok=True)
+    for old in out_dir.glob("package-*.zip"):
+        old.unlink(missing_ok=True)
     shutil.rmtree(out_dir / FIGURES, ignore_errors=True)
     got = audited_manuscript(ps)
     if isinstance(got, str):
         return _failed(got)
-    sections = got[2]
+    s, _, sections = got
     try:
         md, csl, refmap = to_pandoc_markdown(ps, sections, target="docx")
-        latex, _, _ = to_pandoc_markdown(ps, sections, target="latex")
+        latex, _, latex_refmap = to_pandoc_markdown(ps, sections, target="latex")
+        refmap = {**refmap, "raw": latex_refmap["raw"]}
         svgs = {aid: _artifact_file(ps, aid) for aid in refmap["figures"]}
     except ValueError as e:
         return _failed(f"the manuscript cannot be converted: {e}")
@@ -501,7 +577,8 @@ def export(ps: ProjectStore) -> ExportResult:
         return _failed("the bibliography cannot be rendered without inventing metadata (checked before pandoc ran): "
                        + "; ".join(problems))
     lib = Library(ps)
-    files = {"paper.md": md.encode(), "paper-latex.md": latex.encode(), "refs.json": _refs_json(csl).encode(),
+    files = {"paper.md": md.encode(), "paper-latex.md": latex.encode(), "metadata.yaml": metadata(s.question).encode(),
+             "preamble.tex": PREAMBLE.encode(), "refs.json": _refs_json(csl).encode(),
              "refs.bib": export_bibtex([lib.get(k) for k in refmap["keys"]], keys=refmap["keys"]).encode(),
              **{f"{FIGURES}/{aid}.svg": data for aid, data in svgs.items()}}
     for name, data in files.items():
@@ -551,7 +628,9 @@ def _needles(ps: ProjectStore) -> list[str]:
 
 
 def _leaks(files: dict[str, bytes], needles: list[str]) -> list[str]:
-    forms = [form for n in needles for form in (n.encode(), n.encode("utf-16-be"), json.dumps(n)[1:-1].encode())]
+    # as written, in UTF-16 (PDF strings), JSON-escaped and as LaTeX escapes it (paper.tex: ``_`` → ``\_``, …)
+    forms = [form for n in needles for form in (n.encode(), n.encode("utf-16-be"), json.dumps(n)[1:-1].encode(),
+                                                 tex_escape(n).encode())]
     return [name for name, data in files.items() if any(f in text for text in _contents(data) for f in forms)]
 
 
@@ -595,7 +674,8 @@ def build_package(ps: ProjectStore) -> Path:
     out_dir = ps.root / EXPORT_DIR
     md, csl, refmap = to_pandoc_markdown(ps, sections, target="docx")
     latex, _, _ = to_pandoc_markdown(ps, sections, target="latex")
-    expected = {"paper.md": md, "paper-latex.md": latex, "refs.json": _refs_json(csl)}
+    expected = {"paper.md": md, "paper-latex.md": latex, "metadata.yaml": metadata(s.question),
+                "preamble.tex": PREAMBLE, "refs.json": _refs_json(csl)}
     files: dict[str, bytes] = {}
     for name in (*SOURCES, *OUTPUTS):
         try:
