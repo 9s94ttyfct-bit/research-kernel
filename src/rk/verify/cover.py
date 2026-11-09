@@ -7,7 +7,8 @@ a code span is not checked and does not count).
   section a research operation's (``RESEARCH_EVENTS``; the kernel-written Disclosure cites any event it reports); a
   ``plan`` a frozen design or a hypothesis that was not dropped) and, where it has a hash, still matches it (an
   artifact's file, the frozen protocol's body, the frozen design's body, and the frozen design a hypothesis is
-  pre-registered in by its ``prereg_hash``). ``inf`` and ``ck`` take no target.
+  pre-registered in by its ``prereg_hash``). ``inf`` and ``ck`` take no target. ``[[…]]`` text that is no marker (e.g.
+  a bare id, ``[[clm_…]]``) fails the sentence, naming the form to write (``malformed_marker_problem``).
 - **V-NUM:** every number of the sentence is in a marker's target (``number_pool``): a claim's text and its evidence
   notes, as written; an artifact's reported values (a pooled statistic's ``display`` values and ``k``, a map table's
   counts), an event's whitelisted fields (``EVENT_NUMBERS``) and the protocol's stored values, exactly or rounded as
@@ -47,7 +48,13 @@ from pydantic import BaseModel
 from rk.argument import ArgumentService
 from rk.canon import canonical_json, sha256_hex
 from rk.production.artifacts import artifact
-from rk.production.manuscript import Marker, Sentence, parse_section, section_problems
+from rk.production.manuscript import (
+    MARKER,
+    Marker,
+    Sentence,
+    parse_section,
+    section_problems,
+)
 from rk.production.sections import KERNEL_WRITTEN, describes_operations
 from rk.production.store import design, protocol_hash, protocol_row
 from rk.store.project import ProjectStore
@@ -60,6 +67,21 @@ from rk.verify.support import claim_problems
 CK_MAX_SHARE = 0.05
 INF_MAX_LEVEL = 1
 _MARKER_TEXT = re.compile(r"\[\[[^\]]*\]\]")
+# the marker kind that cites an id of each prefix (a Writer that writes the bare id, ``[[clm_…]]``, is told the form)
+_KIND_OF_PREFIX = {"clm": "clm", "evt": "run", "prt": "run", "fig": "fig", "stt": "stat", "dsg": "plan", "hyp": "plan"}
+
+
+def malformed_marker_problem(raw: str) -> str:
+    """Why ``raw`` (``[[…]]`` text that is no source marker) cites nothing, with the form to write."""
+    inner = raw[2:-2].strip()
+    prefix = inner.split("_", 1)[0]
+    if (kind := _KIND_OF_PREFIX.get(prefix)) is not None and "_" in inner and ":" not in inner:
+        fix = f"write [[{kind}:{inner}]] (the kind, a colon, then the id as given)"
+    else:
+        fix = "write [[<kind>:<id>]] with a kind of the marker grammar (clm, run, fig, stat, plan) or [[inf]] / [[ck]]"
+    return f"{raw} is not a source marker and cites nothing: {fix}"
+
+
 # quotation mark pairs; a straight or curly single quote opens only at a word start and closes only before no letter,
 # so an apostrophe inside (don't) or at a word's end (the patients' outcomes) is none
 _QUOTED = re.compile(
@@ -348,6 +370,7 @@ def verify_sentence(ps: ProjectStore, s: Sentence, *, paper_type: str, kernel_wr
     problems: list[str] = []
     if not s.markers:
         problems.append("the sentence has no source marker")
+    problems += [malformed_marker_problem(raw) for raw in _MARKER_TEXT.findall(s.prose) if not MARKER.fullmatch(raw)]
     for m in s.markers:
         if (why := _target_problem(ps, m, paper_type, kernel_written)) is not None:
             problems.append(why)

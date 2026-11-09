@@ -77,6 +77,24 @@ def test_sentence_without_marker_fails(env):
     assert not v.ok and v.problems == ["the sentence has no source marker"]
 
 
+def test_a_bare_id_in_brackets_is_named_with_the_marker_form(env):
+    """Task 9: the Writer wrote [[clm_…]] (the id without its kind); it was dropped as no marker and the verdict said
+    only "no source marker", so every retry repeated it. The verdict names the text and the form to write."""
+    ps, claim = env
+    cid = claim("Copper catalysts may reduce CO2.")
+    v = _one(ps, f"Copper catalysts may reduce CO2 [[{cid}]].")
+    assert not v.ok and "the sentence has no source marker" in v.problems
+    assert f"[[{cid}]] is not a source marker and cites nothing: write [[clm:{cid}]] (the kind, a colon, then the id " \
+           "as given)" in v.problems
+    # beside a valid marker it still fails, naming the bad one; an event id gets the run form, other text the grammar
+    v = _one(ps, f"Copper catalysts may reduce CO2 [[clm:{cid}]] [[evt_01ABC]].")
+    assert not v.ok and v.problems == [("[[evt_01ABC]] is not a source marker and cites nothing: write "
+                                        "[[run:evt_01ABC]] (the kind, a colon, then the id as given)")]
+    assert any("[[source 3]] is not a source marker" in p and "[[<kind>:<id>]]" in p
+               for p in _one(ps, "Copper catalysts were studied [[source 3]].").problems)
+    assert _one(ps, f"Copper catalysts may reduce CO2 [[clm:{cid}]].").ok  # a valid marker alone passes
+
+
 def test_unknown_or_hash_mismatched_target_fails(env):
     ps, _ = env
     assert any("unknown claim clm_nope" in p for p in _one(ps, "It works [[clm:clm_nope]].").problems)
