@@ -511,6 +511,49 @@ def test_degrade_that_deletes_nothing_fails_naming_the_failures(env):
     assert not ps.db.execute("SELECT 1 FROM events WHERE type='stage.degraded'").fetchall()
 
 
+def test_degrade_that_verified_a_version_and_deleted_nothing_gates_again(env):
+    from rk.production.manuscript import write_draft
+
+    _, ps, _ = env
+    _ready(env)
+    w = DraftWorker()
+    assert w.run(_ctx(env, _writer([writes()] * 4))).status == "done"
+    md = draft_text(ps, "conclusion", 1)
+    write_draft(ps, "conclusion", md, stage="draft", attempt=1, round=0, by_task=None, actor="tester")  # unverified
+    failures = w.gate(ps, 1).failures
+    assert failures == ["section conclusion v2 was not verified"], failures
+    out = w.degrade(_ctx(env, _writer([])), failures)
+    assert out.status == "done", out.reason
+    assert draft_versions(ps, "conclusion")[-1]["verdict"]["ok"]
+    assert w.gate(ps, 1).ok
+    assert not ps.db.execute("SELECT 1 FROM events WHERE type='stage.degraded'").fetchall()
+
+
+def test_writer_claims_carry_their_balance_requirements(env):
+    _, ps, _ = env
+    _ready(env)
+    main = main_claim(ps, 1)
+    (reason,) = [c for c in argument_claims(ps, 1) if c != main]
+    finding = synthesis_claims(ps, 1)[0]
+    conflict = contest(ps, main, finding, reason)
+    answered = object_to(ps, finding, response=main)
+    conceded = object_to(ps, finding, status="conceded", source_id="itm_source")
+    ex = _writer([writes()] * 12)
+    DraftWorker().run(_ctx(env, ex))
+    claims = {c["claim_id"]: c for c in ex.of("writer", "SectionDraft")[0]["inputs"]["claims"]}
+    assert claims[main]["contested_by"] == [finding]
+    assert claims[main]["answered_by"] == [{"objection_id": conflict, "response_claim_id": reason}]
+    assert claims[main]["conceded_sourced"] == []
+    assert claims[finding]["contested_by"] == []
+    assert claims[finding]["answered_by"] == [{"objection_id": answered, "response_claim_id": main}]
+    assert claims[finding]["conceded_sourced"] == [{"objection_id": conceded, "text": "another trial found otherwise",
+                                                   "source_id": "itm_source"}]
+    prompt = build_system_prompt("writer", SectionDraft)
+    for word in ("contested_by", "answered_by", "after the claim, in the same section", "conceded_sourced",
+                 "qualify the claim"):
+        assert word in prompt, word
+
+
 def test_missing_design_refusal_survives_a_crash_after_its_version(env, monkeypatch):
     import rk.production.draft as draft_mod
 

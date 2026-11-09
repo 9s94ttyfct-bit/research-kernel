@@ -78,7 +78,7 @@ from rk.production.synthesis import (
 )
 from rk.store.events import NewEvent
 from rk.store.project import ProjectStore
-from rk.verify.balance import check_balance
+from rk.verify.balance import argued, balance_requirements, check_balance
 from rk.verify.cover import (
     EVENT_NUMBERS,
     SectionVerdict,
@@ -346,13 +346,18 @@ class DraftWorker:
         ps = ctx.ps
         svc = ArgumentService(ps)
 
+        facts = argued(ps)  # _load: argue passed
+
         def claim(cid: str, role: str) -> dict:
             c = svc.get_claim(cid)
             notes = [n for e in svc.list_evidence(cid) for i in e["note_ids"] if (n := svc.note(i)) is not None]
+            bal = balance_requirements(ps, cid, facts=facts)
             return {"claim_id": cid, "role": role, "text": c["text"], "status": c["status"], "kind": c["kind"],
                     "scope_limits": c.get("scope_limits") or [],
                     "evidence_notes": [{"kind": n["kind"], "text": n["text"], "verified": _quotable(n)}
-                                       for n in notes]}
+                                       for n in notes],
+                    "contested_by": bal.contested_by, "answered_by": bal.answered_by,
+                    "conceded_sourced": bal.conceded_sourced}
 
         claims = ([claim(s.main, "main")] if s.main else []) + [claim(c, "argument") for c in s.argument] \
             + [claim(c, "finding") for c in s.findings]
@@ -449,14 +454,16 @@ class DraftWorker:
         every failing sentence and every sentence citing a ``fig``/``stat`` that is no artifact of synthesize's passed
         attempt, and store and verify what is left as a new version; disclosed (``stage.degraded``). When that would
         leave a section empty, nothing is deleted and the run fails naming it; when there is no such sentence (only
-        section-level failures, a one-sided section among them, or uncited claims), the run fails naming the failures.
-        The engine gates again: an uncited main claim or finding, or a section-level problem, still fails it."""
+        section-level failures, a one-sided section among them, or uncited claims), the run fails naming the failures,
+        unless it verified a version here (one left unverified), when the engine gates again. The engine gates again
+        after a deletion too: an uncited main claim or finding, or a section-level problem, still fails it."""
         ps = ctx.ps
         s = _load(ps)
         if isinstance(s, str):
             return StageOutcome("failed", reason=s)
         plans: list[tuple[str, str, list]] = []
         emptied: list[str] = []
+        verified_here = False
         for spec in s.sections:
             versions = draft_versions(ps, spec.id)
             if not versions or (versions[-1]["stage"], versions[-1]["attempt"]) != (STAGE, ctx.attempt):
@@ -466,6 +473,7 @@ class DraftWorker:
                 if last["verdict"] is None:
                     self._verify(ctx, s, spec.id, last["version"])
                     last = draft_versions(ps, spec.id)[-1]
+                    verified_here = True
                 md = draft_text(ps, spec.id, last["version"])
             except (KeyError, ValueError) as e:
                 return StageOutcome("failed", reason=f"cannot degrade section {spec.id} v{last['version']}: {e}")
@@ -484,6 +492,9 @@ class DraftWorker:
                 f"degrading draft at the edge limit (P1) would leave {', '.join(emptied)} empty: every sentence fails "
                 "or cites an artifact of another attempt, and a required section is never dropped; "
                 + ("; ".join(failures) or "no failures given")))
+        if not plans and verified_here:
+            return StageOutcome("done", reason="degraded: nothing deleted; an unverified version was verified, so the "
+                                               "engine gates again")
         if not plans:
             return StageOutcome("failed", reason=(
                 "degrading draft at the edge limit (P1) deletes nothing: no sentence fails or cites an artifact of "

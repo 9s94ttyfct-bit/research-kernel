@@ -10,7 +10,7 @@ from rk.production.argue import _note as argue_note
 from rk.production.argue import argument_claims, main_claim
 from rk.production.manuscript import parse_section
 from rk.production.synthesis import synthesis_claims
-from rk.verify.balance import check_balance
+from rk.verify.balance import balance_requirements, check_balance
 from tests.production_fakes import make_frozen_project
 from tests.test_design import _argued
 
@@ -111,14 +111,82 @@ def test_counterpart_in_another_section_does_not_count(env):
 
 def test_uncontested_claims_pass(env):
     _, ps, _ = env
-    main, finding, reason = _claims(env)
+    main, finding, _ = _claims(env)
     assert _check(ps, main, finding) == []
     assert _check(ps) == []
-    # objections with nothing to cite: conceded or rejected (no response claim), unsourced or sourced
+    # objections with nothing to cite: rejected or conceded (no response claim), unsourced
     object_to(ps, finding, status="rejected_invalid")
-    object_to(ps, finding, status="conceded", source_id="itm_source")
+    object_to(ps, finding, status="conceded")
     assert _check(ps, main, finding) == []
-    # a withdrawn response claim cannot be cited (G-SUPPORT): it asks for nothing
-    object_to(ps, main, response=reason)
+
+
+def test_conceded_sourced_objection_passes_balance_and_is_listed(env):
+    """The accepted gap (controller ruling): no marker cites an objection or a source, so a conceded sourced objection
+    asks a sentence for nothing; it is listed for the Writer (to qualify the claim) and the audit's disclosure."""
+    _, ps, _ = env
+    main, finding, _ = _claims(env)
+    oid = object_to(ps, finding, status="conceded", source_id="itm_source")
+    evd = ArgumentService(ps).list_evidence(main)[0]["id"]
+    on_evidence = object_to(ps, evd, status="conceded", source_id="itm_other")
+    object_to(ps, main, status="conceded")  # unsourced: not listed
+    assert _check(ps, main, finding) == []
+    req = balance_requirements(ps, finding)
+    assert req.conceded_sourced == [{"objection_id": oid, "text": "another trial found otherwise",
+                                     "source_id": "itm_source"}]
+    assert [c["objection_id"] for c in balance_requirements(ps, main).conceded_sourced] == [on_evidence]
+
+
+def test_requirements_name_counterparts_and_responses(env):
+    _, ps, _ = env
+    main, finding, reason = _claims(env)
+    assert balance_requirements(ps, main).contested_by == [] and balance_requirements(ps, main).answered_by == []
+    cid = contest(ps, main, finding, reason)
+    oid = object_to(ps, finding, response=main)
+    req = balance_requirements(ps, main)
+    assert req.contested and req.contested_by == [finding]
+    assert req.answered_by == [{"objection_id": cid, "response_claim_id": reason}]
+    assert balance_requirements(ps, finding).answered_by == [{"objection_id": oid, "response_claim_id": main}]
+    assert balance_requirements(ps, finding).contested_by == []
+
+
+def test_withdrawn_response_leaves_its_objection_unanswered(env):
+    _, ps, _ = env
+    main, finding, reason = _claims(env)
+    oid = object_to(ps, main, response=reason)
     ArgumentService(ps).withdraw_claim(reason, reason="test", actor="tester")
-    assert _check(ps, main, finding) == []
+    (problem,) = _check(ps, main, finding)
+    assert "one-sided" in problem and oid in problem and reason in problem and "withdrawn" in problem
+    assert "unanswered" in problem and main in problem
+    assert balance_requirements(ps, main).answered_by == []  # nothing the Writer could cite
+
+
+def test_withdrawn_counterpart_is_not_asked_for(env):
+    _, ps, _ = env
+    main, finding, reason = _claims(env)
+    contest(ps, main, finding, reason)
+    ArgumentService(ps).withdraw_claim(finding, reason="test", actor="tester")
+    assert _check(ps, main, reason) == []
+    assert balance_requirements(ps, main).contested_by == []
+
+
+def test_without_a_passed_argue_attempt_balance_fails(env):
+    _, ps, _ = env
+    assert check_balance(ps, "introduction", parse_section("A finding [[clm:clm_x]].\n")) == [
+        "section introduction: V-BALANCE cannot be checked: argue has not passed"]
+    with pytest.raises(ValueError, match="argue has not passed"):
+        balance_requirements(ps, "clm_x")
+
+
+def test_order_of_a_one_way_counterpart_and_same_sentence_citations(env):
+    _, ps, _ = env
+    main, finding, reason = _claims(env)
+    contest(ps, main, finding, reason)  # only the main claim is contested: the finding is not contested by it
+    (before,) = _check(ps, finding, main, reason)
+    assert "one-sided" in before and main in before and finding in before and "counterpart" in before
+
+    def one(md: str) -> list[str]:
+        return check_balance(ps, "introduction", parse_section(md + "\n"))
+
+    # the counterpart and the response in the claim's own sentence count as after its first citation
+    assert one(f"Trials disagree [[clm:{main}]] [[clm:{finding}]] [[clm:{reason}]].") == []
+    assert one(f"The finding holds [[clm:{main}]] [[clm:{reason}]]. Another trial disagrees [[clm:{finding}]].") == []

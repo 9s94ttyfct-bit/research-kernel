@@ -222,16 +222,18 @@ No new Python dependency. The CSL style is pandoc's built-in default (Chicago au
 - Test: `tests/test_balance.py`, `tests/test_draft.py` (the gate fails on a one-sided section).
 
 **Interfaces:**
-- Produces `check_balance(ps, section: str, sentences: list[Sentence]) -> list[str]`, returning problems; empty means pass.
-- For every `clm` cited in the section that is `contested`, or that has a sourced objection (an objection with a response claim or with evidence):
+- Produces `check_balance(ps, section: str, sentences: list[Sentence]) -> list[str]`, returning problems; empty means pass. `balance_requirements(ps, claim_id) -> BalanceRequirements{contested, contested_by, answered_by, unanswered, conceded_sourced}` holds the balance facts of one claim; `check_balance` and the Writer's claim inputs both read it.
+- For every `clm` cited in the section that is `contested`, or that has a responded objection (on the claim or its evidence):
   - the section must contain a sentence citing the counterpart claim (for a conflict) or the objection's response claim;
   - that sentence must come in the same section, after the first citation of the contested claim.
+- A conceded or rejected objection, sourced or not, asks for nothing: V-COVER has no objection or source marker, so no sentence could cite it (a conceded priority-1 objection already fails its claim's G-SUPPORT until it is narrowed or withdrawn). The disclosure names each cited claim with a conceded sourced objection instead (Task 5, G-DISCLOSE).
 - The problem names the claim and the missing counterpart or response.
 - As implemented (Task 3):
-  - `check_balance` reads argue's passed attempt: the conflicts are `conflict_counterparts` over its objections (`argument_objection_ids`), the objections those of `argument_objection_ids` on the cited claim or its evidence that are `responded` (a conflict objection included). A withdrawn counterpart or response is not asked for (G-SUPPORT fails citing it); an objection without a response claim (conceded, rejected as invalid) leaves nothing to cite, sourced or not. A contested claim with no recorded conflict is one-sided by itself.
-  - "After the first citation" counts the same sentence. For the two claims of one `both_contested` conflict (each contested by the other) either order gives both sides: the counterpart may come first when the claim's own citation follows it.
-  - Problems read `section S is one-sided: C is contested by X, and the section does not cite that counterpart [[clm:X]] after its first citation of C` / `… the objection O to it (to its evidence E) was answered by R, and the section does not cite that response [[clm:R]] …`.
-  - `DraftWorker._verify` adds them to the section verdict as section-level problems (so a one-sided version is retried in the attempt with them in `failures`); the gate reruns `check_balance` on every section's latest version (an objection answered since verification counts) and names new problems as `section X vN: <problem>`.
+  - `balance_requirements` reads argue's passed attempt (no passed attempt: `ValueError`; `check_balance` returns the single problem `section S: V-BALANCE cannot be checked: argue has not passed`): `contested_by` the live counterparts of its conflicts (`conflict_counterparts` over `argument_objection_ids`; a withdrawn counterpart is not asked for), `answered_by` `[{objection_id, response_claim_id}]` of the `responded` objections on the claim or its evidence (a conflict objection included) whose response is live, `unanswered` those whose response claim was withdrawn (fail closed: a problem naming the objection as unanswered), `conceded_sourced` `[{objection_id, text, source_id}]` of the conceded objections with a `source_id` (the accepted gap above: listed, never a problem). A contested claim with no recorded conflict is one-sided by itself.
+  - "After the first citation" counts the same sentence. For the two claims of one `both_contested` conflict (each contested by the other) either order gives both sides: the counterpart may come first when the claim's own citation follows it. A one-way counterpart cited before the claim fails.
+  - Problems read `section S is one-sided: C is contested by X, and the section does not cite that counterpart [[clm:X]] after its first citation of C` / `… the objection O to it (to its evidence E) was answered by R, and the section does not cite that response [[clm:R]] …` / `… the objection O to it was answered by R, which is withdrawn: the objection is unanswered …`.
+  - Each Writer claim input carries `contested_by`, `answered_by` and `conceded_sourced`; `writer.md` says to cite the counterpart or response after the claim, in the same section, and to qualify a claim with conceded sourced objections.
+  - `DraftWorker._verify` adds the problems to the section verdict as section-level problems (so a one-sided version is retried in the attempt with them in `failures`); the gate reruns `check_balance` on every section's latest version (an objection answered since verification counts) and names new problems as `section X vN: <problem>`.
 
 - [ ] **Step 1: Failing tests:**
   - `test_contested_claim_without_counterpart_is_one_sided`;
@@ -301,6 +303,7 @@ No new Python dependency. The CSL style is pandoc's built-in default (Chicago au
   - **G-SUPPORT:** every cited claim is supported.
   - **G-HEDGE:** V-HEDGE on the claims and the sentences.
   - **G-DISCLOSE:** `disclosure.md` has all five parts and every human/vote checkpoint is listed.
+    - It names every cited claim that has a conceded sourced objection (`balance_requirements(...).conceded_sourced`): claim id, objection id, source id. These are the V-BALANCE gap of Task 3.
   - **G-PREREG:** systematic and scoping reviews only (`protocol_prereg_ok`).
   - Also V-PRISMA (where the paper type uses it) and V-STATS for every cited artifact.
   - Every cited `draft.prisma` event is recomputed from its recorded `search_attempt` (`prisma_counts`) under its recorded `protocol_id`; a count that differs, or a search attempt that is no longer search_screen's passed attempt, fails ("stale PRISMA counts") → `audit → draft`.
@@ -326,6 +329,7 @@ No new Python dependency. The CSL style is pandoc's built-in default (Chicago au
   - `test_unsupported_claim_takes_audit_to_argue`;
   - `test_disclosure_lists_models_humans_votes_limitations_deviations`;
   - `test_disclosure_misses_a_human_checkpoint_fails_g_disclose`;
+  - `test_disclosure_names_conceded_sourced_objections`;
   - `test_p2_final_review_approve_revise_back`;
   - `test_p1_final_review_not_approved_goes_to_revise_then_fails_at_limit`;
   - `test_prereg_gate_only_for_systematic_and_scoping`;
