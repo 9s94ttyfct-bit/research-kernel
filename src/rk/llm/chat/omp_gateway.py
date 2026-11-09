@@ -95,8 +95,8 @@ class OmpGatewayBackend:
         turn = openai_turn(reply["body"])
         # omp's retry.modelFallback may answer with another model (e.g. a Codex judge answered by Claude), which would
         # silently change the vendor a judge or generator stands for: such a reply is a failed call, never accepted.
-        if turn.model and turn.model != self.model:
-            raise ProviderError(f"omp auth-gateway answered with {turn.model} instead of {self.model} "
+        if turn.model != self.model:
+            raise ProviderError(f"omp auth-gateway answered with {turn.model or 'no model'} instead of {self.model} "
                                 "(omp model fallback); reply not accepted")
         return turn
 

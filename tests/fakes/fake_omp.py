@@ -26,7 +26,7 @@ for line in sys.stdin:
         print(json.dumps({"id": req["id"], "status": 401, "body": {"error": "unauthorized"}}), flush=True)
         continue
     model = "anthropic/claude-sonnet-5-5" if last == "FALLBACK" else body["model"]
-    reply = {"id": "chatcmpl-x", "object": "chat.completion", "model": model,
+    reply = {"id": "chatcmpl-x", "object": "chat.completion", **({} if last == "NOMODEL" else {"model": model}),
              "choices": [{"index": 0, "message": {"role": "assistant", "content": f"echo:{last}"},
                           "finish_reason": "stop"}], "usage": {"total_tokens": 3}}
     print(json.dumps({"id": req["id"], "status": 200, "body": reply}), flush=True)
