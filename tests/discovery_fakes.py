@@ -19,6 +19,7 @@ from rk.llm.types import Availability, TaskResult, TaskSpec
 from rk.orchestrator.engine import GateResult, StageOutcome
 from rk.text.layer import Page, TextLayer
 from rk.verify.judge import JudgeVerdict
+from rk.verify.records import record_verification
 from rk.verify.retract import RetractionInfo
 from rk.workspace import Kernel
 
@@ -169,7 +170,8 @@ class FakeSources:
     ``year > after_year``, with ``date_from``/``date_to`` only those dated in that year range, cut to ``limit`` from
     ``offset``; its arguments are also in ``search_args``. Per-item presets are keyed
     by item title and need ``lib`` (the project library): ``statuses`` (``verify`` result, also written to the item's
-    ``ref_status``; default ``default_status``), ``retractions``, ``citing`` (``cited_by``, filtered to
+    ``ref_status``; default ``default_status``), ``retractions`` (``retraction``; ``verify`` also records a preset one
+    as V-RETRACT and writes it to the item, as ``KernelSources.verify`` does), ``citing`` (``cited_by``, filtered to
     ``year > after_year``) and ``fulltexts`` (pages recorded as the text layer by ``fulltext``). ``year_counts`` is keyed
     by query; ``record_counts`` (``count``) by ``(query, source)``, default 0 (``None``: the source gave no count), and
     ``count`` refuses a source outside ``COUNTED_SOURCES`` as ``KernelSources`` does. ``resolvable`` maps an identifier
@@ -225,8 +227,13 @@ class FakeSources:
 
     def verify(self, item_id: str) -> str:
         self.calls.append(("verify", item_id))
-        status = self.statuses.get(self._title(item_id), self.default_status)
+        title = self._title(item_id)
+        status = self.statuses.get(title, self.default_status)
         self.lib.update(item_id, ref_status=status, actor="fake-sources")
+        if (ret := self.retractions.get(title)) is not None:
+            self.lib.update(item_id, retraction=ret.status, actor="fake-sources")
+            record_verification(self.lib.ps, "item", item_id, "V-RETRACT", ret.status, ret.model_dump(),
+                                actor="fake-sources")
         return status
 
     def cited_by(self, item_id: str, after_year: int | None) -> list[ItemIn]:

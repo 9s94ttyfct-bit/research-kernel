@@ -590,6 +590,30 @@ def test_carried_question_whose_sentence_is_gone_is_dropped_and_noted(env):
     assert w.gate(ps, 2).ok, w.gate(ps, 2).failures
 
 
+def test_carried_question_whose_sentence_an_accepted_revision_rewrote_is_still_carried(env):
+    """Task 5 round 1 (I4): only draft writing the section afresh after the question's attempt (``revise->draft``)
+    drops a question. An accepted revision that rewrote the questioned sentence while the question stayed unresolved
+    (declined) leaves its subject in the paper: the next attempt carries it, and the Writer must answer it."""
+    _, ps, _ = env
+    _drafted(env)
+    main = main_claim(ps, 1)
+    save_settings(load_settings().model_copy(update={"revise_max_rounds": 1}))
+    w = ReviseWorker()
+    rewrite = revision(drop=_main_sentence(ps, main), add=_restated(ps, main), how="declined", note="no")
+    assert _done(w.run(_ctx(env, _exec([ask(("introduction", 1, 0))], [rewrite]))))
+    (q,) = revise_notes(ps, 1, kind="questions")[0]["questions"]
+    assert [n["accepted"] for n in revise_notes(ps, 1, kind="decided")] == [True]
+    assert q["sentence"] not in draft_text(ps, "introduction", draft_versions(ps, "introduction")[-1]["version"])
+    assert not w.gate(ps, 1).ok
+    ex2 = _exec([ask()], [revision(how="answered", note="the age group is defined in Methods")])
+    assert _done(w.run(_ctx(env, ex2, attempt=2)))
+    assert not revise_notes(ps, 2, kind="carry_dropped")
+    (carried,) = revise_notes(ps, 2, kind="questions")[0]["questions"]
+    assert carried["id"] == q["id"] and carried["carried_from"] == 1
+    assert _written(ex2) == ["introduction"]
+    assert w.gate(ps, 2).ok, w.gate(ps, 2).failures
+
+
 def test_in_a_run_the_budget_counts_the_run_sessions_tasks_of_the_stage(env):
     """(c) With a run, the role tasks used are the run session's tasks of the stage (``tasks_used``), not the
     attempt's: 36 of 40 used leave too little for a round (1 + 4 revisable sections)."""

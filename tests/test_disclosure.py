@@ -4,11 +4,14 @@ deterministic, and itself verified as a manuscript section. G-DISCLOSE fails a d
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from rk.argument import ArgumentService
 from rk.checkpoints import answer_checkpoint, create_checkpoint
-from rk.discovery.store import frozen_rq
+from rk.discovery.models import Gap, GapEvidence, HypothesisIn, RQBody, Topic
+from rk.discovery.store import add_gap, add_rq, add_topic, freeze_rq, frozen_rq
 from rk.ids import new_id
 from rk.orchestrator.state import record_degraded, record_run_task
 from rk.production.audit import audit_manuscript
@@ -23,6 +26,7 @@ from rk.production.manuscript import parse_section, source_markers, write_draft
 from rk.production.store import add_analysis_deviation, add_vote
 from rk.production.synthesis import synthesis_claims
 from rk.store.events import NewEvent
+from tests.discovery_fakes import make_project
 from tests.production_fakes import make_frozen_project
 from tests.test_audit import revised
 from tests.test_balance import object_to
@@ -103,6 +107,13 @@ def test_disclosure_lists_models_humans_votes_limitations_deviations(env):
     writer = next(s for s in parse_section(md) if "`writer`" in s.text)
     assert "`2` tasks" in writer.text and "`claude_cli:claude-haiku-5-5`" in writer.text
     assert "drafting" in writer.text and "revision" in writer.text
+    # the human decision: its kind, decision and time, citing the answer
+    answered = ps.db.execute("SELECT payload FROM events WHERE type='checkpoint.answered' AND entity_id=?",
+                             (human,)).fetchone()["payload"]
+    (line,) = [s for s in parse_section(md) if expected["the human answer"] in {m.target for m in s.markers}]
+    assert line.text.startswith("The researcher answered the `stage_blocked` checkpoint"), line.text
+    assert f"`{human}`" in line.text and "with `allow_one_more`" in line.text
+    assert f"at `{json.loads(answered)['answered_at']}`" in line.text
     for s in parse_section(md):
         if any(m.target in (expected["the vote's answer"], expected["the P1 vote"], expected["the degrade"],
                             expected["the agent's research question"]) for m in s.markers):
@@ -153,3 +164,32 @@ def test_disclosure_names_conceded_sourced_objections(env):
     (ps.root / DISCLOSURE_PATH).write_text(cut)
     (failure,) = _g_disclose(ps)
     assert finding in failure and oid in failure and source in failure
+
+
+def test_disclosure_lists_the_gaps_behind_the_chosen_topic(tmp_home, replay_http):
+    """Each gap behind the frozen research question's topic is a line of its own (not reviewed by a human: verified
+    only within the search scope), citing its ``gap.added``; a gap behind another topic is not listed."""
+    k, ps, _ = make_project(tmp_home, replay_http, paper_type="critical_review")
+    try:
+        gaps = [add_gap(ps, 1, Gap(kind="contradiction", statement=f"Trials disagree ({n}).",
+                                   evidence=GapEvidence(item_ids=["src_1", "src_2"])), verified=True, checks={},
+                        actor="gapminer") for n in ("one", "two", "three")]
+        chosen = add_topic(ps, 1, Topic(title="Aspirin over 80", summary="S.", gap_ids=gaps[:2], feasibility="F.",
+                                        data_needed="D.", paper_type="critical_review", risks="R."), actor="tester")
+        body = RQBody.model_validate({
+            "three_step": {"x": "aspirin over 80", "y": "stroke", "z": "when to start"},
+            "problem": {"condition": "Guidelines stop at 80.", "consequences": ["A.", "B."]},
+            "finer": {"feasible": "F.", "interesting": "I.", "novel": "N.", "ethical": "E.", "relevant": "R."},
+            "clinical": False})
+        rq = add_rq(ps, 1, chosen, body, [HypothesisIn(statement="H.", falsification="X.")], actor="tester")
+        freeze_rq(ps, rq, adopted_by="human", actor="tester")
+        md = render_disclosure(ps)
+        for gid in gaps[:2]:
+            (line,) = [s for s in parse_section(md) if f"`{gid}`" in s.text]
+            assert [m.target for m in line.markers] == [_evt(ps, "gap.added", gid)]
+            assert "within the search scope" in line.text and "not reviewed by a human" in line.text
+        assert f"`{gaps[2]}`" not in md
+        part = md[md.index("### Not reviewed by a human"):md.index("### Limitations")]
+        assert all(f"`{gid}`" in part for gid in gaps[:2])
+    finally:
+        k.close()

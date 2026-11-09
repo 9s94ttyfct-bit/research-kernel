@@ -5,8 +5,9 @@ only when it verifies as well as the version it would replace.
 
 0. **Carried questions.** A new attempt starts with the previous attempt's unresolved priority-1 questions (their ids,
    texts, sentences and the answers they got), recorded as its round 0 (``questions``, ``task`` none). One whose
-   sentence is no longer in its section (draft wrote it afresh after ``revise->draft``) is not carried but noted
-   (``carry_dropped``, with the reason): nothing in the text could answer it or be deleted for it.
+   sentence is no longer in its section because draft wrote it afresh after the question was asked (``revise->draft``)
+   is not carried but noted (``carry_dropped``, with the reason): nothing in the text could answer it or be deleted
+   for it. One whose sentence a revision rewrote is carried: its subject is still in the paper.
 1. **Check.** Each round starts by checking the latest version of every required section (the kernel-written
    disclosure too) with ``rk.production.draft.section_verdict`` (every sentence, and V-BALANCE as section-level
    problems), recorded (``checked``). A section that fails (a claim it cites withdrawn or failing its gate since it was
@@ -293,17 +294,33 @@ def _unresolved(ps: ProjectStore, attempt: int) -> list[dict]:
             if q["priority"] == 1 and q["id"] not in deleted and not _resolved(answers.get(q["id"]))]
 
 
-def _gone(ps: ProjectStore, q: dict) -> str | None:
-    """Why a priority-1 question cannot be carried into a new attempt: the sentence it is about is no longer in its
-    section's latest version; ``None`` when it is (or the question is about the section as a whole, or the section
-    cannot be read: the round's check fails on that)."""
+def _asked_seq(ps: ProjectStore, attempt: int, question_id: str) -> int | None:
+    """The event seq of the attempt's ``questions`` note that recorded the question (round 0 for a carried one)."""
+    for r in ps.db.execute("SELECT seq, payload FROM events WHERE type=? AND json_extract(payload, '$.attempt')=? "
+                           "AND json_extract(payload, '$.kind')='questions' ORDER BY seq", (NOTED, attempt)):
+        if any(q["id"] == question_id for q in json.loads(r["payload"])["questions"]):
+            return r["seq"]
+    return None
+
+
+def _gone(ps: ProjectStore, q: dict, attempt: int) -> str | None:
+    """Why a priority-1 question of revise's ``attempt`` cannot be carried into the next one: draft wrote its section's
+    latest version afresh after the question was asked (``revise->draft``), without the sentence it is about. ``None``
+    when the sentence is still there, the question is about the section as a whole, the section cannot be read (the
+    round's check fails on that), or a revision (not draft) wrote the latest version: the question's subject is still in
+    the paper, so it is carried and the Writer must answer it."""
     if q.get("sentence") is None:
         return None
     got = latest_version(ps, q["section"])
     if isinstance(got, str) or any(x.text == q["sentence"] for x in parse_section(got[1])):
         return None
-    return (f"its sentence “{q['sentence']}” is no longer in section {q['section']} v{got[0]['version']}, so nothing "
-            "in the text could answer it or be deleted for it")
+    row, asked = got[0], _asked_seq(ps, attempt, q["id"])
+    written = ps.db.execute("SELECT seq FROM events WHERE type='draft.written' AND entity_id=?",
+                            (f"{q['section']}.v{row['version']}",)).fetchone()
+    if row["stage"] != "draft" or asked is None or written is None or written["seq"] < asked:
+        return None
+    return (f"its sentence “{q['sentence']}” is no longer in section {q['section']} v{row['version']}, which draft wrote "
+            "afresh after it was asked, so nothing in the text could answer it or be deleted for it")
 
 
 class ReviseWorker:
@@ -354,10 +371,11 @@ class ReviseWorker:
     @staticmethod
     def _carry(ctx: StageContext) -> None:
         """Record the previous attempt's unresolved priority-1 questions as this attempt's round 0 (once). A question
-        about a sentence that is no longer in its section's latest version (e.g. draft wrote the section afresh after
-        ``revise->draft``) is not carried: nothing could answer it in the text or delete it, so it is noted
-        (``carry_dropped``, with the reason) instead. The round-0 note is written last (empty when every question was
-        dropped), so a resume after the ``carry_dropped`` note still carries the others."""
+        whose sentence is gone from its section because draft wrote the section afresh after it was asked
+        (``revise->draft``) is not carried: nothing could answer it in the text or delete it, so it is noted
+        (``carry_dropped``, with the reason) instead. One whose sentence a revision rewrote is carried. The round-0
+        note is written last (empty when every question was dropped), so a resume after the ``carry_dropped`` note
+        still carries the others."""
         ps, attempt = ctx.ps, ctx.attempt
         if attempt < 2 or _recorded(ps, attempt, "questions", 0) is not None:
             return
@@ -365,7 +383,7 @@ class ReviseWorker:
         carried, dropped = [], []
         for q in _unresolved(ps, attempt - 1):
             q = {k: v for k, v in q.items() if k != "round"}
-            if (why := _gone(ps, q)) is not None:
+            if (why := _gone(ps, q, attempt - 1)) is not None:
                 dropped.append({**q, "reason": why})
             else:
                 carried.append(q | {"carried_from": q.get("carried_from") or attempt - 1,

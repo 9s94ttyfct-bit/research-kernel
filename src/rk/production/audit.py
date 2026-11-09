@@ -4,9 +4,11 @@ required section, writes the verification report and ``disclosure.md``, and asks
 but P1's vote.
 
 1. **References** (G-REF's lookups, once per attempt, noted ``refs``): V-REF and V-RETRACT of every item the
-   manuscript cites through a ``[[clm:]]`` marker (the items of the live cited claims' evidence notes) are looked up
-   again (``sources.verify``, ``sources.retraction``; the retraction status is recorded as a verification and on the
-   item), so a retraction found at audit counts. A failed lookup reruns the stage (``audit->audit``).
+   manuscript cites (the items of the live cited claims' evidence notes, and the studies pooled into a cited
+   ``stat_result``'s artifacts or into an artifact cited directly) are looked up again with ``sources.verify``, which
+   records both and writes them to the item, so a retraction found at audit counts. A source error that may go away
+   (HTTP 429, 5xx, a transport error) is raised before the note: the engine waits and runs the attempt again in place,
+   using no edge. Any other failed lookup reruns the stage (``audit->audit``).
 2. **Disclosure.** ``rk.production.disclosure.write_disclosure`` renders ``disclosure.md`` and makes it the
    ``disclosure`` section's latest version (verified like any section); a render equal to the latest version writes
    nothing.
@@ -21,8 +23,8 @@ but P1's vote.
      no open or conceded priority-1 objection, V-STATS of a ``stat_result``; V-HEDGE on the claim).
    - **G-REF:** every cited item's recorded V-REF is ``pass`` (or ``page_metadata_only``) and its V-RETRACT is not
      ``retracted`` or ``withdrawn`` (such a work is never evidence); other flags are warnings.
-   - **G-QUOTE** (notes): every quote note of the project, cited or not, is still verbatim in the text (or abstract) it
-     was verified against (V-QUOTE again, at its locator, else anywhere in that text).
+   - **G-QUOTE** (notes): every quote note of the project, cited or not, still verifies against the text (or abstract)
+     it was verified against, by read_extract's V-QUOTE (``rk.notes.locate_in_layer``: at its locator).
    - **G-DISCLOSE:** ``rk.production.disclosure.disclosure_problems``.
    - **G-PREREG** (systematic and scoping reviews only): ``protocol_prereg_ok``.
    - **V-PRISMA:** where the paper type reports PRISMA, the arithmetic of search_screen's passed attempt
@@ -31,15 +33,20 @@ but P1's vote.
      longer search_screen's passed one, or a protocol no longer in force is "stale PRISMA counts".
    - **V-STATS:** every cited ``stat``/``fig`` artifact recomputes (``check_stats``, not recorded).
 
-   Each failure has the stage that owns it (``routes``): a sentence, coverage, balance or stale-PRISMA failure →
-   ``audit->draft``; a cited claim's gate or V-HEDGE, and an objection left unanswered by a withdrawn response
-   (``rk.verify.balance.UNANSWERED``: argue must answer it again) → ``audit->argue``; G-REF, G-QUOTE on notes and
-   V-STATS (the evidence) → ``audit->read_extract``; G-DISCLOSE, G-PREREG and V-PRISMA's arithmetic, which no earlier
-   stage can mend, rerun the audit (``audit->audit``: at its limit P2 decides, P1 fails). With several, the most
-   upstream is taken (a back-edge reopens every later stage); the guidance names every failure.
+   Each failure has its owner (``routes``). Where no stage the audit can go back to can mend it, the owner is
+   ``fail``: the stage fails at once, in P1 and P2 alike, using no edge, and the reason names the owner and what fixes
+   it (the researcher fixes it and runs again): G-PREREG (the protocol), V-PRISMA's arithmetic (search_screen), V-REF
+   ``mismatch``/``not_found`` (the library item's metadata), G-QUOTE on a quote note (an integrity defect: notes are
+   append-only), and G-DISCLOSE or any failure of the kernel-written ``disclosure`` section (a kernel defect).
+   Otherwise: a sentence, coverage, balance or stale-PRISMA failure → ``audit->draft``; a cited claim's gate or
+   V-HEDGE, and an objection left unanswered by a withdrawn response (``rk.verify.balance.UNANSWERED``: argue must
+   answer it again) → ``audit->argue``; a retracted or withdrawn cited study (read_extract excludes it) and V-STATS →
+   ``audit->read_extract``. A ``fail`` owner wins; else the most upstream stage is taken (a back-edge reopens every
+   later stage). The reason names every failure.
 4. **Report.** ``artifacts/audit/report.v<N>.md`` and ``.json`` with the event ``audit.reported`` (the gates, routes,
    warnings, the sections' versions and whether the final review had approved the manuscript); a report equal to the
-   attempt's latest is not written again.
+   attempt's latest is not written again. A report file the vote cannot read is rendered again from its event (gates
+   and owners in a fixed order) and written again when that gives its recorded sha256; else the stage fails.
 5. **Final review**, once the report passes. P2: ``final_review`` (hard-human; ``rk.checkpoints.final_review_problem``
    for the answer's shape): ``approve``; ``revise`` with a comment → ``audit->revise``; ``back`` with ``to`` (draft,
    argue, read_extract). P1 (Deviation 3): the judges vote ``approve`` or ``not_approved`` (conservative) on the
@@ -74,13 +81,21 @@ from rk.checkpoints import (
     final_review_problem,
     opened_in_place_of,
 )
-from rk.discovery.boundary import per_item
+from rk.discovery.boundary import SOURCE_ERRORS, error_text, transient_source_error
 from rk.library.service import Library
 from rk.llm.drivers import DriverSpec
 from rk.llm.vendors import vendor_of
-from rk.notes import abstract_layer, list_notes
+from rk.notes import (
+    Locator,
+    NoteIn,
+    NoteRejected,
+    abstract_layer,
+    list_notes,
+    locate_in_layer,
+)
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.orchestrator.state import stage_row
+from rk.production.artifacts import artifact
 from rk.production.common import answer_comment
 from rk.production.disclosure import SECTION, disclosure_problems, write_disclosure
 from rk.production.draft import (
@@ -102,8 +117,6 @@ from rk.text.layer import TextLayer
 from rk.verify.balance import UNANSWERED, check_balance
 from rk.verify.cover import verify_section
 from rk.verify.prisma import check_prisma, prisma_counts
-from rk.verify.quote import verify_quote, verify_quote_at
-from rk.verify.records import record_verification
 from rk.verify.stats import check_stats
 from rk.verify.support import claim_problems
 
@@ -118,8 +131,24 @@ REPORT_DIR = "artifacts/audit"
 REF_OK = frozenset({"pass", "page_metadata_only"})
 REMOVED = frozenset({"retracted", "withdrawn"})  # V-RETRACT: never evidence
 PREREG_TYPES = frozenset({"systematic_review", "scoping_review"})
-# the stage owning a failure, most upstream first: a back-edge reopens its stage and every later one
-ROUTES = ("read_extract", "argue", "draft", STAGE)
+# the owner of a failure no stage the audit can go back to can mend: the audit fails at once (no edge)
+FAIL = "fail"
+# the stage owning a failure, the run-failing owner first, then the most upstream: a back-edge reopens its stage and
+# every later one
+ROUTES = (FAIL, "read_extract", "argue", "draft")
+# the hard gates in the report's order
+GATES = ("G-REF", "G-QUOTE", "G-COVER", "V-BALANCE", "G-SUPPORT", "G-HEDGE", "G-DISCLOSE", "G-PREREG", "V-PRISMA",
+         "V-STATS")
+KERNEL_DEFECT = "a kernel defect: the kernel writes the disclosure, so no stage can mend it; report it"
+PREREG_OWNER = ("owned by the protocol, which the audit cannot go back to: record a version deviation into each later "
+                "frozen version (a protocol first frozen after screening began cannot count as preregistered, so "
+                "protocol and search_screen must run again), then run the audit again")
+PRISMA_OWNER = ("owned by search_screen, which the audit cannot go back to: its passed attempt's flow must add up (run "
+                "search_screen again), then run the audit again")
+REF_OWNER = ("owned by the library item's metadata: correct its identifier or bibliographic record and verify it again "
+             "(rk verify), then run the audit again")
+QUOTE_OWNER = ("an integrity defect: notes are append-only and no stage can retire this one; restore the text it was "
+               "verified against, then run the audit again")
 VOTE_QUESTION = (
     "This manuscript passed every hard gate of the kernel's audit (audit_report): every sentence cites a verified "
     "source, every cited claim is supported. Should it be exported as it stands? Answer approve only when it answers "
@@ -128,9 +157,9 @@ VOTE_QUESTION = (
 
 
 class AuditReport(BaseModel):
-    """``gates``: gate -> its failures (``[]``: it passes); ``routes``: the stage owning a failure (``read_extract``,
-    ``argue``, ``draft``, ``audit``) -> those failures; ``warnings``: what passes with a note (a V-RETRACT flag other
-    than retracted or withdrawn); ``ok``: no gate fails."""
+    """``gates``: gate -> its failures (``[]``: it passes); ``routes``: the owner of a failure (``fail``: no stage the
+    audit can go back to mends it; else ``read_extract``, ``argue`` or ``draft``) -> those failures; ``warnings``: what
+    passes with a note (a V-RETRACT flag other than retracted or withdrawn); ``ok``: no gate fails."""
     gates: dict[str, list[str]]
     routes: dict[str, list[str]] = {}
     warnings: list[str] = []
@@ -175,17 +204,43 @@ def _write(path, text: str) -> None:
     os.replace(tmp, path)
 
 
+def _rank(order: tuple[str, ...], key: str) -> int:
+    return order.index(key) if key in order else len(order)
+
+
 def report_markdown(version: int, attempt: int, report: AuditReport) -> str:
-    """The report as markdown: the result, each gate with its failures, the warnings and the back-edges."""
+    """The report as markdown: the result, each gate with its failures, the warnings and the owners of the failures
+    (the stage the audit goes back to, or none: the audit fails). Gates and owners are in their fixed order (``GATES``,
+    ``ROUTES``), so the report renders the same from its event, whose payload's keys are sorted."""
     lines = [f"# Audit report v{version}", "", f"Attempt {attempt}: {'passed' if report.ok else 'failed'}.", ""]
-    for gate, failures in report.gates.items():
+    for gate, failures in sorted(report.gates.items(), key=lambda kv: _rank(GATES, kv[0])):
         lines += [f"## {gate}", ""] + ([f"- {f}" for f in failures] or ["- pass"]) + [""]
     if report.warnings:
         lines += ["## Warnings", ""] + [f"- {w}" for w in report.warnings] + [""]
     if report.routes:
-        lines += ["## Back to", ""] + [f"- {to}: {len(fs)} failure{'s' if len(fs) != 1 else ''}"
-                                       for to, fs in report.routes.items()] + [""]
+        lines += ["## Owners", ""] + [
+            f"- {'no stage the audit can go back to (it fails)' if to == FAIL else to}: {len(fs)} "
+            f"failure{'s' if len(fs) != 1 else ''}"
+            for to, fs in sorted(report.routes.items(), key=lambda kv: _rank(ROUTES, kv[0]))] + [""]
     return "\n".join(lines)
+
+
+def _report_text(ps: ProjectStore, rep: dict) -> str | None:
+    """The markdown of a recorded report (``audit.reported``): its file, else rendered again from the event and written
+    again when that gives the recorded sha256; ``None`` when it does not."""
+    path = ps.root / rep["md_path"]
+    try:
+        md = path.read_text(encoding="utf-8")
+        if sha256_hex(md.encode()) == rep["sha256"]["md"]:
+            return md
+    except (OSError, UnicodeError):
+        pass
+    md = report_markdown(rep["version"], rep["attempt"], AuditReport(gates=rep["gates"], routes=rep["routes"],
+                                                                     warnings=rep["warnings"], ok=rep["ok"]))
+    if sha256_hex(md.encode()) != rep["sha256"]["md"]:
+        return None
+    _write(path, md)
+    return md
 
 
 # ---- the audit ----
@@ -212,15 +267,33 @@ def _live_claims(ps: ProjectStore, cited: list[str]) -> list[str]:
     return out
 
 
-def cited_items(ps: ProjectStore, claim_ids: list[str]) -> dict[str, list[str]]:
-    """item id -> the claims citing it through their evidence notes, in order."""
+def cited_items(ps: ProjectStore, claim_ids: list[str], artifact_ids: list[str] | tuple[str, ...] = ()) -> \
+        dict[str, list[str]]:
+    """item id -> what cites it, in order: a claim through its evidence notes or the studies its artifacts pool (a
+    ``stat_result``'s evidence), an artifact cited directly through the studies it pools."""
     svc = ArgumentService(ps)
     out: dict[str, list[str]] = {}
+
+    def add(item_id: str, by: str) -> None:
+        if by not in out.setdefault(item_id, []):
+            out[item_id].append(by)
+
+    def pooled(artifact_id: str) -> list[str]:
+        a = artifact(ps, artifact_id)
+        return list((a or {}).get("values", {}).get("item_ids") or [])
+
     for cid in claim_ids:
-        for e in svc.get_claim(cid)["evidence"]:
+        claim = svc.get_claim(cid)
+        for e in claim["evidence"]:
             for n in e["notes"]:
-                if n and cid not in out.setdefault(n["item_id"], []):
-                    out[n["item_id"]].append(cid)
+                if n:
+                    add(n["item_id"], cid)
+        for a in claim.get("artifact_ids") or []:
+            for iid in pooled(a):
+                add(iid, cid)
+    for a in artifact_ids:
+        for iid in pooled(a):
+            add(iid, a)
     return out
 
 
@@ -242,12 +315,14 @@ def _cited(texts: dict[str, str], kinds: tuple[str, ...]) -> list[str]:
 
 
 def quote_note_problem(ps: ProjectStore, note: dict) -> str | None:
-    """Why a quote note fails V-QUOTE now: it was never verified, or its text is no longer verbatim in the text it was
-    verified against (its snapshot's text layer, or the item's abstract), at its locator or anywhere in it."""
+    """Why a quote note fails V-QUOTE now, read_extract's check again (``rk.notes.locate_in_layer``: its locator counts
+    only where it holds the quote): it was never verified, or its text is no longer at its locator in the text it was
+    verified against (its snapshot's text layer, or the item's abstract)."""
     q = (note.get("verified") or {}).get("quote") or {}
     if not q.get("ok"):
         return "it was never verified as a quote (V-QUOTE)"
-    if q.get("against") == "abstract" or not note.get("snapshot_sha"):
+    against = "abstract" if q.get("against") == "abstract" or not note.get("snapshot_sha") else "text"
+    if against == "abstract":
         layer = abstract_layer(Library(ps).get(note["item_id"]).abstract)
         if layer is None:
             return "the abstract it was verified against is gone"
@@ -257,11 +332,16 @@ def quote_note_problem(ps: ProjectStore, note: dict) -> str | None:
         except (OSError, ValueError) as e:
             return f"the text it was verified against (snapshot {note['snapshot_sha']}) cannot be read: {e}"
     loc = note.get("locator")
-    if loc and verify_quote_at(note["text"], layer, loc["page"], loc["start"], loc["end"]).ok:
-        return None
-    if verify_quote(note["text"], layer).ok:
-        return None
-    return "its text is no longer verbatim in the text it was verified against (V-QUOTE)"
+    probe = NoteIn(source_id=note["item_id"], kind="quote", text=note["text"],
+                   locator=Locator(**loc) if loc else None, role_in_source=note.get("role_in_source"), against=against)
+    try:
+        found, _ = locate_in_layer(probe, layer)
+    except NoteRejected:
+        return "its text is no longer verbatim in the text it was verified against (V-QUOTE)"
+    if loc and found.model_dump() != loc:
+        return (f"its text is no longer at its locator (page {loc['page']}, {loc['start']}-{loc['end']}) in the text "
+                "it was verified against (V-QUOTE)")
+    return None
 
 
 def _stale_prisma(ps: ProjectStore, s: DraftInputs, evt: str, payload: dict) -> list[str]:
@@ -284,13 +364,10 @@ def _stale_prisma(ps: ProjectStore, s: DraftInputs, evt: str, payload: dict) -> 
 def audit_manuscript(ps: ProjectStore, *, paper_type: str) -> AuditReport:
     """Every hard gate over the latest version of every required section (see the module docstring). Reads stored
     state only (V-REF and V-RETRACT as recorded on the items) and records nothing."""
-    gates: dict[str, list[str]] = {g: [] for g in ("G-REF", "G-QUOTE", "G-COVER", "V-BALANCE", "G-SUPPORT", "G-HEDGE",
-                                                   "G-DISCLOSE")}
-    if paper_type in PREREG_TYPES:
-        gates["G-PREREG"] = []
-    if reports_prisma(paper_type):
-        gates["V-PRISMA"] = []
-    gates["V-STATS"] = []
+    # the gates of the paper type: G-PREREG for systematic and scoping reviews, V-PRISMA's arithmetic where it reports
+    # PRISMA (a cited PRISMA event of another paper type adds V-PRISMA when it is stale)
+    gates: dict[str, list[str]] = {g: [] for g in GATES if (g != "G-PREREG" or paper_type in PREREG_TYPES)
+                                   and (g != "V-PRISMA" or reports_prisma(paper_type))}
     routes: dict[str, list[str]] = {}
     warnings: list[str] = []
 
@@ -301,8 +378,8 @@ def audit_manuscript(ps: ProjectStore, *, paper_type: str) -> AuditReport:
             routes[to].append(text)
 
     def report() -> AuditReport:
-        order = {r: i for i, r in enumerate(ROUTES)}
-        return AuditReport(gates=gates, routes=dict(sorted(routes.items(), key=lambda kv: order[kv[0]])),
+        return AuditReport(gates=dict(sorted(gates.items(), key=lambda kv: _rank(GATES, kv[0]))),
+                           routes=dict(sorted(routes.items(), key=lambda kv: _rank(ROUTES, kv[0]))),
                            warnings=warnings, ok=not any(gates.values()))
 
     s = load_inputs(ps)
@@ -312,12 +389,14 @@ def audit_manuscript(ps: ProjectStore, *, paper_type: str) -> AuditReport:
     texts, versions, unread = _texts(ps, s)
     for why in unread:
         fail("G-COVER", "draft", why)
-    # every sentence and section (G-COVER, and the sentence parts of G-SUPPORT, G-HEDGE, G-QUOTE), V-BALANCE
+    # every sentence and section (G-COVER, and the sentence parts of G-SUPPORT, G-HEDGE, G-QUOTE), V-BALANCE; a failure
+    # in the kernel-written disclosure is no draft's to mend
     for sec, md in texts.items():
         tag = f"section {sec} v{versions[sec]}"
+        to, owner = (FAIL, f" ({KERNEL_DEFECT})") if sec == SECTION else ("draft", "")
         verdict = verify_section(ps, sec, md, paper_type=paper_type, version=versions[sec])
         for p in verdict.problems:
-            fail("G-COVER", "draft", f"{tag}: {p}")
+            fail("G-COVER", to, f"{tag}: {p}{owner}")
         sentences = parse_section(md)
         for sv in verdict.sentences:
             if sv.ok:
@@ -327,9 +406,9 @@ def audit_manuscript(ps: ProjectStore, *, paper_type: str) -> AuditReport:
                 by_gate.setdefault(_sentence_gate(p), []).append(p)
             text = sentences[sv.index].text.strip()
             for gate, problems in by_gate.items():
-                fail(gate, "draft", f"{tag}: sentence {sv.index + 1} “{text}”: {'; '.join(problems)}")
+                fail(gate, to, f"{tag}: sentence {sv.index + 1} “{text}”: {'; '.join(problems)}{owner}")
         for p in check_balance(ps, sec, sentences):
-            fail("V-BALANCE", "argue" if UNANSWERED in p else "draft", f"{tag}: {p}")
+            fail("V-BALANCE", "argue" if UNANSWERED in p else to, f"{tag}: {p}{owner if to == FAIL else ''}")
     for p in manuscript_problems(ps, s, texts):
         fail("G-COVER", "draft", p)
     # the cited claims (G-SUPPORT, G-HEDGE) and the items behind them (G-REF)
@@ -337,35 +416,36 @@ def audit_manuscript(ps: ProjectStore, *, paper_type: str) -> AuditReport:
     for cid in live:
         for p in claim_problems(ps, cid):
             fail("G-HEDGE" if p.kind == "hedge" else "G-SUPPORT", "argue", f"claim {cid}: {p.detail}")
-    items, lib = cited_items(ps, live), Library(ps)
-    for iid, claims in items.items():
+    items, lib = cited_items(ps, live, _cited(texts, ("stat", "fig"))), Library(ps)
+    for iid, by in items.items():
         item = lib.get(iid)
-        label = f"item {iid} “{item.title}” (evidence of {', '.join(claims)})"
+        label = f"item {iid} “{item.title}” (evidence of {', '.join(by)})"
         ref, ret = item.ref_status, item.retraction
         if ref not in REF_OK:
-            fail("G-REF", "read_extract", f"{label}: V-REF {ref}")
-        if ret in REMOVED:
+            fail("G-REF", FAIL, f"{label}: V-REF {ref} ({REF_OWNER})")
+        if ret in REMOVED:  # read_extract excludes a retracted or withdrawn study
             fail("G-REF", "read_extract", f"{label}: V-RETRACT {ret}: a {ret} work is never evidence")
         elif ret != "none":
             warnings.append(f"{label}: V-RETRACT {ret}")
     # every quote note of the project (G-QUOTE)
     for n in list_notes(ps):
         if n["kind"] == "quote" and (why := quote_note_problem(ps, n)) is not None:
-            fail("G-QUOTE", "read_extract", f"quote note {n['id']} of item {n['item_id']}: {why}")
+            fail("G-QUOTE", FAIL, f"quote note {n['id']} of item {n['item_id']}: {why} ({QUOTE_OWNER})")
     # G-DISCLOSE, G-PREREG
     if SECTION in texts:
         for p in disclosure_problems(ps, texts[SECTION], live):
-            fail("G-DISCLOSE", STAGE, f"section {SECTION} v{versions[SECTION]}: {p}")
+            fail("G-DISCLOSE", FAIL, f"section {SECTION} v{versions[SECTION]}: {p} ({KERNEL_DEFECT})")
     if paper_type in PREREG_TYPES and not protocol_prereg_ok(ps):
-        fail("G-PREREG", STAGE, "the protocol was not frozen before screening began, or a later frozen version has no "
-                                "recorded deviation into it")
+        fail("G-PREREG", FAIL, "the protocol was not frozen before screening began, or a later frozen version has no "
+                               f"recorded deviation into it ({PREREG_OWNER})")
     # V-PRISMA: the flow's arithmetic, and every cited PRISMA event recomputed
     if reports_prisma(paper_type):
         if s.search_attempt is None:
-            fail("V-PRISMA", STAGE, "search_screen has not passed: there is no PRISMA flow to check")
+            fail("V-PRISMA", FAIL, f"search_screen has not passed: there is no PRISMA flow to check ({PRISMA_OWNER})")
         else:
             for p in check_prisma(prisma_counts(ps, s.search_attempt)):
-                fail("V-PRISMA", STAGE, f"the PRISMA flow of search_screen's passed attempt {s.search_attempt}: {p}")
+                fail("V-PRISMA", FAIL, f"the PRISMA flow of search_screen's passed attempt {s.search_attempt}: {p} "
+                                       f"({PRISMA_OWNER})")
     for evt in _cited(texts, ("run",)):
         r = ps.db.execute("SELECT type, payload FROM events WHERE evt_id=?", (evt,)).fetchone()
         if r is not None and r["type"] == PRISMA_EVENT and (why := _stale_prisma(ps, s, evt, json.loads(r["payload"]))):
@@ -427,21 +507,24 @@ class AuditWorker:
     # ---- lookups, the audit and the report ----
     @staticmethod
     def _refs(ctx: StageContext, s: _Inputs) -> list[str]:
-        """V-REF and V-RETRACT of every cited item, looked up again (once per attempt); the failed lookups."""
+        """V-REF and V-RETRACT of every cited item, looked up again (once per attempt: ``sources.verify`` records both
+        and writes them to the item); the failed lookups. A source error that may go away (HTTP 429, 5xx, a transport
+        error) is raised before anything is noted: the engine waits and runs the attempt again in place."""
         ps = ctx.ps
         if noted := audit_notes(ps, ctx.attempt, kind="refs"):
             return noted[-1]["errors"]
         texts, _, _ = _texts(ps, s.draft)
         results, errors = [], []
-        for iid in cited_items(ps, _live_claims(ps, _cited(texts, ("clm",)))):
-            ref, e1 = per_item(f"V-REF of {iid}", lambda i=iid: ctx.sources.verify(i))
-            ret, e2 = per_item(f"V-RETRACT of {iid}", lambda i=iid: ctx.sources.retraction(i))
-            if ret is not None:
-                record_verification(ps, "item", iid, "V-RETRACT", ret.status, ret.model_dump(), actor=ctx.actor)
-                if ctx.lib.get(iid).retraction != ret.status:
-                    ctx.lib.update(iid, retraction=ret.status, actor=ctx.actor)
-            errors += [e for e in (e1, e2) if e]
-            results.append({"item_id": iid, "ref": ref, "retraction": ret.status if ret else None})
+        for iid in cited_items(ps, _live_claims(ps, _cited(texts, ("clm",))), _cited(texts, ("stat", "fig"))):
+            try:
+                ref = ctx.sources.verify(iid)
+            except SOURCE_ERRORS as e:
+                if transient_source_error(e):
+                    raise
+                ref = None
+                errors.append(f"V-REF and V-RETRACT of {iid} failed ({error_text(e)})")
+            results.append({"item_id": iid, "ref": ref,
+                            "retraction": ctx.lib.get(iid).retraction if ref is not None else None})
         _note(ps, ctx.attempt, "refs", actor=ctx.actor, items=results, errors=errors)
         return errors
 
@@ -478,10 +561,19 @@ class AuditWorker:
         return self._outcome(_note(ctx.ps, ctx.attempt, "back_edge", actor=ctx.actor, to=to, reason=reason))
 
     def _back(self, ctx: StageContext, rep: dict) -> StageOutcome:
-        """The owning back-edge of a failing report (the most upstream), naming every failure."""
+        """A failing report: when no stage the audit can go back to mends a failure (``fail``), the stage fails at
+        once naming its owner and what fixes it (no edge is used); else the owning back-edge (the most upstream). The
+        reason names every failure."""
+        failures = [f"{gate}: {f}" for gate, fs in rep["gates"].items() for f in fs]
+        if terminal := rep["routes"].get(FAIL):
+            owned = [f for f in failures if f.split(": ", 1)[1] in terminal]
+            rest = [f for f in failures if f not in owned]
+            return StageOutcome("failed", reason=(
+                f"the audit (report v{rep['version']}) failed, and no stage it can go back to can mend "
+                f"{'this' if len(owned) == 1 else 'these'}, so it stops here without a back-edge: " + "; ".join(owned)
+                + (f"; other failures: {'; '.join(rest)}" if rest else "")))
         to = next(r for r in ROUTES if rep["routes"].get(r))
-        failures = "; ".join(f"{gate}: {f}" for gate, fs in rep["gates"].items() for f in fs)
-        return self._send(ctx, to, f"the audit (report v{rep['version']}) failed: {failures}")
+        return self._send(ctx, to, f"the audit (report v{rep['version']}) failed: {'; '.join(failures)}")
 
     # ---- the final review ----
     @staticmethod
@@ -527,11 +619,16 @@ class AuditWorker:
         if noted := audit_notes(ps, ctx.attempt, kind="vote"):
             v = noted[-1]
         else:
+            report = _report_text(ps, rep)
+            if report is None:
+                return StageOutcome("failed", reason=(
+                    f"the audit report v{rep['version']} ({rep['md_path']}) cannot be read, and rendering it again from "
+                    "its event does not give its recorded sha256"))
             texts, _, _ = _texts(ps, s.draft)
             inputs = {"research_question": s.draft.question, "audience": s.draft.audience,
                       "manuscript": [{"section": x.id, "title": x.title, "markdown": texts.get(x.id, "")}
                                      for x in s.draft.sections],
-                      "audit_report": (ps.root / rep["md_path"]).read_text(encoding="utf-8")}
+                      "audit_report": report}
             res = vote(ctx, KIND, f"{STAGE}:{ctx.attempt}", VOTE_QUESTION, [APPROVE, NOT_APPROVED], NOT_APPROVED,
                        inputs, generator_vendors=self._generators(ctx, s), reuse=True)
             why = "; ".join(f"{o['role']} ({o['vendor']}): {o['reason']}" for o in res.opinions if o["reason"])

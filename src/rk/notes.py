@@ -72,9 +72,10 @@ def _source(ps: ProjectStore, lib: Library, note: NoteIn) -> tuple[str | None, T
     return snap
 
 
-def _locate(note: NoteIn, layer: TextLayer) -> tuple[Locator, str]:
-    """V-QUOTE of the quote (or the paraphrase's source span): its locator and how it was found (``given``: the
-    given locator holds it; ``search``: found by searching, a given locator that does not hold it is replaced)."""
+def locate_in_layer(note: NoteIn, layer: TextLayer) -> tuple[Locator, str]:
+    """V-QUOTE of the quote (or the paraphrase's source span) in ``layer``: its locator and how it was found (``given``:
+    the given locator holds it; ``search``: found by searching, a given locator that does not hold it is replaced).
+    Raises ``NoteRejected`` when it is not there. Also the audit's re-verification of a stored quote note."""
     target = note.text if note.kind == "quote" else note.source_span
     q = None
     if note.kind == "quote" and note.locator is not None:  # a known position must hold an acceptable occurrence
@@ -93,7 +94,7 @@ def locate_quote(ps: ProjectStore, lib: Library, note: NoteIn) -> tuple[str | No
     """V-QUOTE of a quote note without storing it: ``(snapshot sha, locator)`` as ``add_note`` would store them;
     raises ``NoteRejected`` as ``add_note`` does."""
     snapshot_sha, layer = _source(ps, lib, note)
-    return snapshot_sha, _locate(note, layer)[0]
+    return snapshot_sha, locate_in_layer(note, layer)[0]
 
 
 def add_note(ps: ProjectStore, lib: Library, note: NoteIn, *, actor: str,
@@ -110,7 +111,7 @@ def add_note(ps: ProjectStore, lib: Library, note: NoteIn, *, actor: str,
         snapshot_sha, layer = _source(ps, lib, note)
         if note.kind == "paraphrase" and not (note.source_span or "").strip():
             raise ValueError("paraphrase notes need source_span (the original passage)")
-        locator, located = _locate(note, layer)
+        locator, located = locate_in_layer(note, layer)
         verified["quote"] = {"ok": True, "page": locator.page, "located": located}
         if note.against == "abstract":
             verified["quote"]["against"] = "abstract"

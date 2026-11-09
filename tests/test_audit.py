@@ -11,29 +11,59 @@ from dataclasses import replace
 
 import pytest
 
-from rk.argument import ArgumentService, ObjectionIn
+from rk.argument import ArgumentService, ClaimIn, ObjectionIn
+from rk.canon import sha256_hex
 from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
+from rk.config import load_settings
+from rk.discovery.boundary import transient_source_error
 from rk.discovery.executor import RateCapped
+from rk.library.models import ItemIn
+from rk.llm.drivers import DriverSpec
+from rk.llm.vendors import vendor_of
+from rk.net.http import HttpError
 from rk.notes import NoteIn, add_note, list_notes
 from rk.orchestrator.engine import default_workers
-from rk.orchestrator.graph import BACK_EDGES, OPEN_STAGES
-from rk.orchestrator.state import record_attempt, record_passed, record_ran
+from rk.orchestrator.graph import BACK_EDGES, EDGE_LIMIT, OPEN_STAGES
+from rk.orchestrator.state import (
+    current_stage,
+    edge_rows,
+    record_attempt,
+    record_edge_taken,
+    record_passed,
+    record_ran,
+    run_row,
+    stage_row,
+)
 from rk.production.argue import argument_claims, main_claim
+from rk.production.artifacts import ArtifactIn, add_artifact
 from rk.production.audit import (
     AuditWorker,
     audit_manuscript,
     audit_notes,
     audit_reports,
+    cited_items,
+    quote_note_problem,
 )
 from rk.production.disclosure import DISCLOSURE_PATH, write_disclosure
 from rk.production.draft import PRISMA_EVENT, DraftWorker
-from rk.production.manuscript import draft_text, draft_versions, latest_draft
+from rk.production.manuscript import (
+    draft_text,
+    draft_versions,
+    latest_draft,
+    write_draft,
+)
 from rk.production.revise import ReviseWorker
+from rk.production.store import add_protocol, freeze_protocol, frozen_protocol
 from rk.production.synthesis import synthesis_claims
 from rk.store.events import NewEvent
 from rk.verify.retract import RetractionInfo
 from tests.discovery_fakes import FakeSources
-from tests.production_fakes import make_frozen_project, production_ctx
+from tests.production_fakes import (
+    a_protocol,
+    make_frozen_project,
+    production_ctx,
+    stage_run,
+)
 from tests.test_balance import object_to
 from tests.test_design import _votes
 from tests.test_draft import _ready, writes
@@ -84,6 +114,10 @@ def _report(ps) -> dict:
     return audit_reports(ps)[-1]
 
 
+def _vendor(role: str) -> str | None:
+    spec = DriverSpec.parse(load_settings().drivers[role])
+    return vendor_of(spec.provider, spec.model)
+
 
 # ---- tests ----
 def test_audit_is_a_default_worker_with_its_edges():
@@ -104,7 +138,7 @@ def test_p1_audit_passes_writes_its_report_and_disclosure_and_is_approved_by_the
     cited = {n["item_id"] for c in synthesis_claims(ps, 1) for e in ArgumentService(ps).get_claim(c)["evidence"]
              for n in e["notes"] if n}
     assert cited and {c[1] for c in ctx.sources.calls if c[0] == "verify"} >= cited
-    assert {c[1] for c in ctx.sources.calls if c[0] == "retraction"} >= cited
+    assert not [c for c in ctx.sources.calls if c[0] == "retraction"]  # verify gives V-RETRACT too: one lookup
     # two reports: before the vote, and after it (the disclosure then lists the approval)
     first, last = audit_reports(ps)
     assert first["ok"] and last["ok"] and (first["version"], last["version"]) == (1, 2)
@@ -130,6 +164,9 @@ def test_p1_audit_passes_writes_its_report_and_disclosure_and_is_approved_by_the
     assert "Audit report v1" in subject["audit_report"]
     assert "not instructions" in v1["inputs"]["question"]
     assert not ex.of("judge_3")
+    assert _vendor("judge_3") == _vendor("writer") and _vendor("writer") not in {_vendor("judge"), _vendor("judge_2")}
+    skipped = json.loads(ps.db.execute("SELECT payload FROM events WHERE type='vote.decided'").fetchone()["payload"])
+    assert "judge_3" in skipped["skipped"], skipped
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
 
 
@@ -156,15 +193,20 @@ def test_audit_fails_sentence_citing_withdrawn_claim(env):
 
 
 def test_retracted_evidence_takes_audit_to_read_extract(env):
+    """read_extract excludes a retracted study, so it can mend this: the one route to read_extract that stays. The
+    lookup is ``sources.verify`` alone (V-REF and V-RETRACT), one V-RETRACT record per item."""
     _, ps, lib = env
     revised(env)
     (item,) = [i for i in lib.list() if i.title == "A trial"]
-    out = AuditWorker().run(_ctx(env, _judges("approve"),
-                                 retractions={"A trial": RetractionInfo(status="retracted", sources=["openalex"])}))
+    ctx = _ctx(env, _judges("approve"), retractions={"A trial": RetractionInfo(status="retracted", sources=["openalex"])})
+    out = AuditWorker().run(ctx)
     assert (out.status, out.to) == ("back_edge", "read_extract"), (out.status, out.reason)
     assert f"item {item.id}" in out.reason and "retracted" in out.reason
     assert lib.get(item.id).retraction == "retracted"
     assert any(item.id in f for f in _report(ps)["gates"]["G-REF"])
+    assert [c for c in ctx.sources.calls if c[1:] == (item.id,)] == [("verify", item.id)]
+    assert ps.db.execute("SELECT COUNT(*) FROM verifications WHERE target_id=? AND verifier='V-RETRACT'",
+                         (item.id,)).fetchone()[0] == 1
 
 
 def test_failing_quote_note_no_claim_cites_still_fails_g_quote(env):
@@ -179,10 +221,12 @@ def test_failing_quote_note_no_claim_cites_still_fails_g_quote(env):
     ps.apply(NewEvent(type="note.added", entity_id=item.id, actor_kind="agent", actor="tester",
                       payload={"note": {**note, "text": "Words the source never says."}}))
     out = AuditWorker().run(_ctx(env, _judges("approve")))
-    assert (out.status, out.to) == ("back_edge", "read_extract"), (out.status, out.reason)
-    assert "G-QUOTE" in out.reason and nid in out.reason
+    # notes are append-only and read_extract only adds new ones: no stage can mend it, so the audit fails at once
+    assert out.status == "failed", (out.status, out.reason)
+    assert "G-QUOTE" in out.reason and nid in out.reason and "integrity" in out.reason
     (failure,) = _report(ps)["gates"]["G-QUOTE"]
     assert nid in failure and "verbatim" in failure
+    assert not audit_notes(ps, 1, kind="back_edge")
 
 
 def test_unsupported_claim_takes_audit_to_argue(env):
@@ -216,20 +260,26 @@ def test_unanswered_objection_takes_audit_to_argue_other_balance_problems_to_dra
     assert all(f in rep["gates"]["V-BALANCE"] for f in rep["routes"]["argue"])
 
 
+def _cites_prisma(inputs):
+    """A Writer output that cites the PRISMA event in methods."""
+    md = writes()(inputs)["markdown"]
+    if inputs["section"]["id"] == "methods":
+        e = next(e for e in inputs["events"] if e["type"] == PRISMA_EVENT)
+        n = e["numbers"]
+        md = (md.rstrip("\n") + f" The search identified {n['identified']} records and included {n['included']} "
+              f"studies [[run:{e['event_id']}]].\n")
+    return {"markdown": md}
+
+
+def _stale(ps) -> list[str]:
+    return [f for f in audit_manuscript(ps, paper_type="systematic_review").gates["V-PRISMA"]
+            if f.startswith("stale PRISMA counts")]
+
+
 @pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
 def test_stale_prisma_counts_take_audit_to_draft(env):
     _, ps, _ = env
-
-    def cites_prisma(inputs):
-        md = writes()(inputs)["markdown"]
-        if inputs["section"]["id"] == "methods":
-            e = next(e for e in inputs["events"] if e["type"] == PRISMA_EVENT)
-            n = e["numbers"]
-            md = (md.rstrip("\n") + f" The search identified {n['identified']} records and included {n['included']} "
-                  f"studies [[run:{e['event_id']}]].\n")
-        return {"markdown": md}
-
-    revised(env, writer=cites_prisma)
+    revised(env, writer=_cites_prisma)
     (evt,) = [r["evt_id"] for r in ps.db.execute("SELECT evt_id FROM events WHERE type=?", (PRISMA_EVENT,))]
     assert f"[[run:{evt}]]" in draft_text(ps, "methods", 1)
     w = AuditWorker()
@@ -243,6 +293,27 @@ def test_stale_prisma_counts_take_audit_to_draft(env):
     assert "stale PRISMA counts" in out.reason and evt in out.reason
     assert any("search_screen attempt 1" in f and evt in f for f in _report(ps)["gates"]["V-PRISMA"])
     assert not w.gate(ps, 2).ok
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_stale_prisma_counts_when_a_count_differs_or_the_protocol_changed(env, monkeypatch):
+    import rk.production.audit as audit_mod
+
+    _, ps, _ = env
+    revised(env, writer=_cites_prisma)
+    (evt,) = [r["evt_id"] for r in ps.db.execute("SELECT evt_id FROM events WHERE type=?", (PRISMA_EVENT,))]
+    assert not _stale(ps)
+    counts = audit_mod.prisma_counts
+    monkeypatch.setattr(audit_mod, "prisma_counts", lambda ps, a: replace(counts(ps, a), identified=99))
+    (stale,) = _stale(ps)
+    assert evt in stale and "identified" in stale and "is now 99" in stale
+    monkeypatch.setattr(audit_mod, "prisma_counts", counts)
+    old = frozen_protocol(ps)["id"]
+    freeze_protocol(ps, add_protocol(ps, 2, a_protocol(), version=2, actor="tester"), actor="tester")
+    (stale,) = _stale(ps)
+    assert evt in stale and f"under the protocol {old}" in stale and frozen_protocol(ps)["id"] in stale
+    rep = audit_manuscript(ps, paper_type="systematic_review")
+    assert stale in rep.routes["draft"]
 
 
 def _answer(ps, cid: str, answer: dict) -> dict:
@@ -363,3 +434,170 @@ def test_write_disclosure_is_idempotent(env):
     assert draft_versions(ps, "disclosure")[-1]["verdict"]["ok"], draft_versions(ps, "disclosure")[-1]["verdict"]
     assert (ps.root / DISCLOSURE_PATH).is_file()
     assert (ps.root / DISCLOSURE_PATH).read_text() == latest_draft(ps, "disclosure")[1]
+
+
+# ---- round 1 ----
+URL = "https://api.crossref.org/works/10.1000/x"
+
+
+class _Flaky(FakeSources):
+    """``FakeSources`` whose first ``verify`` raises ``error``."""
+
+    def __init__(self, *a, error: Exception, **kw):
+        super().__init__(*a, **kw)
+        self.error: Exception | None = error
+
+    def verify(self, item_id: str) -> str:
+        if self.error is not None:
+            e, self.error = self.error, None
+            raise e
+        return super().verify(item_id)
+
+
+def test_a_transient_lookup_error_resumes_the_audit_in_place_and_a_persistent_one_reruns_it(env):
+    """I1: an HTTP 429/5xx or transport error at V-REF is raised before the ``refs`` note, so the engine waits
+    (``waiting_source``) and runs the attempt again in place, spending no edge; a persistent error reruns as before."""
+    _, ps, lib = env
+    revised(env)
+    w = AuditWorker()
+    ctx = replace(_ctx(env, _judges("approve")), sources=_Flaky({}, lib=lib, error=HttpError(503, URL)))
+    with pytest.raises(HttpError) as e:
+        w.run(ctx)
+    assert transient_source_error(e.value)
+    assert not audit_notes(ps, 1, kind="refs") and not audit_notes(ps, 1, kind="back_edge")
+    out = w.run(ctx)  # the same attempt, in place
+    assert out.status == "done", out.reason
+    (refs,) = audit_notes(ps, 1, kind="refs")
+    assert refs["errors"] == []
+    ctx = replace(_ctx(env, Exec({}), attempt=2), sources=_Flaky({}, lib=lib, error=HttpError(404, URL)))
+    out = w.run(ctx)
+    assert out.status == "rerun" and "HTTP 404" in out.reason, (out.status, out.reason)
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_a_failure_no_stage_can_mend_fails_the_audit_at_once_using_no_edge(env, monkeypatch):
+    """I2: G-PREREG (owned by the protocol) and V-PRISMA's arithmetic (owned by search_screen) cannot change by any
+    stage the audit can go back to: the stage fails at once, naming the owner and what fixes it, in P1 and P2 alike."""
+    import rk.production.audit as audit_mod
+
+    k, ps, lib = env
+    revised(env)
+    monkeypatch.setattr(audit_mod, "protocol_prereg_ok", lambda ps: False)
+    ex = _judges("approve")
+    o, run_id = stage_run(k, ps, lib, "audit", ex)
+    assert o.step("demo", run_id, actor="tester") == "failed"
+    run = run_row(ps, run_id)
+    assert run["status"] == "failed" and "G-PREREG" in run["reason"], run
+    assert "owned by the protocol" in run["reason"] and "deviation" in run["reason"]
+    assert [e for e, r in edge_rows(ps).items() if e.startswith("audit->") and r["count"]] == []
+    assert not ex.calls and not audit_notes(ps, 1, kind="back_edge")
+    assert list(_report(ps)["routes"]) == ["fail"]
+    monkeypatch.setattr(audit_mod, "protocol_prereg_ok", lambda ps: True)
+    monkeypatch.setattr(audit_mod, "check_prisma", lambda p: ["identified does not add up"])
+    out = AuditWorker().run(_ctx(env, Exec({}), attempt=2))
+    assert out.status == "failed" and "V-PRISMA" in out.reason and "owned by search_screen" in out.reason, out
+
+
+@pytest.mark.parametrize("case", ["v_ref", "g_disclose", "disclosure_sentence"])
+def test_other_failures_no_stage_can_mend_fail_the_audit_at_once(env, monkeypatch, case):
+    """I3: V-REF mismatch or not_found (owned by the library item's metadata), G-DISCLOSE and any failure in the
+    kernel-written disclosure section (a kernel defect) fail the audit at once; no back-edge, no vote."""
+    import rk.production.audit as audit_mod
+    import rk.production.disclosure as disclosure_mod
+
+    _, ps, lib = env
+    revised(env)
+    (item,) = [i for i in lib.list() if i.title == "A trial"]
+    sources: dict = {}
+    if case == "v_ref":
+        sources, owner = {"statuses": {"A trial": "mismatch"}}, "owned by the library item"
+    elif case == "g_disclose":
+        monkeypatch.setattr(audit_mod, "disclosure_problems", lambda ps, md, cited: ["the part Limitations is missing"])
+        owner = "a kernel defect"
+    else:
+        render = disclosure_mod.render_disclosure
+        monkeypatch.setattr(disclosure_mod, "render_disclosure", lambda ps: render(ps) + "\nA sentence without a source.\n")
+        owner = "a kernel defect"
+    ex = _judges("approve")
+    out = AuditWorker().run(_ctx(env, ex, **sources))
+    assert out.status == "failed", (out.status, out.reason)
+    assert owner in out.reason
+    if case == "v_ref":
+        assert item.id in out.reason and "V-REF mismatch" in out.reason
+    if case == "disclosure_sentence":
+        assert "section disclosure" in out.reason
+    assert not ex.calls and not audit_notes(ps, 1, kind="back_edge")
+    assert list(_report(ps)["routes"]) == ["fail"]
+
+
+def test_p1_not_approved_takes_audit_to_revise_through_the_engine_and_fails_at_the_limit(env):
+    k, ps, lib = env
+    revised(env)
+    ex = Exec({**_votes(["not_approved"] * 2, ["not_approved"] * 2),
+               ("simreader", "ReaderQuestions"): [{"questions": []}]})
+    o, run_id = stage_run(k, ps, lib, "audit", ex)
+    assert o.step("demo", run_id, actor="tester") == "running"
+    assert current_stage(ps) == "revise" and edge_rows(ps)["audit->revise"]["count"] == 1
+    assert "judge says not_approved" in stage_row(ps, "revise")["guidance"]
+    assert o.step("demo", run_id, actor="tester") == "running"  # revise again: no question, it passes
+    assert current_stage(ps) == "audit"
+    record_edge_taken(ps, "audit->revise", EDGE_LIMIT, actor="tester")
+    assert o.step("demo", run_id, actor="tester") == "failed"  # P1 at the limit never exports it unapproved
+    run = run_row(ps, run_id)
+    assert "never exported" in run["reason"] and "judge says not_approved" in run["reason"], run
+    assert len(ex.of("judge", "VoteOut")) == 2
+
+
+def test_quote_note_whose_locator_no_longer_holds_its_text_fails_v_quote(env):
+    """read_extract's V-QUOTE: a given locator counts only where it holds the quote (no search elsewhere)."""
+    _, ps, _ = env
+    revised(env)
+    note = next(n for n in list_notes(ps) if n["kind"] == "quote" and n.get("locator"))
+    assert quote_note_problem(ps, note) is None
+    loc = note["locator"]
+    moved = {**note, "locator": {**loc, "start": loc["start"] + 1, "end": loc["end"] + 1}}
+    assert "V-QUOTE" in (quote_note_problem(ps, moved) or ""), quote_note_problem(ps, moved)
+
+
+def test_a_removed_report_file_is_written_again_from_its_event_before_the_vote(env):
+    _, ps, _ = env
+    revised(env)
+    ex = CapOnce(_votes(["approve"] * 2, ["approve"] * 2), at=("judge", "VoteOut"))
+    w = AuditWorker()
+    ctx = _ctx(env, ex)
+    with pytest.raises(RateCapped):
+        w.run(ctx)
+    (rep,) = audit_reports(ps)
+    (ps.root / rep["md_path"]).unlink()
+    out = w.run(ctx)
+    assert out.status == "done", out.reason
+    md = (ps.root / rep["md_path"]).read_text(encoding="utf-8")
+    assert sha256_hex(md.encode()) == rep["sha256"]["md"]
+    assert ex.of("judge", "VoteOut")[-1]["inputs"]["subject"]["audit_report"] == md
+
+
+def test_g_ref_covers_the_studies_pooled_into_a_cited_stat_result(env):
+    """A ``stat_result`` claim's evidence is its artifacts, not notes: the studies they pool are cited items too
+    (looked up again, and checked by G-REF), as are those of an artifact cited directly."""
+    _, ps, lib = env
+    revised(env)
+    pooled = lib.add_item(ItemIn(title="A pooled trial", year=2010), added_by="agent", actor="tester").item_id
+    sid = add_artifact(ps, ArtifactIn(kind="stt", code_path="rk.stats.pool:pool", code_version="v", input_hashes=[],
+                                      values={"k": 3, "estimate": 0.62, "item_ids": [pooled]}, output_path=None),
+                       stage="synthesize", attempt=1, actor="kernel")
+    svc = ArgumentService(ps)
+    stat = svc.add_claim(ClaimIn(text="Pooled RR 0.62 (3 studies).", kind="stat_result", artifact_ids=[sid],
+                                 number_bindings=[{"artifact_id": sid, "key": "estimate", "text": "0.62"},
+                                                  {"artifact_id": sid, "key": "k", "text": "3"}]),
+                         generator_vendor=None, actor="kernel", actor_kind="kernel", origin="synthesis")
+    assert cited_items(ps, [stat]) == {pooled: [stat]}
+    assert pooled in cited_items(ps, [], [sid])
+    _, md = latest_draft(ps, "conclusion")
+    write_draft(ps, "conclusion", md.rstrip("\n") + f" Pooled RR 0.62 (3 studies) [[clm:{stat}]].\n", stage="revise",
+                attempt=1, round=1, by_task=None, actor="tester")
+    ctx = _ctx(env, _judges("approve"),
+               retractions={"A pooled trial": RetractionInfo(status="retracted", sources=["openalex"])})
+    out = AuditWorker().run(ctx)
+    assert ("verify", pooled) in ctx.sources.calls
+    assert any(pooled in f and "retracted" in f for f in _report(ps)["gates"]["G-REF"]), _report(ps)["gates"]
+    assert (out.status, out.to) == ("back_edge", "read_extract"), (out.status, out.reason)
