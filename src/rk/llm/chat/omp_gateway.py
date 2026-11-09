@@ -3,14 +3,20 @@
 Protocol (verified 2026-11-05): the child prints ``{"ready": true, ...}``, then for every request line
 ``{"id": n, "path": "/v1/chat/completions", "body": {...}}`` replies ``{"id": n, "status": 200, "body": {...}}``.
 Replies are matched by id; one child process is shared and guarded by a lock.
+
+The child runs with omp's model fallback off (``NO_FALLBACK_OVERLAY`` appended to ``PI_CONFIG_FILES``, verified
+2026-11-09: a request for a model without a credential then returns 401 instead of an answer from the user's
+``retry.fallbackChains``); a reply naming another model is still refused (``complete``).
 """
 
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import threading
+from importlib.resources import files
 
 from rk.llm.chat.base import Msg, ToolDef, Turn
 from rk.llm.chat.openai_chat import openai_body, openai_turn
@@ -18,6 +24,15 @@ from rk.llm.types import Availability, ProviderError
 
 READY_TIMEOUT_S = 30.0
 REPLY_TIMEOUT_S = 600.0
+NO_FALLBACK_OVERLAY = str(files("rk.llm.chat").joinpath("omp_no_fallback.yml"))
+
+
+def gateway_env() -> dict[str, str]:
+    """The environment of the gateway child: this process's, with ``NO_FALLBACK_OVERLAY`` loaded last among the
+    user's own omp settings overlays (``PI_CONFIG_FILES``), so it wins over them."""
+    env = dict(os.environ)
+    env["PI_CONFIG_FILES"] = os.pathsep.join(p for p in (env.get("PI_CONFIG_FILES"), NO_FALLBACK_OVERLAY) if p)
+    return env
 
 
 class OmpGatewayBackend:
@@ -40,7 +55,8 @@ class OmpGatewayBackend:
             return self._proc
         try:
             proc = subprocess.Popen([self.omp_bin, "auth-gateway", "stdio"], stdin=subprocess.PIPE,
-                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1,
+                                    env=gateway_env())
         except OSError as e:
             raise ProviderError(f"cannot start omp auth-gateway: {e}") from e
         first = self._readline(proc, READY_TIMEOUT_S)
@@ -93,11 +109,12 @@ class OmpGatewayBackend:
         if reply.get("status") != 200:
             raise ProviderError(f"omp auth-gateway status {reply.get('status')}: {str(reply.get('body'))[:500]}")
         turn = openai_turn(reply["body"])
-        # omp's retry.modelFallback may answer with another model (e.g. a Codex judge answered by Claude), which would
-        # silently change the vendor a judge or generator stands for: such a reply is a failed call, never accepted.
+        # Model fallback is off in the child (gateway_env), but a reply naming another model (e.g. a Codex judge
+        # answered by Claude) would silently change the vendor a judge or generator stands for: a failed call, never
+        # accepted.
         if turn.model != self.model:
-            raise ProviderError(f"omp auth-gateway answered with {turn.model or 'no model'} instead of {self.model} "
-                                "(omp model fallback); reply not accepted")
+            raise ProviderError(f"omp auth-gateway answered with {turn.model or 'no model'} instead of {self.model}; "
+                                "reply not accepted")
         return turn
 
     def close(self) -> None:

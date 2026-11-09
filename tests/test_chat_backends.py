@@ -116,7 +116,10 @@ def fake_omp(tmp_path) -> str:
     return str(exe)
 
 
-def test_omp_gateway_stdio_protocol(fake_omp):
+def test_omp_gateway_stdio_protocol(fake_omp, tmp_path, monkeypatch):
+    user_overlay = tmp_path / "user.yml"
+    user_overlay.write_text("retry:\n  modelFallback: true\n")
+    monkeypatch.setenv("PI_CONFIG_FILES", str(user_overlay))  # the user's own overlay cannot turn fallback back on
     b = OmpGatewayBackend("openai-codex/gpt-6-luna", omp_bin=fake_omp)
     try:
         assert b.complete([Msg(role="user", content="hello")], [], None).text == "echo:hello"
@@ -125,9 +128,12 @@ def test_omp_gateway_stdio_protocol(fake_omp):
         assert b.complete([Msg(role="user", content="again")], [], None).model == "openai-codex/gpt-6-luna"
         with pytest.raises(ProviderError, match="401"):
             b.complete([Msg(role="user", content="FAIL")], [], None)
-        # omp's model fallback answered with another vendor's model: a failed call, never this driver's answer
-        with pytest.raises(ProviderError, match="claude-sonnet-5-5 instead of openai-codex/gpt-6-luna"):
+        # the requested model failed: omp's model fallback is off in the gateway, so the call fails, not Sonnet answers
+        with pytest.raises(ProviderError, match="401"):
             b.complete([Msg(role="user", content="FALLBACK")], [], None)
+        # a reply from another vendor's model anyway: a failed call, never this driver's answer
+        with pytest.raises(ProviderError, match="claude-sonnet-5-5 instead of openai-codex/gpt-6-luna"):
+            b.complete([Msg(role="user", content="WRONGMODEL")], [], None)
         with pytest.raises(ProviderError, match="no model instead of openai-codex/gpt-6-luna"):
             b.complete([Msg(role="user", content="NOMODEL")], [], None)  # unidentifiable: fail closed
     finally:

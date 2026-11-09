@@ -302,7 +302,7 @@ Role tasks run on a configurable driver per role (`drivers` in `config.toml`; se
 | `codex_cli` | `codex exec`, read-only sandbox, shell/apps/browser features off, `--ignore-user-config` | `rk mcp`, tools pre-approved for that server only |
 | `anthropic_api:<model>`, `openai_api:<model>` | HTTP API with your key (`config.toml` or `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) | the in-process tool loop |
 | `ollama:<model>` | local `ollama serve` (cloud models via `:cloud`; output validated client-side) | the in-process tool loop |
-| `omp_gateway:<provider/model>` | the default; `omp auth-gateway stdio` with omp's own logins (`rk models` lists its models). A reply from another model than the one asked for (omp's model fallback) is refused, so a role never silently changes vendor | the in-process tool loop |
+| `omp_gateway:<provider/model>` | the default; `omp auth-gateway stdio` with omp's own logins (`rk models` lists its models). The gateway runs with omp's model fallback (`retry.modelFallback`) off, so a failing model fails instead of being answered by your `retry.fallbackChains`; a reply from another model than the one asked for is still refused, so a role never silently changes vendor | the in-process tool loop |
 | `human` | turns the task into a checkpoint for you | — |
 
 - Every task is bound to one project and to its role's tools (`src/rk/roles/policy.py`). Agents can never answer

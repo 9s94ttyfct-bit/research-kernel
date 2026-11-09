@@ -1,0 +1,6 @@
+# omp settings overlay for the auth-gateway processes rk starts (PI_CONFIG_FILES): a request for a model must be
+# answered by that model or fail. With omp's retry.modelFallback on (its default), a failing model (no credential, a
+# rate limit, an outage) is answered by the user's retry.fallbackChains instead, e.g. a Codex judge by Claude Sonnet,
+# which would break the vendor separation between generators and reviewers. Same-model retries stay on.
+retry:
+  modelFallback: false
