@@ -1,11 +1,11 @@
 # Plan 5c demo: draft, revise, audit and export, cloud models only (2026-11-09)
 
 The Plan 5c stages turn a review's argument into an exported manuscript: `draft → revise → audit → export`. This page
-records the live runs of Task 9:
+will record the live runs of Task 9 (in progress: no project has exported yet; see each project's status below):
 - a systematic review (melatonin for delirium), a critical review (large language models as screeners) and a research
   proposal (the melatonin question as a trial), each in P2 with the checkpoints answered;
 - one P1 project from intake to export, with every checkpoint the mode lets a vote answer voted;
-- the systematic-review reproduction set (`docs/eval/sr-repro-<date>.md`).
+- the systematic-review reproduction set (its report, `docs/eval/sr-repro-<date>.md`, is written when the set has run).
 
 Every number comes from the runs' event logs, databases and CLI output; ids are the runs' own. **The checkpoints were
 answered by the agent that ran the demo, standing in for the researcher**; every answer is logged with its time and
@@ -88,8 +88,11 @@ failed on the argue crash fixed in 7ca05c5).
 - Draft: attempt 6 (the first on 2e717c7) failed on 8 sentence problems and attempt 7 on 4. The abstract came back
   empty after its second missing_support request was refused (fix 0d8e3d0), a withdrawn claim was cited, and one
   sentence wrongly said that neither trial was powered. Attempt 8 failed on 4 more problems; its Methods also said
-  that risk of bias was assessed with RoB 2, although the extraction records it as not reported. Attempt 9 was running
-  at 20:20 UTC, guided by the stand-in's comment.
+  that risk of bias was assessed with RoB 2, although the extraction records it as not reported. Attempt 9, guided by
+  the stand-in's comment, also failed its tries: draft is blocked at its draft→draft limit (stage_blocked
+  `chk_01M711V1MPDXR2F9QAM1G71AVJ`, open at 21:05 UTC). Two of its failure kinds were kernel defects (a number of the
+  cited protocol's text, such as the eligibility age, was not in the sentence's target; withdrawn claims were offered
+  to the Writer), fixed by the controller after this status; the others are the Writer's.
 
 ## Research proposal (P2), in progress
 

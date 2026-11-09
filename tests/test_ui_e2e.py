@@ -320,12 +320,13 @@ def test_stage_blocked_card(page, workbench):
     kernel, _, _ = workbench
     ps, _ = kernel.project("demo")
     for button, answer in (("Allow one more use", {"decision": "allow_one_more", "comment": "narrow to the RCTs"}),
+                           ("Allow one more use", {"decision": "allow_one_more"}),  # the field left empty
                            ("Stop", {"decision": "stop"})):
         cid = create_checkpoint(ps, "stage_blocked", "'gaps' wants gaps->landscape again, but it was used 2 times.",
                                 {"choices": ["allow_one_more", "stop"], "edge": "gaps->landscape", "to": "landscape",
                                  "failures": ["no verified gap to build topics on"]}, stage="gaps",
                                 actor="orchestrator")
-        _goto(page, f"checkpoints?{answer['decision']}")
+        _goto(page, f"checkpoints?{cid}")
         card = page.locator('.checkpoints li[data-kind="stage_blocked"]')
         card.get_by_text("no verified gap to build topics on").wait_for()
         if "comment" in answer:  # the optional guidance goes with the allowed rerun

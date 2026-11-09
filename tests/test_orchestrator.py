@@ -181,17 +181,25 @@ def test_third_use_of_an_edge_opens_stage_blocked(project):
     assert _drive(o, run_id)[-1] == "paused_waiting_human"
     assert [c[1] for c in landscape.calls if c[0] == "run"] == [1, 2, 3, 4]
     fourth = [c for c in landscape.calls if c[0] == "run"][3][2]
-    assert "failure 3" in fourth and "narrow to the two RCTs" in fourth
+    assert fourth.index("failure 3") < fourth.index("narrow to the two RCTs")  # the failures first, then the comment
     assert edge_count(ps, "landscape->landscape") == 3
     assert [e["edge"] for e in _events(ps, "edge.allowed")] == ["landscape->landscape"]
-    [second] = list_checkpoints(ps, "open")
-    assert second["kind"] == "stage_blocked" and second["id"] != blocked["id"]
+    # a blank or non-text comment is no guidance: the reopened stage gets the failures alone
+    for n, comment in ((5, "  "), (6, 3)):
+        [again] = list_checkpoints(ps, "open")
+        assert again["kind"] == "stage_blocked" and again["id"] != blocked["id"]
+        answer_checkpoint(ps, again["id"], {"decision": "allow_one_more", "comment": comment}, answered_by="human",
+                          actor="tester")
+        assert _drive(o, run_id)[-1] == "paused_waiting_human"
+        runs = [c for c in landscape.calls if c[0] == "run"]
+        assert len(runs) == n and runs[-1][2] == "\n".join(again["options"]["failures"])
 
-    answer_checkpoint(ps, second["id"], {"decision": "stop"}, answered_by="human", actor="tester")
+    [last] = list_checkpoints(ps, "open")
+    answer_checkpoint(ps, last["id"], {"decision": "stop"}, answered_by="human", actor="tester")
     assert o.step("demo", run_id, actor="tester") == "failed"
     row = run_row(ps, run_id)
     assert row["status"] == "failed" and "landscape->landscape" in row["reason"]
-    assert len([c for c in landscape.calls if c[0] == "run"]) == 4
+    assert len([c for c in landscape.calls if c[0] == "run"]) == 6
 
 
 def _degraded_gate(ps):

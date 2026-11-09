@@ -281,41 +281,34 @@ def _parse(markdown: str) -> _Doc:
     return _Doc(blocks, code_blocks, tables, headings, references)
 
 
-def _markers(markdown: str, doc: _Doc) -> tuple[list[Marker], list[Marker]]:
-    """The section's markers (see the module docstring), and the literal grammar found where the reader cannot see
-    it (outside code, not escaped, but not rendered prose text)."""
-    code, visible = doc.code(), doc.visible()
-    seen, hidden = [], []
-    for m in MARKER.finditer(markdown):
-        if any(m.start() < e and m.end() > s for s, e in code):
-            continue
-        before = markdown[:m.start()]
-        if (len(before) - len(before.rstrip("\\"))) % 2:  # an escaped first bracket
-            continue
-        mk = Marker(kind=m[1], target=m[2], span=(m.start(), m.end()))
-        (seen if all(o in visible for o in range(m.start(), m.end())) else hidden).append(mk)
-    return seen, hidden
+class _Literals(NamedTuple):
+    seen: list[Marker]  # the section's markers
+    hidden: list[Marker]  # marker grammar where the reader cannot see it (not rendered prose text)
+    malformed: list[tuple[int, str]]  # ``(offset, text)`` of visible ``[[…]]`` that is no marker, e.g. ``[[clm_…]]``
 
 
-def _malformed(markdown: str, doc: _Doc) -> list[tuple[int, str]]:
-    """``(offset, text)`` of each visible ``[[…]]`` that is no marker (e.g. a bare id, ``[[clm_…]]``): outside code and
-    not escaped, by the same rules as ``_markers``; the reader sees it, and it cites nothing."""
+def _markers(markdown: str, doc: _Doc) -> _Literals:
+    """Every ``[[…]]`` of the section outside code and not escaped, by one rule: a marker (see the module docstring)
+    the reader sees or cannot see, else, when visible, malformed marker text that cites nothing."""
     code, visible = doc.code(), doc.visible()
-    out = []
+    out = _Literals([], [], [])
     for m in _BRACKETED.finditer(markdown):
-        if MARKER.fullmatch(m[0]) or any(m.start() < e and m.end() > s for s, e in code):
+        if any(m.start() < e and m.end() > s for s, e in code):
             continue
         before = markdown[:m.start()]
         if (len(before) - len(before.rstrip("\\"))) % 2:  # an escaped first bracket: literal text
             continue
-        if all(o in visible for o in range(m.start(), m.end())):
-            out.append((m.start(), m[0]))
+        shown = all(o in visible for o in range(m.start(), m.end()))
+        if (g := MARKER.fullmatch(m[0])) is not None:
+            (out.seen if shown else out.hidden).append(Marker(kind=g[1], target=g[2], span=(m.start(), m.end())))
+        elif shown:
+            out.malformed.append((m.start(), m[0]))
     return out
 
 
 def source_markers(markdown: str) -> list[Marker]:
     """Every marker of the section markdown, in order, with its source span (see the module docstring)."""
-    return _markers(markdown, _parse(markdown))[0]
+    return _markers(markdown, _parse(markdown)).seen
 
 
 def _is_caption(b: _Block) -> bool:
@@ -340,7 +333,7 @@ def section_problems(markdown: str, *, kernel_written: bool = False) -> list[str
     out += [f"line {markdown.count(chr(10), 0, m.span[0]) + 1}: the marker {markdown[m.span[0]:m.span[1]]} is where "
             "the reader cannot see it (a heading, a table, a link's destination or title, an autolink, an image's alt "
             "text or a reference definition): it counts for no sentence; put markers in the prose"
-            for m in _markers(markdown, doc)[1]]
+            for m in _markers(markdown, doc).hidden]
     if kernel_written:
         return out
     titles = {b.line: b.text.strip() for b in doc.blocks if b.kind == "heading"}
@@ -394,8 +387,8 @@ def _cuts(prose: str) -> list[tuple[int, int]]:
 def parse_section(markdown: str) -> list[Sentence]:
     """The section's sentences, in order, with their markers (see the module docstring)."""
     doc = _parse(markdown)
-    markers = _markers(markdown, doc)[0]
-    malformed = _malformed(markdown, doc)
+    lit = _markers(markdown, doc)
+    markers, malformed = lit.seen, lit.malformed
     sentences: list[Sentence] = []
     for b in doc.blocks:
         if b.kind != "prose" or _is_caption(b):
