@@ -397,31 +397,25 @@ def test_resume_stores_an_accepted_revision_made_for_a_carried_question(env, mon
 
 
 def test_kept_verdict_needs_the_same_rendered_sentence(env):
+    """A sentence's rendering may depend on the whole section (a reference definition elsewhere makes ``[x][42]`` a
+    link): its earlier verdict is kept only when its rendered text is the same too. (A Writer's section may no longer
+    hold a reference definition at all, so the check is shown on ``_check`` itself.)"""
+    from rk.production.revise import _check
+
     _, ps, _ = env
-    definition = "[42]: https://example.org/trials\n"
-
-    def with_reference(inputs):
-        md = writes()(inputs)["markdown"]
-        if inputs["section"]["id"] != "introduction":
-            return {"markdown": md}
-        c = next(c for c in inputs["claims"] if c["role"] == "main")
-        linked = f"{c['text'].rstrip('.')} in [the trials][42] [[clm:{c['claim_id']}]]."
-        return {"markdown": md.rstrip("\n") + " " + linked + "\n\n" + definition}
-
-    _drafted(env, writer=with_reference)
+    _drafted(env)
     main = main_claim(ps, 1)
-    save_settings(load_settings().model_copy(update={"revise_max_rounds": 1}))
-    # the Writer deletes only the reference definition: the sentence's source is unchanged, but it now renders
-    # "[the trials][42]", whose 42 no marker target contains
-    ex = _exec([ask(("introduction", 1))], [revision(drop=definition)])
-    w = ReviseWorker()
-    assert _done(w.run(_ctx(env, ex)))
-    (decided,) = revise_notes(ps, 1, kind="decided")
-    linked = parse_section(draft_text(ps, "introduction", 1))[-1]
-    assert main in linked.text and "the trials" in linked.text
-    assert not decided["accepted"] and linked.index in decided["reverified"]
-    assert any("the number 42 is not in any marker's target" in r for r in decided["reasons"]), decided["reasons"]
-    assert len(draft_versions(ps, "introduction")) == 1
+    text = ArgumentService(ps).get_claim(main)["text"].rstrip(".")
+    sentence = f"{text} in [the trials][42] [[clm:{main}]]."
+    with_definition = sentence + "\n\n[42]: https://example.org/trials\n"
+    before = _check(ps, "critical_review", "introduction", with_definition, None)
+    linked = parse_section(with_definition)[-1]
+    assert "the trials" in linked.text and before["sentences"][-1]["ok"]
+    # the definition deleted: the sentence's source is unchanged, but it now renders "[the trials][42]", whose 42 no
+    # marker target contains
+    after = _check(ps, "critical_review", "introduction", sentence + "\n", before["sentences"])
+    assert after["reverified"] == [0]
+    assert any("the number 42 is not in any marker's target" in p for p in after["sentences"][0]["problems"])
 
 
 def test_revision_dropping_the_main_claim_or_citing_another_attempts_artifact_is_rejected(env):

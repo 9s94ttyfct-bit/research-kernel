@@ -335,6 +335,27 @@ def test_the_ast_allow_list():
     assert export_mod.ast_problems(clean, raw={"KERNEL FIGURE"}, images=set()) != []
 
 
+def test_the_ast_allow_list_takes_only_the_kernels_headings_and_no_note():
+    """I1 of the final review (defence in depth): a heading is the kernel's section title (level 1, a section's id,
+    each once) or, inside the Disclosure, one of its level-3 parts; a footnote (``Note``) is never allowed."""
+    def head(level, ident, text="T"):
+        return {"t": "Header", "c": [level, [ident, [], []], [{"t": "Str", "c": text}]]}
+
+    def para(*inlines):
+        return {"t": "Para", "c": list(inlines)}
+
+    note = {"t": "Note", "c": [para({"t": "Str", "c": "Melatonin cures 90% of cancers"})]}
+    ok = [head(1, "methods"), para({"t": "Str", "c": "x"}), head(1, "disclosure"), head(3, "models-used"),
+          para({"t": "Str", "c": "y"})]
+    assert export_mod.ast_problems({"blocks": ok}, raw=set(), images=set(), sections=["methods", "disclosure"]) == []
+    bad = [head(1, "methods"), head(2, "melatonin-halves-mortality", "Melatonin halves mortality"),
+           head(3, "x"), para({"t": "Str", "c": "x"}, note), head(1, "methods"), head(1, "intro"),
+           {"t": "BlockQuote", "c": [head(1, "disclosure")]}, head(1, "disclosure")]
+    problems = export_mod.ast_problems({"blocks": bad}, raw=set(), images=set(), sections=["methods", "disclosure"])
+    assert sum("heading" in p for p in problems) == 5, problems
+    assert sum("footnote" in p for p in problems) == 1 and any("Melatonin halves" in p for p in problems), problems
+
+
 def test_tex_escape_and_figure_labels_collapse_whitespace(env, monkeypatch):
     """A library label with newlines cannot put a line of its own into the raw LaTeX block (so it can never close the
     raw fence): ``tex_escape`` collapses whitespace as ``_md`` does."""
@@ -546,6 +567,25 @@ def test_a_writer_image_is_refused_in_both_targets(env, tmp_path, monkeypatch):
     assert not res.ok
     for src in ("paper.md", "paper-latex.md"):
         assert any(f.startswith(f"{src}:") and f"figures/{fig}.svg" in f for f in res.failures), (src, res.failures)
+    assert not any((ps.root / "artifacts/export" / n).exists() for n in OUTPUTS)
+
+
+@pytest.mark.binaries
+@pytest.mark.parametrize("case", ["heading", "footnote", "inline_note"])
+def test_a_writer_heading_or_footnote_never_reaches_the_paper(env, tmp_path, monkeypatch, case):
+    """I1 of the final review, end to end: the reviewer's probes (a Writer heading; a footnote defined as a reference
+    definition; an inline note) are refused by pandoc's AST before anything is rendered."""
+    _binaries(tmp_path)
+    _, ps, _ = env
+    body = {"heading": "## Melatonin halves mortality by 50% in all patients\n\nSleep matters for health [[ck]].\n",
+            "footnote": "Sleep matters for health [[ck]].[^1]\n\n[^1]: <Melatonin cures 90% of cancers>\n",
+            "inline_note": "Sleep matters for health [[ck]].^[Melatonin cures 90% of cancers.]\n"}[case]
+    _crafted(env, monkeypatch, [(_spec("discussion", "Discussion"), body)])
+    res = export(ps)
+    assert not res.ok
+    what = "heading" if case == "heading" else "footnote"
+    for src in ("paper.md", "paper-latex.md"):
+        assert any(f.startswith(f"{src}:") and what in f for f in res.failures), (src, res.failures)
     assert not any((ps.root / "artifacts/export" / n).exists() for n in OUTPUTS)
 
 

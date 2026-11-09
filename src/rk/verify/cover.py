@@ -21,7 +21,8 @@ a code span is not checked and does not count).
   vote; V-HEDGE; V-STATS for a ``stat_result``; no open or conceded priority-1 objection); a withdrawn claim is never
   cited.
 - ``[[ck]]`` sentences carry no number and are at most 5% of a section's sentences; ``[[plan:]]`` only in a research
-  proposal. A section with a markdown table or a table caption fails (``section_problems``).
+  proposal. A section with a markdown table or a table caption fails (``section_problems``); so does a Writer's
+  section (any but the kernel-written ``KERNEL_WRITTEN``) with a heading, a reference definition or a footnote.
 
 A caller may keep a sentence's earlier verdict instead of verifying it again (``verify_section(known=...)``; revise
 does, for a sentence whose exact text is unchanged): only while each of its markers' ``target_state`` (a digest of
@@ -40,6 +41,7 @@ from rk.argument import ArgumentService
 from rk.canon import canonical_json, sha256_hex
 from rk.production.artifacts import artifact
 from rk.production.manuscript import Marker, Sentence, parse_section, section_problems
+from rk.production.sections import KERNEL_WRITTEN
 from rk.production.store import design, protocol_hash, protocol_row
 from rk.store.project import ProjectStore
 from rk.text.layer import normalize_query
@@ -352,16 +354,18 @@ def verify_sentence(ps: ProjectStore, s: Sentence, *, paper_type: str) -> Senten
 def verify_section(ps: ProjectStore, section: str, markdown: str, *, paper_type: str,
                    version: int | None = None, known: dict[int, SentenceVerdict] | None = None) -> SectionVerdict:
     """Every sentence of the section, the common-knowledge share (at most ``CK_MAX_SHARE``) and what the section may
-    not contain (``section_problems``: tables and table captions). ``known``: sentence index -> a verdict the caller
-    keeps for that sentence instead of verifying it again (see the module docstring); every other sentence is
+    not contain (``section_problems``: tables and table captions; in a Writer's section, i.e. one not in
+    ``KERNEL_WRITTEN``, headings, reference definitions and footnotes too). ``known``: sentence index -> a verdict the
+    caller keeps for that sentence instead of verifying it again (see the module docstring); every other sentence is
     verified."""
+    kernel_written = section in KERNEL_WRITTEN
     sentences = parse_section(markdown)
     known = known or {}
     verdicts = [known[s.index] if s.index in known else verify_sentence(ps, s, paper_type=paper_type)
                 for s in sentences]
     ck = sum(1 for s in sentences if any(m.kind == "ck" for m in s.markers))
     share = ck / len(sentences) if sentences else 0.0
-    problems = section_problems(markdown)
+    problems = section_problems(markdown, kernel_written=kernel_written)
     if share > CK_MAX_SHARE:
         problems.append(f"{ck} of {len(sentences)} sentences are common knowledge ([[ck]]), more than "
                         f"{CK_MAX_SHARE:.0%}")

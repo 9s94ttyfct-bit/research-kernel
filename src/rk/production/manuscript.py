@@ -12,10 +12,11 @@ preview substitutes exactly these.
 ``parse_section`` reads the markdown with markdown-it (raw HTML off, so it stays text) and keeps the prose of
 paragraphs and list items; headings, tables, table captions and code blocks are not prose. A table, a pandoc
 caption line (``Table: …`` / ``: …``) or a code block (a paper has none) is a section problem (``section_problems``):
-tables come from code artifacts at export. A paragraph inside a block quote is one sentence of quoted text
-(``quoted``). A sentence's ``text`` is its rendered prose (emphasis and link markup gone, code spans kept with their
-backticks); its ``prose`` is that text with every code span blanked, which is what every prose check reads; its
-``span`` and its markers' spans are offsets into the section markdown.
+tables come from code artifacts at export; in a Writer's section so are a heading, a reference definition and a
+footnote, which no sentence rule reads but the export prints. A paragraph inside a block quote is one sentence of
+quoted text (``quoted``). A sentence's ``text`` is its rendered prose (emphasis and link markup gone, code spans kept
+with their backticks); its ``prose`` is that text with every code span blanked, which is what every prose check reads;
+its ``span`` and its markers' spans are offsets into the section markdown.
 
 Sentences end at ``.``, ``?`` or ``!`` (with any closing quotes or brackets, and any markers right after them, which
 belong to the sentence they follow) followed by whitespace and anything but a marker (a capital, a digit, a lowercase
@@ -56,6 +57,8 @@ _ABBREVIATIONS = frozenset({"e.g", "i.e", "al", "vs", "fig", "figs", "eq", "eqs"
 # terminal punctuation, closing quotes or brackets, the markers right after it; then anything but a marker
 _END = re.compile(r"[.?!][\"”’'»)\]]*(?:\s*\[\[[^\[\]\n]*\]\])*(?=\s+(?!\[\[)\S)")
 _CAPTION = re.compile(r"(?:[Tt]able)?:(?:\s|$)")
+# a pandoc inline note ``^[…]`` (group 1), or a footnote definition ``[^n]:`` at a line's start
+_FOOTNOTE = re.compile(r"(?m)((?<!\\)\^\[)|^ {0,3}\[\^[^\]\n]+\]:")
 _SENTENCE_OPENERS = frozenset({
     "A", "After", "All", "Also", "Although", "Among", "An", "As", "At", "Because", "Before", "Both", "But", "By",
     "Each", "Finally", "First", "For", "From", "Further", "Furthermore", "However", "If", "In", "It", "Its", "Many",
@@ -95,6 +98,8 @@ class _Doc(NamedTuple):
     blocks: list[_Block]
     code_blocks: list[tuple[int, int]]  # source ranges of fenced and indented code
     tables: list[int]  # each table's first source line
+    headings: list[int]  # each heading's first source line
+    references: list[tuple[int, str]]  # each reference definition's first source line and label
 
     def code(self) -> list[tuple[int, int]]:
         return self.code_blocks + [r for b in self.blocks for r in b.code]
@@ -244,10 +249,13 @@ def _parse(markdown: str) -> _Doc:
     blocks: list[_Block] = []
     code_blocks: list[tuple[int, int]] = []
     tables: list[int] = []
+    headings: list[int] = []
+    env: dict = {}
     heading = table = quote = 0
-    for t in _markdown().parse(markdown):
+    for t in _markdown().parse(markdown, env):
         if t.type == "heading_open":
             heading += 1
+            headings.append(t.map[0])
         elif t.type == "heading_close":
             heading -= 1
         elif t.type == "table_open":
@@ -266,7 +274,8 @@ def _parse(markdown: str) -> _Doc:
             offs = _content_offsets(t.content, markdown, starts, t.map[0], cursor)
             kind = "heading" if heading else "table" if table else "prose"
             blocks.append(_Block(kind, quote > 0, t.map[0], *_decode(t, offs)))
-    return _Doc(blocks, code_blocks, tables)
+    references = sorted((r["map"][0], label) for label, r in (env.get("references") or {}).items())
+    return _Doc(blocks, code_blocks, tables, headings, references)
 
 
 def _markers(markdown: str, doc: _Doc) -> tuple[list[Marker], list[Marker]]:
@@ -294,10 +303,12 @@ def _is_caption(b: _Block) -> bool:
     return b.kind == "prose" and _CAPTION.match(b.text.lstrip()) is not None
 
 
-def section_problems(markdown: str) -> list[str]:
+def section_problems(markdown: str, *, kernel_written: bool = False) -> list[str]:
     """What the section may not contain at all: a markdown table, a pandoc table caption line, a code block (fenced or
     indented: a paper has none, so the exported PDF never needs a verbatim environment), a marker where the reader
-    cannot see it."""
+    cannot see it. A Writer's section (not ``kernel_written``) also has no heading (the kernel writes the section
+    titles), no reference definition and no footnote (a pandoc ``[^n]:`` definition or an inline ``^[…]`` note):
+    none is a sentence, so no rule reads it, yet pandoc prints it."""
     doc = _parse(markdown)
     out = [f"line {n + 1}: a markdown table is not allowed in a draft: tables come from code artifacts at export "
            "(cite a [[stat:…]] or [[fig:…]] instead)" for n in doc.tables]
@@ -311,6 +322,22 @@ def section_problems(markdown: str) -> list[str]:
             "the reader cannot see it (a heading, a table, a link's destination or title, an autolink, an image's alt "
             "text or a reference definition): it counts for no sentence; put markers in the prose"
             for m in _markers(markdown, doc)[1]]
+    if kernel_written:
+        return out
+    titles = {b.line: b.text.strip() for b in doc.blocks if b.kind == "heading"}
+    out += [f"line {n + 1}: a heading (“{titles.get(n, '')[:60]}”) is not allowed in a draft: the kernel writes the "
+            "section's title; a heading is no sentence and no rule verifies it, so write it as prose with its marker"
+            for n in doc.headings]
+    out += [f"line {n + 1}: a reference definition ([{label}]: …) is not allowed in a draft (a pandoc footnote "
+            "definition [^n]: is one too): it is no sentence and no rule verifies it, yet the export prints it; put "
+            "every statement in a sentence with its marker" for n, label in doc.references]
+    code, defined = doc.code(), {n for n, _ in doc.references}
+    for m in _FOOTNOTE.finditer(markdown):
+        line = markdown.count("\n", 0, m.start())
+        if not any(s <= m.start() < e for s, e in code) and (m[1] or line not in defined):
+            out.append(f"line {line + 1}: a footnote ({m[0].strip()}…) is not allowed in a draft: the export prints "
+                       "it, but it is no sentence and no rule verifies it; put every statement in a sentence with its "
+                       "marker")
     return out
 
 

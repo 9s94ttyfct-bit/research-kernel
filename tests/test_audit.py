@@ -683,3 +683,20 @@ def test_g_ref_covers_the_studies_pooled_into_a_cited_stat_result(env):
     assert ("verify", pooled) in ctx.sources.calls
     assert any(pooled in f and "retracted" in f for f in _report(ps)["gates"]["G-REF"]), _report(ps)["gates"]
     assert (out.status, out.to) == ("back_edge", "read_extract"), (out.status, out.reason)
+
+
+@pytest.mark.parametrize("probe", ["## Melatonin halves mortality by 50% in all patients\n\n",
+                                   "[^1]: <Melatonin cures 90% of cancers>\n\n"])
+def test_a_writer_heading_or_footnote_fails_the_audit_and_goes_back_to_draft(env, probe):
+    """I1 of the final review: the reviewer's probes in a Writer's section fail G-COVER as section problems (the
+    sentences around them all verify) and the audit goes back to draft."""
+    _, ps, _ = env
+    revised(env)
+    _, md = latest_draft(ps, "conclusion")
+    write_draft(ps, "conclusion", probe + md, stage="revise", attempt=1, round=1, by_task=None, actor="tester")
+    ex = _judges("approve")
+    out = AuditWorker().run(_ctx(env, ex))
+    assert (out.status, out.to) == ("back_edge", "draft"), (out.status, out.reason)
+    what = "heading" if probe.startswith("#") else "reference definition"
+    assert any("section conclusion" in f and what in f for f in _report(ps)["gates"]["G-COVER"]), _report(ps)["gates"]
+    assert not ex.calls

@@ -186,8 +186,10 @@ def test_a_marker_the_reader_cannot_see_does_not_count_and_fails_the_section(md)
     (s,) = parse_section(md)
     assert [m.kind for m in s.markers] == ["inf"]
     assert [m.kind for m in source_markers(md)] == ["inf"]
-    (problem,) = section_problems(md)
+    (problem,) = section_problems(md, kernel_written=True)
     assert "[[clm:clm_A]]" in problem and "cannot see" in problem
+    if md.startswith("#") or "[r]:" in md:  # a Writer's section also may not hold the heading or the definition
+        assert len(section_problems(md)) == 2
 
 
 def test_a_marker_in_visible_link_text_counts():

@@ -22,6 +22,7 @@ class SectionSpec(BaseModel):
 
 _DISCLOSURE = SectionSpec(id="disclosure", title="Disclosure", kernel_written=True,
                           purpose="What the kernel ran to produce this manuscript, each step with its record.")
+KERNEL_WRITTEN = frozenset({_DISCLOSURE.id})  # the sections only the kernel writes (verified with their own rules)
 
 
 def _review(results_title: str, results_purpose: str) -> list[SectionSpec]:

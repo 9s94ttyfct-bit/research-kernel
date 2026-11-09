@@ -364,3 +364,30 @@ def test_a_hidden_marker_neither_covers_its_sentence_nor_passes_the_section(env)
     assert not v.ok and "the sentence has no source marker" in s.problems
     assert any("the number 0.62 is not in any marker's target" in p for p in s.problems)
     assert any(f"[[clm:{cid}]]" in p and "cannot see" in p for p in v.problems)
+
+
+# ---- final review fix wave ----
+# the reviewer's probes (each above or after one sentence; the heading's sentence passes on its own)
+HEADING = "## Melatonin halves mortality by 50% in all patients\n\nSleep may matter for health [[inf]].\n"
+FOOTNOTE = "Sleep matters for health [[ck]].[^1]\n\n[^1]: <Melatonin cures 90% of cancers>\n"
+
+
+@pytest.mark.parametrize("text,what", [(HEADING, "heading"), (FOOTNOTE, "reference definition"),
+                                       ("Copper may matter [[inf]].\n\n[x]: http://x \"y\"\n", "reference definition"),
+                                       ("Copper may matter [[inf]].\n\nA title\n=======\n", "heading")])
+def test_a_writer_heading_or_reference_definition_fails_the_section(env, text, what):
+    """I1 of the final review: a heading, or a reference definition (a pandoc footnote ``[^n]:`` among them), is no
+    sentence, so no rule reads it, yet pandoc prints it: in a Writer's section it is a section problem."""
+    ps, _ = env
+    v = verify_section(ps, "discussion", text, paper_type="systematic_review")
+    assert not v.ok and any(what in p for p in v.problems), v.problems
+    if text is not FOOTNOTE:  # (the footnote's reference ``[^1]`` is link text with a number in it)
+        assert all(s.ok for s in v.sentences)
+
+
+def test_the_kernel_written_disclosure_keeps_its_part_headings(env):
+    ps, _ = env
+    md = "### Models used\n\nWater is wet [[ck]].\n"
+    assert not verify_section(ps, "discussion", md, paper_type="systematic_review").ok
+    v = verify_section(ps, "disclosure", md, paper_type="systematic_review")
+    assert not any("heading" in p for p in v.problems), v.problems

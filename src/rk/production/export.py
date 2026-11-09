@@ -31,10 +31,12 @@ and packs a reproducible package. No role task, no model.
    ``--include-in-header preamble.tex`` for LaTeX).
    Before anything is rendered, each markdown's AST is checked against an allow-list (``ast_problems``): no math, no
    raw output but the kernel's own figure blocks, no image but the one ``figures/<id>.svg`` the kernel inserted for
-   each figure in ``paper.md`` (none in ``paper-latex.md``: a Writer's image is refused in both), no metadata key but
-   the kernel's; a section holding a raw ``{=format}`` block or span is refused even earlier, at conversion. So the
-   Writer's text or the RQ can neither run LaTeX nor make pandoc or tectonic read a local file. The kernel's
-   ``crossref.lua`` filter resolves ``@fig:``/``@tbl:`` before ``--citeproc`` (pandoc-crossref is not installed).
+   each figure in ``paper.md`` (none in ``paper-latex.md``: a Writer's image is refused in both), no footnote, no
+   heading but the kernel's section titles and the Disclosure's parts, no metadata key but the kernel's; a section
+   holding a raw ``{=format}`` block or span is refused even earlier, at conversion. So the Writer's text or the RQ
+   can neither run LaTeX, print an unverified heading or footnote, nor make pandoc or tectonic read a local file. The
+   kernel's ``crossref.lua`` filter resolves ``@fig:``/``@tbl:`` before ``--citeproc`` (pandoc-crossref is not
+   installed).
    ``paper.md`` → ``paper.docx`` (``docx+native_numbering``, so the captions are numbered as the references);
    ``paper-latex.md`` → ``paper.tex`` (standalone) and ``paper.pdf`` (``--pdf-engine=tectonic``, ``--untrusted``).
    The round trip: for each markdown, the citation keys pandoc reads equal the bibliography entries citeproc
@@ -307,8 +309,9 @@ def to_pandoc_markdown(ps: ProjectStore, sections: list[tuple[SectionSpec, str]]
     ``target`` (see the module docstring; no front matter: the metadata is the kernel's, ``metadata``), its
     bibliography as CSL JSON items (keyed by item id, in order of first citation) and ``refmap``: ``claims`` (claim
     id → its citation keys), ``figures`` / ``tables`` (artifact id → its cross-reference id), ``keys`` (every
-    citation key) and ``raw`` (the kernel's raw LaTeX figure blocks, ``latex`` only). ``ValueError`` names a marker
-    without its artifact or a section holding raw output."""
+    citation key), ``raw`` (the kernel's raw LaTeX figure blocks, ``latex`` only) and ``sections`` (the section ids,
+    in order: the kernel's titles). ``ValueError`` names a marker without its artifact or a section holding raw
+    output."""
     if target not in TARGETS:
         raise ValueError(f"unknown export target {target!r}; expected one of {', '.join(TARGETS)}")
     paper = _Paper(ps, sections, target)
@@ -324,7 +327,7 @@ def to_pandoc_markdown(ps: ProjectStore, sections: list[tuple[SectionSpec, str]]
     refmap = {"claims": paper.claims,
               "figures": {a: x for a, x in paper.xrefs.items() if x.startswith("fig:")},
               "tables": {a: x for a, x in paper.xrefs.items() if x.startswith("tbl:")},
-              "keys": list(paper.keys), "raw": list(paper.raw)}
+              "keys": list(paper.keys), "raw": list(paper.raw), "sections": [spec.id for spec, _ in sections]}
     return markdown, [to_csl(i) for i in items], refmap
 
 
@@ -357,23 +360,48 @@ def _problem_walk(node, out: list[str], raw: set[str], images: dict[str, int]) -
         else:
             out.append(f"an image of {c[2][0]} is not one of the kernel's figures (or is that figure again: the "
                        "kernel inserts each figure once, and an image the Writer wrote is refused)")
+    if t == "Note":
+        out.append(f"a footnote (“{_plain(c)[:120]}”) is not allowed: no sentence rule verified it")
+    if t == "Header":
+        out.append(f"a heading (“{_plain(c[2])[:120]}”, level {c[0]}) is not one of the kernel's section titles")
     for v in node.values():
         _problem_walk(v, out, raw, images)
 
 
-def ast_problems(ast: dict, *, raw: set[str], images: set[str]) -> list[str]:
+def _plain(node) -> str:
+    """The ``Str`` text of an AST fragment, words joined by spaces (for a message)."""
+    words: list[str] = []
+    _walk(node, lambda n: words.append(n["c"]) if n.get("t") == "Str" else None)
+    return " ".join(words)
+
+
+def ast_problems(ast: dict, *, raw: set[str], images: set[str], sections: list[str] | tuple[str, ...] = ()) \
+        -> list[str]:
     """What the allow-list refuses in a pandoc JSON AST before anything is rendered: any ``Math``; a ``RawInline`` or
     ``RawBlock`` other than one of the kernel's figure blocks ``raw``; an ``Image`` other than the one the kernel
     inserted for each of its figures ``images`` (each source once: a Writer's copy of a kernel figure is refused too;
-    the latex source passes none, its figures being raw TikZ); a metadata key not in ``META_KEYS`` (the metadata's
-    values are walked too)."""
+    the latex source passes none, its figures being raw TikZ); any footnote (``Note``); a ``Header`` other than the
+    kernel's title of each of ``sections`` (level 1, the section's id, once, at the top level) and, inside the
+    Disclosure, its level-3 parts; a metadata key not in ``META_KEYS`` (the metadata's values are walked too)."""
     out: list[str] = []
     allowed = {r.strip("\n") for r in raw}
     left = dict.fromkeys(images, 1)
     meta = ast.get("meta") or {}
     out += [f"the metadata key {k} is not the kernel's" for k in meta if k not in META_KEYS]
     _problem_walk(meta, out, allowed, {})
-    _problem_walk(ast.get("blocks") or [], out, allowed, left)
+    titles, current = set(sections), None
+    for block in ast.get("blocks") or []:
+        if block.get("t") == "Header":
+            level, (ident, _, _), inlines = block["c"]
+            if level == 1 and ident in titles:
+                titles.discard(ident)
+                current = ident
+                _problem_walk(inlines, out, allowed, left)
+                continue
+            if level == 3 and current == DISCLOSURE:
+                _problem_walk(inlines, out, allowed, left)
+                continue
+        _problem_walk(block, out, allowed, left)
     return out
 
 
@@ -497,8 +525,9 @@ def _render(out_dir: Path, refmap: dict) -> tuple[list[str], list[str]]:
                 failures.append(err)
                 continue
             ast = json.loads(plain.stdout)
-            if problems := ast_problems(ast, raw=raw, images=images[src]):
-                failures += [f"{src}: {p} (only the kernel's figures and metadata are allowed)" for p in problems]
+            if problems := ast_problems(ast, raw=raw, images=images[src], sections=refmap["sections"]):
+                failures += [f"{src}: {p} (only the kernel's titles, figures and metadata are allowed)"
+                             for p in problems]
                 continue
             # the round trip: the keys pandoc reads are the entries citeproc renders, without a warning
             full, err = _run([pandoc, src, *opts, "--to", "json"], work, f"pandoc ({src} → citeproc)", TIMEOUT)
