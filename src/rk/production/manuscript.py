@@ -34,7 +34,6 @@ longer has its recorded sha256 is refused, not read as the draft. A file without
 
 from __future__ import annotations
 
-import os
 import re
 import sqlite3
 from typing import Literal, NamedTuple
@@ -43,6 +42,7 @@ from markdown_it import MarkdownIt
 from pydantic import BaseModel
 
 from rk.canon import canonical_json, sha256_hex
+from rk.production.common import write_atomic
 from rk.store.events import Event, NewEvent
 from rk.store.project import ProjectStore
 from rk.store.projections import projection
@@ -415,18 +415,7 @@ def write_draft(ps: ProjectStore, section: str, markdown: str, *, stage: str, at
         version = (row[0] or 0) + 1
         rel = f"{DRAFTS_DIR}/{section}.v{version}.md"
         dest = ps.root / rel
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        tmp = dest.with_name(dest.name + ".tmp")
-        with open(tmp, "wb") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, dest)
-        fd = os.open(dest.parent, os.O_RDONLY)
-        try:
-            os.fsync(fd)  # the rename itself
-        finally:
-            os.close(fd)
+        write_atomic(dest, data)
         try:
             ps.apply(NewEvent(type="draft.written", entity_id=f"{section}.v{version}", actor_kind="kernel",
                               actor=actor, payload={"section": section, "version": version, "stage": stage,

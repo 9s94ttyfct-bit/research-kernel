@@ -570,8 +570,9 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
     @r.get("/ui/api/artifacts/{slug}/export/{name}", response_model=None)
     def export_file(slug: str, name: str, request: Request) -> FileResponse:
         """A file of the project's export, for download: the paper (``application/pdf``, Word, ``text/markdown``) and
-        the package (``application/zip``), only from the project's own ``artifacts/export`` (``download``: no other
-        file, no path out of it, no symlink)."""
+        the package (``application/zip``), only while the export is the manuscript's as it stands (``export_current``)
+        and only from the project's own ``artifacts/export`` (``download``: no other file, no path out of it, no
+        symlink)."""
         ctx_dep(request)
         ps, _ = project(slug)
         got = download(ps, name)

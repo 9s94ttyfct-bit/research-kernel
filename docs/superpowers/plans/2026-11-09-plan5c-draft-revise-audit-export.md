@@ -159,6 +159,7 @@ No new Python dependency. The CSL style is pandoc's built-in default (Chicago au
 - [ ] **Step 3:** Implement the interfaces above. `rk.ui.drafts` uses `parse_section`'s marker regex (one grammar) and resolves `fig`/`stat`/`plan` targets for the preview.
 - [ ] **Step 4:** Run the tests and confirm they pass. Full suite, pipefail, ruff.
 - [ ] **Step 5: Commit** `feat(verify): sentence markers, V-COVER and the draft store`.
+- Final fix wave (final review I1, I2): in a Writer's section (any not in `rk.production.sections.KERNEL_WRITTEN`; the kernel-written disclosure keeps its level-3 parts), `section_problems(markdown, *, kernel_written=False)` also refuses every heading, every reference definition (a pandoc footnote definition `[^n]:` included) and an inline note `^[…]`: none is a sentence, yet pandoc prints it. `verify_sentence(..., kernel_written=False)`: a `[[run:evt_…]]` target in a Writer's section must be a research operation, an event type of `RESEARCH_EVENTS` (the producers in `EVENT_NUMBERS` plus `stage.passed`); the disclosure cites any event. `verify_section` derives `kernel_written` from the section id.
 
 ### Task 2: Draft stage (Writer per required section)
 
@@ -290,6 +291,7 @@ No new Python dependency. The CSL style is pandoc's built-in default (Chicago au
   - `test_unverifiable_section_takes_revise_to_draft`.
 - [ ] **Step 2:** Confirm they fail. **Step 3:** Implement. **Step 4:** Confirm they pass; full suite.
 - [ ] **Step 5: Commit** `feat(production): revise stage`.
+- Final fix wave (final review I3, I4, M5, M6): an attempt reopened by `audit->revise` carries the final review's request (the researcher's `revise` comment, or the P1 judges' not-approved reasons: the edge's guidance) as a round-0 priority-1 question on section `manuscript` (no sentence); every revisable section's Writer gets it each round until one accepted revised/answered answer with a note resolves it, and the gate needs it; P1's degrade fails the run naming it. Budget: in a run, the rounds stop silently (noted `budget`) only after at least one SimReader round with no unresolved priority-1 question; otherwise `BudgetExceeded` pauses the run and the attempt resumes in place in a new session (spec §11.3); outside a run the stop stays silent (the rerun attempt has a fresh count). Resume comments no longer claim "nothing twice" (a kill before a task's note asks that task again). Shared helpers: `rk.orchestrator.state.passed_attempt`, `rk.orchestrator.state.degraded_questions`, `rk.production.draft.latest_texts`, `rk.production.common.write_atomic`.
 
 ### Task 5: Audit stage (every hard gate, disclosure, verification report, final_review)
 
@@ -360,6 +362,7 @@ No new Python dependency. The CSL style is pandoc's built-in default (Chicago au
   - `test_audit_resumes_in_place`.
 - [ ] **Step 2:** Confirm they fail. **Step 3:** Implement. **Step 4:** Confirm they pass; full suite.
 - [ ] **Step 5: Commit** `feat(production): audit stage, disclosure and final review`.
+- Final fix wave (final review M4): the tasks and votes of an evaluation (`rk.production.disclosure.EVALUATION_STAGES`: `sr_repro`'s direction vote and judge tasks) are not part of the paper: the disclosure does not list them and G-DISCLOSE does not ask for them.
 
 ### Task 6: Export stage (pandoc + citeproc + tectonic) and the reproducible package
 
@@ -414,6 +417,7 @@ No new Python dependency. The CSL style is pandoc's built-in default (Chicago au
   - `test_package_manifest_hashes_match_and_contains_no_secrets_or_paths`.
 - [ ] **Step 2:** Confirm they fail. **Step 3:** Implement. **Step 4:** Confirm they pass, including binaries locally; full suite.
 - [ ] **Step 5: Commit** `feat(production): export and reproducible package`.
+- Final fix wave (final review I1, M2, M3): `ast_problems(ast, *, raw, images, sections)` also refuses any `Note` and any `Header` but the kernel's level-1 title of each section id (once, top level) and the Disclosure's level-3 parts (`refmap["sections"]`). `build_package` refuses a `disclosure.md` that is not the audited disclosure section's text. `export_current(ps)`: the export files are current only while `audited_manuscript` accepts the manuscript and the export stage passed with a package built from that audit report; `download`/`downloads` (the API route, `rk audit show`, the Workbench) offer nothing otherwise, and `export_view` carries `current` (the reason).
 
 ### Task 7: Tools, CLI and Workbench for draft, revise, audit, export
 
@@ -453,6 +457,7 @@ No new Python dependency. The CSL style is pandoc's built-in default (Chicago au
   - the read-tool policy (screeners, scout and reader get none).
 - [ ] **Step 2:** Confirm they fail. **Step 3:** Implement. Check at 1280 and 760 px on a scratch `rk serve` with a temporary RK_HOME; no console errors. **Step 4:** Confirm they pass; full suite.
 - [ ] **Step 5: Commit** `feat(ui): drafts, revise, audit, final review and export in the Workbench`.
+- Final fix wave (final review M3): `rk audit show` / `rk export` print "exported files withheld" with the reason when the export is not current; the Workbench shows the package label only while it is current, and "Not the current export: …" otherwise.
 
 ### Task 8: Systematic-review reproduction set (§10) and the eval command
 

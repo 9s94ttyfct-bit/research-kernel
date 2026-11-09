@@ -77,12 +77,19 @@ from rk.config import load_settings
 from rk.discovery.executor import BudgetExceeded
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.orchestrator.graph import STAGE_TASK_BUDGET
-from rk.orchestrator.state import record_degraded, run_row, stage_row, tasks_used
+from rk.orchestrator.state import (
+    degraded_questions,
+    record_degraded,
+    run_row,
+    stage_row,
+    tasks_used,
+)
 from rk.production.common import RoleOut
 from rk.production.draft import (
     DraftInputs,
     deletable,
     delete_sentences,
+    latest_texts,
     latest_version,
     load_inputs,
     manuscript_problems,
@@ -211,15 +218,6 @@ def _load(ps: ProjectStore) -> _Inputs | str:
     return _Inputs(d, row["passed_attempt"])
 
 
-def _texts(ps: ProjectStore, s: _Inputs) -> dict[str, str]:
-    """The latest markdown of every required section that can be read."""
-    out = {}
-    for spec in s.draft.sections:
-        if not isinstance(got := latest_version(ps, spec.id), str):
-            out[spec.id] = got[1]
-    return out
-
-
 # ---- checks ----
 def _key(source: str, x: Sentence) -> str:
     """What makes two sentences the same to the sentence rules: the exact source text, whether it is quoted, the
@@ -294,13 +292,6 @@ def _questions_of(ps: ProjectStore, attempt: int) -> list[dict]:
     return [{**q, "round": n["round"]} for n in revise_notes(ps, attempt, kind="questions") for q in n["questions"]]
 
 
-def _deleted(ps: ProjectStore, attempt: int) -> set[str]:
-    """The questions whose sentence P1's degrade deleted in the attempt (``stage.degraded``)."""
-    rows = ps.db.execute("SELECT payload FROM events WHERE type='stage.degraded' "
-                         "AND json_extract(payload, '$.stage')=? AND json_extract(payload, '$.attempt')=?",
-                         (STAGE, attempt))
-    return {q for r in rows for q in json.loads(r["payload"]).get("questions") or []}
-
 
 def _earlier_answer(q: dict, answers: dict[str, dict]) -> dict | None:
     return answers.get(q["id"]) or q.get("previous_answer")
@@ -309,7 +300,7 @@ def _earlier_answer(q: dict, answers: dict[str, dict]) -> dict | None:
 def _unresolved(ps: ProjectStore, attempt: int, *, before: int | None = None) -> list[dict]:
     """The attempt's priority-1 questions with no resolving answer (in a round before ``before``) whose sentence was
     not deleted."""
-    answers, deleted = _answers(ps, attempt, before=before), _deleted(ps, attempt)
+    answers, deleted = _answers(ps, attempt, before=before), degraded_questions(ps, STAGE, attempt)
     return [q for q in _questions_of(ps, attempt)
             if q["priority"] == 1 and q["id"] not in deleted and not _resolved(answers.get(q["id"]))]
 
@@ -364,7 +355,9 @@ def _gone(ps: ProjectStore, q: dict, attempt: int) -> str | None:
 
 class ReviseWorker:
     # An interrupted attempt runs again in place (rk.orchestrator.engine): ``run`` goes on from the attempt's notes
-    # (see the module docstring) and asks the SimReader and the Writer nothing twice.
+    # (see the module docstring): a recorded question set or revision is not asked again. A task whose output was not
+    # yet noted (a kill between the task's return and its ``questions`` or ``revision`` note) is asked again: one
+    # extra role task, never a lost or doubled version or answer.
     resumes_in_place = True
 
     def __init__(self, *, budget: int = STAGE_TASK_BUDGET):
@@ -599,7 +592,7 @@ class ReviseWorker:
                          unchanged=False, version=None)
         base = _recorded(ps, attempt, "checked", rev["round"], section)
         c = _check(ps, s.draft.paper_type, section, rev["markdown"], base["sentences"])
-        texts = _texts(ps, s)
+        texts = latest_texts(ps, s.draft)[0]
         before = manuscript_problems(ps, s.draft, texts)
         broken = [p for p in manuscript_problems(ps, s.draft, {**texts, section: rev["markdown"]}) if p not in before]
         reasons = [*(version_failures(rev["markdown"], c["verdict"]) if not c["verdict"]["ok"] else []), *broken]
@@ -633,7 +626,7 @@ class ReviseWorker:
         if isinstance(s, str):
             return GateResult(False, [s])
         failures: list[str] = []
-        answers, deleted = _answers(ps, attempt), _deleted(ps, attempt)
+        answers, deleted = _answers(ps, attempt), degraded_questions(ps, STAGE, attempt)
         for q in _questions_of(ps, attempt):
             if q["priority"] != 1 or q["id"] in deleted:
                 continue

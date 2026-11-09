@@ -221,6 +221,12 @@ def stage_row(ps: ProjectStore, stage: str) -> dict[str, Any] | None:
     return _stage_dict(r) if r else None
 
 
+def passed_attempt(ps: ProjectStore, stage: str) -> int | None:
+    """The stage's passed attempt (kept while it is reopened or runs again), else ``None``."""
+    row = stage_row(ps, stage)
+    return row["passed_attempt"] if row is not None and row["passed_attempt"] else None
+
+
 def stage_rows(ps: ProjectStore) -> list[dict[str, Any]]:
     """One row per stage of the project, in order; a stage that never ran is ``pending`` with attempt 0."""
     rows = {r["stage"]: _stage_dict(r) for r in ps.db.execute("SELECT * FROM stages")}
@@ -325,6 +331,12 @@ def degradations(ps: ProjectStore, stage: str | None = None) -> list[dict[str, A
     rows = ps.db.execute("SELECT payload FROM events WHERE type='stage.degraded' ORDER BY seq").fetchall()
     out = [json.loads(r["payload"]) for r in rows]
     return [d for d in out if stage is None or d["stage"] == stage]
+
+
+def degraded_questions(ps: ProjectStore, stage: str, attempt: int) -> set[str]:
+    """The questions whose content the stage's P1 degrade deleted in the attempt (``stage.degraded``'s
+    ``questions``)."""
+    return {q for d in degradations(ps, stage) if d.get("attempt") == attempt for q in d.get("questions") or []}
 
 
 # ---- projections ----

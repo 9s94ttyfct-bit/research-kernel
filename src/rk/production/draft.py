@@ -57,7 +57,7 @@ from rk.config import load_settings
 from rk.discovery.models import RQBody
 from rk.discovery.store import frozen_rq, hypotheses, intake_of
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
-from rk.orchestrator.state import record_degraded, stage_row
+from rk.orchestrator.state import passed_attempt, record_degraded
 from rk.production.argue import argue_limitations, argument_claims, main_claim
 from rk.production.artifacts import artifacts
 from rk.production.common import RoleOut
@@ -183,11 +183,6 @@ class DraftInputs:
     design: dict | None
 
 
-def _passed(ps: ProjectStore, stage: str) -> int | None:
-    row = stage_row(ps, stage)
-    return row["passed_attempt"] if row is not None and row["passed_attempt"] else None
-
-
 def themes(ps: ProjectStore, synth_attempt: int) -> list[str]:
     """The themes (``theme_or_outcome``) of the attempt's narrative synthesis, in order."""
     notes = synthesis_notes(ps, synth_attempt, kind="narrative")
@@ -201,7 +196,7 @@ def load_inputs(ps: ProjectStore) -> DraftInputs | str:
     rq = frozen_rq(ps)
     if rq is None:
         return "no frozen research question"
-    synth, argue = _passed(ps, "synthesize"), _passed(ps, "argue")
+    synth, argue = passed_attempt(ps, "synthesize"), passed_attempt(ps, "argue")
     if synth is None or argue is None:
         return "argue has not passed"
     synth_themes = themes(ps, synth)
@@ -210,14 +205,14 @@ def load_inputs(ps: ProjectStore) -> DraftInputs | str:
                 f"{synth} gave no themes")
     design_attempt, design = None, None
     if intake.paper_type == PROPOSAL:
-        design_attempt, design = _passed(ps, "design"), approved_design(ps)
+        design_attempt, design = passed_attempt(ps, "design"), approved_design(ps)
         if design_attempt is None or design is None:
             return "design has not passed: a research proposal is drafted from its approved design"
     main = main_claim(ps, argue)
     return DraftInputs(
         paper_type=intake.paper_type, mode=intake.production_mode, audience=intake.audience,
         question=RQBody.model_validate(rq["body"]).three_step.sentence(), rq_id=rq["id"], synth_attempt=synth,
-        argue_attempt=argue, design_attempt=design_attempt, search_attempt=_passed(ps, "search_screen"),
+        argue_attempt=argue, design_attempt=design_attempt, search_attempt=passed_attempt(ps, "search_screen"),
         sections=required_sections(intake.paper_type, synth_themes), main=main,
         argument=[c for c in argument_claims(ps, argue) if c != main], findings=synthesis_claims(ps, synth),
         artifact_ids=frozenset(a["id"] for a in artifacts(ps, "synthesize", synth)), protocol=frozen_protocol(ps),
@@ -265,6 +260,18 @@ def latest_version(ps: ProjectStore, section: str) -> tuple[dict, str] | str:
         return last, draft_text(ps, section, last["version"])
     except (KeyError, ValueError) as e:
         return f"section {section} v{last['version']}: {e}"
+
+
+def latest_texts(ps: ProjectStore, s: DraftInputs) -> tuple[dict[str, str], dict[str, int], list[str]]:
+    """The latest markdown and version of every required section that can be read, and why the others cannot."""
+    texts, versions, unread = {}, {}, []
+    for spec in s.sections:
+        got = latest_version(ps, spec.id)
+        if isinstance(got, str):
+            unread.append(got)
+        else:
+            versions[spec.id], texts[spec.id] = got[0]["version"], got[1]
+    return texts, versions, unread
 
 
 def manuscript_problems(ps: ProjectStore, s: DraftInputs, texts: dict[str, str]) -> list[str]:
@@ -361,7 +368,9 @@ def writer_inputs(ps: ProjectStore, s: DraftInputs, spec: SectionSpec, prisma: s
 
 class DraftWorker:
     # An interrupted attempt runs again in place (rk.orchestrator.engine): ``run`` goes on from the attempt's stored
-    # versions (see the module docstring) and asks the Writer nothing twice.
+    # versions (see the module docstring): a section with a stored version is not asked again. A Writer task whose
+    # output was not yet stored (a kill between the task's return and ``write_draft`` or the back-edge note) is asked
+    # again: one extra role task, never a lost or doubled version.
     resumes_in_place = True
 
     def run(self, ctx: StageContext) -> StageOutcome:

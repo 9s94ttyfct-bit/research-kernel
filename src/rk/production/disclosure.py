@@ -22,18 +22,20 @@ reads):
 
 A part with nothing to list says so, citing the intake (who answers checkpoints follows from its production mode),
 synthesize's pass or the frozen protocol. Rendering reads stored state only, in event order, so the same events give
-the same bytes (``write_disclosure`` then writes no new version). ``disclosure_problems`` is G-DISCLOSE."""
+the same bytes (``write_disclosure`` then writes no new version). ``disclosure_problems`` is G-DISCLOSE. The tasks and
+votes of an evaluation of the project (``EVALUATION_STAGES``: ``rk.eval.sr_repro``'s scoring) are not part of how the
+manuscript was made: no part lists them and G-DISCLOSE does not ask for them."""
 
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Iterator
 
 from rk.argument import ArgumentService
 from rk.discovery.store import frozen_rq
-from rk.orchestrator.state import stage_row
+from rk.orchestrator.state import passed_attempt
 from rk.production.argue import argue_limitations
+from rk.production.common import write_atomic
 from rk.production.design import design_limitations
 from rk.production.draft import STAGE_NAMES, latest_version, section_verdict, themes
 from rk.production.manuscript import (
@@ -54,6 +56,9 @@ PARTS = ("Models used", "Human decisions", "Not reviewed by a human", "Limitatio
 DISCLOSURE_PATH = "artifacts/audit/disclosure.md"
 NOT_HUMAN = "not reviewed by a human"
 FINAL_REVIEW = "final_review"
+# stages of an evaluation of the project (``rk.eval.sr_repro.STAGE``): its tasks and votes score the paper and are not
+# part of how it was made, so the disclosure neither lists them nor G-DISCLOSE asks for them
+EVALUATION_STAGES = frozenset({"sr_repro"})
 
 
 # ---- formatting ----
@@ -108,11 +113,6 @@ def _intake(ps: ProjectStore) -> str | None:
     return _last(ps, "project.intake")
 
 
-def _passed(ps: ProjectStore, stage: str) -> int | None:
-    row = stage_row(ps, stage)
-    return row["passed_attempt"] if row is not None and row["passed_attempt"] else None
-
-
 # ---- the parts ----
 def _models(ps: ProjectStore) -> list[str]:
     rows = ps.db.execute(
@@ -125,6 +125,8 @@ def _models(ps: ProjectStore) -> list[str]:
             models.setdefault(r["entity_id"], set()).add(model)
     groups: dict[tuple[str, str], dict] = {}
     for r in rows:
+        if r["stage"] in EVALUATION_STAGES:
+            continue
         g = groups.setdefault((r["role"], r["driver"]), {"first": r["evt_id"], "tasks": 0, "stages": {},
                                                           "models": set()})
         g["tasks"] += 1
@@ -176,6 +178,8 @@ def _not_reviewed(ps: ProjectStore) -> list[str]:
            for evt, cp, p in _answers(ps, "vote")]
     for r in _rows(ps, "vote.decided"):
         p = json.loads(r["payload"])
+        if p.get("stage") in EVALUATION_STAGES:
+            continue
         if p["subject_type"] == FINAL_REVIEW:
             what = "approved" if p["decision"] == "approve" else "not approved"
             out.append(_line(f"Final review: {what} by the P1 vote, {NOT_HUMAN}", r["evt_id"]))
@@ -256,7 +260,7 @@ def _conceded(ps: ProjectStore) -> list[tuple[str, str]]:
     """``(objection id, line)`` for every claim the manuscript cites that has a conceded sourced objection (the
     V-BALANCE gap of Task 3): the claim, the objection and its source in one sentence."""
     paper_type = ps.meta("paper_type")
-    synth = _passed(ps, "synthesize")
+    synth = passed_attempt(ps, "synthesize")
     if paper_type is None or synth is None:
         return []
     cited: dict[str, None] = {}
@@ -292,7 +296,7 @@ def _limitations(ps: ProjectStore) -> list[str]:
     seen = {f"objection_id:{oid}" for oid, _ in conceded}  # listed with their claim and source below
     out = []
     for where, stage, limitations in sources:
-        attempt = _passed(ps, stage)
+        attempt = passed_attempt(ps, stage)
         if attempt is None:
             continue
         passed = _last(ps, "stage.passed", stage=stage, attempt=attempt)
@@ -304,7 +308,7 @@ def _limitations(ps: ProjectStore) -> list[str]:
             out.append(_line(f"The {where} limitations list, under {what}: {_fields(entry)}",
                              _entry_event(ps, path, entry) or passed))
     out += [line for _, line in conceded]
-    synth = _passed(ps, "synthesize")
+    synth = passed_attempt(ps, "synthesize")
     return out or [_line("No limitation was recorded by the synthesis, the argument or the design",
                          _last(ps, "stage.passed", stage="synthesize", attempt=synth) if synth else _intake(ps))]
 
@@ -349,10 +353,7 @@ def write_disclosure(ps: ProjectStore, *, attempt: int, paper_type: str, actor: 
                                                                      version=version), actor=actor)
     path = ps.root / DISCLOSURE_PATH
     if not path.is_file() or path.read_text(encoding="utf-8") != md:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".md.tmp")
-        tmp.write_text(md, encoding="utf-8")
-        os.replace(tmp, path)
+        write_atomic(path, md.encode("utf-8"))
     return version
 
 
@@ -369,8 +370,8 @@ def disclosure_problems(ps: ProjectStore, markdown: str, cited_claims: list[str]
         out += [f"the {cp['kind']} checkpoint {cp['id']}, answered by {who}, is not listed (its answer, event {evt}, "
                 f"is not cited)" for evt, cp, _ in _answers(ps, by) if evt not in cited]
     for r in _rows(ps, "vote.decided"):
-        if r["evt_id"] not in cited:
-            p = json.loads(r["payload"])
+        p = json.loads(r["payload"])
+        if r["evt_id"] not in cited and p.get("stage") not in EVALUATION_STAGES:
             out.append(f"the P1 vote {r['entity_id']} on the {p['subject_type']} {p['subject_id']} is not listed "
                        f"(event {r['evt_id']} is not cited)")
     for r in _rows(ps, "stage.degraded"):

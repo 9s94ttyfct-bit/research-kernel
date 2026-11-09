@@ -193,3 +193,23 @@ def test_disclosure_lists_the_gaps_behind_the_chosen_topic(tmp_home, replay_http
         assert all(f"`{gid}`" in part for gid in gaps[:2])
     finally:
         k.close()
+
+
+def test_the_sr_repro_scoring_is_not_part_of_the_papers_disclosure(env):
+    """M4 of the final review: the evaluation's direction vote and its judge tasks (stage ``sr_repro``) are scoring,
+    not part of the paper: the disclosure neither lists them nor G-DISCLOSE asks for them."""
+    from rk.eval.sr_repro import STAGE as SR_REPRO
+    from rk.production.disclosure import EVALUATION_STAGES
+
+    _, ps, _ = env
+    revised(env)
+    assert SR_REPRO in EVALUATION_STAGES
+    _task(ps, "judge_2", "eval_only_driver", SR_REPRO, "eval-only-model")
+    vid = add_vote(ps, subject_type="sr_repro_direction", subject_id="entry:clm_x", question="Which direction?",
+                   options=["benefit", "unclear"], conservative="unclear", decision="benefit",
+                   conservative_used=False, reason="", opinions=[], skipped={}, stage=SR_REPRO, attempt=1,
+                   actor="tester")
+    md = render_disclosure(ps)
+    assert "sr_repro" not in md and "eval_only" not in md and _evt(ps, "vote.decided", vid) not in _cited(md)
+    write_disclosure(ps, attempt=1, paper_type="critical_review", actor="tester")
+    assert _g_disclose(ps) == []

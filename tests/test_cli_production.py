@@ -133,3 +133,13 @@ def test_export_runs_the_export_stage_and_opens_the_pdf_only_on_a_terminal(cli, 
     assert r.exit_code == 0, r.output
     (path,) = cli.opened
     assert str(path).endswith("artifacts/export/paper.pdf") and (ps.root / "artifacts/export/paper.pdf").samefile(path)
+    # M3 of the final review: once the manuscript changes, rk audit show no longer lists the files as the export
+    from rk.production.manuscript import latest_draft, write_draft
+
+    _, md = latest_draft(ps, "conclusion")
+    write_draft(ps, "conclusion", md + "\nA new sentence.\n", stage="revise", attempt=2, round=1, by_task=None,
+                actor="tester")
+    r = _run("audit", "show", "--project", "demo")
+    assert r.exit_code == 0, r.output
+    assert "paper.pdf" not in r.output and "exported files withheld" in r.output, r.output
+    assert "manuscript changed since audit" in r.output

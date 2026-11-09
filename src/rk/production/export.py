@@ -84,6 +84,7 @@ from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.orchestrator.state import stage_row
 from rk.production.artifacts import artifact
 from rk.production.audit import audit_notes, audit_reports, cited_items
+from rk.production.common import write_atomic
 from rk.production.disclosure import DISCLOSURE_PATH
 from rk.production.disclosure import SECTION as DISCLOSURE
 from rk.production.draft import DraftInputs, latest_version, load_inputs
@@ -565,13 +566,6 @@ def _render(out_dir: Path, refmap: dict) -> tuple[list[str], list[str]]:
     return failures, list(dict.fromkeys(warnings))
 
 
-def _write(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.tmp")
-    tmp.write_bytes(data)
-    os.replace(tmp, path)
-
-
 def _refs_json(csl: list[dict]) -> str:
     return json.dumps(csl, ensure_ascii=False, indent=2) + "\n"
 
@@ -622,7 +616,7 @@ def export(ps: ProjectStore) -> ExportResult:
              "refs.bib": export_bibtex([lib.get(k) for k in refmap["keys"]], keys=refmap["keys"]).encode(),
              **{f"{FIGURES}/{aid}.svg": data for aid, data in svgs.items()}}
     for name, data in files.items():
-        _write(out_dir / name, data)
+        write_atomic(out_dir / name, data)
     failures, warnings = _render(out_dir, refmap)
     written = {name: out_dir / name for name in (*files, *OUTPUTS) if (out_dir / name).is_file()}
     missing = [n for n in OUTPUTS if n not in written]
@@ -732,6 +726,10 @@ def build_package(ps: ProjectStore) -> Path:
         files[f"export/{FIGURES}/{aid}.svg"] = data
     try:
         files["disclosure.md"] = (ps.root / DISCLOSURE_PATH).read_bytes()
+        audited = {spec.id: md for spec, md in sections}.get(DISCLOSURE)
+        if audited is None or files["disclosure.md"] != audited.encode("utf-8"):
+            raise ValueError(f"{DISCLOSURE_PATH} is not the disclosure section the audit report v{rep['version']} "
+                             "audited: run the audit again")
         for key, path in (("md", rep["md_path"]), ("json", rep["json_path"])):
             data = (ps.root / path).read_bytes()
             if sha256_hex(data) != rep["sha256"][key]:
@@ -765,7 +763,7 @@ def build_package(ps: ProjectStore) -> Path:
                 "files": {n: sha256_hex(files[n]) for n in sorted(files)}}
     files[MANIFEST] = (json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode()
     path = out_dir / f"package-{sha256_hex(files[MANIFEST])[:8]}.zip"
-    _write(path, _zip(files))
+    write_atomic(path, _zip(files))
     return path
 
 
@@ -809,10 +807,24 @@ PACKAGE_NAME = re.compile(r"package-[0-9a-f]{8}\.zip")
 PACKAGE_TYPE = "application/zip"
 
 
-def download(ps: ProjectStore, name: str) -> tuple[Path, str] | None:
-    """The export file ``name`` with its media type, for download: only the paper (PDF, Word, markdown) and the
-    package, and only as a regular file of the project's own ``artifacts/export`` (no symlink on the way, the resolved
-    path inside that directory); else ``None``."""
+def export_current(ps: ProjectStore) -> str | None:
+    """Why the files in ``artifacts/export`` are not the export of the manuscript as it stands, else ``None``: the
+    export worker would refuse the manuscript now (``audited_manuscript``; the Workbench's ``ready``), or the export
+    stage has not passed with a package built from the audit report it would export."""
+    got = audited_manuscript(ps)
+    if isinstance(got, str):
+        return got
+    row = stage_row(ps, STAGE)
+    attempt = row["passed_attempt"] if row is not None and row["status"] == "passed" else None
+    if attempt is None:
+        return "the export has not passed for the manuscript as audited: export it"
+    b = built(ps, attempt)
+    if b is None or b.get("audit_report") != got[1]["version"]:
+        return f"the passed export was not built from the audit report v{got[1]['version']}: export again"
+    return None
+
+
+def _file(ps: ProjectStore, name: str) -> tuple[Path, str] | None:
     media = DOWNLOAD_TYPES.get(name) or (PACKAGE_TYPE if PACKAGE_NAME.fullmatch(name) else None)
     if media is None:
         return None
@@ -824,13 +836,23 @@ def download(ps: ProjectStore, name: str) -> tuple[Path, str] | None:
     return path, media
 
 
+def download(ps: ProjectStore, name: str) -> tuple[Path, str] | None:
+    """The export file ``name`` with its media type, for download: only while the export is current
+    (``export_current``), only the paper (PDF, Word, markdown) and the package, and only as a regular file of the
+    project's own ``artifacts/export`` (no symlink on the way, the resolved path inside that directory); else
+    ``None``."""
+    return None if export_current(ps) is not None else _file(ps, name)
+
+
 def downloads(ps: ProjectStore) -> list[dict]:
-    """The export files that can be downloaded now (``download``), each with its media type and size in bytes."""
+    """The export files that can be downloaded now (``download``), each with its media type and size in bytes; none
+    while the export is not current."""
     out_dir = ps.root / EXPORT_DIR
-    packages = sorted(p.name for p in out_dir.glob("package-*.zip")) if out_dir.is_dir() else []
+    if export_current(ps) is not None or not out_dir.is_dir():
+        return []
     out = []
-    for name in (*DOWNLOAD_TYPES, *packages):
-        if (got := download(ps, name)) is not None:
+    for name in (*DOWNLOAD_TYPES, *sorted(p.name for p in out_dir.glob("package-*.zip"))):
+        if (got := _file(ps, name)) is not None:
             out.append({"name": name, "media_type": got[1], "bytes": got[0].stat().st_size})
     return out
 

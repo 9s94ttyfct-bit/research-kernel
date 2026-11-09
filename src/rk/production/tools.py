@@ -20,7 +20,12 @@ from rk.argument import ArgumentService
 from rk.checkpoints import get_checkpoint, list_checkpoints, opened_in_place_of
 from rk.discovery.models import RQBody
 from rk.discovery.store import frozen_rq, hypotheses, intake_of
-from rk.orchestrator.state import attempt_ran, shown_attempt, stage_row
+from rk.orchestrator.state import (
+    attempt_ran,
+    degraded_questions,
+    shown_attempt,
+    stage_row,
+)
 from rk.production.argue import (
     argue_limitations,
     argue_notes,
@@ -40,7 +45,13 @@ from rk.production.audit import STAGE as AUDIT
 from rk.production.common import by_group, entity_row
 from rk.production.design import design_notes, design_problems, feasibility_claims
 from rk.production.draft import load_inputs
-from rk.production.export import EXPORT_DIR, audited_manuscript, built, downloads
+from rk.production.export import (
+    EXPORT_DIR,
+    audited_manuscript,
+    built,
+    downloads,
+    export_current,
+)
 from rk.production.export import STAGE as EXPORT
 from rk.production.extraction import (
     extraction_limitations,
@@ -660,10 +671,7 @@ def revise_view(ps: ProjectStore, attempt: int | None = None) -> dict:
     tries = [{**n, "accepted": decided[n["task"]]["accepted"] if n["task"] in decided else None,
               "reasons": decided[n["task"]]["reasons"] if n["task"] in decided else []}
              for n in notes if n["kind"] == "revision"]
-    deleted = {q for r in ps.db.execute("SELECT payload FROM events WHERE type='stage.degraded' AND "
-                                        "json_extract(payload, '$.stage')=? AND json_extract(payload, '$.attempt')=?",
-                                        (REVISE, attempt))
-               for q in json.loads(r["payload"]).get("questions") or []}
+    deleted = degraded_questions(ps, REVISE, attempt)
     questions = []
     for qn in (n for n in notes if n["kind"] == "questions"):
         for q in qn["questions"]:
@@ -715,13 +723,14 @@ def manuscript_view(ps: ProjectStore, section: str | None = None, version: int |
 def export_view(ps: ProjectStore) -> dict:
     """Whether the manuscript can be exported now (``ready``: ``None``, else the reason the export worker refuses
     it, ``audited_manuscript``), the export attempt it shows with its package and the audit report it was built from
-    (``built.audit_report``), and the files to download."""
+    (``built.audit_report``), whether the exported files are the export of the manuscript as it stands (``current``:
+    ``None``, else why not, ``export_current``) and the files to download (none unless current)."""
     got = audited_manuscript(ps)
     attempt = shown_attempt(ps, EXPORT)
     b = built(ps, attempt) if attempt is not None else None
     return {"ready": got if isinstance(got, str) else None, "attempt": attempt,
             "built": {**{k: b[k] for k in ("package", "sha256", "warnings")}, "audit_report": b.get("audit_report")}
-            if b else None, "files": downloads(ps)}
+            if b else None, "current": export_current(ps), "files": downloads(ps)}
 
 
 def audit_view(ps: ProjectStore, version: int | None = None) -> dict:

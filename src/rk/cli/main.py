@@ -1436,6 +1436,9 @@ def _export_lines(e: dict) -> None:
     typer.echo("export: ready" if e["ready"] is None else f"export: not ready: {e['ready']}")
     if e["built"]:
         typer.echo(f"package: {e['built']['package']}")
+        if e["current"] is not None:
+            typer.echo(f"exported files withheld: they are not the export of the manuscript as it stands "
+                       f"({e['current']})")
     for f in e["files"]:
         typer.echo(f"  {f['name']} ({f['media_type']}, {f['bytes']} bytes)")
 

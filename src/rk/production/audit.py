@@ -69,7 +69,6 @@ that the final review did not approve is never exported."""
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 
 from pydantic import BaseModel, ValidationError
@@ -100,12 +99,13 @@ from rk.notes import (
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.orchestrator.state import stage_row
 from rk.production.artifacts import artifact
-from rk.production.common import answer_comment
+from rk.production.common import answer_comment, write_atomic
 from rk.production.disclosure import SECTION, disclosure_problems, write_disclosure
 from rk.production.draft import (
     PRISMA_EVENT,
     PRISMA_FIELDS,
     DraftInputs,
+    latest_texts,
     latest_version,
     load_inputs,
     manuscript_problems,
@@ -203,13 +203,6 @@ def latest_audit_report(ps: ProjectStore) -> dict | None:
     return reports[-1] if reports else None
 
 
-def _write(path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
-
-
 def _rank(order: tuple[str, ...], key: str) -> int:
     return order.index(key) if key in order else len(order)
 
@@ -245,7 +238,7 @@ def _report_text(ps: ProjectStore, rep: dict) -> str | None:
                                                                      warnings=rep["warnings"], ok=rep["ok"]))
     if sha256_hex(md.encode()) != rep["sha256"]["md"]:
         return None
-    _write(path, md)
+    write_atomic(path, md.encode("utf-8"))
     return md
 
 
@@ -301,18 +294,6 @@ def cited_items(ps: ProjectStore, claim_ids: list[str], artifact_ids: list[str] 
         for iid in pooled(a):
             add(iid, a)
     return out
-
-
-def _texts(ps: ProjectStore, s: DraftInputs) -> tuple[dict[str, str], dict[str, int], list[str]]:
-    """The latest markdown and version of every required section that can be read, and why the others cannot."""
-    texts, versions, unread = {}, {}, []
-    for spec in s.sections:
-        got = latest_version(ps, spec.id)
-        if isinstance(got, str):
-            unread.append(got)
-        else:
-            versions[spec.id], texts[spec.id] = got[0]["version"], got[1]
-    return texts, versions, unread
 
 
 def _cited(texts: dict[str, str], kinds: tuple[str, ...]) -> list[str]:
@@ -415,7 +396,7 @@ def audit_manuscript(ps: ProjectStore, *, paper_type: str) -> AuditReport:
     if isinstance(s, str):
         fail("G-COVER", "draft", f"the manuscript cannot be audited: {s}")
         return report()
-    texts, versions, unread = _texts(ps, s)
+    texts, versions, unread = latest_texts(ps, s)
     for why in unread:
         fail("G-COVER", "draft", why)
     # every sentence and section (G-COVER, and the sentence parts of G-SUPPORT, G-HEDGE, G-QUOTE), V-BALANCE; a failure
@@ -545,7 +526,7 @@ class AuditWorker:
         ps = ctx.ps
         if noted := audit_notes(ps, ctx.attempt, kind="refs"):
             return noted[-1]["errors"]
-        texts, _, _ = _texts(ps, s.draft)
+        texts, _, _ = latest_texts(ps, s.draft)
         done = _verified_in_attempt(ps, ctx.attempt)
         results, errors = [], []
         for iid in cited_items(ps, _live_claims(ps, _cited(texts, ("clm",))), _cited(texts, ("stat", "fig"))):
@@ -570,7 +551,7 @@ class AuditWorker:
         ps = ctx.ps
         write_disclosure(ps, attempt=ctx.attempt, paper_type=s.draft.paper_type, actor=ctx.actor)
         rep = audit_manuscript(ps, paper_type=s.draft.paper_type)
-        texts_versions = _texts(ps, s.draft)[1]
+        texts_versions = latest_texts(ps, s.draft)[1]
         approved = bool(audit_notes(ps, ctx.attempt, kind="approved"))
         new = {"attempt": ctx.attempt, "ok": rep.ok, "gates": rep.gates, "routes": rep.routes,
                "warnings": rep.warnings, "sections": texts_versions, "approved": approved}
@@ -581,8 +562,8 @@ class AuditWorker:
         md_path, json_path = f"{REPORT_DIR}/report.v{version}.md", f"{REPORT_DIR}/report.v{version}.json"
         md = report_markdown(version, ctx.attempt, rep)
         js = json.dumps({"version": version, **new}, indent=2, ensure_ascii=False) + "\n"
-        _write(ps.root / md_path, md)
-        _write(ps.root / json_path, js)
+        write_atomic(ps.root / md_path, md.encode("utf-8"))
+        write_atomic(ps.root / json_path, js.encode("utf-8"))
         payload = {"version": version, **new, "md_path": md_path, "json_path": json_path,
                    "sha256": {"md": sha256_hex(md.encode()), "json": sha256_hex(js.encode())}}
         ps.apply(NewEvent(type=REPORTED, entity_id=None, actor_kind="kernel", actor=ctx.actor, payload=payload))
@@ -660,7 +641,7 @@ class AuditWorker:
                 return StageOutcome("failed", reason=(
                     f"the audit report v{rep['version']} ({rep['md_path']}) cannot be read, and rendering it again from "
                     "its event does not give its recorded sha256"))
-            texts, _, _ = _texts(ps, s.draft)
+            texts, _, _ = latest_texts(ps, s.draft)
             inputs = {"research_question": s.draft.question, "audience": s.draft.audience,
                       "manuscript": [{"section": x.id, "title": x.title, "markdown": texts.get(x.id, "")}
                                      for x in s.draft.sections],

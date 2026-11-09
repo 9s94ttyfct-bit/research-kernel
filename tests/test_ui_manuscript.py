@@ -234,7 +234,9 @@ def test_audit_tool_shows_the_gates_with_their_failures_and_the_export(api):
     assert old["approved"] is not None  # attempt 1's approval note
 
 
-def test_export_downloads_go_through_the_artifact_route_export_files_only(api, tmp_path):
+def test_export_downloads_go_through_the_artifact_route_export_files_only(api, tmp_path, monkeypatch):
+    from rk.production import export as export_mod
+
     ps = api.ps
     out = ps.root / "artifacts/export"
     out.mkdir(parents=True, exist_ok=True)
@@ -243,6 +245,10 @@ def test_export_downloads_go_through_the_artifact_route_export_files_only(api, t
              "package-0123abcd.zip": (b"PK\x03\x04 zip", "application/zip")}
     for name, (data, _) in files.items():
         (out / name).write_bytes(data)
+    # M3 of the final review: files that are not the current export (here: audit has not passed) are not served
+    assert api.client.get("/ui/api/artifacts/demo/export/paper.pdf").status_code == 404
+    assert _get(api, "/ui/api/audit")["export"]["files"] == []
+    monkeypatch.setattr(export_mod, "export_current", lambda ps: None)  # from here on: the file rules alone
     for name, (data, media) in files.items():
         r = api.client.get(f"/ui/api/artifacts/demo/export/{name}")
         assert r.status_code == 200, (name, r.text)

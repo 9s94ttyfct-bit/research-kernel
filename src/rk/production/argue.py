@@ -120,6 +120,7 @@ from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.orchestrator.graph import EDGE_LIMIT, STAGE_TASK_BUDGET, edge_name
 from rk.orchestrator.state import (
     edge_row,
+    passed_attempt,
     record_degraded,
     run_row,
     stage_row,
@@ -521,8 +522,7 @@ def argued_synthesis_attempt(ps: ProjectStore, attempt: int) -> int | None:
     recorded = next((n["synthesis_attempt"] for n in _drafts(ps, attempt) if n.get("synthesis_attempt")), None)
     if recorded is not None:
         return recorded
-    row = stage_row(ps, "synthesize")
-    return row["passed_attempt"] if row and row["passed_attempt"] else None
+    return passed_attempt(ps, "synthesize")
 
 
 def argument_roles(ps: ProjectStore, attempt: int, findings: list[str]) -> dict[str, str]:

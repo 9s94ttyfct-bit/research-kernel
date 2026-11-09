@@ -27,7 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from rk.argument import ArgumentService
-from rk.orchestrator.state import stage_row
+from rk.orchestrator.state import passed_attempt
 from rk.production.argue import argument_objection_ids, conflict_counterparts
 from rk.production.common import entity_row
 from rk.production.manuscript import Sentence
@@ -60,8 +60,7 @@ class BalanceRequirements:
 
 def argued(ps: ProjectStore) -> Argued:
     """argue's passed attempt for V-BALANCE; ``ValueError`` when argue has not passed."""
-    row = stage_row(ps, "argue")
-    attempt = row["passed_attempt"] if row is not None and row["passed_attempt"] else None
+    attempt = passed_attempt(ps, "argue")
     if attempt is None:
         raise ValueError(NOT_ARGUED)
     return Argued(attempt, conflict_counterparts(ps, attempt),

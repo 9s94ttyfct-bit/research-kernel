@@ -1618,12 +1618,12 @@ pages.audit = async (root, params) => {
       el("section", { class: "export" }, el("h2", {}, "Export"),
         e.ready === null ? el("p", { class: "check ok" }, "The audit passed and the final review approved the manuscript: it can be exported (rk export, or a run until export).")
           : el("p", { class: "hint" }, `Not exportable now: ${e.ready}`),
-        // the files are the manuscript's export only while it stands as audited and approved
+        // the files are the manuscript's export only while it stands as audited and approved and the export passed for it
         e.ready !== null ? null : [
-          e.built ? el("p", { class: "hint" }, `Export attempt ${e.attempt}, built from the audit report v${e.built.audit_report ?? "?"}: package `, el("code", {}, e.built.package)) : null,
+          e.built && e.current === null ? el("p", { class: "hint" }, `Export attempt ${e.attempt}, built from the audit report v${e.built.audit_report ?? "?"}: package `, el("code", {}, e.built.package)) : null,
           e.files.length ? el("ul", { class: "downloads" }, e.files.map((f) => el("li", {},
             el("a", { href: exportUrl(f.name), download: f.name }, f.name), ` — ${MEDIA[f.media_type] || f.media_type}, ${kib(f.bytes)}`)))
-            : el("p", { class: "empty" }, "Nothing exported yet.")])));
+            : el("p", { class: "empty" }, e.built && e.current ? `Not the current export: ${e.current}` : "Nothing exported yet.")])));
 };
 
 // The Models section of Settings: one model per role. The catalog loads after the page (omp may be slow), and the

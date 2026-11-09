@@ -718,3 +718,47 @@ def test_the_export_gate_fails_once_the_manuscript_changes_after_the_export(env,
                 actor="tester")
     gate = w.gate(ps, 1)
     assert not gate.ok and any("manuscript changed since audit" in f for f in gate.failures), gate.failures
+
+
+def test_the_package_refuses_a_disclosure_md_that_is_not_the_audited_disclosure(env, monkeypatch):
+    """M2 of the final review: ``disclosure.md`` is packed only while it is the disclosure section the audit passed."""
+    from rk.production.disclosure import DISCLOSURE_PATH
+
+    _, ps, _ = env
+    monkeypatch.setattr(export_mod, "_render", _fake_render)
+    audited(env)
+    assert export(ps).ok
+    path = ps.root / DISCLOSURE_PATH
+    good = path.read_bytes()
+    path.write_bytes(good + b"\nA line the audit never saw [[ck]].\n")
+    with pytest.raises(ValueError, match="disclosure.md"):
+        build_package(ps)
+    path.write_bytes(good)
+    assert build_package(ps).is_file()
+
+
+def test_export_files_are_offered_only_while_the_export_is_current(env, monkeypatch):
+    """M3 of the final review: the export's files are downloadable (and listed) only while the manuscript stands as
+    audited and approved and the export passed for it, the rule the Workbench shows them by."""
+    from rk.production.tools import export_view
+
+    k, ps, lib = env
+    monkeypatch.setattr(export_mod, "_render", _fake_render)
+    audited(env)
+    ctx = replace(production_ctx(k, ps, lib, Exec({}), stage="export"), guidance="")
+    assert ExportWorker().run(ctx).status == "done"
+    # exported, but the export has not passed yet
+    assert "export has not passed" in export_mod.export_current(ps)
+    assert export_mod.download(ps, "paper.pdf") is None and export_mod.downloads(ps) == []
+    _passed(ps, "export")
+    assert export_mod.export_current(ps) is None
+    assert export_mod.download(ps, "paper.pdf") is not None
+    assert {"paper.pdf", "paper.docx", "paper.md"} <= {f["name"] for f in export_view(ps)["files"]}
+    # the manuscript changed since the audit: the files are no longer its export
+    _, md = latest_draft(ps, "conclusion")
+    write_draft(ps, "conclusion", md + "\nA new sentence.\n", stage="revise", attempt=2, round=1, by_task=None,
+                actor="tester")
+    assert "manuscript changed since audit" in export_mod.export_current(ps)
+    assert export_mod.download(ps, "paper.pdf") is None and export_mod.downloads(ps) == []
+    view = export_view(ps)
+    assert view["files"] == [] and "manuscript changed since audit" in view["current"]

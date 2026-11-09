@@ -84,7 +84,9 @@ MANIFEST_PATH = Path(__file__).with_name("data") / "sr_repro.json"
 ENTRIES = 6
 SLUG_PREFIX = "srrepro-"
 PAPER_TYPE = "systematic_review"
-STAGE = "sr_repro"  # the stage the direction vote is recorded under (no stage of the graph: an evaluation)
+# the stage the direction vote is recorded under (no stage of the graph: an evaluation, which
+# rk.production.disclosure.EVALUATION_STAGES keeps out of the paper's disclosure)
+STAGE = "sr_repro"
 SEEDED = "sr_repro.seeded"
 ACTOR = "sr-repro"
 TITLE_MATCH = 90  # rapidfuzz token_set_ratio, after default_process

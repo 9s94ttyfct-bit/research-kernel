@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict
@@ -48,3 +50,20 @@ def entity_row(ps: ProjectStore, table: str, id_: str) -> dict:
 def by_group(notes: list[dict], kind: str) -> dict[int, dict]:
     """group index -> the last of ``notes`` of ``kind`` that names a group."""
     return {n["group"]: n for n in notes if n["kind"] == kind and n.get("group") is not None}
+
+
+def write_atomic(path: Path, data: bytes) -> None:
+    """Write ``path`` whole or not at all: the bytes go to a temporary file beside it, synced, renamed into place, and
+    the rename synced (a crash leaves the old file or the new one, never a part)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    with open(tmp, "wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+    fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
