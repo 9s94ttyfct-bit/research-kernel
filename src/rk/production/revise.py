@@ -20,8 +20,11 @@ only when it verifies as well as the version it would replace.
    afresh. The check after the last round is the same.
 2. **Budget.** Before a round's questions are asked, the round must fit in what is left of the stage's role-task budget
    (§7.2: ``STAGE_TASK_BUDGET`` per run session, as the executor counts it; outside a run the attempt's own tasks): a
-   SimReader task and one Writer task per revisable section. When it does not, the rounds stop as if
-   ``revise_max_rounds`` were reached (``budget``), so a run is never paused mid-round by the budget.
+   SimReader task and one Writer task per revisable section, so a run is never paused mid-round by the budget. When it
+   does not fit, the rounds stop as if ``revise_max_rounds`` were reached (``budget``) only after the attempt asked the
+   SimReader at least once and left no priority-1 question unresolved (or outside a run, where the budget is the
+   attempt's own); otherwise the round is needed (spec §11.3: suspended, never skipped silently): ``BudgetExceeded``
+   pauses the run, and resuming it goes on with the attempt in place in a new session with a fresh budget.
 3. **SimReader** (``ReaderQuestions``, ``codex_cli``): the manuscript's revisable sections as numbered sentences, the
    audience and the earlier questions with their answers. The kernel numbers the questions (``a<attempt>r<round>q<n>``),
    keeps the text of the sentence each is about, and refuses one on a section the Writer does not revise (``refused``);
@@ -45,9 +48,9 @@ only when it verifies as well as the version it would replace.
    answer counts only from an accepted revision.
 
 Rounds stop after one whose questions have no priority-1 question (its questions are still revised), after
-``revise_max_rounds``, or when the budget cannot cover a round. An interrupted attempt runs again in place: a round's
-recorded check and questions are not made again, a section's recorded revision is not asked again but is decided and,
-when accepted, stored (once, with its verdict), whatever questions the section has now.
+``revise_max_rounds``, or when the budget cannot cover a round it may skip (above). An interrupted attempt runs again in
+place: a round's recorded check and questions are not made again, a section's recorded revision is not asked again
+but is decided and, when accepted, stored (once, with its verdict), whatever questions the section has now.
 
 The gate: every priority-1 question of the attempt is ``revised`` or ``answered`` in an accepted revision, with a note
 (``declined`` is for priority 2–3 only; of the answers to a question on the whole manuscript, one that resolves it
@@ -71,6 +74,7 @@ from typing import Literal
 from pydantic import Field
 
 from rk.config import load_settings
+from rk.discovery.executor import BudgetExceeded
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.orchestrator.graph import STAGE_TASK_BUDGET
 from rk.orchestrator.state import record_degraded, run_row, stage_row, tasks_used
@@ -444,7 +448,11 @@ class ReviseWorker:
         return tasks_used(ctx.ps, ctx.run_id, row["session"] if row else None, ctx.stage)
 
     def _out_of_budget(self, ctx: StageContext, s: _Inputs, rnd: int) -> bool:
-        """Whether the rounds stop before ``rnd`` for the budget (noted once); a round already asked goes on."""
+        """Whether the rounds stop before ``rnd`` for the budget (noted once); a round already asked goes on. In a run
+        the stop is silent only when the attempt has asked the SimReader at least once and has no unresolved
+        priority-1 question; otherwise the round is needed and ``BudgetExceeded`` pauses the run (spec §11.3: never
+        skipped silently), which resumes the attempt in place in a new session with a fresh budget. Outside a run the
+        budget is the attempt's own, so a stop is silent and the attempt the gate reruns starts afresh."""
         ps, attempt = ctx.ps, ctx.attempt
         if _recorded(ps, attempt, "budget", rnd) is not None:
             return True
@@ -453,6 +461,9 @@ class ReviseWorker:
         used, needed = self._used(ctx), 1 + len(s.revisable)
         if self.budget - used >= needed:
             return False
+        read = any(n["round"] >= 1 for n in revise_notes(ps, attempt, kind="questions"))
+        if ctx.run_id is not None and (not read or _unresolved(ps, attempt)):
+            raise BudgetExceeded(STAGE, used, self.budget)
         _note(ps, attempt, "budget", actor=ctx.actor, round=rnd, used=used, needed=needed, budget=self.budget)
         return True
 

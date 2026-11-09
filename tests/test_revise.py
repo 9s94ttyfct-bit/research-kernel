@@ -654,24 +654,100 @@ def test_carried_question_whose_sentence_an_accepted_revision_rewrote_is_still_c
     assert w.gate(ps, 2).ok, w.gate(ps, 2).failures
 
 
-def test_in_a_run_the_budget_counts_the_run_sessions_tasks_of_the_stage(env):
-    """(c) With a run, the role tasks used are the run session's tasks of the stage (``tasks_used``), not the
-    attempt's: 36 of 40 used leave too little for a round (1 + 4 revisable sections)."""
+class _Counted(Exec):
+    """``Exec`` that links each task to the run session as ``KernelExecutor`` does (``record_run_task``), so the
+    stage budget counts it; ``run_id`` is set once the run started."""
+    ps = None
+    run_id: str | None = None
+
+    def run(self, role, instructions, inputs, output_schema, **kw):
+        from rk.ids import new_id
+        from rk.orchestrator.state import record_run_task, run_row
+
+        res = super().run(role, instructions, inputs, output_schema, **kw)
+        record_run_task(self.ps, task_id=res.task_id or new_id("tsk"), run_id=self.run_id,
+                        session=run_row(self.ps, self.run_id)["session"], stage=kw["stage"], attempt=kw["attempt"])
+        return res
+
+
+def _budget_run(env, ex: _Counted, used: int) -> tuple:
+    """A run up to revise (draft passed) whose session already used ``used`` of revise's 40 role tasks."""
     from rk.ids import new_id
-    from rk.orchestrator.state import record_run_task, run_row, start_run
+    from rk.orchestrator.state import record_run_task, run_row
+    from tests.production_fakes import stage_run
+
+    k, ps, lib = env
+    o, run_id = stage_run(k, ps, lib, "revise", ex)
+    ex.ps, ex.run_id = ps, run_id
+    for _ in range(used):
+        record_run_task(ps, task_id=new_id("tsk"), run_id=run_id, session=run_row(ps, run_id)["session"],
+                        stage="revise", attempt=1)
+    return o, run_id
+
+
+def _new_session(ps, run_id: str) -> None:
+    """``rk run resume`` of a ``paused_budget`` run: session n + 1 (the stage budgets restart), running again."""
+    from rk.orchestrator.state import record_run_session, record_run_status, run_row
+
+    record_run_session(ps, run_id, run_row(ps, run_id)["session"] + 1, actor="tester", clock=lambda: 1.8e9)
+    record_run_status(ps, run_id, "running", actor="tester", clock=lambda: 1.8e9)
+
+
+@pytest.mark.parametrize("case", ["no_round_yet", "unresolved_priority1"])
+def test_a_budget_that_cannot_cover_a_needed_round_pauses_the_run_for_a_new_session(env, case):
+    """I4 of the final review (spec §11.3: suspended, never silently skipped): when the session's budget cannot cover
+    a round and the attempt has not asked the SimReader yet, or a priority-1 question is still unresolved, revise
+    raises ``BudgetExceeded``: the run pauses (``paused_budget``), and resumed in a new session the attempt goes on in
+    place with the rounds it needs."""
+    from rk.orchestrator.state import run_row
 
     _, ps, _ = env
     _drafted(env)
-    run_id = start_run(ps, until="revise", actor="tester", clock=lambda: 1.8e9)
-    session = run_row(ps, run_id)["session"]
-    for stage, n in (("revise", 36), ("draft", 9)):  # another stage's tasks do not count
-        for _ in range(n):
-            record_run_task(ps, task_id=new_id("tsk"), run_id=run_id, session=session, stage=stage, attempt=1)
-    ex = _exec([ask(("introduction", 1))], [revision(add=_restated(ps, main_claim(ps, 1)))])
-    assert _done(ReviseWorker().run(replace(_ctx(env, ex), run_id=run_id)))
-    assert not ex.calls
+    main = main_claim(ps, 1)
+    if case == "no_round_yet":  # 36 of 40 used: too little for a round (1 + 4 revisable sections)
+        ex = _Counted({("simreader", "ReaderQuestions"): [ask(("introduction", 1)), ask()],
+                       ("writer", "Revision"): [revision(add=_restated(ps, main))]})
+        o, run_id = _budget_run(env, ex, 36)
+    else:  # 34 used: round 1 fits; its priority-1 question is declined, and round 2 does not fit
+        ex = _Counted({("simreader", "ReaderQuestions"): [ask(("introduction", 1)), ask()],
+                       ("writer", "Revision"): [revision(how="declined", note="out of scope"),
+                                                revision(add=_restated(ps, main))]})
+        o, run_id = _budget_run(env, ex, 34)
+    asked = len(ex.of("simreader"))
+    assert o.step("demo", run_id, actor="tester") == "paused_budget"
+    run = run_row(ps, run_id)
+    assert "'revise'" in run["reason"] and "of 40 role tasks" in run["reason"], run
+    assert len(ex.of("simreader")) == asked + (0 if case == "no_round_yet" else 1)
+    assert not revise_notes(ps, 1, kind="budget")  # no silent stop was noted
+    _new_session(ps, run_id)
+    assert o.step("demo", run_id, actor="tester") == "done", run_row(ps, run_id)
+    assert stage_row_status(ps, "revise") == ("passed", 1)  # the same attempt, resumed in place
+    assert "introduction" in _written(ex)
+
+
+def test_a_budget_stop_after_a_round_with_every_priority1_question_answered_is_silent(env):
+    """I4 of the final review: after at least one SimReader round, with no priority-1 question left unresolved, a
+    round the budget cannot cover is not run: revise stops (noted ``budget``) and its gate passes."""
+    from rk.orchestrator.state import run_row
+
+    _, ps, _ = env
+    _drafted(env)
+    main = main_claim(ps, 1)
+    ex = _Counted({("simreader", "ReaderQuestions"): [ask(("introduction", 1))] * 3,
+                   ("writer", "Revision"): [revision(add=_restated(ps, main))] * 3})
+    o, run_id = _budget_run(env, ex, 34)  # round 1 fits (6 left), round 2 does not (4 left)
+    assert o.step("demo", run_id, actor="tester") == "done", run_row(ps, run_id)
+    assert len(ex.of("simreader")) == 1 and _written(ex) == ["introduction"]
     (note,) = revise_notes(ps, 1, kind="budget")
-    assert (note["round"], note["used"], note["needed"], note["budget"]) == (1, 36, 5, 40)
+    assert (note["round"], note["used"], note["needed"], note["budget"]) == (2, 36, 5, 40)
+    assert stage_row_status(ps, "revise") == ("passed", 1)
+
+
+def stage_row_status(ps, stage: str) -> tuple:
+    from rk.orchestrator.state import stage_row
+
+    row = stage_row(ps, stage)
+    return row["status"], row["passed_attempt"]
 
 
 def test_resumed_round_whose_checked_section_no_longer_reads_goes_back_to_draft(env):
