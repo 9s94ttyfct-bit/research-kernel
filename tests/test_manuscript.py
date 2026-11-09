@@ -97,9 +97,13 @@ def test_et_al_ends_a_sentence_before_a_capitalised_start():
     out = parse_section("This was shown by Smith et al. Melatonin cures delirium [[clm:clm_A]].")
     assert [s.text for s in out] == ["This was shown by Smith et al.", "Melatonin cures delirium [[clm:clm_A]]."]
     assert len(parse_section("Smith et al. found it, as did Li et al. (2020) [[clm:clm_A]].")) == 1
-    # a sentence that starts with a digit splits after et al. too (as everywhere else)
-    assert [s.text for s in parse_section("Shown by Smith et al. 12 trials ran [[clm:clm_A]].")] == [
-        "Shown by Smith et al.", "12 trials ran [[clm:clm_A]]."]
+    # author-year citations stay inside their sentence (a sentence that starts with a numeral is rare in scientific
+    # writing; a year after "et al." is the common case)
+    for text in ("Smith et al. 2020 showed that melatonin helps [[clm:clm_A]].",
+                 "Melatonin helped (Smith et al. 2020) [[clm:clm_A]].",
+                 "Two trials (Smith et al. 2020; Li et al. 2021) agree [[clm:clm_A]].",
+                 "Smith et al. 3 (2019) found it [[clm:clm_A]]."):
+        assert len(parse_section(text)) == 1, text
 
 
 # ---- fix round 1: tables and captions, markers in the source ----
