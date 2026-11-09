@@ -57,8 +57,9 @@ _ABBREVIATIONS = frozenset({"e.g", "i.e", "al", "vs", "fig", "figs", "eq", "eqs"
 # terminal punctuation, closing quotes or brackets, the markers right after it; then anything but a marker
 _END = re.compile(r"[.?!][\"”’'»)\]]*(?:\s*\[\[[^\[\]\n]*\]\])*(?=\s+(?!\[\[)\S)")
 _CAPTION = re.compile(r"(?:[Tt]able)?:(?:\s|$)")
-# a pandoc inline note ``^[…]`` (group 1), or a footnote definition ``[^n]:`` at a line's start
-_FOOTNOTE = re.compile(r"(?m)((?<!\\)\^\[)|^ {0,3}\[\^[^\]\n]+\]:")
+# a pandoc inline note ``^[…]`` (group 1), or a footnote definition ``[^n]:`` at a line's start, also after block
+# quote and list markers (``> ``, ``- ``, ``* ``, ``+ ``, ``1. ``, ``1) ``), where pandoc reads it as one too
+_FOOTNOTE = re.compile(r"(?m)((?<!\\)\^\[)|^ {0,3}(?:(?:>|[-*+]|\d{1,9}[.)])[ \t]*)*\[\^[^\]\n]+\]:")
 _SENTENCE_OPENERS = frozenset({
     "A", "After", "All", "Also", "Although", "Among", "An", "As", "At", "Because", "Before", "Both", "But", "By",
     "Each", "Finally", "First", "For", "From", "Further", "Furthermore", "However", "If", "In", "It", "Its", "Many",

@@ -292,17 +292,40 @@ def _questions_of(ps: ProjectStore, attempt: int) -> list[dict]:
     return [{**q, "round": n["round"]} for n in revise_notes(ps, attempt, kind="questions") for q in n["questions"]]
 
 
+def withheld_questions(ps: ProjectStore, attempt: int, *, before: int | None = None) -> set[str]:
+    """The questions that, in the latest round they were asked (before ``before``), got a ``revised`` answer from a
+    revision the kernel rejected: the change meant to meet them is not in the text, so no other section's accepted
+    answer settles them yet."""
+    decided = {n["task"]: n["accepted"] for n in revise_notes(ps, attempt, kind="decided")}
+    revisions = [n for n in revise_notes(ps, attempt, kind="revision") if before is None or n["round"] < before]
+    last: dict[str, int] = {}
+    for n in revisions:
+        for qid in n["asked"]:
+            last[qid] = max(last.get(qid, 0), n["round"])
+    return {a["question_id"] for n in revisions if decided.get(n["task"]) is False
+            for a in n["answers"] if a["question_id"] in n["asked"] and a["how"] == "revised"
+            and n["round"] == last[a["question_id"]]}
+
+
+def settled_answers(ps: ProjectStore, attempt: int, *, before: int | None = None) -> dict[str, dict]:
+    """question id -> the accepted answer that resolves it (``revised`` or ``answered`` with a note; of a question on
+    the whole manuscript, one from any section), unless the question is ``withheld_questions``. The gate, the carry
+    and the Revise view all read this rule."""
+    held = withheld_questions(ps, attempt, before=before)
+    return {qid: a for qid, a in _answers(ps, attempt, before=before).items() if _resolved(a) and qid not in held}
+
+
 
 def _earlier_answer(q: dict, answers: dict[str, dict]) -> dict | None:
     return answers.get(q["id"]) or q.get("previous_answer")
 
 
 def _unresolved(ps: ProjectStore, attempt: int, *, before: int | None = None) -> list[dict]:
-    """The attempt's priority-1 questions with no resolving answer (in a round before ``before``) whose sentence was
-    not deleted."""
-    answers, deleted = _answers(ps, attempt, before=before), degraded_questions(ps, STAGE, attempt)
+    """The attempt's priority-1 questions with no settling answer (``settled_answers``, in a round before ``before``)
+    whose sentence was not deleted."""
+    settled, deleted = settled_answers(ps, attempt, before=before), degraded_questions(ps, STAGE, attempt)
     return [q for q in _questions_of(ps, attempt)
-            if q["priority"] == 1 and q["id"] not in deleted and not _resolved(answers.get(q["id"]))]
+            if q["priority"] == 1 and q["id"] not in deleted and q["id"] not in settled]
 
 
 def _review_request(ps: ProjectStore, attempt: int) -> str | None:
@@ -627,12 +650,16 @@ class ReviseWorker:
             return GateResult(False, [s])
         failures: list[str] = []
         answers, deleted = _answers(ps, attempt), degraded_questions(ps, STAGE, attempt)
+        held = withheld_questions(ps, attempt)
         for q in _questions_of(ps, attempt):
             if q["priority"] != 1 or q["id"] in deleted:
                 continue
             a = answers.get(q["id"])
             what = f"the priority-1 question {q['id']} on {q['section']} “{q['text']}”"
-            if a is None:
+            if q["id"] in held:
+                failures.append(f"{what}: the revision that answered it revised was rejected in its latest round, so "
+                                "the change it asks for is not in the text")
+            elif a is None:
                 failures.append(f"{what} has no answer in an accepted revision")
             elif a["how"] == "declined":
                 failures.append(f"{what} was declined: only a priority-2 or -3 question may be declined")

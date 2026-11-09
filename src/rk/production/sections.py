@@ -18,24 +18,27 @@ class SectionSpec(BaseModel):
     title: str
     purpose: str
     kernel_written: bool = False
+    # the section describes the research operations (what was searched, screened, planned): a sentence whose only
+    # source markers are ``run``/``plan`` may stand here (``rk.verify.cover``), nowhere else
+    operations: bool = False
 
 
-_DISCLOSURE = SectionSpec(id="disclosure", title="Disclosure", kernel_written=True,
+_DISCLOSURE = SectionSpec(id="disclosure", title="Disclosure", kernel_written=True, operations=True,
                           purpose="What the kernel ran to produce this manuscript, each step with its record.")
 KERNEL_WRITTEN = frozenset({_DISCLOSURE.id})  # the sections only the kernel writes (verified with their own rules)
 
 
 def _review(results_title: str, results_purpose: str) -> list[SectionSpec]:
     return [
-        SectionSpec(id="abstract", title="Abstract",
+        SectionSpec(id="abstract", title="Abstract", operations=True,
                     purpose="The question, the methods, the main results and the conclusion, briefly."),
         SectionSpec(id="introduction", title="Introduction",
                     purpose="Why the question matters to the audience and what the review sets out to answer."),
-        SectionSpec(id="methods", title="Methods",
+        SectionSpec(id="methods", title="Methods", operations=True,
                     purpose="The frozen protocol: sources and search, eligibility, screening, extraction, risk of bias "
                             "(how each study's evidence was assessed) and the synthesis method, with the search and "
                             "screening counts."),
-        SectionSpec(id="results", title=results_title, purpose=results_purpose),
+        SectionSpec(id="results", title=results_title, purpose=results_purpose, operations=True),
         SectionSpec(id="discussion", title="Discussion",
                     purpose="What the findings and the argument mean for the question, with the contested points and "
                             "the answers to the objections."),
@@ -58,7 +61,7 @@ SECTIONS: dict[str, list[SectionSpec]] = {
         "The PRISMA flow of the studies (the flow figure and its counts), the evidence map and the themes of the "
         "synthesis."),
     "critical_review": [
-        SectionSpec(id="introduction", title="Introduction",
+        SectionSpec(id="introduction", title="Introduction", operations=True,
                     purpose="Context, then the problem, then the review's response: why the question matters to the "
                             "audience, how the literature was selected and the argument the review makes."),
         SectionSpec(id="gaps-agenda", title="Gaps & Agenda",
@@ -72,10 +75,10 @@ SECTIONS: dict[str, list[SectionSpec]] = {
                     purpose="What is known, from the synthesis findings and the argument, and why the question "
                             "matters to the audience."),
         SectionSpec(id="gap", title="Gap", purpose="What the literature leaves open and why it matters."),
-        SectionSpec(id="questions-hypotheses", title="Research Question & Hypotheses",
+        SectionSpec(id="questions-hypotheses", title="Research Question & Hypotheses", operations=True,
                     purpose="The research question and the hypotheses the design tests, each with its falsification "
                             "condition: the result that would count against it."),
-        SectionSpec(id="methods", title="Proposed Methods",
+        SectionSpec(id="methods", title="Proposed Methods", operations=True,
                     purpose="The planned work, from the frozen design (cited with [[plan:]] markers): its items, "
                             "samples, controls, measurements and analyses, and its feasibility. No results exist."),
         SectionSpec(id="expected-outcomes", title="Expected Outcomes & Alternatives",
@@ -110,3 +113,10 @@ def required_sections(paper_type: str, themes: list[str] = ()) -> list[SectionSp
         at = next(i for i, s in enumerate(out) if s.id == THEMES_AFTER) + 1
         out[at:at] = theme_sections(list(themes))
     return out
+
+
+def describes_operations(paper_type: str, section: str) -> bool:
+    """Whether the paper type's section ``section`` describes the research operations (``SectionSpec.operations``);
+    a theme section or an unknown id does not."""
+    return section in KERNEL_WRITTEN or any(
+        s.id == section and s.operations for s in SECTIONS.get(paper_type, []))

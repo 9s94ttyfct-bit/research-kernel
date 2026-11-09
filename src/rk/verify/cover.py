@@ -24,6 +24,11 @@ a code span is not checked and does not count).
 - ``[[ck]]`` sentences carry no number and are at most 5% of a section's sentences; ``[[plan:]]`` only in a research
   proposal. A section with a markdown table or a table caption fails (``section_problems``); so does a Writer's
   section (any but the kernel-written ``KERNEL_WRITTEN``) with a heading, a reference definition or a footnote.
+- **Research-operation sentences:** a Writer's sentence whose only source markers are ``run``/``plan`` (no claim,
+  figure or statistic) stands only in a section that describes the research operations
+  (``rk.production.sections.describes_operations``: the Abstract, Methods and Results of a review, a critical review's
+  Introduction, a proposal's Hypotheses and Proposed Methods), and there it is held to V-HEDGE's plain level
+  (``OPERATION_MAX_LEVEL``: nothing categorical). The kernel-written Disclosure is exempt.
 
 A caller may keep a sentence's earlier verdict instead of verifying it again (``verify_section(known=...)``; revise
 does, for a sentence whose exact text is unchanged): only while each of its markers' ``target_state`` (a digest of
@@ -42,7 +47,7 @@ from rk.argument import ArgumentService
 from rk.canon import canonical_json, sha256_hex
 from rk.production.artifacts import artifact
 from rk.production.manuscript import Marker, Sentence, parse_section, section_problems
-from rk.production.sections import KERNEL_WRITTEN
+from rk.production.sections import KERNEL_WRITTEN, describes_operations
 from rk.production.store import design, protocol_hash, protocol_row
 from rk.store.project import ProjectStore
 from rk.text.layer import normalize_query
@@ -86,9 +91,13 @@ EVENT_NUMBERS: dict[str, tuple[str, ...]] = {
                      "assessed_ft", "excluded_ft_total", "included", "excluded_language", "abstract_only"),
 }
 # What a [[run:evt_…]] marker in a Writer's section may cite (spec §9.1 V-COVER ②: the system's own research
-# operations): the producers of a run event's numbers, and a stage's pass (the draft's Disclosure stub cites it). The
-# kernel-written Disclosure cites any event it reports (a checkpoint answer, a vote, a degrade, …).
-RESEARCH_EVENTS = frozenset({*EVENT_NUMBERS, "stage.passed"})
+# operations): the producers of a run event's numbers, which are the events the Writer is given. The kernel-written
+# Disclosure cites any event it reports (a stage's pass, a checkpoint answer, a vote, a degrade, …).
+RESEARCH_EVENTS = frozenset(EVENT_NUMBERS)
+# V-HEDGE's ceiling for a Writer's sentence whose only source markers are ``run``/``plan`` (no claim, figure or
+# statistic): plain statement (``hedge_level`` 2), never categorical (3). The strictest ceiling under which a plain
+# report of what ran ("We searched PubMed from 2024") still passes; tentative wording (1) would refuse it.
+OPERATION_MAX_LEVEL = 2
 
 
 class SentenceVerdict(BaseModel):
@@ -329,9 +338,12 @@ def _quotations(s: Sentence, prose: str) -> list[tuple[int, int, str]]:
     return [(q.start(), q.end(), next(g for g in q.groups() if g is not None)) for q in _QUOTED.finditer(prose)]
 
 
-def verify_sentence(ps: ProjectStore, s: Sentence, *, paper_type: str, kernel_written: bool = False) -> SentenceVerdict:
+def verify_sentence(ps: ProjectStore, s: Sentence, *, paper_type: str, kernel_written: bool = False,
+                    operations: bool = True) -> SentenceVerdict:
     """The sentence against every rule of the module docstring; ``kernel_written``: of a section only the kernel
-    writes (its ``run`` markers may cite any event)."""
+    writes (its ``run`` markers may cite any event, and its ``run``-only sentences are not hedge-capped);
+    ``operations``: of a section that describes the research operations, the only place a Writer's sentence whose
+    only source markers are ``run``/``plan`` may stand (``rk.production.sections.describes_operations``)."""
     problems: list[str] = []
     if not s.markers:
         problems.append("the sentence has no source marker")
@@ -339,6 +351,11 @@ def verify_sentence(ps: ProjectStore, s: Sentence, *, paper_type: str, kernel_wr
         if (why := _target_problem(ps, m, paper_type, kernel_written)) is not None:
             problems.append(why)
     kinds = {m.kind for m in s.markers}
+    run_only = not kernel_written and bool(kinds & {"run", "plan"}) and not kinds & {"clm", "fig", "stat"}
+    if run_only and not operations:
+        problems.append("a statement here needs a claim, figure or statistic, not only a research-operation marker "
+                        "(a sentence citing only [[run:]]/[[plan:]] belongs in a section that describes the research "
+                        "operations, such as Methods)")
     prose = _MARKER_TEXT.sub(lambda x: " " * len(x.group(0)), s.prose)
     nums = extract_numbers(s.prose)
     if "ck" in kinds and nums:
@@ -361,6 +378,9 @@ def verify_sentence(ps: ProjectStore, s: Sentence, *, paper_type: str, kernel_wr
     cited = [c for m in s.markers if m.kind == "clm" and m.target and (c := _claim(ps, m.target)) is not None]
     if cited and level > max(hedge_level(c["text"]) for c in cited):
         problems.append("the sentence is stronger than the claims it cites (V-HEDGE)")
+    if run_only and level > OPERATION_MAX_LEVEL:
+        problems.append("the sentence cites no claim, only research-operation markers, and is stated categorically "
+                        "(V-HEDGE)")
     return SentenceVerdict(index=s.index, ok=not problems, problems=problems)
 
 
@@ -372,10 +392,12 @@ def verify_section(ps: ProjectStore, section: str, markdown: str, *, paper_type:
     caller keeps for that sentence instead of verifying it again (see the module docstring); every other sentence is
     verified."""
     kernel_written = section in KERNEL_WRITTEN
+    operations = describes_operations(paper_type, section)
     sentences = parse_section(markdown)
     known = known or {}
     verdicts = [known[s.index] if s.index in known
-                else verify_sentence(ps, s, paper_type=paper_type, kernel_written=kernel_written) for s in sentences]
+                else verify_sentence(ps, s, paper_type=paper_type, kernel_written=kernel_written,
+                                     operations=operations) for s in sentences]
     ck = sum(1 for s in sentences if any(m.kind == "ck" for m in s.markers))
     share = ck / len(sentences) if sentences else 0.0
     problems = section_problems(markdown, kernel_written=kernel_written)

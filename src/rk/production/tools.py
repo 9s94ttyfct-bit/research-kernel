@@ -73,7 +73,7 @@ from rk.production.protocol import (
     render_protocol,
 )
 from rk.production.revise import STAGE as REVISE
-from rk.production.revise import revise_notes
+from rk.production.revise import revise_notes, settled_answers, withheld_questions
 from rk.production.screening import reports_prisma
 from rk.production.store import (
     decisions,
@@ -672,6 +672,7 @@ def revise_view(ps: ProjectStore, attempt: int | None = None) -> dict:
               "reasons": decided[n["task"]]["reasons"] if n["task"] in decided else []}
              for n in notes if n["kind"] == "revision"]
     deleted = degraded_questions(ps, REVISE, attempt)
+    settled, held = settled_answers(ps, attempt), withheld_questions(ps, attempt)
     questions = []
     for qn in (n for n in notes if n["kind"] == "questions"):
         for q in qn["questions"]:
@@ -684,7 +685,9 @@ def revise_view(ps: ProjectStore, attempt: int | None = None) -> dict:
             answered = [r for r in revisions if r["accepted"] and r["how"]]
             if q["id"] in deleted:
                 outcome, note = "deleted", "P1's degrade deleted the sentence it was about"
-            elif answered:
+            elif q["id"] in settled:  # the gate's rule: a settling answer wins over a later section's decline
+                outcome, note = settled[q["id"]]["how"], settled[q["id"]]["note"]
+            elif answered and q["id"] not in held:
                 outcome, note = answered[-1]["how"], answered[-1]["note"]
             else:
                 outcome, note = ("rejected" if any(r["accepted"] is False for r in revisions) else "open"), None

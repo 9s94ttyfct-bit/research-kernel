@@ -579,6 +579,54 @@ def test_a_final_review_request_is_a_manuscript_question_every_writer_gets_and_t
     assert w.gate(ps, 2).ok, w.gate(ps, 2).failures
 
 
+def test_the_revise_view_reports_a_settled_manuscript_request_as_answered(env):
+    """N1 of the re-review: the request one section answered and the others declined is settled; the Revise view (the
+    Workbench panel, ``rk revise show``) says so, by the gate's rule, not "declined"."""
+    from rk.production.tools import revise_view
+
+    _, ps, _ = env
+    _drafted(env)
+    save_settings(load_settings().model_copy(update={"revise_max_rounds": 1}))
+    _reopened_by_the_final_review(ps, 1, "final_review: revise: Say who the audience is.")
+    ex = _exec([ask()], [revision(how="answered", note="the introduction names the audience"),
+                         *[revision(how="declined", note="not mine")] * 3])
+    w = ReviseWorker()
+    assert _done(w.run(_ctx(env, ex)))
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    (q,) = revise_view(ps, 1)["questions"]
+    assert (q["section"], q["outcome"], q["note"]) == ("manuscript", "answered", "the introduction names the audience")
+
+
+def test_a_manuscript_request_stays_open_while_its_latest_revised_answer_was_rejected(env):
+    """N4 of the re-review: when, in the latest round, a section answered the request ``revised`` but its revision was
+    rejected, another section's accepted answer does not settle it: the gate fails, the view says rejected, and the
+    next attempt asks every Writer again."""
+    from rk.production.tools import revise_view
+
+    _, ps, _ = env
+    _drafted(env)
+    main = main_claim(ps, 1)
+    save_settings(load_settings().model_copy(update={"revise_max_rounds": 1}))
+    _reopened_by_the_final_review(ps, 1, "final_review: revise: Say who the audience is.")
+    ex = _exec([ask()], [revision(add="An unmarked sentence names the audience.", how="revised", note="added"),
+                         *[revision(how="answered", note="already clear")] * 3])
+    w = ReviseWorker()
+    assert _done(w.run(_ctx(env, ex)))
+    assert [n["accepted"] for n in revise_notes(ps, 1, kind="decided")] == [False, True, True, True]
+    gate = w.gate(ps, 1)
+    (q,) = revise_view(ps, 1)["questions"]
+    assert not gate.ok and any(q["id"] in f and "rejected" in f for f in gate.failures), gate.failures
+    assert q["outcome"] == "rejected"
+    record_ran(ps, "revise", 1, "done", "", actor="tester")
+    record_reopened(ps, "revise", by_edge="revise->revise", guidance="; ".join(gate.failures), actor="tester")
+    record_attempt(ps, "revise", 2, run_id=None, guidance="", requested=None, actor="tester")
+    ex2 = _exec([ask()], [revision(add=_restated(ps, main), how="revised", note="the audience is named"),
+                          *[revision(how="declined", note="not mine")] * 3])
+    assert _done(w.run(_ctx(env, ex2, attempt=2)))
+    assert [c["inputs"]["revise"]["questions"][0]["id"] for c in ex2.of("writer", "Revision")] == [q["id"]] * 4
+    assert w.gate(ps, 2).ok, w.gate(ps, 2).failures
+
+
 def test_rounds_stop_when_the_budget_cannot_cover_a_round(env):
     _, ps, _ = env
     _drafted(env)

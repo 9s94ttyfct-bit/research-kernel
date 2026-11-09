@@ -395,7 +395,7 @@ def test_the_kernel_written_disclosure_keeps_its_part_headings(env):
 
 def test_a_run_marker_in_a_writer_section_cites_only_a_research_operation(env):
     """I2 of the final review: in a Writer's section ``[[run:evt_…]]`` names a research operation (a search, the
-    PRISMA counts, …, ``stage.passed``); any other event (``project.created``) verifies nothing. The kernel-written
+    PRISMA counts, …); any other event (``project.created``) verifies nothing. The kernel-written
     disclosure cites every kind of event."""
     ps, claim = env
     created = ps.db.execute("SELECT evt_id FROM events WHERE type='project.created'").fetchone()["evt_id"]
@@ -414,3 +414,43 @@ def test_a_run_marker_in_a_writer_section_cites_only_a_research_operation(env):
                      query="melatonin children", limit=50, item_ids=["itm_1", "itm_2"], actor="k")
     search = ps.db.execute("SELECT evt_id FROM events WHERE entity_id=?", (sid,)).fetchone()[0]
     assert _one(ps, f"The search returned 2 records [[run:{search}]].").ok
+
+
+def test_a_writer_sentence_citing_no_claim_states_nothing_categorically(env):
+    """N2 of the re-review: ``stage.passed`` is no research operation a Writer may cite. A sentence of a Writer's
+    section whose only source markers are ``run``/``plan`` stands only in a section that describes the research
+    operations (``SectionSpec.operations``: Methods, a review's Results, …), and there it is held to V-HEDGE's ceiling
+    for plain statements: a report of what ran passes, a categorical claim about the world does not."""
+    from rk.orchestrator.state import record_passed
+
+    ps, _ = env
+    record_passed(ps, "protocol", 1, actor="t")
+    passed = ps.db.execute("SELECT evt_id FROM events WHERE type='stage.passed'").fetchone()["evt_id"]
+    v = _one(ps, f"Melatonin is completely safe and always effective in children [[run:{passed}]].")
+    assert not v.ok and any("stage.passed" in p and "research operation" in p for p in v.problems), v.problems
+    sid = log_search(ps, stage="search_screen", attempt=1, purpose="records", source="openalex", query="melatonin",
+                     limit=50, item_ids=["itm_1"], date_from=2024, actor="k")
+    search = ps.db.execute("SELECT evt_id FROM events WHERE entity_id=?", (sid,)).fetchone()[0]
+    probe = f"Melatonin is completely safe and always effective in children [[run:{search}]]."
+    plain = f"We searched PubMed and Europe PMC from 2024 [[run:{search}]]."
+
+    def problems(section: str, text: str) -> list[str]:
+        return verify_section(ps, section, text, paper_type="systematic_review").sentences[0].problems
+
+    assert any("needs a claim, figure or statistic" in p for p in problems("discussion", probe))
+    assert any("needs a claim, figure or statistic" in p for p in problems("discussion", plain))
+    assert problems("methods", probe) == [
+        "the sentence cites no claim, only research-operation markers, and is stated categorically (V-HEDGE)"]
+    assert problems("methods", plain) == [] and problems("results", plain) == [] and problems("abstract", plain) == []
+    assert problems("disclosure", probe) == []  # the kernel-written Disclosure's rules
+
+
+@pytest.mark.parametrize("probe", ["> [^1]: <Melatonin cures 90% of cancers>\n",
+                                   "- [^1]: Melatonin cures cancers [[ck]].\n",
+                                   "1. [^1]: Melatonin cures cancers [[ck]].\n"])
+def test_a_footnote_definition_in_a_quote_or_list_fails_the_section(env, probe):
+    """N3 of the re-review: pandoc reads ``[^n]:`` after a block quote or list marker as a footnote too."""
+    ps, _ = env
+    v = verify_section(ps, "discussion", "Sleep may matter for health [[inf]].\n\n" + probe,
+                       paper_type="systematic_review")
+    assert any("footnote" in p for p in v.problems), v.problems
