@@ -218,7 +218,8 @@ No new Python dependency. The CSL style is pandoc's built-in default (Chicago au
 
 **Files:**
 - Create: `src/rk/verify/balance.py`.
-- Test: `tests/test_balance.py`.
+- Modify: `src/rk/production/draft.py` (`DraftWorker.gate` runs `check_balance` on every section's latest verified version; a one-sided section fails the gate and is redrafted with the problem as guidance).
+- Test: `tests/test_balance.py`, `tests/test_draft.py` (the gate fails on a one-sided section).
 
 **Interfaces:**
 - Produces `check_balance(ps, section: str, sentences: list[Sentence]) -> list[str]`, returning problems; empty means pass.
@@ -297,6 +298,7 @@ No new Python dependency. The CSL style is pandoc's built-in default (Chicago au
   - **G-DISCLOSE:** `disclosure.md` has all five parts and every human/vote checkpoint is listed.
   - **G-PREREG:** systematic and scoping reviews only (`protocol_prereg_ok`).
   - Also V-PRISMA (where the paper type uses it) and V-STATS for every cited artifact.
+  - Every cited `draft.prisma` event is recomputed from its recorded `search_attempt` (`prisma_counts`) under its recorded `protocol_id`; a count that differs, or a search attempt that is no longer search_screen's passed attempt, fails ("stale PRISMA counts") → `audit → draft`.
 - `AuditWorker(resumes_in_place=True)`:
   - It runs `audit_manuscript`, writes `artifacts/audit/report.v<N>.md` and `.json` (`audit.reported`), and writes `disclosure.md`, re-rendering the `disclosure` section through `write_draft`.
   - On failure it takes the owning back-edge:
