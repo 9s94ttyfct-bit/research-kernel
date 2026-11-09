@@ -160,7 +160,7 @@ def prisma_event(ps: ProjectStore, attempt: int, search_attempt: int, protocol_i
 
 # ---- inputs ----
 @dataclass(frozen=True)
-class _Inputs:
+class DraftInputs:
     paper_type: str
     mode: str
     audience: str
@@ -190,7 +190,7 @@ def themes(ps: ProjectStore, synth_attempt: int) -> list[str]:
     return [g["theme_or_outcome"] for g in notes[-1]["output"].get("groups") or []] if notes else []
 
 
-def _load(ps: ProjectStore) -> _Inputs | str:
+def load_inputs(ps: ProjectStore) -> DraftInputs | str:
     intake = intake_of(ps)
     if intake is None:
         return "intake missing"
@@ -210,7 +210,7 @@ def _load(ps: ProjectStore) -> _Inputs | str:
         if design_attempt is None or design is None:
             return "design has not passed: a research proposal is drafted from its approved design"
     main = main_claim(ps, argue)
-    return _Inputs(
+    return DraftInputs(
         paper_type=intake.paper_type, mode=intake.production_mode, audience=intake.audience,
         question=RQBody.model_validate(rq["body"]).three_step.sentence(), rq_id=rq["id"], synth_attempt=synth,
         argue_attempt=argue, design_attempt=design_attempt, search_attempt=_passed(ps, "search_screen"),
@@ -226,7 +226,7 @@ def _mine(ps: ProjectStore, section: str, attempt: int) -> list[dict]:
     return [v for v in draft_versions(ps, section) if v["stage"] == STAGE and v["attempt"] == attempt]
 
 
-def _failures(markdown: str, verdict: dict) -> list[str]:
+def version_failures(markdown: str, verdict: dict) -> list[str]:
     """A failing version's problems: section-level ones, then each failing sentence with its text."""
     v = SectionVerdict.model_validate(verdict)
     sentences = {s.index: s for s in parse_section(markdown)}
@@ -244,6 +244,61 @@ def _quotable(note: dict) -> bool:
     return note["kind"] == "quote" and bool(((note.get("verified") or {}).get("quote") or {}).get("ok"))
 
 
+def writer_inputs(ps: ProjectStore, s: DraftInputs, spec: SectionSpec, prisma: str | None) -> dict:
+    """What every Writer task gets for ``spec`` (draft and revise alike): the paper type, audience and question, the
+    section and the sections, the marker grammar, the claims (ids, texts, statuses, evidence notes with whether each is
+    a verified quote, and their balance facts: ``rk.verify.balance.balance_requirements``), the artifacts with their
+    reported values only (``rk.verify.cover.reported_values``), the protocol, the search events and the PRISMA event
+    ``prisma``, a proposal's design and hypotheses, and the limitations."""
+    svc = ArgumentService(ps)
+    facts = argued(ps)  # load_inputs: argue passed
+
+    def claim(cid: str, role: str) -> dict:
+        c = svc.get_claim(cid)
+        notes = [n for e in svc.list_evidence(cid) for i in e["note_ids"] if (n := svc.note(i)) is not None]
+        bal = balance_requirements(ps, cid, facts=facts)
+        return {"claim_id": cid, "role": role, "text": c["text"], "status": c["status"], "kind": c["kind"],
+                "scope_limits": c.get("scope_limits") or [],
+                "evidence_notes": [{"kind": n["kind"], "text": n["text"], "verified": _quotable(n)} for n in notes],
+                "contested_by": bal.contested_by, "answered_by": bal.answered_by,
+                "conceded_sourced": bal.conceded_sourced}
+
+    claims = ([claim(s.main, "main")] if s.main else []) + [claim(c, "argument") for c in s.argument] \
+        + [claim(c, "finding") for c in s.findings]
+    arts = [{"id": a["id"], "kind": a["kind"], "values": reported_values(a["values"])}
+            for a in artifacts(ps, "synthesize", s.synth_attempt) if a["kind"] in ("stt", "fig")]
+    events = []
+    if s.search_attempt is not None:
+        rows = ps.db.execute("SELECT evt_id, type, payload FROM events WHERE type='search.logged' "
+                             "AND json_extract(payload, '$.stage')='search_screen' "
+                             "AND json_extract(payload, '$.attempt')=? ORDER BY seq", (s.search_attempt,))
+        for r in rows:
+            p = json.loads(r["payload"])
+            events.append({"event_id": r["evt_id"], "type": r["type"], "source": p["source"], "query": p["query"],
+                           "numbers": {f: (len(p[f]) if isinstance(p[f], list) else p[f])
+                                       for f in EVENT_NUMBERS[r["type"]] if p.get(f) is not None}})
+    if prisma is not None:
+        r = ps.db.execute("SELECT payload FROM events WHERE evt_id=?", (prisma,)).fetchone()
+        p = json.loads(r["payload"])
+        events.append({"event_id": prisma, "type": PRISMA_EVENT, "numbers": {f: p[f] for f in PRISMA_FIELDS}})
+    limitations: dict = {"synthesis": synthesis_limitations(ps, s.synth_attempt),
+                         "argument": argue_limitations(ps, s.argue_attempt)}
+    inputs: dict = {"paper_type": s.paper_type, "audience": s.audience, "question": s.question,
+                    "section": spec.model_dump(),
+                    "sections": [{"id": x.id, "title": x.title} for x in s.sections],
+                    "markers": MARKER_GRAMMAR, "claims": claims, "artifacts": arts,
+                    "protocol": ({"id": s.protocol["id"], "body": s.protocol["body"]} if s.protocol else None),
+                    "events": events}
+    if s.paper_type == PROPOSAL:
+        limitations["design"] = design_limitations(ps, s.design_attempt)
+        inputs["design"] = {"id": s.design["id"], "body": s.design["body"]}
+        inputs["hypotheses"] = [{k: h.get(k) for k in ("id", "statement", "falsification", "status")}
+                                for h in hypotheses(ps, s.rq_id) if h["status"] != "dropped"]
+    inputs["limitations"] = limitations
+    return inputs
+
+
+
 class DraftWorker:
     # An interrupted attempt runs again in place (rk.orchestrator.engine): ``run`` goes on from the attempt's stored
     # versions (see the module docstring) and asks the Writer nothing twice.
@@ -251,7 +306,7 @@ class DraftWorker:
 
     def run(self, ctx: StageContext) -> StageOutcome:
         ps = ctx.ps
-        s = _load(ps)
+        s = load_inputs(ps)
         if isinstance(s, str):
             return StageOutcome("failed", reason=s)
         if sent := draft_notes(ps, ctx.attempt, kind="back_edge"):  # resumed after the back-edge was noted
@@ -280,7 +335,7 @@ class DraftWorker:
                 mine = _mine(ps, spec.id, ctx.attempt)
         return StageOutcome("done")
 
-    def _write(self, ctx: StageContext, s: _Inputs, spec: SectionSpec, mine: list[dict],
+    def _write(self, ctx: StageContext, s: DraftInputs, spec: SectionSpec, mine: list[dict],
                prisma: str | None) -> StageOutcome | None:
         """One Writer task for the section, then the version stored and verified; an outcome when the attempt ends
         here (a back-edge, no output), else ``None``."""
@@ -310,7 +365,7 @@ class DraftWorker:
         return None
 
     @staticmethod
-    def _verify(ctx: StageContext, s: _Inputs, section: str, version: int) -> None:
+    def _verify(ctx: StageContext, s: DraftInputs, section: str, version: int) -> None:
         """Verify the version and record its verdict: every sentence (``verify_section``) and V-BALANCE
         (``check_balance``), whose problems are section-level ones; a refusal noted for the Writer task that wrote it
         (``refused``) makes it fail too, as a section-level problem, so the try counts as failed however its sentences
@@ -341,56 +396,10 @@ class DraftWorker:
                  for st, e in last.items()]
         return " ".join(lines) + "\n"
 
-    def _inputs(self, ctx: StageContext, s: _Inputs, spec: SectionSpec, mine: list[dict],
+    def _inputs(self, ctx: StageContext, s: DraftInputs, spec: SectionSpec, mine: list[dict],
                 prisma: str | None) -> dict:
         ps = ctx.ps
-        svc = ArgumentService(ps)
-
-        facts = argued(ps)  # _load: argue passed
-
-        def claim(cid: str, role: str) -> dict:
-            c = svc.get_claim(cid)
-            notes = [n for e in svc.list_evidence(cid) for i in e["note_ids"] if (n := svc.note(i)) is not None]
-            bal = balance_requirements(ps, cid, facts=facts)
-            return {"claim_id": cid, "role": role, "text": c["text"], "status": c["status"], "kind": c["kind"],
-                    "scope_limits": c.get("scope_limits") or [],
-                    "evidence_notes": [{"kind": n["kind"], "text": n["text"], "verified": _quotable(n)}
-                                       for n in notes],
-                    "contested_by": bal.contested_by, "answered_by": bal.answered_by,
-                    "conceded_sourced": bal.conceded_sourced}
-
-        claims = ([claim(s.main, "main")] if s.main else []) + [claim(c, "argument") for c in s.argument] \
-            + [claim(c, "finding") for c in s.findings]
-        arts = [{"id": a["id"], "kind": a["kind"], "values": reported_values(a["values"])}
-                for a in artifacts(ps, "synthesize", s.synth_attempt) if a["kind"] in ("stt", "fig")]
-        events = []
-        if s.search_attempt is not None:
-            rows = ps.db.execute("SELECT evt_id, type, payload FROM events WHERE type='search.logged' "
-                                 "AND json_extract(payload, '$.stage')='search_screen' "
-                                 "AND json_extract(payload, '$.attempt')=? ORDER BY seq", (s.search_attempt,))
-            for r in rows:
-                p = json.loads(r["payload"])
-                events.append({"event_id": r["evt_id"], "type": r["type"], "source": p["source"], "query": p["query"],
-                               "numbers": {f: (len(p[f]) if isinstance(p[f], list) else p[f])
-                                           for f in EVENT_NUMBERS[r["type"]] if p.get(f) is not None}})
-        if prisma is not None:
-            r = ps.db.execute("SELECT payload FROM events WHERE evt_id=?", (prisma,)).fetchone()
-            p = json.loads(r["payload"])
-            events.append({"event_id": prisma, "type": PRISMA_EVENT, "numbers": {f: p[f] for f in PRISMA_FIELDS}})
-        limitations: dict = {"synthesis": synthesis_limitations(ps, s.synth_attempt),
-                             "argument": argue_limitations(ps, s.argue_attempt)}
-        inputs: dict = {"paper_type": s.paper_type, "audience": s.audience, "question": s.question,
-                        "section": spec.model_dump(),
-                        "sections": [{"id": x.id, "title": x.title} for x in s.sections],
-                        "markers": MARKER_GRAMMAR, "claims": claims, "artifacts": arts,
-                        "protocol": ({"id": s.protocol["id"], "body": s.protocol["body"]} if s.protocol else None),
-                        "events": events}
-        if s.paper_type == PROPOSAL:
-            limitations["design"] = design_limitations(ps, s.design_attempt)
-            inputs["design"] = {"id": s.design["id"], "body": s.design["body"]}
-            inputs["hypotheses"] = [{k: h.get(k) for k in ("id", "statement", "falsification", "status")}
-                                    for h in hypotheses(ps, s.rq_id) if h["status"] != "dropped"]
-        inputs["limitations"] = limitations
+        inputs = writer_inputs(ps, s, spec, prisma)
         earlier = []
         for x in s.sections:
             if x.id == spec.id:
@@ -403,7 +412,7 @@ class DraftWorker:
         if mine:
             last = mine[-1]
             md = draft_text(ps, spec.id, last["version"])
-            inputs["retry"] = {"previous_draft": md, "failures": _failures(md, last["verdict"])}
+            inputs["retry"] = {"previous_draft": md, "failures": version_failures(md, last["verdict"])}
         if ctx.guidance:
             inputs["guidance"] = ctx.guidance
         return inputs
@@ -414,7 +423,7 @@ class DraftWorker:
 
     # ---- gate ----
     def gate(self, ps: ProjectStore, attempt: int) -> GateResult:
-        s = _load(ps)
+        s = load_inputs(ps)
         if isinstance(s, str):
             return GateResult(False, [s])
         failures: list[str] = []
@@ -435,7 +444,7 @@ class DraftWorker:
             if last["verdict"] is None:
                 failures.append(f"{tag} was not verified")
             elif not last["verdict"]["ok"]:
-                failures += [f"{tag}: {f}" for f in _failures(md, last["verdict"])]
+                failures += [f"{tag}: {f}" for f in version_failures(md, last["verdict"])]
             # V-BALANCE now: an objection answered or a conflict decided since the version was verified counts too
             recorded = set(last["verdict"]["problems"]) if last["verdict"] else set()
             failures += [f"{tag}: {p}" for p in check_balance(ps, spec.id, parse_section(md)) if p not in recorded]
@@ -458,7 +467,7 @@ class DraftWorker:
         unless it verified a version here (one left unverified), when the engine gates again. The engine gates again
         after a deletion too: an uncited main claim or finding, or a section-level problem, still fails it."""
         ps = ctx.ps
-        s = _load(ps)
+        s = load_inputs(ps)
         if isinstance(s, str):
             return StageOutcome("failed", reason=s)
         plans: list[tuple[str, str, list]] = []

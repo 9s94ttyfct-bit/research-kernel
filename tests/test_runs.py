@@ -303,7 +303,7 @@ def test_start_fails_fast_without_two_judge_vendors(env, judge_2):
 def test_start_runs_until_topics_or_question(env):
     _, ps, _, make = env
     m, _ = make(_workers())
-    for until in ("intake", "landscape", "gaps", "revise"):
+    for until in ("intake", "landscape", "gaps", "audit"):
         with pytest.raises(ToolError) as e:
             m.start("demo", until, actor="tester")
         assert e.value.type == "stage_unavailable", until

@@ -23,6 +23,10 @@ a code span is not checked and does not count).
 - ``[[ck]]`` sentences carry no number and are at most 5% of a section's sentences; ``[[plan:]]`` only in a research
   proposal. A section with a markdown table or a table caption fails (``section_problems``).
 
+A caller may keep a sentence's earlier verdict instead of verifying it again (``verify_section(known=...)``; revise
+does, for a sentence whose exact text is unchanged): only while each of its markers' ``target_state`` (a digest of
+everything these rules read about the target) is the one it had when that verdict was made.
+
 Nothing here calls a model."""
 
 from __future__ import annotations
@@ -183,6 +187,33 @@ def _target_problem(ps: ProjectStore, m: Marker, paper_type: str) -> str | None:
     return _hypothesis_problem(ps, m.target)
 
 
+def target_state(ps: ProjectStore, m: Marker, *, paper_type: str) -> str:
+    """A digest of everything the sentence rules read about the marker's target: whether it exists and still matches
+    its hash, a claim's row with its evidence, notes and objections and its claim gate (``claim_problems``), an
+    artifact's row and its file's sha256, an event, a protocol, a design, a hypothesis with the frozen designs of its
+    ``prereg_hash``. Equal digests mean a sentence citing it verifies alike; any change of the target's stored state
+    (a timestamp too) changes it, so a kept verdict errs towards verifying again."""
+    t, data = m.target, None
+    if t and m.kind == "clm":
+        c = _claim(ps, t)
+        data = c and {"claim": c, "gate": [p.line for p in claim_problems(ps, t)]}
+    elif t and m.kind in ("stat", "fig"):
+        a = artifact(ps, t)
+        if a is not None:
+            path = ps.root / a["path"] if a.get("path") else None
+            data = {"artifact": a, "file": sha256_hex(path.read_bytes()) if path and path.is_file() else None}
+    elif t and m.kind == "run":
+        data = protocol_row(ps, t) if t.startswith("prt_") else _event(ps, t)
+    elif t and m.kind == "plan" and t.startswith("dsg_"):
+        data = design(ps, t)
+    elif t and m.kind == "plan":
+        h = _hypothesis(ps, t)
+        rows = ps.db.execute("SELECT id FROM designs WHERE status='frozen' AND frozen_hash=?",
+                             (h["prereg_hash"],)).fetchall() if h and h["prereg_hash"] else []
+        data = h and {"hypothesis": h, "designs": [design(ps, r["id"]) for r in rows]}
+    return sha256_hex(json.dumps([m.kind, t, paper_type, data], sort_keys=True, default=str, ensure_ascii=False))
+
+
 def _number(v) -> list[float]:
     return [float(v)] if isinstance(v, int | float) and not isinstance(v, bool) else []
 
@@ -319,11 +350,15 @@ def verify_sentence(ps: ProjectStore, s: Sentence, *, paper_type: str) -> Senten
 
 
 def verify_section(ps: ProjectStore, section: str, markdown: str, *, paper_type: str,
-                   version: int | None = None) -> SectionVerdict:
+                   version: int | None = None, known: dict[int, SentenceVerdict] | None = None) -> SectionVerdict:
     """Every sentence of the section, the common-knowledge share (at most ``CK_MAX_SHARE``) and what the section may
-    not contain (``section_problems``: tables and table captions)."""
+    not contain (``section_problems``: tables and table captions). ``known``: sentence index -> a verdict the caller
+    keeps for that sentence instead of verifying it again (see the module docstring); every other sentence is
+    verified."""
     sentences = parse_section(markdown)
-    verdicts = [verify_sentence(ps, s, paper_type=paper_type) for s in sentences]
+    known = known or {}
+    verdicts = [known[s.index] if s.index in known else verify_sentence(ps, s, paper_type=paper_type)
+                for s in sentences]
     ck = sum(1 for s in sentences if any(m.kind == "ck" for m in s.markers))
     share = ck / len(sentences) if sentences else 0.0
     problems = section_problems(markdown)

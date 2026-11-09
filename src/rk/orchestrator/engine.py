@@ -168,13 +168,14 @@ def default_workers() -> dict[str, Worker]:
     from rk.production.draft import DraftWorker
     from rk.production.extraction import ReadExtractWorker
     from rk.production.protocol import ProtocolWorker
+    from rk.production.revise import ReviseWorker
     from rk.production.screening import SearchScreenWorker
     from rk.production.synthesis import SynthesizeWorker
 
     return {"intake": IntakeWorker(), "landscape": LandscapeWorker(), "gaps": GapsWorker(), "topics": TopicsWorker(),
             "question": QuestionWorker(), "protocol": ProtocolWorker(), "search_screen": SearchScreenWorker(),
             "read_extract": ReadExtractWorker(), "synthesize": SynthesizeWorker(), "argue": ArgueWorker(),
-            "design": DesignWorker(), "draft": DraftWorker()}
+            "design": DesignWorker(), "draft": DraftWorker(), "revise": ReviseWorker()}
 
 
 @functools.cache

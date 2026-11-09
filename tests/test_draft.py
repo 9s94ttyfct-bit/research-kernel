@@ -23,7 +23,7 @@ from rk.production.draft import (
     draft_notes,
     prisma_event,
 )
-from rk.production.draft import _load as draft_inputs
+from rk.production.draft import load_inputs as draft_inputs
 from rk.production.manuscript import (
     draft_text,
     draft_versions,
