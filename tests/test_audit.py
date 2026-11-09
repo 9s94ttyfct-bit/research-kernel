@@ -654,8 +654,9 @@ def test_p1_not_approved_reasons_reach_every_writer_and_gate_revise_through_the_
 
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
 def test_p2_final_review_revise_comment_reaches_every_writer_and_gates_revise(env):
-    """I3 of the final review: the researcher's revise comment reaches every revisable section's Writer; Writers that
-    only decline it fail revise's gate, and the next attempt asks them again until one answers it."""
+    """I3 of the final review: the researcher's revise comment reaches every revisable section's Writer; a round where
+    Writers only decline it leaves it open, so (R2 of the re-review) the next round asks them again until one answers
+    it, within the same attempt."""
     k, ps, lib = env
     revised(env)
     n = len(_revisable(ps))
@@ -668,11 +669,9 @@ def test_p2_final_review_revise_comment_reaches_every_writer_and_gates_revise(en
     _answer(ps, cp["id"], {"decision": "revise", "comment": "Say who the audience is."})
     assert o.step("demo", run_id, actor="tester") == "running"
     assert current_stage(ps) == "revise"
-    assert o.step("demo", run_id, actor="tester") == "running"  # every Writer declined: the gate fails, revise again
-    assert current_stage(ps) == "revise" and edge_rows(ps)["revise->revise"]["count"] == 1
-    assert "Say who the audience is." in "; ".join(stage_row(ps, "revise")["guidance"].split("\n"))
+    # every Writer declined in round 1: round 2 asks them again, they answer it and revise passes, no rerun
     assert o.step("demo", run_id, actor="tester") == "running"
-    assert current_stage(ps) == "audit"
+    assert current_stage(ps) == "audit" and "revise->revise" not in edge_rows(ps)
     writers = ex.of("writer", "Revision")
     assert len(writers) == 2 * n
     for c in writers:

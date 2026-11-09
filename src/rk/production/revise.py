@@ -47,8 +47,9 @@ only when it verifies as well as the version it would replace.
    the ``decided`` note gives the reasons, so it never becomes a version the gate, the audit or the preview reads. An
    answer counts only from an accepted revision.
 
-Rounds stop after one whose questions have no priority-1 question (its questions are still revised), after
-``revise_max_rounds``, or when the budget cannot cover a round it may skip (above). An interrupted attempt runs again in
+Rounds stop after ``revise_max_rounds``, after one whose questions have no priority-1 question (its questions are still
+revised) once no earlier priority-1 question is unresolved either (``_unresolved``: carried, or held by a rejected
+``revised`` answer), or when the budget cannot cover a round it may skip (above). An interrupted attempt runs again in
 place: a round's recorded check and questions are not made again, a section's recorded revision is not asked again
 but is decided and, when accepted, stored (once, with its verdict), whatever questions the section has now.
 
@@ -406,7 +407,8 @@ class ReviseWorker:
                 _note(ps, ctx.attempt, "back_edge", actor=ctx.actor, round=rnd, to="draft", reason=why)
                 return StageOutcome("back_edge", to="draft", reason=why)
             last = _recorded(ps, ctx.attempt, "questions", rnd - 1) if rnd > 1 else None
-            if rnd > rounds or (last is not None and not any(q["priority"] == 1 for q in last["questions"])):
+            if rnd > rounds or (last is not None and not any(q["priority"] == 1 for q in last["questions"])
+                                and not _unresolved(ps, ctx.attempt, before=rnd)):
                 return StageOutcome("done")
             if self._out_of_budget(ctx, s, rnd):
                 return StageOutcome("done", reason="the stage's task budget cannot cover another round")

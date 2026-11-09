@@ -42,7 +42,7 @@ def _review(results_title: str, results_purpose: str) -> list[SectionSpec]:
         SectionSpec(id="discussion", title="Discussion",
                     purpose="What the findings and the argument mean for the question, with the contested points and "
                             "the answers to the objections."),
-        SectionSpec(id="limitations", title="Limitations",
+        SectionSpec(id="limitations", title="Limitations", operations=True,
                     purpose="The limitations input: fallbacks, withdrawn and narrowed claims, studies left out, "
                             "conceded objections and anything else that limits the conclusions."),
         SectionSpec(id="conclusion", title="Conclusion",
@@ -81,9 +81,9 @@ SECTIONS: dict[str, list[SectionSpec]] = {
         SectionSpec(id="methods", title="Proposed Methods", operations=True,
                     purpose="The planned work, from the frozen design (cited with [[plan:]] markers): its items, "
                             "samples, controls, measurements and analyses, and its feasibility. No results exist."),
-        SectionSpec(id="expected-outcomes", title="Expected Outcomes & Alternatives",
+        SectionSpec(id="expected-outcomes", title="Expected Outcomes & Alternatives", operations=True,
                     purpose="The results the design expects and the alternative explanations of them."),
-        SectionSpec(id="risks", title="Risks",
+        SectionSpec(id="risks", title="Risks", operations=True,
                     purpose="What could keep the design from answering the question: the limitations input, dropped "
                             "hypotheses and withdrawn or narrowed feasibility claims."),
         _DISCLOSURE,

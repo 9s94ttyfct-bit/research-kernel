@@ -18,6 +18,7 @@ from rk.production import store
 from rk.production.artifacts import ArtifactIn, add_artifact, artifact
 from rk.production.manuscript import parse_section
 from rk.production.models import DesignIn
+from rk.production.sections import describes_operations
 from rk.store.events import NewEvent
 from rk.verify.cover import verify_section, verify_sentence
 from rk.workspace import Kernel
@@ -443,6 +444,26 @@ def test_a_writer_sentence_citing_no_claim_states_nothing_categorically(env):
         "the sentence cites no claim, only research-operation markers, and is stated categorically (V-HEDGE)"]
     assert problems("methods", plain) == [] and problems("results", plain) == [] and problems("abstract", plain) == []
     assert problems("disclosure", probe) == []  # the kernel-written Disclosure's rules
+
+
+def test_limitations_risks_and_expected_outcomes_may_state_what_ran(env):
+    """R1 of the re-review: a review's Limitations (what the search left out), a proposal's Risks and Expected
+    Outcomes (what the plan cannot answer, what it expects) describe the research operations too: a plain run-only
+    sentence passes there, a categorical one fails V-HEDGE."""
+    ps, _ = env
+    sid = log_search(ps, stage="search_screen", attempt=1, purpose="records", source="openalex", query="melatonin",
+                     limit=50, item_ids=["itm_1"], actor="k")
+    search = ps.db.execute("SELECT evt_id FROM events WHERE entity_id=?", (sid,)).fetchone()[0]
+    plain = f"The search covered only English-language studies [[run:{search}]]."
+    categorical = f"The search was completely exhaustive and always covered every study [[run:{search}]]."
+    v = verify_section(ps, "limitations", plain, paper_type="systematic_review")
+    assert v.sentences[0].problems == [], v.sentences[0].problems
+    v = verify_section(ps, "limitations", categorical, paper_type="systematic_review")
+    assert v.sentences[0].problems == [
+        "the sentence cites no claim, only research-operation markers, and is stated categorically (V-HEDGE)"]
+    assert describes_operations("research_proposal", "risks")
+    assert describes_operations("research_proposal", "expected-outcomes")
+    assert not describes_operations("research_proposal", "gap")
 
 
 @pytest.mark.parametrize("probe", ["> [^1]: <Melatonin cures 90% of cancers>\n",

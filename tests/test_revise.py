@@ -627,6 +627,28 @@ def test_a_manuscript_request_stays_open_while_its_latest_revised_answer_was_rej
     assert w.gate(ps, 2).ok, w.gate(ps, 2).failures
 
 
+def test_a_request_held_in_round_1_gets_round_2_within_the_round_limit(env):
+    """R2 of the re-review: the rounds go on while a priority-1 question stays unresolved (carried, or held by a
+    rejected ``revised`` answer) and rounds are left, even when the SimReader's last round asked no priority-1
+    question: with the default ``revise_max_rounds`` the held request gets round 2, not a ``revise->revise`` rerun."""
+    _, ps, _ = env
+    _drafted(env)
+    main = main_claim(ps, 1)
+    assert load_settings().revise_max_rounds == 3
+    _reopened_by_the_final_review(ps, 1, "final_review: revise: Say who the audience is.")
+    ex = _exec([ask()] * 3, [revision(add="An unmarked sentence names the audience.", how="revised", note="added"),
+                             *[revision(how="answered", note="already clear")] * 3,
+                             revision(add=_restated(ps, main), how="revised", note="the audience is named"),
+                             *[revision(how="declined", note="not mine")] * 3])
+    w = ReviseWorker()
+    assert _done(w.run(_ctx(env, ex)))
+    assert [n["round"] for n in revise_notes(ps, 1, kind="questions")] == [0, 1, 2]
+    assert [n["accepted"] for n in revise_notes(ps, 1, kind="decided")] == [False, True, True, True] + [True] * 4
+    (request,) = revise_notes(ps, 1, kind="questions")[0]["questions"]
+    assert [c["inputs"]["revise"]["questions"][0]["id"] for c in ex.of("writer", "Revision")[4:]] == [request["id"]] * 4
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
 def test_rounds_stop_when_the_budget_cannot_cover_a_round(env):
     _, ps, _ = env
     _drafted(env)

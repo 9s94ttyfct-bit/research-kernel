@@ -26,8 +26,9 @@ a code span is not checked and does not count).
   section (any but the kernel-written ``KERNEL_WRITTEN``) with a heading, a reference definition or a footnote.
 - **Research-operation sentences:** a Writer's sentence whose only source markers are ``run``/``plan`` (no claim,
   figure or statistic) stands only in a section that describes the research operations
-  (``rk.production.sections.describes_operations``: the Abstract, Methods and Results of a review, a critical review's
-  Introduction, a proposal's Hypotheses and Proposed Methods), and there it is held to V-HEDGE's plain level
+  (``rk.production.sections.describes_operations``: the Abstract, Methods, Results and Limitations of a review, a
+  critical review's Introduction, a proposal's Hypotheses, Proposed Methods, Expected Outcomes and Risks), and there
+  it is held to V-HEDGE's plain level
   (``OPERATION_MAX_LEVEL``: nothing categorical). The kernel-written Disclosure is exempt.
 
 A caller may keep a sentence's earlier verdict instead of verifying it again (``verify_section(known=...)``; revise
