@@ -4,7 +4,9 @@ audience would and asks questions, the Writer revises the sections that have que
 only when it verifies as well as the version it would replace.
 
 0. **Carried questions.** A new attempt starts with the previous attempt's unresolved priority-1 questions (their ids,
-   texts, sentences and the answers they got), recorded as its round 0 (``questions``, ``task`` none).
+   texts, sentences and the answers they got), recorded as its round 0 (``questions``, ``task`` none). One whose
+   sentence is no longer in its section (draft wrote it afresh after ``revise->draft``) is not carried but noted
+   (``carry_dropped``, with the reason): nothing in the text could answer it or be deleted for it.
 1. **Check.** Each round starts by checking the latest version of every required section (the kernel-written
    disclosure too) with ``rk.production.draft.section_verdict`` (every sentence, and V-BALANCE as section-level
    problems), recorded (``checked``). A section that fails (a claim it cites withdrawn or failing its gate since it was
@@ -153,7 +155,8 @@ def _note(ps: ProjectStore, attempt: int, kind: str, *, actor: str, **fields) ->
 def revise_notes(ps: ProjectStore, attempt: int, *, kind: str | None = None) -> list[dict]:
     """What revise noted in the attempt, in order: ``checked`` (a round's check of a section's latest ``version``:
     ``ok``, ``failures``, ``verdict``, the per-sentence ``sentences`` rows its verdicts are kept by, ``reverified``),
-    ``budget`` (the rounds stopped before ``round``: ``used``, ``needed``, ``budget``), ``questions`` (a round's
+    ``budget`` (the rounds stopped before ``round``: ``used``, ``needed``, ``budget``), ``carry_dropped`` (the previous
+    attempt's unresolved priority-1 ``questions`` not carried, each with its ``reason``), ``questions`` (a round's
     SimReader ``task``, its ``questions`` and the ``refused`` ones; round 0: those carried from the previous attempt),
     ``revision`` (a Writer ``task`` on a section: the ``version`` it was written on, its ``markdown``, ``answers``, the
     question ids ``asked``, an ``error`` making it unusable), ``decided`` (the decision on that revision: ``accepted``,
@@ -290,6 +293,19 @@ def _unresolved(ps: ProjectStore, attempt: int) -> list[dict]:
             if q["priority"] == 1 and q["id"] not in deleted and not _resolved(answers.get(q["id"]))]
 
 
+def _gone(ps: ProjectStore, q: dict) -> str | None:
+    """Why a priority-1 question cannot be carried into a new attempt: the sentence it is about is no longer in its
+    section's latest version; ``None`` when it is (or the question is about the section as a whole, or the section
+    cannot be read: the round's check fails on that)."""
+    if q.get("sentence") is None:
+        return None
+    got = latest_version(ps, q["section"])
+    if isinstance(got, str) or any(x.text == q["sentence"] for x in parse_section(got[1])):
+        return None
+    return (f"its sentence “{q['sentence']}” is no longer in section {q['section']} v{got[0]['version']}, so nothing "
+            "in the text could answer it or be deleted for it")
+
+
 class ReviseWorker:
     # An interrupted attempt runs again in place (rk.orchestrator.engine): ``run`` goes on from the attempt's notes
     # (see the module docstring) and asks the SimReader and the Writer nothing twice.
@@ -325,6 +341,8 @@ class ReviseWorker:
             asked = self._ask(ctx, s, rnd)
             if isinstance(asked, StageOutcome):
                 return asked
+            if asked is None:  # a section the round's check read cannot be read now: check the round again
+                continue
             for spec in s.revisable:
                 # a recorded revision is decided and stored whatever questions the section has now (a resume)
                 questions = self._questions_for(ps, ctx.attempt, spec.id, rnd)
@@ -335,16 +353,26 @@ class ReviseWorker:
     # ---- carried questions and the budget ----
     @staticmethod
     def _carry(ctx: StageContext) -> None:
-        """Record the previous attempt's unresolved priority-1 questions as this attempt's round 0 (once)."""
+        """Record the previous attempt's unresolved priority-1 questions as this attempt's round 0 (once). A question
+        about a sentence that is no longer in its section's latest version (e.g. draft wrote the section afresh after
+        ``revise->draft``) is not carried: nothing could answer it in the text or delete it, so it is noted
+        (``carry_dropped``, with the reason) instead. The round-0 note is written last (empty when every question was
+        dropped), so a resume after the ``carry_dropped`` note still carries the others."""
         ps, attempt = ctx.ps, ctx.attempt
         if attempt < 2 or _recorded(ps, attempt, "questions", 0) is not None:
             return
         answers = _answers(ps, attempt - 1)
-        carried = [{k: v for k, v in q.items() if k != "round"}
-                   | {"carried_from": q.get("carried_from") or attempt - 1,
-                      "previous_answer": _earlier_answer(q, answers)}
-                   for q in _unresolved(ps, attempt - 1)]
-        if carried:
+        carried, dropped = [], []
+        for q in _unresolved(ps, attempt - 1):
+            q = {k: v for k, v in q.items() if k != "round"}
+            if (why := _gone(ps, q)) is not None:
+                dropped.append({**q, "reason": why})
+            else:
+                carried.append(q | {"carried_from": q.get("carried_from") or attempt - 1,
+                                    "previous_answer": _earlier_answer(q, answers)})
+        if dropped and not revise_notes(ps, attempt, kind="carry_dropped"):
+            _note(ps, attempt, "carry_dropped", actor=ctx.actor, questions=dropped)
+        if carried or dropped:
             _note(ps, attempt, "questions", actor=ctx.actor, round=0, task=None, questions=carried, refused=[])
 
     def _used(self, ctx: StageContext) -> int:
@@ -395,15 +423,22 @@ class ReviseWorker:
         return out
 
     @staticmethod
-    def _ask(ctx: StageContext, s: _Inputs, rnd: int) -> dict | StageOutcome:
-        """The round's questions: recorded, or asked of the SimReader and recorded."""
+    def _ask(ctx: StageContext, s: _Inputs, rnd: int) -> dict | StageOutcome | None:
+        """The round's questions: recorded, or asked of the SimReader and recorded. ``None`` when a section the
+        round's recorded check read can no longer be read (a resume after its file was altered or removed): the check
+        is made again for it (recorded failing), and the caller checks the round again."""
         ps, attempt = ctx.ps, ctx.attempt
         if (rec := _recorded(ps, attempt, "questions", rnd)) is not None:
             return rec
         answers = _answers(ps, attempt)
         sections, parsed = [], {}
         for spec in s.revisable:
-            parsed[spec.id] = parse_section(latest_version(ps, spec.id)[1])  # the round's check read it
+            got = latest_version(ps, spec.id)
+            if isinstance(got, str):
+                _note(ps, attempt, "checked", actor=ctx.actor, round=rnd, section=spec.id, version=None, ok=False,
+                      failures=[got])
+                return None
+            parsed[spec.id] = parse_section(got[1])
             sections.append({"id": spec.id, "title": spec.title,
                              "sentences": [{"index": x.index, "text": x.text} for x in parsed[spec.id]]})
         earlier = [{k: q[k] for k in ("id", "section", "text", "priority")} | {"answer": _earlier_answer(q, answers)}

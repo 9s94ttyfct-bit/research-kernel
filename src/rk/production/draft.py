@@ -510,8 +510,10 @@ class DraftWorker:
 
     def degrade(self, ctx: StageContext, failures: list[str]) -> StageOutcome:
         """P1 at an edge limit (spec §5.3 delete-or-narrow): delete from each section's latest version of the attempt
-        every failing sentence and every sentence citing a ``fig``/``stat`` that is no artifact of synthesize's passed
-        attempt, and store and verify what is left as a new version; disclosed (``stage.degraded``). When that would
+        every sentence that fails its recorded verdict or a fresh one (``section_verdict`` now: a claim withdrawn or
+        failing its gate since it was verified counts, as in the gate) and every sentence citing a ``fig``/``stat``
+        that is no artifact of synthesize's passed attempt, and store and verify what is left as a new version;
+        disclosed (``stage.degraded``). When that would
         leave a section empty, nothing is deleted and the run fails naming it; when there is no such sentence (only
         section-level failures, a one-sided section among them, or uncited claims), the run fails naming the failures,
         unless it verified a version here (one left unverified), when the engine gates again. The engine gates again
@@ -537,7 +539,8 @@ class DraftWorker:
             except (KeyError, ValueError) as e:
                 return StageOutcome("failed", reason=f"cannot degrade section {spec.id} v{last['version']}: {e}")
             sentences = parse_section(md)
-            drop = deletable(s, sentences, last["verdict"])
+            drop = deletable(s, sentences, last["verdict"]) | deletable(
+                s, sentences, section_verdict(ps, spec.id, md, paper_type=s.paper_type))
             if not drop:
                 continue
             if {x.index for x in sentences} <= drop:

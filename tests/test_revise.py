@@ -551,3 +551,80 @@ def test_rounds_stop_when_the_budget_cannot_cover_a_round(env):
     (note,) = revise_notes(ps, 1, kind="budget")
     assert (note["round"], note["used"], note["needed"], note["budget"]) == (2, 2, 5, 6)
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+# ---- Task 4 re-review ----
+def test_carried_question_whose_sentence_is_gone_is_dropped_and_noted(env):
+    """(b) After revise->draft, draft writes the introduction afresh without the sentence an unresolved priority-1
+    question was about: the next attempt drops that question from the carry and notes why (``carry_dropped``) instead
+    of carrying it into a failure nothing can answer or delete."""
+    k, ps, lib = env
+    _drafted(env)
+    main = main_claim(ps, 1)
+    save_settings(load_settings().model_copy(update={"revise_max_rounds": 1}))
+    w = ReviseWorker()
+    assert _done(w.run(_ctx(env, _exec([ask(("introduction", 1, 0))], [revision(how="declined", note="no")]))))
+    (q,) = revise_notes(ps, 1, kind="questions")[0]["questions"]
+    assert q["sentence"] == parse_section(draft_text(ps, "introduction", 1))[0].text
+
+    def restated(inputs):
+        md = writes()(inputs)["markdown"]
+        if inputs["section"]["id"] == "introduction":
+            md = md.replace(_main_sentence(ps, main), _restated(ps, main))
+        return {"markdown": md}
+
+    ex = Exec({("writer", "SectionDraft"): [restated] * 4})
+    assert _done(DraftWorker().run(replace(production_ctx(k, ps, lib, ex, stage="draft", attempt=2), guidance="")))
+    assert DraftWorker().gate(ps, 2).ok, DraftWorker().gate(ps, 2).failures
+    record_attempt(ps, "draft", 2, run_id=None, guidance="", requested=None, actor="tester")
+    record_ran(ps, "draft", 2, "done", "", actor="tester")
+    record_passed(ps, "draft", 2, actor="tester")
+    ex2 = _exec([ask()], [revision(how="answered", note="stated")])
+    assert _done(w.run(_ctx(env, ex2, attempt=2)))
+    dropped = revise_notes(ps, 2, kind="carry_dropped")
+    assert len(dropped) == 1, revise_notes(ps, 2, kind="questions")
+    (d,) = dropped[0]["questions"]
+    assert d["id"] == q["id"] and "no longer in section introduction" in d["reason"] and q["sentence"] in d["reason"]
+    assert not _written(ex2)  # nothing to revise for it
+    assert not [x for n in revise_notes(ps, 2, kind="questions") for x in n["questions"]]
+    assert w.gate(ps, 2).ok, w.gate(ps, 2).failures
+
+
+def test_in_a_run_the_budget_counts_the_run_sessions_tasks_of_the_stage(env):
+    """(c) With a run, the role tasks used are the run session's tasks of the stage (``tasks_used``), not the
+    attempt's: 36 of 40 used leave too little for a round (1 + 4 revisable sections)."""
+    from rk.ids import new_id
+    from rk.orchestrator.state import record_run_task, run_row, start_run
+
+    _, ps, _ = env
+    _drafted(env)
+    run_id = start_run(ps, until="revise", actor="tester", clock=lambda: 1.8e9)
+    session = run_row(ps, run_id)["session"]
+    for stage, n in (("revise", 36), ("draft", 9)):  # another stage's tasks do not count
+        for _ in range(n):
+            record_run_task(ps, task_id=new_id("tsk"), run_id=run_id, session=session, stage=stage, attempt=1)
+    ex = _exec([ask(("introduction", 1))], [revision(add=_restated(ps, main_claim(ps, 1)))])
+    assert _done(ReviseWorker().run(replace(_ctx(env, ex), run_id=run_id)))
+    assert not ex.calls
+    (note,) = revise_notes(ps, 1, kind="budget")
+    assert (note["round"], note["used"], note["needed"], note["budget"]) == (1, 36, 5, 40)
+
+
+def test_resumed_round_whose_checked_section_no_longer_reads_goes_back_to_draft(env):
+    """(d) A round's check is recorded, then the run stops before the SimReader; the introduction's file is altered
+    before the resume. The resumed round does not read the error text as the section: the check runs again, fails,
+    and the stage goes back to draft naming it, with no SimReader task."""
+    _, ps, _ = env
+    _drafted(env)
+    ex = _exec([ask()], [], cls=CapOnce, at=("simreader", "ReaderQuestions"), n=1)
+    w = ReviseWorker()
+    with pytest.raises(RateCapped):
+        w.run(_ctx(env, ex))
+    assert [n["ok"] for n in revise_notes(ps, 1, kind="checked")] == [True] * 5
+    (ps.root / "artifacts/drafts/introduction.v1.md").write_text("Unmarked text.\n")
+    out = w.run(_ctx(env, ex))
+    assert (out.status, out.to) == ("back_edge", "draft"), (out.status, out.reason)
+    assert "section introduction v1" in out.reason and "sha256" in out.reason
+    assert not ex.of("simreader")
+    rechecked = [n for n in revise_notes(ps, 1, kind="checked") if n["section"] == "introduction"]
+    assert [(n["round"], n["ok"]) for n in rechecked] == [(1, True), (1, False)]

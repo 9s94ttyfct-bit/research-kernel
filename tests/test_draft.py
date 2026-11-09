@@ -602,3 +602,36 @@ def test_gate_and_degrade_name_an_unreadable_draft_file(env, monkeypatch):
     assert any(f.startswith("section conclusion v1: ") and "cannot be read" in f for f in res.failures), res.failures
     out = w.degrade(_ctx(env, _writer([])), res.failures)
     assert out.status == "failed" and "conclusion v1" in out.reason and "cannot be read" in out.reason
+
+
+def test_p1_degrade_deletes_a_sentence_that_fails_now_though_it_verified_when_drafted(env):
+    """Task 4 re-review (a): the degrade deletes from a fresh section verdict (as revise does), not only from the
+    recorded one: a sentence that verified when it was drafted and fails now (its claim has an open priority-1
+    objection since) is deleted, and the gate passes."""
+    from rk.argument import ArgumentService, ObjectionIn
+
+    _, ps, _ = env
+    _ready(env)
+    main = main_claim(ps, 1)
+    (reason,) = [c for c in argument_claims(ps, 1) if c != main]
+
+    def with_reason(inputs):
+        if inputs["section"]["id"] != "conclusion":
+            return writes()(inputs)
+        r = next(c for c in inputs["claims"] if c["claim_id"] == reason)
+        return writes(extra=_sentence(r))(inputs)
+
+    w = DraftWorker()
+    assert w.run(_ctx(env, _writer([with_reason] * 4))).status == "done"
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    ArgumentService(ps).add_objection(
+        ObjectionIn(target_id=reason, category="counterexample", priority=1, text="a trial found the opposite"),
+        actor="tester", actor_kind="kernel")
+    assert draft_versions(ps, "conclusion")[-1]["verdict"]["ok"]  # recorded before the objection
+    failures = w.gate(ps, 1).failures
+    assert any(f.startswith("section conclusion v1") and reason in f for f in failures), failures
+    out = w.degrade(_ctx(env, _writer([])), failures)
+    assert out.status == "done", out.reason
+    md = draft_text(ps, "conclusion", draft_versions(ps, "conclusion")[-1]["version"])
+    assert f"[[clm:{reason}]]" not in md and f"[[clm:{main}]]" in md
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
