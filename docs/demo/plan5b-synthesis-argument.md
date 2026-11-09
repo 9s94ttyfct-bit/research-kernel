@@ -224,7 +224,8 @@ asked again). **No task ran on a local model**: the three queries above return 0
 
 1. **The Arguer's synthesis request was wrong about the data**: it asked for per-arm sizes that are already extracted.
    As an input, the request now costs nothing unless you accept it.
-2. **A task left `running` by the server restart** (above); the run was not affected.
+2. **A task left `running` by the server restart** (above); the run was not affected. Fixed in 45911e1: `rk serve`
+   marks such tasks `interrupted` at start, and they count in the stage budget.
 3. **Judges again answered "partial"** (or "unsupported") on all three new argument claims, so the final review
    decided them.
 4. **The Skeptic's counterexamples come from outside the included set**: three trials published before the 2024

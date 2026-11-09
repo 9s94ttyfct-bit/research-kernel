@@ -42,7 +42,9 @@ def run_task(kernel, registry, *, project: str, role: str, instructions: str, in
              timeout_s: int = 600, actor: str = "kernel",
              on_created: Callable[[str], None] | None = None) -> TaskResult:
     """``on_created(task_id)`` runs right after ``task.created``, before any call: a caller links the task there (e.g.
-    to its stage attempt), so a task cut off by a restart is linked too."""
+    to its stage attempt), so a task cut off by a restart is linked too. A task whose run stops before
+    ``task.finished`` (a kill, or an error before the call) stays ``running`` until the next ``rk serve`` start
+    marks it ``interrupted`` (``interrupt_orphaned_tasks``)."""
     settings = kernel.settings()
     spec_driver = driver or DriverSpec.parse(settings.drivers[role])
     prov = provider or build_provider(spec_driver, settings)

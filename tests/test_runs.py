@@ -248,7 +248,6 @@ def test_serve_marks_orphaned_tasks_interrupted_before_it_serves_or_resumes(tmp_
     assert "marked 1 task(s) interrupted" in r.output
 
 
-
 def test_one_run_per_project(env):
     _, ps, _, make = env
     m, _ = make(_workers(topics=FakeWorker(runs=[_review])))

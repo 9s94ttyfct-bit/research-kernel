@@ -177,6 +177,7 @@ def _interrupt_orphaned_tasks(kernel) -> None:
     while the serve lock is held and before anything can start a task (uvicorn, ``resume_all``)."""
     from rk.llm.runner import interrupt_orphaned_tasks
 
+    # walks the project dirs itself (not Kernel.list_projects) so one broken project is reported and skipped
     for d in sorted(kernel.projects_dir.iterdir()):
         if not (d / "rk.sqlite").exists():
             continue
