@@ -137,7 +137,7 @@ The checkpoints you answer (only a human can, in the Workbench Checkpoints page 
 | `topic_review` | after the topics stage, in every mode | `approve` one topic, `revise` (topics or gaps, with a comment) or `reject` |
 | `rq_approval` | the RQ was not found answered within the searched scope (D1; D2 with P2) | `approve` freezes the RQ; `revise` with a comment reruns the stage |
 | `significance_novelty` | the two already-done judges split (P2) | `proceed` to `rq_approval`, or go `back` to topics |
-| `stage_blocked` | a back-edge is at its limit (P2) | allow one more use, or stop the run |
+| `stage_blocked` | a back-edge is at its limit (P2) | `{"decision": "allow_one_more"}` (optional `comment`: guidance for the stage that runs again, with the failures), or `stop` the run |
 
 - **A verified gap means its evidence chain was checked, not that it is new.** The kinds are contradictions (two
   verbatim quotes judged "contradicted" by V-SUPPORT), citation distortions (a citing quote judged unsupported by

@@ -175,9 +175,13 @@ def test_third_use_of_an_edge_opens_stage_blocked(project):
     assert o.step("demo", run_id, actor="tester") == "paused_waiting_human"
     assert len([c for c in landscape.calls if c[0] == "run"]) == 3
 
-    answer_checkpoint(ps, blocked["id"], {"decision": "allow_one_more"}, answered_by="human", actor="tester")
+    # the comment of the answer is guidance for the reopened stage, with the failures (Task 9: it was dropped)
+    answer_checkpoint(ps, blocked["id"], {"decision": "allow_one_more", "comment": "narrow to the two RCTs"},
+                      answered_by="human", actor="tester")
     assert _drive(o, run_id)[-1] == "paused_waiting_human"
     assert [c[1] for c in landscape.calls if c[0] == "run"] == [1, 2, 3, 4]
+    fourth = [c for c in landscape.calls if c[0] == "run"][3][2]
+    assert "failure 3" in fourth and "narrow to the two RCTs" in fourth
     assert edge_count(ps, "landscape->landscape") == 3
     assert [e["edge"] for e in _events(ps, "edge.allowed")] == ["landscape->landscape"]
     [second] = list_checkpoints(ps, "open")

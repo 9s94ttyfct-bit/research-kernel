@@ -557,13 +557,18 @@ class Orchestrator:
 
     def _resolve_blocked(self, ps: ProjectStore, run: dict | None, stage: str, attempt: int, cp: dict, *,
                          actor: str) -> str:
-        """Apply an answered ``stage_blocked``: ``allow_one_more`` grants and takes one more use of the edge;
-        anything else stops (the run fails). Returns what happened."""
+        """Apply an answered ``stage_blocked``: ``allow_one_more`` grants and takes one more use of the edge, the
+        reopened stage guided by the failures and the answer's ``comment``; anything else stops (the run fails).
+        Returns what happened."""
         opts = cp["options"] or {}
         edge = opts.get("edge", "?")
-        if (cp["answer"] or {}).get("decision") == "allow_one_more":
+        answer = cp["answer"] or {}
+        if answer.get("decision") == "allow_one_more":
             record_edge_allowed(ps, edge, actor=actor)
-            self._take_edge(ps, stage, opts["to"], opts.get("failures") or [], actor=actor)
+            comment = answer.get("comment")
+            guidance = [*(opts.get("failures") or []),
+                        *([comment.strip()] if isinstance(comment, str) and comment.strip() else [])]
+            self._take_edge(ps, stage, opts["to"], guidance, actor=actor)
             if run is not None:
                 self._set_run(ps, run, "running", actor=actor)
             return f"one more use of {edge} allowed; {opts['to']!r} reopened"

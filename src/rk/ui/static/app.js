@@ -485,11 +485,14 @@ async function rqCard(c, answer) {
 
 function blockedCard(c, answer) {
   const o = c.options || {};
+  const comment = el("textarea", { name: "comment" });
+  const allow = () => answer(comment.value.trim() ? { decision: "allow_one_more", comment: comment.value.trim() } : { decision: "allow_one_more" });
   return [
     facts([["Back-edge", (o.edge || "").replace("->", " → ")], ["Allow one more", `${words(o.to)} runs again`], ["Stop", "the stage ends here (an active run fails)"]]),
     (o.failures || []).length ? [el("h4", {}, "Why"), el("ul", {}, o.failures.map((f) => el("li", {}, f)))] : null,
+    el("label", { class: "field" }, `Guidance for ${words(o.to)} if it runs again (optional)`, comment),
     el("div", { class: "toolbar" },
-      el("button", { type: "button", onclick: () => answer({ decision: "allow_one_more" }) }, "Allow one more use"),
+      el("button", { type: "button", onclick: allow }, "Allow one more use"),
       el("button", { type: "button", class: "secondary", onclick: () => answer({ decision: "stop" }) }, "Stop")),
   ];
 }
