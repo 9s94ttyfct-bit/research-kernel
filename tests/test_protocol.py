@@ -153,6 +153,20 @@ def test_meta_analysis_draft_without_typed_fields_fails_the_gate_and_is_redrafte
     assert not any(f"- {k}:" in text for k in ("hksj", "pi_df", "pool_model", "outcomes"))
 
 
+def test_meta_analysis_plan_is_for_a_systematic_review_only():
+    """A meta-analysis plan outside a systematic review fails with one problem naming the fix (a thematic, narrative
+    or evidence-map plan, or none for the light types), not with the meta-analysis field problems the Ideator would
+    chase (Task 9 defect: a critical review's draft alternated between two outcome-mapping failures)."""
+    meta = a_protocol(synthesis_plan=SynthesisPlan(method="meta_analysis", effect_measure="RD", outcomes=[]))
+    for t in ("critical_review", "research_proposal", "scoping_review"):
+        failures = check_protocol(meta, t)
+        assert len(failures) == 1 and failures[0].startswith(
+            f"synthesis_plan.method meta_analysis is for a systematic review only; a {t.replace('_', ' ')}")
+        assert not any("pool_model" in f or "outcomes" in f or "effect_measure" in f for f in failures)
+    assert "synthesis_plan is missing" not in " ".join(check_protocol(meta, "critical_review"))
+    assert any("pool_model" in f for f in check_protocol(meta, "systematic_review"))
+
+
 def test_light_protocol_for_critical_review(env):
     light = a_protocol(extraction_schema=[], synthesis_plan=None, prisma_p=None)
     for t in ("critical_review", "research_proposal"):

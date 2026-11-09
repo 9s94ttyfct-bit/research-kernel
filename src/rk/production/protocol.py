@@ -87,6 +87,10 @@ VOTE_OPTIONS = ["approve", "revise"]
 QUERIES_MIN, SOURCES_MIN = 3, 2  # what the Scout's strategy needs
 LIGHT_TYPES = frozenset({"critical_review", "research_proposal"})  # question, search and selection principles only
 PREREG_TYPES = frozenset({"systematic_review", "scoping_review"})  # the freeze counts as preregistration (G-PREREG)
+# the synthesis plan of a paper type that does no meta-analysis (spec §7.3: V-STATS only for the systematic review)
+OTHER_PLANS = {"scoping_review": "an evidence_map (no pooling)",
+               "critical_review": "thematic or narrative_swim, or none (synthesis_plan may be left out)",
+               "research_proposal": "thematic or narrative_swim, or none (synthesis_plan may be left out)"}
 PAPER_TYPES: tuple[str, ...] = get_args(PaperType)
 # The PRISMA-P items a systematic review needs that are written as text in ``prisma_p``; the others (eligibility,
 # information sources, search strategy, data items, synthesis) are the structured parts of the protocol, which the
@@ -175,8 +179,9 @@ def check_protocol(body: Protocol, paper_type: str) -> list[str]:
     """What keeps the protocol from the structure of its paper type, one failure per item; ``[]`` when it has it.
     Every type: the question, a query and a source, an include criterion (the selection principles), named and
     distinct extraction fields, no novelty claim in the Ideator's texts. The systematic and scoping reviews also need
-    an extraction schema and a synthesis plan; the systematic review also the PRISMA-P items. A meta-analysis plan
-    needs its typed ``pool_model``, an ``effect_measure`` the statistics module computes (``MEASURES``) and its
+    an extraction schema and a synthesis plan; the systematic review also the PRISMA-P items. A meta-analysis plan is
+    for a systematic review only (one failure naming the plan to use instead, ``OTHER_PLANS``); there it needs its
+    typed ``pool_model``, an ``effect_measure`` the statistics module computes (``MEASURES``) and its
     pre-specified ``outcomes``, each named once and mapping the measure's roles to its own number fields."""
     if paper_type not in PAPER_TYPES:
         raise ValueError(f"unknown paper type {paper_type!r}")
@@ -204,7 +209,10 @@ def check_protocol(body: Protocol, paper_type: str) -> list[str]:
         if body.synthesis_plan is None:
             out.append("synthesis_plan is missing")
     plan = body.synthesis_plan
-    if plan is not None and plan.method == "meta_analysis":
+    if plan is not None and plan.method == "meta_analysis" and paper_type != "systematic_review":
+        out.append(f"synthesis_plan.method meta_analysis is for a systematic review only; a "
+                   f"{paper_type.replace('_', ' ')}'s plan is {OTHER_PLANS[paper_type]}")
+    elif plan is not None and plan.method == "meta_analysis":
         if plan.pool_model is None:
             out.append("synthesis_plan.pool_model is required for a meta-analysis (REML, DL or FE)")
         if plan.effect_measure not in MEASURES:
