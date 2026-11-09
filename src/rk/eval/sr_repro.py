@@ -61,7 +61,7 @@ from rk.orchestrator.state import (
     record_ran,
     stage_row,
 )
-from rk.production.argue import argument_objection_ids, main_claim
+from rk.production.argue import main_claim
 from rk.production.audit import audit_reports
 from rk.production.common import entity_row
 from rk.production.extraction import included_studies
@@ -455,15 +455,11 @@ def final_main_claim(ps: ProjectStore) -> dict | None:
 
 
 def objection_sources(ps: ProjectStore) -> set[str]:
-    """The library items the objections of argue's passed attempt (``argument_objection_ids``) cite as their
-    ``source_id``; empty before argue passed."""
-    row = stage_row(ps, "argue")
-    if row is None or row["status"] != "passed" or not row["passed_attempt"]:
-        return set()
+    """The library items any objection of the project cites as its ``source_id``, in any argue attempt: one conceded
+    in an earlier attempt is not carried into the next (argue imports only open ones), yet it shaped the claim."""
     out = set()
-    for oid in argument_objection_ids(ps, row["passed_attempt"]):
-        r = ps.db.execute("SELECT data FROM objections WHERE id=?", (oid,)).fetchone()
-        src = json.loads(r["data"]).get("source_id") if r else None
+    for r in ps.db.execute("SELECT data FROM objections"):
+        src = json.loads(r["data"]).get("source_id")
         if src:
             out.add(src)
     return out
@@ -485,7 +481,7 @@ def score(ps: ProjectStore, entry: Entry, *, ctx: StageContext | None = None) ->
     the direction decided and why none was, whether export passed and the protocol's search window. Leakage:
     ``review_included`` (the reproduced review is one of the project's included studies), ``claim_from_review``
     (an evidence note of the main claim or of its reasons comes from it) and ``objection_from_review`` (an objection
-    of argue's passed attempt cites it as its source: the Skeptic may search outside the window) each make
+    of the project, in any argue attempt, cites it as its source: the Skeptic may search outside the window) each make
     ``direction_compromised`` the reason the direction does not count; ``review_in_library`` (retrieved, perhaps
     unused) is information only. The
     direction is judged only with ``ctx`` (the judges' executor; its ``stage`` and ``attempt`` key the recorded

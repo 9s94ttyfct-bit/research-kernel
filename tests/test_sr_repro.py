@@ -338,6 +338,32 @@ def test_objection_from_review_compromises_the_direction(tmp_home, replay_http):
     k.close()
 
 
+def test_objection_from_review_in_an_earlier_attempt_still_compromises_the_direction(tmp_home, replay_http):
+    from rk.argument import ArgumentService, ObjectionIn
+    from rk.production.argue import _note, argument_objection_ids
+
+    k, ps, lib, _ = make_frozen_project(tmp_home, replay_http, paper_type="systematic_review",
+                                        production_mode="auto")
+    _ready((k, ps, lib))  # argue attempt 1 passed
+    first = stage_row(ps, "argue")["passed_attempt"]
+    entry = _entry("objected-before", doi="10.5555/the-review", title="A pooled analysis of drug A and outcome B")
+    review = lib.add_item(ItemIn(title=entry.title, ids=Ids(doi=entry.doi)), added_by="agent", actor="tester").item_id
+    # attempt 1: the Skeptic objects with the review's pooled result; the objection is conceded, and argue reopens
+    oid = ArgumentService(ps).add_objection(ObjectionIn(target_id=main_claim(ps, first), category="counterexample",
+                                                        priority=1, text="The pooled analysis finds the opposite.",
+                                                        source_id=review), actor="tester")
+    _note(ps, first, "critique", actor="tester", round=99, objection_ids=[oid])
+    # attempt 2 passes without carrying it (a conceded objection is not imported)
+    second = first + 1
+    record_attempt(ps, "argue", second, run_id=None, guidance="", requested=None, actor="tester")
+    record_ran(ps, "argue", second, "done", "", actor="tester")
+    record_passed(ps, "argue", second, actor="tester")
+    assert stage_row(ps, "argue")["passed_attempt"] == second and oid not in argument_objection_ids(ps, second)
+    got = sr.score(ps, entry)
+    assert got["objection_from_review"] is True and "objection" in got["direction_compromised"]
+    k.close()
+
+
 def test_review_included_compromises_the_direction(kernel):
     entry = _entry("leaky")
     ps = sr.seed_project(kernel, entry)
