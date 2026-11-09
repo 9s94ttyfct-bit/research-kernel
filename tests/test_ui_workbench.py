@@ -145,7 +145,7 @@ def test_render_draft_skips_markers_in_code(ui, project):
     assert "<code>[[clm:clm_A]]</code>" in d["html"] and "[[clm:clm_B]]" in d["html"] and "[[clm:clm_C]]" in d["html"]
 
 
-def test_render_draft_resolves_statistics_figures_and_missing_plans(ui, project):
+def test_render_draft_resolves_statistics_figures_and_missing_plans(ui, project, tmp_path):
     """The preview names a statistic's or figure's code; an unknown ``plan`` target is marked missing."""
     from rk.production.artifacts import ArtifactIn, add_artifact
     from rk.ui.drafts import render_draft
@@ -158,6 +158,38 @@ def test_render_draft_resolves_statistics_figures_and_missing_plans(ui, project)
     m = {x["kind"]: x for x in d["markers"]}
     assert m["stat"]["label"] == "statistic from rk.stats.meta:pool" and not m["stat"].get("missing")
     assert m["plan"]["missing"] is True
+    svg = tmp_path / "forest.svg"
+    svg.write_text("<svg/>")
+    fid = add_artifact(ps, ArtifactIn(kind="fig", code_path="rk.stats.plots:forest_svg", code_version="v",
+                                      input_hashes=[], values={"estimate": 0.62}, output_path=str(svg)),
+                       stage="synthesize", attempt=1, actor="k")
+    wrong = render_draft(ps, lib, f"See [[fig:{sid}]] and [[stat:{fid}]] [[inf]].")  # fix round 2: kind mismatch
+    assert [(x["kind"], x.get("missing")) for x in wrong["markers"]] == [("fig", True), ("stat", True), ("inf", None)]
+    assert "not a figure" in wrong["markers"][0]["label"] and "not a statistic" in wrong["markers"][1]["label"]
+
+
+@pytest.mark.parametrize("md", [
+    'See [text](http://x "[[clm:clm_A]]") here [[inf]].', "See [text](http://x/[[clm:clm_A]]) here [[inf]].",
+    "See <http://x/[[clm:clm_A]]> here [[inf]].", "# Results [[clm:clm_A]]\n\nSee text here [[inf]].",
+    'See [text][r] here [[inf]].\n\n[r]: http://x "[[clm:clm_A]]"\n', "See ![[[clm:clm_A]]](img.png) here [[inf]]."],
+    ids=["link-title", "link-destination", "autolink", "heading", "reference-definition", "image-alt"])
+def test_render_draft_renders_no_marker_the_verifier_does_not_count(ui, project, md):
+    """Fix round 2: the preview substitutes the verifier's markers only, so no hover card lands in an attribute."""
+    from html.parser import HTMLParser
+
+    from rk.ui.drafts import render_draft
+
+    ps, lib = project
+    d = render_draft(ps, lib, md)
+    assert [x["kind"] for x in d["markers"]] == ["inf"]
+    attrs: list[str] = []
+
+    class Attrs(HTMLParser):
+        def handle_starttag(self, tag, a):
+            attrs.extend(v or "" for _, v in a)
+
+    Attrs().feed(d["html"])
+    assert not any("<" in v or "RKMARKER" in v for v in attrs) and "RKMARKER" not in d["html"]
 
 
 def test_browser_status_without_browser(ui, project):

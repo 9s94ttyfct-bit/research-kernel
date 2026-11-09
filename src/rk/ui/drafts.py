@@ -62,7 +62,11 @@ def _resolve(ps: ProjectStore, lib: Library, kind: str, target: str | None) -> d
         if row:
             return {**info, "label": f"{row['type']} at {row['ts']}"}
     elif kind in ("stat", "fig") and target and (a := artifact(ps, target)) is not None:
-        return {**info, "label": f"{'statistic' if a['kind'] == 'stt' else 'figure'} from {a['code_path']}"}
+        what = "statistic" if a["kind"] == "stt" else "figure"
+        if a["kind"] != {"stat": "stt", "fig": "fig"}[kind]:  # the verifier rejects it too
+            return {**info, "missing": True,
+                    "label": f"{target} is a {what}, not a {'statistic' if kind == 'stat' else 'figure'}"}
+        return {**info, "label": f"{what} from {a['code_path']}"}
     elif kind == "plan" and target and target.startswith("dsg_") and (d := design(ps, target)) is not None:
         return {**info, "label": f"method design ({d['status']})"}
     elif kind == "plan" and target:

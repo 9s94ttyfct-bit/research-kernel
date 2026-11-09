@@ -115,13 +115,13 @@ No new Python dependency. The CSL style is pandoc's built-in default (Chicago au
 **Interfaces (produces):**
 - `Marker{kind: Literal["clm","run","fig","stat","plan","inf","ck"], target: str | None, span: tuple[int,int]}`.
 - `Sentence{index: int, text: str, prose: str, markers: list[Marker], span: tuple[int,int], quoted: bool}`. `span` and `Marker.span` are source offsets into the section markdown; `text` is the rendered prose (code spans kept), `prose` is `text` with code spans blanked (what every prose check reads: numbers, V-HEDGE and quotes in a code span do not count); `quoted`: the paragraph of a block quote, one sentence of quoted text.
-- `source_markers(markdown: str) -> list[Marker]`: the literal grammar in the source, outside code spans and code blocks, not backslash-escaped (escaped, entity-encoded and emphasis-split forms are no markers); `rk.ui.drafts.render_draft` substitutes exactly these.
+- `source_markers(markdown: str) -> list[Marker]`: the literal grammar in the source, outside code spans and code blocks, not backslash-escaped (escaped, entity-encoded and emphasis-split forms are no markers), and only where its whole source is rendered prose text (link text counts; a heading, a table, a link's destination or title, an autolink, an image's alt text or a reference definition does not); `rk.ui.drafts.render_draft` substitutes exactly these.
 - `parse_section(markdown: str) -> list[Sentence]`:
   - markdown structure via markdown-it (`html=False`);
   - code spans and code blocks are not prose;
-  - sentence split on `.?!` (with closing quotes or brackets, and the markers right after it, which belong to that sentence) followed by whitespace and anything but a marker, keeping abbreviations (`e.g.`, `i.e.`, `et al.`, `vs.`, `Fig.`, `Eq.`, decimal numbers) and initials before a capitalised name (`J. Smith`) intact;
+  - sentence split on `.?!` (with closing quotes or brackets, and the markers right after it, which belong to that sentence) followed by whitespace and anything but a marker, keeping abbreviations (`e.g.`, `i.e.`, `et al.` unless a capitalised word follows, `vs.`, `Fig.`, `Eq.`, decimal numbers) and initials before a capitalised name (`J. Smith`) intact;
   - headings and table captions are not sentences.
-- `section_problems(markdown: str) -> list[str]`: a markdown table or a pandoc caption line (`Table: …`, `: …`) fails the section (tables come from code artifacts at export).
+- `section_problems(markdown: str) -> list[str]`: a markdown table or a pandoc caption line (`Table: …`, `: …`) fails the section (tables come from code artifacts at export), and so does a marker where the reader cannot see it (the places `source_markers` leaves out).
 - `SentenceVerdict{index, ok: bool, problems: list[str]}`.
 - `verify_sentence(ps, s: Sentence, *, paper_type: str) -> SentenceVerdict`, implementing every sentence rule in Global Constraints.
 - `number_pool(ps, markers: list[Marker]) -> NumberPool` (`rk.verify.numbers.NumberPool{nums: list[Num], values: list[float]}`; `covers(n)`: `nums` match as written (value and unit), `values` exactly or rounded as written, `matches_value`):

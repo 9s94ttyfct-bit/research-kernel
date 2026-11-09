@@ -351,3 +351,16 @@ def test_a_table_or_a_caption_fails_the_section(env):
     assert not v.ok and all(s.ok for s in v.sentences) and any("table" in p for p in v.problems)
     w = verify_section(ps, "results", body + "\n\nTable: Results 42.\n", paper_type="systematic_review")
     assert not w.ok and len(w.sentences) == 3 and any("caption" in p for p in w.problems)
+
+
+def test_a_hidden_marker_neither_covers_its_sentence_nor_passes_the_section(env):
+    """Fix round 2: a claim marker in a link title covers nothing; the visible sentence has no marker, and the
+    section names the hidden marker."""
+    ps, claim = env
+    cid = claim("Copper catalysts may reduce CO2.")
+    v = verify_section(ps, "results", f'Copper may reduce CO2 by 0.62 [here](http://x "[[clm:{cid}]]").',
+                       paper_type="systematic_review")
+    (s,) = v.sentences
+    assert not v.ok and "the sentence has no source marker" in s.problems
+    assert any("the number 0.62 is not in any marker's target" in p for p in s.problems)
+    assert any(f"[[clm:{cid}]]" in p and "cannot see" in p for p in v.problems)

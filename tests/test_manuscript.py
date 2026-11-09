@@ -92,6 +92,13 @@ def test_a_capital_letter_is_an_initial_only_before_a_capitalised_name():
         assert len(parse_section(text)) == 2, text
 
 
+def test_et_al_ends_a_sentence_before_a_capitalised_start():
+    """Fix round 2: the review's probe; ``et al.`` before a lowercase word or a year stays inside the sentence."""
+    out = parse_section("This was shown by Smith et al. Melatonin cures delirium [[clm:clm_A]].")
+    assert [s.text for s in out] == ["This was shown by Smith et al.", "Melatonin cures delirium [[clm:clm_A]]."]
+    assert len(parse_section("Smith et al. found it, as did Li et al. (2020) [[clm:clm_A]].")) == 1
+
+
 # ---- fix round 1: tables and captions, markers in the source ----
 def test_tables_and_table_captions_are_section_problems_not_sentences():
     md = "Delirium fell [[clm:clm_A]].\n\nTable: Results 42.\n\n: Other caption 7.\n"
@@ -131,6 +138,34 @@ def test_escaped_entity_encoded_and_emphasis_split_markers_do_not_count(fake):
 def test_source_markers_skip_code_spans_and_code_blocks():
     md = "Use `[[clm:clm_A]]` here [[inf]].\n\n```\n[[clm:clm_B]]\n```\n\n    [[clm:clm_C]]\n"
     assert [(m.kind, md[m.span[0]:m.span[1]]) for m in source_markers(md)] == [("inf", "[[inf]]")]
+
+
+HIDDEN = {
+    "link-title": 'See [text](http://x "[[clm:clm_A]]") here [[inf]].',
+    "link-destination": "See [text](http://x/[[clm:clm_A]]) here [[inf]].",
+    "autolink": "See <http://x/[[clm:clm_A]]> here [[inf]].",
+    "heading": "# Results [[clm:clm_A]]\n\nSee text here [[inf]].",
+    "reference-definition": 'See [text][r] here [[inf]].\n\n[r]: http://x "[[clm:clm_A]]"\n',
+    "image-alt": "See ![[[clm:clm_A]]](img.png) here [[inf]].",
+}
+
+
+@pytest.mark.parametrize("md", list(HIDDEN.values()), ids=list(HIDDEN))
+def test_a_marker_the_reader_cannot_see_does_not_count_and_fails_the_section(md):
+    """Fix round 2: a marker counts only where its whole source is rendered prose text; one in a heading, a link's
+    destination or title, an autolink, a reference definition or an image's alt text is a section problem."""
+    (s,) = parse_section(md)
+    assert [m.kind for m in s.markers] == ["inf"]
+    assert [m.kind for m in source_markers(md)] == ["inf"]
+    (problem,) = section_problems(md)
+    assert "[[clm:clm_A]]" in problem and "cannot see" in problem
+
+
+def test_a_marker_in_visible_link_text_counts():
+    md = "See [the trial [[clm:clm_A]]](http://x) here."
+    (s,) = parse_section(md)
+    assert [(m.kind, md[m.span[0]:m.span[1]]) for m in s.markers] == [("clm", "[[clm:clm_A]]")]
+    assert section_problems(md) == []
 
 
 @pytest.fixture

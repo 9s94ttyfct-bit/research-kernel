@@ -3,9 +3,11 @@
 Marker grammar (one grammar for the whole kernel; the Workbench preview imports it): ``[[clm:clm_…]]``,
 ``[[run:evt_…]]`` / ``[[run:prt_…]]``, ``[[fig:fig_…]]`` / ``[[stat:stt_…]]``, ``[[plan:dsg_…]]`` /
 ``[[plan:hyp_…]]``, ``[[inf]]`` and ``[[ck]]``; a sentence may carry several. A marker is the literal grammar in the
-source markdown (``source_markers``), outside code spans and code blocks and not escaped by a backslash: an escaped,
-entity-encoded or emphasis-split form, or one broken by a line break, is no marker. The preview substitutes exactly
-these.
+source markdown (``source_markers``), outside code spans and code blocks, not escaped by a backslash, and only where
+the reader sees it: its whole source is rendered text of a prose paragraph (link text counts; a link's destination or
+title, an autolink, an image's alt text, a heading, a table and a reference definition do not, and a marker there is a
+section problem). An escaped, entity-encoded or emphasis-split form, or one broken by a line break, is no marker. The
+preview substitutes exactly these.
 
 ``parse_section`` reads the markdown with markdown-it (raw HTML off, so it stays text) and keeps the prose of
 paragraphs and list items; headings, tables, table captions and code blocks are not prose. A table or a pandoc
@@ -20,7 +22,8 @@ belong to the sentence they follow) followed by whitespace and anything but a ma
 or non-ASCII letter, a quote or a bracket alike), except after an abbreviation (``e.g.``, ``i.e.``, ``et al.``,
 ``vs.``, ``Fig.``, ``Eq.``, …) or an initial: a capital letter standing alone before a capitalised name that is no
 common sentence opener, and not after a lowercase word other than one that leads a name (``by J. Smith``, but not
-``vitamin D. The``, ``group A. Next`` or ``Figure 2A. Then``). Decimals never split.
+``vitamin D. The``, ``group A. Next`` or ``Figure 2A. Then``). ``et al.`` ends a sentence only before a capitalised
+word (``Smith et al. Melatonin …``; not ``et al. found`` or ``et al. (2020)``). Decimals never split.
 
 Drafts (``draft.written``, ``draft.verified``; projection ``drafts``): version ``N`` of section ``S`` is the file
 ``artifacts/drafts/S.vN.md`` with its sha256; the file is synced and put in place before the event, and a file that no
@@ -83,6 +86,7 @@ class _Block(NamedTuple):
     ranges: list[tuple[int, int]]  # each character's source range
     code: list[tuple[int, int]]  # its code spans' source ranges
     code_text: list[tuple[int, int]]  # its code spans' ranges in ``text``
+    seen: list[int]  # the source offsets of its literal text characters (not an autolink's)
 
 
 class _Doc(NamedTuple):
@@ -92,6 +96,10 @@ class _Doc(NamedTuple):
 
     def code(self) -> list[tuple[int, int]]:
         return self.code_blocks + [r for b in self.blocks for r in b.code]
+
+    def visible(self) -> set[int]:
+        """The source offsets the reader sees as prose text."""
+        return {o for b in self.blocks if b.kind == "prose" for o in b.seen}
 
 
 def _markdown() -> MarkdownIt:
@@ -160,13 +168,17 @@ def _link_tail(c: str, k: int) -> int:
     return len(c)
 
 
-def _decode(token, offs: list[int]) -> tuple[str, list[tuple[int, int]], list[tuple[int, int]], list[tuple[int, int]]]:
-    """An inline token's rendered text with each character's source range, and its code spans (source ranges and
-    ranges in the text). Its children are found in order in its content: text as written, escapes and entities by
-    their source form, emphasis delimiters, link and image syntax (whose destination is not text) and code spans."""
+def _decode(token, offs: list[int]) -> tuple[str, list[tuple[int, int]], list[tuple[int, int]], list[tuple[int, int]],
+                                            list[int]]:
+    """An inline token's rendered text with each character's source range, its code spans (source ranges and ranges
+    in the text) and the source offsets of its literal text characters outside autolinks. Its children are found in
+    order in its content: text as written, escapes and entities by their source form, emphasis delimiters, link and
+    image syntax (whose destination is not text) and code spans."""
     c = token.content
     text: list[str] = []
     ranges: list[tuple[int, int]] = []
+    seen: list[int] = []
+    auto = False
     code_src: list[tuple[int, int]] = []
     code_text: list[tuple[int, int]] = []
     p = 0
@@ -188,6 +200,8 @@ def _decode(token, offs: list[int]) -> tuple[str, list[tuple[int, int]], list[tu
             i = find(ch.content, p)
             text.extend(ch.content)
             ranges.extend((at(i + j), at(i + j) + 1) for j in range(len(ch.content)))
+            if not auto:
+                seen.extend(at(i + j) for j in range(len(ch.content)))
             p = i + len(ch.content)
         elif t == "text_special":
             i = find(ch.markup, p)
@@ -207,9 +221,11 @@ def _decode(token, offs: list[int]) -> tuple[str, list[tuple[int, int]], list[tu
             put(" ", i, i + 1)
             p = i + 1
         elif t == "link_open":
-            p = find("<" if ch.markup == "autolink" else "[", p) + 1
+            auto = ch.markup == "autolink"
+            p = find("<" if auto else "[", p) + 1
         elif t == "link_close":
-            p = find(">", p) + 1 if ch.markup == "autolink" else _link_tail(c, find("]", p) + 1)
+            p = find(">", p) + 1 if auto else _link_tail(c, find("]", p) + 1)
+            auto = False
         elif t == "image":
             i = find("![", p)
             end = _link_tail(c, _bracket_end(c, i + 1))
@@ -217,7 +233,7 @@ def _decode(token, offs: list[int]) -> tuple[str, list[tuple[int, int]], list[tu
             p = end
         elif ch.markup and t.endswith(("_open", "_close")):  # emphasis delimiters
             p = find(ch.markup, p) + len(ch.markup)
-    return "".join(text), ranges, code_src, code_text
+    return "".join(text), ranges, code_src, code_text, seen
 
 
 def _parse(markdown: str) -> _Doc:
@@ -251,21 +267,25 @@ def _parse(markdown: str) -> _Doc:
     return _Doc(blocks, code_blocks, tables)
 
 
-def _markers(markdown: str, code: list[tuple[int, int]]) -> list[Marker]:
-    out = []
+def _markers(markdown: str, doc: _Doc) -> tuple[list[Marker], list[Marker]]:
+    """The section's markers (see the module docstring), and the literal grammar found where the reader cannot see
+    it (outside code, not escaped, but not rendered prose text)."""
+    code, visible = doc.code(), doc.visible()
+    seen, hidden = [], []
     for m in MARKER.finditer(markdown):
         if any(m.start() < e and m.end() > s for s, e in code):
             continue
         before = markdown[:m.start()]
         if (len(before) - len(before.rstrip("\\"))) % 2:  # an escaped first bracket
             continue
-        out.append(Marker(kind=m[1], target=m[2], span=(m.start(), m.end())))
-    return out
+        mk = Marker(kind=m[1], target=m[2], span=(m.start(), m.end()))
+        (seen if all(o in visible for o in range(m.start(), m.end())) else hidden).append(mk)
+    return seen, hidden
 
 
 def source_markers(markdown: str) -> list[Marker]:
     """Every marker of the section markdown, in order, with its source span (see the module docstring)."""
-    return _markers(markdown, _parse(markdown).code())
+    return _markers(markdown, _parse(markdown))[0]
 
 
 def _is_caption(b: _Block) -> bool:
@@ -273,12 +293,17 @@ def _is_caption(b: _Block) -> bool:
 
 
 def section_problems(markdown: str) -> list[str]:
-    """What the section may not contain at all: a markdown table, or a pandoc table caption line."""
+    """What the section may not contain at all: a markdown table, a pandoc table caption line, a marker where the
+    reader cannot see it."""
     doc = _parse(markdown)
     out = [f"line {n + 1}: a markdown table is not allowed in a draft: tables come from code artifacts at export "
            "(cite a [[stat:…]] or [[fig:…]] instead)" for n in doc.tables]
     out += [f"line {b.line + 1}: a table caption (“{b.text.strip()[:60]}”) is not a sentence and is not allowed in a "
             "draft: tables and their captions come from code artifacts at export" for b in doc.blocks if _is_caption(b)]
+    out += [f"line {markdown.count(chr(10), 0, m.span[0]) + 1}: the marker {markdown[m.span[0]:m.span[1]]} is where "
+            "the reader cannot see it (a heading, a table, a link's destination or title, an autolink, an image's alt "
+            "text or a reference definition): it counts for no sentence; put markers in the prose"
+            for m in _markers(markdown, doc)[1]]
     return out
 
 
@@ -288,6 +313,8 @@ def _abbreviation_before(text: str, end: int) -> bool:
     if word is None:
         return False
     w = word.group(1)
+    if w.lower() == "al":  # et al.: inside the sentence unless a capitalised sentence start follows
+        return re.match(r"\s+[\"“‘«„]?[A-Z]", text[end + 1:]) is None
     if w.lower() in _ABBREVIATIONS:
         return True
     if len(w) != 1 or not w.isupper():
@@ -313,7 +340,7 @@ def _cuts(prose: str) -> list[tuple[int, int]]:
 def parse_section(markdown: str) -> list[Sentence]:
     """The section's sentences, in order, with their markers (see the module docstring)."""
     doc = _parse(markdown)
-    markers = _markers(markdown, doc.code())
+    markers = _markers(markdown, doc)[0]
     sentences: list[Sentence] = []
     for b in doc.blocks:
         if b.kind != "prose" or _is_caption(b):
