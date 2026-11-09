@@ -1,40 +1,57 @@
-"""``revise`` (spec §7.1, §7.2: an open stage; §8.1: the SimReader and the Writer; §9.1; Plan 5c Task 4): at most
-``Settings.revise_max_rounds`` rounds in which the SimReader reads the manuscript as its audience would and asks
-questions, the Writer revises the sections that have questions, and the kernel keeps a revision only when it verifies
-as well as the version it would replace.
+"""``revise`` (spec §7.1, §7.2: an open stage; §5.3: P1 at an edge limit; §8.1: the SimReader and the Writer; §9.1;
+Plan 5c Task 4): at most ``Settings.revise_max_rounds`` rounds in which the SimReader reads the manuscript as its
+audience would and asks questions, the Writer revises the sections that have questions, and the kernel keeps a revision
+only when it verifies as well as the version it would replace.
 
+0. **Carried questions.** A new attempt starts with the previous attempt's unresolved priority-1 questions (their ids,
+   texts, sentences and the answers they got), recorded as its round 0 (``questions``, ``task`` none).
 1. **Check.** Each round starts by checking the latest version of every required section (the kernel-written
-   disclosure too): its sentences (``rk.verify.cover.verify_section``) and V-BALANCE (``rk.verify.balance``), recorded
-   (``checked``). A section that fails (a claim it cites withdrawn or failing its gate since it was drafted, a one-sided
-   section, a missing or altered file) cannot be revised into shape here: the stage goes back to draft
-   (``revise->draft``) with its failing sentences as guidance. The check after the last round is the same.
-2. **SimReader** (``ReaderQuestions``, ``codex_cli``): the manuscript's revisable sections as numbered sentences, the
-   audience and the earlier rounds' questions with their answers. The kernel numbers the questions (``r<round>q<n>``)
-   and refuses one on a section the Writer does not revise (``refused``); recorded (``questions``) before any Writer
-   task.
-3. **Writer** (``Revision``), one task per section with questions: this round's questions on the section and every
+   disclosure too) with ``rk.production.draft.section_verdict`` (every sentence, and V-BALANCE as section-level
+   problems), recorded (``checked``). A section that fails (a claim it cites withdrawn or failing its gate since it was
+   drafted, a one-sided section, a missing or altered file) cannot be revised into shape here: the stage goes back to
+   draft (``revise->draft``) with its failing sentences (their text quoted) as guidance; draft writes every section
+   afresh. The check after the last round is the same.
+2. **Budget.** Before a round's questions are asked, the round must fit in what is left of the stage's role-task budget
+   (§7.2: ``STAGE_TASK_BUDGET`` per run session, as the executor counts it; outside a run the attempt's own tasks): a
+   SimReader task and one Writer task per revisable section. When it does not, the rounds stop as if
+   ``revise_max_rounds`` were reached (``budget``), so a run is never paused mid-round by the budget.
+3. **SimReader** (``ReaderQuestions``, ``codex_cli``): the manuscript's revisable sections as numbered sentences, the
+   audience and the earlier questions with their answers. The kernel numbers the questions (``a<attempt>r<round>q<n>``),
+   keeps the text of the sentence each is about, and refuses one on a section the Writer does not revise (``refused``);
+   recorded (``questions``) before any Writer task.
+4. **Writer** (``Revision``), one task per section with questions: the round's questions on the section and every
    earlier priority-1 question on it still unresolved, the section's current text, and the inputs a draft Writer gets
    (``rk.production.draft.writer_inputs``: the claims with their balance facts, the artifacts' reported values, the
    protocol, the events, the limitations). Its output is recorded (``revision``) before the kernel decides on it.
-4. **Decision** (``decided``). The kernel diffs the revision against the version it was written on by sentences, on
-   their exact source text (markers included) and whether they are quoted. A sentence of the revision keeps the
-   verdict it had in that version's check only when that text occurs there and the ``target_state`` of each of its
-   markers is unchanged since that check (what it cites changed: it is verified again); every other sentence is
-   verified (``reverified``). The section-level rules and V-BALANCE run over the whole revision. The revision is
-   accepted only when the result verifies and is balanced: nothing that verified before fails now. An accepted
-   revision becomes the section's next version (``write_draft``, stage ``revise``, its round; ``draft.verified`` with
-   that verdict), unless its text is the version's own (nothing to store). A rejected one stays a candidate: its text
-   is only in its ``revision`` note and the ``decided`` note gives the reasons, so it never becomes a version the gate,
-   the audit or the preview reads. An answer counts only from an accepted revision.
+5. **Decision** (``decided``). The kernel diffs the revision against the version it was written on by sentences. A
+   sentence keeps the verdict it had in that version's check only when the same sentence occurs there (its exact
+   source text with the markers, whether it is quoted, its rendered ``text`` and ``prose``, and its markers with their
+   offsets in the sentence: a section-wide change such as a deleted reference definition changes the rendering) and
+   the ``target_state`` of each of its markers is unchanged since that check; every other sentence is verified
+   (``reverified``). The section-level rules and V-BALANCE run over the whole revision, and the manuscript as a whole
+   (``rk.production.draft.manuscript_problems``: the main claim and every supported finding cited, every ``fig`` and
+   ``stat`` an artifact of synthesize's passed attempt) must not lose what it had. The revision is accepted only when
+   all of that holds: nothing that verified before fails now. An accepted revision becomes the section's next version
+   (``write_draft``, stage ``revise``, its round; ``draft.verified`` with that verdict), unless its text is the
+   version's own (nothing to store). A rejected one stays a candidate: its text is only in its ``revision`` note and
+   the ``decided`` note gives the reasons, so it never becomes a version the gate, the audit or the preview reads. An
+   answer counts only from an accepted revision.
 
-Rounds stop after one whose questions have no priority-1 question (its questions are still revised) or after
-``revise_max_rounds``. An interrupted attempt runs again in place: a round's recorded check and questions are not made
-again, a section's recorded revision is not asked again, and a recorded decision is applied (its version stored once).
+Rounds stop after one whose questions have no priority-1 question (its questions are still revised), after
+``revise_max_rounds``, or when the budget cannot cover a round. An interrupted attempt runs again in place: a round's
+recorded check and questions are not made again, a section's recorded revision is not asked again but is decided and,
+when accepted, stored (once, with its verdict), whatever questions the section has now.
 
 The gate: every priority-1 question of the attempt is ``revised`` or ``answered`` in an accepted revision, with a note
-(``declined`` is for priority 2–3 only); the latest version of every required section verifies and is balanced, checked
-afresh. A failing gate reruns the stage; P1 at an edge limit cannot delete or narrow a reader's question, so the run
-fails naming the failures. No checkpoint."""
+(``declined`` is for priority 2–3 only), unless P1's degrade deleted its sentence; the latest version of every required
+section verifies and is balanced, checked afresh; the manuscript as a whole passes ``manuscript_problems``. A failing
+gate reruns the stage. P1 at an edge limit (``degrade``, spec §5.3 delete-or-narrow) deletes from the latest versions
+the sentences that cannot verify (draft's rule, ``deletable``) and the sentence each unresolved priority-1 question is
+about, stores what is left as new versions (stage ``revise``, round 0, no Writer task) and records the deleted
+sentences and those questions (``stage.degraded``), which the gate then accepts; it fails the run, naming the cause,
+when a question is about a section as a whole (every revisable section is required, so none can be deleted) or about a
+sentence no longer in it, when a deletion would empty a section, break the manuscript's coverage or leave a section
+that does not verify. No checkpoint."""
 
 from __future__ import annotations
 
@@ -46,16 +63,23 @@ from pydantic import Field
 
 from rk.config import load_settings
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
-from rk.orchestrator.state import stage_row
+from rk.orchestrator.graph import STAGE_TASK_BUDGET
+from rk.orchestrator.state import record_degraded, run_row, stage_row, tasks_used
 from rk.production.common import RoleOut
 from rk.production.draft import (
     DraftInputs,
+    deletable,
+    delete_sentences,
+    latest_version,
     load_inputs,
+    manuscript_problems,
     prisma_event,
+    section_verdict,
     version_failures,
     writer_inputs,
 )
 from rk.production.manuscript import (
+    Sentence,
     draft_text,
     draft_versions,
     parse_section,
@@ -66,8 +90,7 @@ from rk.production.screening import reports_prisma
 from rk.production.sections import SectionSpec
 from rk.store.events import NewEvent
 from rk.store.project import ProjectStore
-from rk.verify.balance import check_balance
-from rk.verify.cover import SentenceVerdict, target_state, verify_section
+from rk.verify.cover import SentenceVerdict, target_state
 
 STAGE = "revise"
 READER = "simreader"
@@ -130,11 +153,12 @@ def _note(ps: ProjectStore, attempt: int, kind: str, *, actor: str, **fields) ->
 def revise_notes(ps: ProjectStore, attempt: int, *, kind: str | None = None) -> list[dict]:
     """What revise noted in the attempt, in order: ``checked`` (a round's check of a section's latest ``version``:
     ``ok``, ``failures``, ``verdict``, the per-sentence ``sentences`` rows its verdicts are kept by, ``reverified``),
-    ``questions`` (a round's SimReader ``task``, its ``questions`` and the ``refused`` ones), ``revision`` (a Writer
-    ``task`` on a section: the ``version`` it was written on, its ``markdown``, ``answers``, the question ids ``asked``,
-    an ``error`` making it unusable), ``decided`` (the decision on that revision: ``accepted``, ``reasons``,
-    ``unchanged`` with its ``version`` when its text is that version's, ``verdict``, ``sentences``, ``reverified``) and
-    ``back_edge`` (``to``, ``reason``)."""
+    ``budget`` (the rounds stopped before ``round``: ``used``, ``needed``, ``budget``), ``questions`` (a round's
+    SimReader ``task``, its ``questions`` and the ``refused`` ones; round 0: those carried from the previous attempt),
+    ``revision`` (a Writer ``task`` on a section: the ``version`` it was written on, its ``markdown``, ``answers``, the
+    question ids ``asked``, an ``error`` making it unusable), ``decided`` (the decision on that revision: ``accepted``,
+    ``reasons``, ``unchanged`` with its ``version`` when its text is that version's, ``verdict``, ``sentences``,
+    ``reverified``) and ``back_edge`` (``to``, ``reason``)."""
     rows = ps.db.execute(f"SELECT payload FROM events WHERE type='{NOTED}' "
                          "AND json_extract(payload, '$.attempt')=? ORDER BY seq", (attempt,))
     notes = [json.loads(r["payload"]) for r in rows]
@@ -168,24 +192,31 @@ def _load(ps: ProjectStore) -> _Inputs | str:
     return _Inputs(d, row["passed_attempt"])
 
 
+def _texts(ps: ProjectStore, s: _Inputs) -> dict[str, str]:
+    """The latest markdown of every required section that can be read."""
+    out = {}
+    for spec in s.draft.sections:
+        if not isinstance(got := latest_version(ps, spec.id), str):
+            out[spec.id] = got[1]
+    return out
+
+
 # ---- checks ----
-def _verdict(ps: ProjectStore, paper_type: str, section: str, markdown: str,
-             known: dict[int, SentenceVerdict] | None = None) -> dict:
-    """The section's verdict (``known``: kept sentence verdicts) with V-BALANCE's problems as section-level ones, as
-    draft records it."""
-    verdict = verify_section(ps, section, markdown, paper_type=paper_type, known=known)
-    if balance := check_balance(ps, section, parse_section(markdown)):
-        verdict = verdict.model_copy(update={"ok": False, "problems": [*verdict.problems, *balance]})
-    return verdict.model_dump(mode="json")
+def _key(source: str, x: Sentence) -> str:
+    """What makes two sentences the same to the sentence rules: the exact source text, whether it is quoted, the
+    rendered ``text`` and ``prose`` (which depend on the whole section, e.g. on a reference definition) and the markers
+    with their offsets in the sentence."""
+    return json.dumps([source, x.quoted, x.text, x.prose,
+                       [[m.kind, m.target, m.span[0] - x.span[0], m.span[1] - x.span[0]] for m in x.markers]])
 
 
 def _check(ps: ProjectStore, paper_type: str, section: str, markdown: str, prior: list[dict] | None) -> dict:
-    """``_verdict``, keeping the earlier verdict of each sentence whose exact source text and quotedness occur in
-    ``prior`` (a check's ``sentences`` rows) with the same ``target_state`` of every marker; with the ``sentences``
-    rows of this check and ``reverified``: the sentences verified here."""
+    """``section_verdict``, keeping the earlier verdict of each sentence whose ``_key`` occurs in ``prior`` (a check's
+    ``sentences`` rows) with the same ``target_state`` of every marker; with the ``sentences`` rows of this check and
+    ``reverified``: the sentences verified here."""
     sentences = parse_section(markdown)
     states: dict[tuple[str, str | None], str] = {}
-    earlier = {(r["text"], r["quoted"]): r for r in prior or []}
+    earlier = {r["key"]: r for r in prior or []}
     rows, known, reverified = [], {}, []
     for x in sentences:
         state = {}
@@ -193,14 +224,14 @@ def _check(ps: ProjectStore, paper_type: str, section: str, markdown: str, prior
             if (m.kind, m.target) not in states:
                 states[m.kind, m.target] = target_state(ps, m, paper_type=paper_type)
             state[f"{m.kind}:{m.target or ''}"] = states[m.kind, m.target]
-        text = markdown[x.span[0]:x.span[1]]
-        p = earlier.get((text, x.quoted))
+        key = _key(markdown[x.span[0]:x.span[1]], x)
+        p = earlier.get(key)
         if p is not None and p["state"] == state:
             known[x.index] = SentenceVerdict(index=x.index, ok=p["ok"], problems=p["problems"])
         else:
             reverified.append(x.index)
-        rows.append({"text": text, "quoted": x.quoted, "state": state})
-    verdict = _verdict(ps, paper_type, section, markdown, known)
+        rows.append({"key": key, "state": state})
+    verdict = section_verdict(ps, section, markdown, paper_type=paper_type, known=known).model_dump(mode="json")
     for row, v in zip(rows, verdict["sentences"], strict=True):
         row.update(ok=v["ok"], problems=v["problems"])
     return {"verdict": verdict, "sentences": rows, "reverified": reverified}
@@ -236,13 +267,36 @@ def _resolved(answer: dict | None) -> bool:
 
 
 def _questions_of(ps: ProjectStore, attempt: int) -> list[dict]:
+    """The attempt's questions (those carried into it first, as round 0), each with its ``round``."""
     return [{**q, "round": n["round"]} for n in revise_notes(ps, attempt, kind="questions") for q in n["questions"]]
+
+
+def _deleted(ps: ProjectStore, attempt: int) -> set[str]:
+    """The questions whose sentence P1's degrade deleted in the attempt (``stage.degraded``)."""
+    rows = ps.db.execute("SELECT payload FROM events WHERE type='stage.degraded' "
+                         "AND json_extract(payload, '$.stage')=? AND json_extract(payload, '$.attempt')=?",
+                         (STAGE, attempt))
+    return {q for r in rows for q in json.loads(r["payload"]).get("questions") or []}
+
+
+def _earlier_answer(q: dict, answers: dict[str, dict]) -> dict | None:
+    return answers.get(q["id"]) or q.get("previous_answer")
+
+
+def _unresolved(ps: ProjectStore, attempt: int) -> list[dict]:
+    """The attempt's priority-1 questions with no resolving answer whose sentence was not deleted."""
+    answers, deleted = _answers(ps, attempt), _deleted(ps, attempt)
+    return [q for q in _questions_of(ps, attempt)
+            if q["priority"] == 1 and q["id"] not in deleted and not _resolved(answers.get(q["id"]))]
 
 
 class ReviseWorker:
     # An interrupted attempt runs again in place (rk.orchestrator.engine): ``run`` goes on from the attempt's notes
     # (see the module docstring) and asks the SimReader and the Writer nothing twice.
     resumes_in_place = True
+
+    def __init__(self, *, budget: int = STAGE_TASK_BUDGET):
+        self.budget = budget
 
     def run(self, ctx: StageContext) -> StageOutcome:
         ps = ctx.ps
@@ -251,6 +305,7 @@ class ReviseWorker:
             return StageOutcome("failed", reason=s)
         if sent := revise_notes(ps, ctx.attempt, kind="back_edge"):  # resumed after the back-edge was noted
             return StageOutcome("back_edge", to=sent[-1]["to"], reason=sent[-1]["reason"])
+        self._carry(ctx)
         rounds = load_settings().revise_max_rounds
         d = s.draft
         prisma = (prisma_event(ps, s.draft_attempt, d.search_attempt, d.protocol["id"] if d.protocol else None,
@@ -262,16 +317,57 @@ class ReviseWorker:
                 why = "a section cannot verify, so it is drafted again: " + "; ".join(failures)
                 _note(ps, ctx.attempt, "back_edge", actor=ctx.actor, round=rnd, to="draft", reason=why)
                 return StageOutcome("back_edge", to="draft", reason=why)
-            last = _recorded(ps, ctx.attempt, "questions", rnd - 1)
+            last = _recorded(ps, ctx.attempt, "questions", rnd - 1) if rnd > 1 else None
             if rnd > rounds or (last is not None and not any(q["priority"] == 1 for q in last["questions"])):
                 return StageOutcome("done")
+            if self._out_of_budget(ctx, s, rnd):
+                return StageOutcome("done", reason="the stage's task budget cannot cover another round")
             asked = self._ask(ctx, s, rnd)
             if isinstance(asked, StageOutcome):
                 return asked
             for spec in s.revisable:
-                if questions := self._questions_for(ps, ctx.attempt, spec.id, rnd):
+                # a recorded revision is decided and stored whatever questions the section has now (a resume)
+                questions = self._questions_for(ps, ctx.attempt, spec.id, rnd)
+                if questions or _recorded(ps, ctx.attempt, "revision", rnd, spec.id) is not None:
                     self._revise(ctx, s, spec, rnd, questions, prisma)
             rnd += 1
+
+    # ---- carried questions and the budget ----
+    @staticmethod
+    def _carry(ctx: StageContext) -> None:
+        """Record the previous attempt's unresolved priority-1 questions as this attempt's round 0 (once)."""
+        ps, attempt = ctx.ps, ctx.attempt
+        if attempt < 2 or _recorded(ps, attempt, "questions", 0) is not None:
+            return
+        answers = _answers(ps, attempt - 1)
+        carried = [{k: v for k, v in q.items() if k != "round"}
+                   | {"carried_from": q.get("carried_from") or attempt - 1,
+                      "previous_answer": _earlier_answer(q, answers)}
+                   for q in _unresolved(ps, attempt - 1)]
+        if carried:
+            _note(ps, attempt, "questions", actor=ctx.actor, round=0, task=None, questions=carried, refused=[])
+
+    def _used(self, ctx: StageContext) -> int:
+        """Role tasks the stage used: in a run, every task of the stage in the run session (§7.2, as the executor
+        counts them); outside a run, the attempt's."""
+        if ctx.run_id is None:
+            return sum(1 for n in revise_notes(ctx.ps, ctx.attempt)
+                       if n["kind"] in ("questions", "revision") and n.get("task"))
+        row = run_row(ctx.ps, ctx.run_id)
+        return tasks_used(ctx.ps, ctx.run_id, row["session"] if row else None, ctx.stage)
+
+    def _out_of_budget(self, ctx: StageContext, s: _Inputs, rnd: int) -> bool:
+        """Whether the rounds stop before ``rnd`` for the budget (noted once); a round already asked goes on."""
+        ps, attempt = ctx.ps, ctx.attempt
+        if _recorded(ps, attempt, "budget", rnd) is not None:
+            return True
+        if _recorded(ps, attempt, "questions", rnd) is not None:
+            return False
+        used, needed = self._used(ctx), 1 + len(s.revisable)
+        if self.budget - used >= needed:
+            return False
+        _note(ps, attempt, "budget", actor=ctx.actor, round=rnd, used=used, needed=needed, budget=self.budget)
+        return True
 
     # ---- a round ----
     @staticmethod
@@ -283,23 +379,18 @@ class ReviseWorker:
         for spec in s.draft.sections:
             rec = _recorded(ps, attempt, "checked", rnd, spec.id)
             if rec is None:
-                versions = draft_versions(ps, spec.id)
-                if not versions:
+                got = latest_version(ps, spec.id)
+                if isinstance(got, str):
                     rec = _note(ps, attempt, "checked", actor=ctx.actor, round=rnd, section=spec.id, version=None,
-                                ok=False, failures=[f"section {spec.id} has no draft"])
+                                ok=False, failures=[got])
                 else:
-                    version = versions[-1]["version"]
-                    tag = f"section {spec.id} v{version}"
-                    try:
-                        md = draft_text(ps, spec.id, version)
-                    except (KeyError, ValueError) as e:
-                        rec = _note(ps, attempt, "checked", actor=ctx.actor, round=rnd, section=spec.id,
-                                    version=version, ok=False, failures=[f"{tag}: {e}"])
-                    else:
-                        c = _check(ps, s.draft.paper_type, spec.id, md, _prior(ps, attempt, spec.id, version))
-                        rec = _note(ps, attempt, "checked", actor=ctx.actor, round=rnd, section=spec.id,
-                                    version=version, ok=c["verdict"]["ok"],
-                                    failures=[f"{tag}: {f}" for f in version_failures(md, c["verdict"])], **c)
+                    last, md = got
+                    version = last["version"]
+                    c = _check(ps, s.draft.paper_type, spec.id, md, _prior(ps, attempt, spec.id, version))
+                    rec = _note(ps, attempt, "checked", actor=ctx.actor, round=rnd, section=spec.id, version=version,
+                                ok=c["verdict"]["ok"],
+                                failures=[f"section {spec.id} v{version}: {f}"
+                                          for f in version_failures(md, c["verdict"])], **c)
             out += rec["failures"]
         return out
 
@@ -310,13 +401,12 @@ class ReviseWorker:
         if (rec := _recorded(ps, attempt, "questions", rnd)) is not None:
             return rec
         answers = _answers(ps, attempt)
-        sections = []
+        sections, parsed = [], {}
         for spec in s.revisable:
-            version = draft_versions(ps, spec.id)[-1]["version"]
+            parsed[spec.id] = parse_section(latest_version(ps, spec.id)[1])  # the round's check read it
             sections.append({"id": spec.id, "title": spec.title,
-                             "sentences": [{"index": x.index, "text": x.text}
-                                           for x in parse_section(draft_text(ps, spec.id, version))]})
-        earlier = [{k: q[k] for k in ("id", "section", "text", "priority")} | {"answer": answers.get(q["id"])}
+                             "sentences": [{"index": x.index, "text": x.text} for x in parsed[spec.id]]})
+        earlier = [{k: q[k] for k in ("id", "section", "text", "priority")} | {"answer": _earlier_answer(q, answers)}
                    for q in _questions_of(ps, attempt)]
         inputs: dict = {"paper_type": s.draft.paper_type, "audience": s.draft.audience, "question": s.draft.question,
                         "sections": sections, "earlier_questions": earlier}
@@ -328,7 +418,11 @@ class ReviseWorker:
         ids = {spec.id for spec in s.revisable}
         valid, refused = [], []
         for n, q in enumerate(res.output.questions, 1):
-            item = {"id": f"r{rnd}q{n}", "reader_id": q.id, "section": q.section, "sentence_index": q.sentence_index,
+            at = parsed.get(q.section, [])
+            item = {"id": f"a{attempt}r{rnd}q{n}", "reader_id": q.id, "section": q.section,
+                    "sentence_index": q.sentence_index,
+                    "sentence": (at[q.sentence_index].text if q.sentence_index is not None
+                                 and 0 <= q.sentence_index < len(at) else None),
                     "text": q.text.strip(), "priority": q.priority}
             if q.section not in ids:
                 refused.append({**item, "why": f"{q.section!r} is no section the writer revises"})
@@ -344,10 +438,10 @@ class ReviseWorker:
         """The questions the section's Writer task gets in round ``rnd``: the round's, then every earlier priority-1
         question on it still unresolved (with the answer it got, if any)."""
         answers = _answers(ps, attempt)
-        return [{**q, "earlier_answer": answers.get(q["id"]) if q["round"] < rnd else None}
-                for q in _questions_of(ps, attempt) if q["section"] == section
-                and (q["round"] == rnd or (q["round"] < rnd and q["priority"] == 1 and not _resolved(answers.get(
-                    q["id"]))))]
+        carried = [q for q in _unresolved(ps, attempt) if q["section"] == section and q["round"] < rnd]
+        return ([{**q, "earlier_answer": None} for q in _questions_of(ps, attempt)
+                 if q["section"] == section and q["round"] == rnd]
+                + [{**q, "earlier_answer": _earlier_answer(q, answers)} for q in carried])
 
     def _revise(self, ctx: StageContext, s: _Inputs, spec: SectionSpec, rnd: int, questions: list[dict],
                 prisma: str | None) -> None:
@@ -358,13 +452,11 @@ class ReviseWorker:
         if rev is None:
             version = draft_versions(ps, spec.id)[-1]["version"]
             md = draft_text(ps, spec.id, version)
-            sentences = parse_section(md)
             inputs = writer_inputs(ps, s.draft, spec, prisma)
             inputs["revise"] = {"version": version, "markdown": md, "questions": [
                 {"id": q["id"], "priority": q["priority"], "text": q["text"], "sentence_index": q["sentence_index"],
-                 "sentence": (sentences[q["sentence_index"]].text if q["sentence_index"] is not None
-                              and 0 <= q["sentence_index"] < len(sentences) else None),
-                 "round": q["round"], "earlier_answer": q["earlier_answer"]} for q in questions]}
+                 "sentence": q.get("sentence"), "round": q["round"], "earlier_answer": q["earlier_answer"]}
+                for q in questions]}
             inputs["other_sections"] = [
                 {"id": x.id, "title": x.title, "markdown": draft_text(ps, x.id, draft_versions(ps, x.id)[-1]["version"])}
                 for x in s.draft.sections if x.id != spec.id]
@@ -391,7 +483,8 @@ class ReviseWorker:
     @staticmethod
     def _decide(ctx: StageContext, s: _Inputs, rev: dict) -> dict:
         """Accept the revision when it verifies and is balanced, its unchanged sentences keeping the verdicts of the
-        round's check of the version it was written on (see the module docstring); recorded either way."""
+        round's check of the version it was written on, and the manuscript loses nothing ``manuscript_problems`` asks
+        for (see the module docstring); recorded either way."""
         ps, attempt, section = ctx.ps, ctx.attempt, rev["section"]
         fields = {"round": rev["round"], "section": section, "task": rev["task"]}
         if rev["error"]:
@@ -399,11 +492,14 @@ class ReviseWorker:
                          unchanged=False, version=None)
         base = _recorded(ps, attempt, "checked", rev["round"], section)
         c = _check(ps, s.draft.paper_type, section, rev["markdown"], base["sentences"])
-        ok = c["verdict"]["ok"]
+        texts = _texts(ps, s)
+        before = manuscript_problems(ps, s.draft, texts)
+        broken = [p for p in manuscript_problems(ps, s.draft, {**texts, section: rev["markdown"]}) if p not in before]
+        reasons = [*(version_failures(rev["markdown"], c["verdict"]) if not c["verdict"]["ok"] else []), *broken]
+        ok = not reasons
         unchanged = ok and rev["markdown"] == draft_text(ps, section, rev["version"])
-        return _note(ps, attempt, "decided", actor=ctx.actor, **fields, accepted=ok,
-                     reasons=[] if ok else version_failures(rev["markdown"], c["verdict"]), unchanged=unchanged,
-                     version=rev["version"] if unchanged else None, **c)
+        return _note(ps, attempt, "decided", actor=ctx.actor, **fields, accepted=ok, reasons=reasons,
+                     unchanged=unchanged, version=rev["version"] if unchanged else None, **c)
 
     @staticmethod
     def _store(ctx: StageContext, rev: dict, decided: dict) -> None:
@@ -430,9 +526,9 @@ class ReviseWorker:
         if isinstance(s, str):
             return GateResult(False, [s])
         failures: list[str] = []
-        answers = _answers(ps, attempt)
+        answers, deleted = _answers(ps, attempt), _deleted(ps, attempt)
         for q in _questions_of(ps, attempt):
-            if q["priority"] != 1:
+            if q["priority"] != 1 or q["id"] in deleted:
                 continue
             a = answers.get(q["id"])
             what = f"the priority-1 question {q['id']} on {q['section']} “{q['text']}”"
@@ -442,26 +538,81 @@ class ReviseWorker:
                 failures.append(f"{what} was declined: only a priority-2 or -3 question may be declined")
             elif not a["note"].strip():
                 failures.append(f"{what} was {a['how']} without a note")
+        texts: dict[str, str] = {}
         for spec in s.draft.sections:
-            versions = draft_versions(ps, spec.id)
-            if not versions:
-                failures.append(f"section {spec.id} has no draft")
+            got = latest_version(ps, spec.id)
+            if isinstance(got, str):
+                failures.append(got)
                 continue
-            version = versions[-1]["version"]
-            tag = f"section {spec.id} v{version}"
-            try:
-                md = draft_text(ps, spec.id, version)
-            except (KeyError, ValueError) as e:
-                failures.append(f"{tag}: {e}")
-                continue
-            # afresh: every sentence verified now
-            failures += [f"{tag}: {f}" for f in version_failures(md, _verdict(ps, s.draft.paper_type, spec.id, md))]
+            last, md = got
+            texts[spec.id] = md
+            verdict = section_verdict(ps, spec.id, md, paper_type=s.draft.paper_type)  # afresh: every sentence now
+            failures += [f"section {spec.id} v{last['version']}: {f}" for f in version_failures(md, verdict)]
+        failures += manuscript_problems(ps, s.draft, texts)
         return GateResult(not failures, failures)
 
     def degrade(self, ctx: StageContext, failures: list[str]) -> StageOutcome:
-        """P1 at an edge limit: a reader's unanswered question or a section that cannot verify is nothing revise can
-        delete or narrow (draft deletes failing sentences; it is the stage a failing section goes back to), so the run
-        fails naming the failures: an unrevised manuscript is never exported with them."""
-        return StageOutcome("failed", reason=(
-            "revise cannot degrade at the edge limit (P1): an unanswered priority-1 question or a section that cannot "
-            "verify is nothing to delete or narrow here; " + ("; ".join(failures) or "no failures given")))
+        """P1 at an edge limit (spec §5.3: delete or narrow, never keep and only label): delete the sentences that cannot
+        verify and the sentence of each unresolved priority-1 question, store and verify what is left, and record the
+        deletions with those questions (``stage.degraded``); fail naming the cause when that is not possible (see the
+        module docstring). The engine gates again."""
+        ps, attempt = ctx.ps, ctx.attempt
+        s = _load(ps)
+        if isinstance(s, str):
+            return StageOutcome("failed", reason=s)
+        head = "degrading revise at the edge limit (P1)"
+        unresolved = _unresolved(ps, attempt)
+        texts: dict[str, str] = {}
+        plans: list[tuple[str, str, list[Sentence]]] = []
+        questions: list[str] = []
+        cannot: list[str] = []
+        for spec in s.draft.sections:
+            got = latest_version(ps, spec.id)
+            if isinstance(got, str):
+                return StageOutcome("failed", reason=f"{head}: cannot read {got}")
+            md = texts[spec.id] = got[1]
+            sentences = parse_section(md)
+            drop = deletable(s.draft, sentences, section_verdict(ps, spec.id, md, paper_type=s.draft.paper_type))
+            for q in unresolved:
+                if q["section"] != spec.id:
+                    continue
+                what = f"the priority-1 question {q['id']} on {spec.id} “{q['text']}”"
+                x = next((x for x in sentences if q.get("sentence") is not None and x.text == q["sentence"]), None)
+                if x is not None:
+                    drop.add(x.index)
+                    questions.append(q["id"])
+                elif q.get("sentence") is None:
+                    cannot.append(f"{what} is about the section as a whole, and {spec.id} is a required section: it "
+                                  "cannot be deleted")
+                else:
+                    cannot.append(f"{what} is about a sentence that is no longer in it (“{q['sentence']}”), and "
+                                  f"{spec.id} is a required section: nothing can be deleted for it")
+            if drop:
+                plans.append((spec.id, md, [x for x in sentences if x.index in drop]))
+                if {x.index for x in sentences} <= drop:
+                    cannot.append(f"deleting would leave {spec.id} empty, and a required section is never dropped")
+        if not cannot and not plans:
+            cannot.append("no sentence fails and no unresolved question has a sentence to delete")
+        new = {section: delete_sentences(md, dropped) for section, md, dropped in plans}
+        if not cannot:
+            before = manuscript_problems(ps, s.draft, texts)
+            cannot += [f"deleting would break the manuscript: {p}" for p in
+                       manuscript_problems(ps, s.draft, {**texts, **new}) if p not in before]
+        verdicts = {}
+        for section, md in new.items() if not cannot else ():
+            verdicts[section] = section_verdict(ps, section, md, paper_type=s.draft.paper_type)
+            cannot += [f"after deleting, section {section} still fails: {f}"
+                       for f in version_failures(md, verdicts[section])]
+        if cannot:
+            return StageOutcome("failed", reason=f"{head}: " + "; ".join(cannot) + "; the gate failed with: "
+                                + ("; ".join(failures) or "no failures given"))
+        removed: list[str] = []
+        for section, _, dropped in plans:
+            removed += [f"{section}: “{x.text.strip()}”" for x in sorted(dropped, key=lambda x: x.span[0])]
+            v = write_draft(ps, section, new[section], stage=STAGE, attempt=attempt, round=0, by_task=None,
+                            actor=ctx.actor)
+            record_section_verdict(ps, section, v, verdicts[section], actor=ctx.actor)
+        record_degraded(ps, stage=STAGE, attempt=attempt, removed=removed, questions=questions,
+                        reason="sentences that cannot verify and the sentences of unresolved priority-1 reader "
+                               "questions deleted at the edge limit (P1): " + "; ".join(failures), actor=ctx.actor)
+        return StageOutcome("done", reason=f"degraded: {len(removed)} sentences deleted")

@@ -142,10 +142,13 @@ def record_waiting(ps: ProjectStore, stage: str, attempt: int, checkpoint_id: st
 
 
 def record_degraded(ps: ProjectStore, *, stage: str, attempt: int, removed: list[str], reason: str,
-                    actor: str) -> None:
-    """P1 deleted or narrowed content to get past an edge limit (spec §5.3/§7.2); disclosed as a limitation."""
-    _emit(ps, "stage.degraded", stage, {"stage": stage, "attempt": attempt, "removed": list(removed),
-                                        "reason": reason}, actor)
+                    actor: str, questions: list[str] | None = None) -> None:
+    """P1 deleted or narrowed content to get past an edge limit (spec §5.3/§7.2); disclosed as a limitation.
+    ``questions``: the reader questions (revise) whose content the deletion removed, which the gate then accepts."""
+    payload = {"stage": stage, "attempt": attempt, "removed": list(removed), "reason": reason}
+    if questions:
+        payload["questions"] = list(questions)
+    _emit(ps, "stage.degraded", stage, payload, actor)
 
 
 def record_edge_taken(ps: ProjectStore, edge: str, count: int, *, actor: str) -> None:

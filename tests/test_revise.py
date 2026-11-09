@@ -6,6 +6,7 @@ takes the stage back to draft."""
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 
 import pytest
@@ -17,6 +18,7 @@ from rk.orchestrator.engine import default_workers
 from rk.orchestrator.graph import BACK_EDGES, OPEN_STAGES
 from rk.orchestrator.state import record_attempt, record_passed, record_ran
 from rk.production.argue import argument_claims, main_claim
+from rk.production.artifacts import ArtifactIn, add_artifact
 from rk.production.draft import DraftWorker
 from rk.production.manuscript import (
     draft_text,
@@ -60,10 +62,11 @@ def _ctx(env, ex, attempt: int = 1):
     return replace(production_ctx(k, ps, lib, ex, stage="revise", attempt=attempt), guidance="")
 
 
-def ask(*questions: tuple[str, int]) -> dict:
-    """A SimReader output: one question per ``(section, priority)``, on the section's first sentence."""
-    return {"questions": [{"id": f"q{i}", "section": sec, "sentence_index": 0, "text": f"What does {sec} mean here?",
-                           "priority": p} for i, (sec, p) in enumerate(questions)]}
+def ask(*questions: tuple) -> dict:
+    """A SimReader output: one question per ``(section, priority)`` on the section's first sentence, or per
+    ``(section, priority, sentence_index)`` (``None``: on the section as a whole)."""
+    return {"questions": [{"id": f"q{i}", "section": q[0], "sentence_index": q[2] if len(q) > 2 else 0,
+                           "text": f"What does {q[0]} mean here?", "priority": q[1]} for i, q in enumerate(questions)]}
 
 
 def revision(*, add: str = "", drop: str | None = None, how: str = "revised", note: str = "clarified"):
@@ -261,12 +264,12 @@ def test_priority1_question_cannot_be_declined(env):
     assert not res.ok
     (declined,) = res.failures
     assert "priority-1 question" in declined and "introduction" in declined and "declined" in declined
-    # an answer needs a note
-    ex2 = _exec([ask(("introduction", 1))], [revision(how="answered", note="  ")])
+    # an answer needs a note: the next attempt carries the declined question (no new question asked)
+    ex2 = _exec([ask()], [revision(how="answered", note="  ")])
     assert w.run(_ctx(env, ex2, attempt=2)).status == "done"
     (bare,) = w.gate(ps, 2).failures
     assert "introduction" in bare and "without a note" in bare
-    ex3 = _exec([ask(("introduction", 1))], [revision(how="answered", note="the age group is defined in Methods")])
+    ex3 = _exec([ask()], [revision(how="answered", note="the age group is defined in Methods")])
     assert w.run(_ctx(env, ex3, attempt=3)).status == "done"
     assert w.gate(ps, 3).ok, w.gate(ps, 3).failures
 
@@ -337,3 +340,214 @@ def test_unverifiable_section_takes_revise_to_draft(env):
     out3 = w.run(_ctx(env, ex3, attempt=2))
     assert (out3.status, out3.to) == ("back_edge", "draft") and not ex3.calls
     assert "section introduction v1" in out3.reason and "section theme-1 v1" in out3.reason
+
+
+# ---- round 1 ----
+def _main_sentence(ps, cid: str) -> str:
+    return _sentence({"claim_id": cid, "text": ArgumentService(ps).get_claim(cid)["text"]})
+
+
+def _degraded(ps) -> list[dict]:
+    return [json.loads(r["payload"]) for r in
+            ps.db.execute("SELECT payload FROM events WHERE type='stage.degraded' ORDER BY seq")]
+
+
+def _done(out) -> bool:
+    assert out.status == "done", out.reason
+    return True
+
+
+def _placed(inputs):
+    """A draft Writer output with the main claim only in the introduction and the findings everywhere."""
+    cs = [c for c in inputs["claims"] if c["status"] == "supported" and (
+        c["role"] == "finding" or (c["role"] == "main" and inputs["section"]["id"] == "introduction"))]
+    return {"markdown": " ".join(_sentence(c) for c in cs) + "\n"}
+
+
+def test_resume_stores_an_accepted_revision_made_for_a_carried_question(env, monkeypatch):
+    import rk.production.revise as revise_mod
+
+    _, ps, _ = env
+    _drafted(env)
+    main = main_claim(ps, 1)
+    bad = f"Aspirin was studied in 1234 older people [[clm:{main}]]."
+    added = _restated(ps, main)
+    # round 1 rejects the introduction's revision; round 2 asks only about theme-1 (priority 2), and the introduction
+    # is revised for its carried priority-1 question alone; the store fails right after that revision is accepted
+    ex = _exec([ask(("introduction", 1)), ask(("theme-1", 2))],
+               [revision(add=bad), revision(add=added), revision(how="answered", note="stated in Methods")])
+    real = revise_mod.write_draft
+
+    def boom(*a, **kw):
+        raise RuntimeError("crash before the accepted version was stored")
+
+    monkeypatch.setattr(revise_mod, "write_draft", boom)
+    w = ReviseWorker()
+    with pytest.raises(RuntimeError):
+        w.run(_ctx(env, ex))
+    monkeypatch.setattr(revise_mod, "write_draft", real)
+    assert [(n["round"], n["accepted"]) for n in revise_notes(ps, 1, kind="decided")] == [(1, False), (2, True)]
+    assert _done(w.run(_ctx(env, ex)))
+    assert _written(ex) == ["introduction", "introduction", "theme-1"] and len(ex.of("simreader")) == 2
+    versions = draft_versions(ps, "introduction")
+    assert [(v["stage"], v["round"]) for v in versions] == [("draft", 0), ("revise", 2)]
+    assert versions[-1]["verdict"] is not None and versions[-1]["verdict"]["ok"]
+    assert added in draft_text(ps, "introduction", 2)
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+def test_kept_verdict_needs_the_same_rendered_sentence(env):
+    _, ps, _ = env
+    definition = "[42]: https://example.org/trials\n"
+
+    def with_reference(inputs):
+        md = writes()(inputs)["markdown"]
+        if inputs["section"]["id"] != "introduction":
+            return {"markdown": md}
+        c = next(c for c in inputs["claims"] if c["role"] == "main")
+        linked = f"{c['text'].rstrip('.')} in [the trials][42] [[clm:{c['claim_id']}]]."
+        return {"markdown": md.rstrip("\n") + " " + linked + "\n\n" + definition}
+
+    _drafted(env, writer=with_reference)
+    main = main_claim(ps, 1)
+    save_settings(load_settings().model_copy(update={"revise_max_rounds": 1}))
+    # the Writer deletes only the reference definition: the sentence's source is unchanged, but it now renders
+    # "[the trials][42]", whose 42 no marker target contains
+    ex = _exec([ask(("introduction", 1))], [revision(drop=definition)])
+    w = ReviseWorker()
+    assert _done(w.run(_ctx(env, ex)))
+    (decided,) = revise_notes(ps, 1, kind="decided")
+    linked = parse_section(draft_text(ps, "introduction", 1))[-1]
+    assert main in linked.text and "the trials" in linked.text
+    assert not decided["accepted"] and linked.index in decided["reverified"]
+    assert any("the number 42 is not in any marker's target" in r for r in decided["reasons"]), decided["reasons"]
+    assert len(draft_versions(ps, "introduction")) == 1
+
+
+def test_revision_dropping_the_main_claim_or_citing_another_attempts_artifact_is_rejected(env):
+    _, ps, _ = env
+    _drafted(env, writer=_placed)
+    main = main_claim(ps, 1)
+    sid = add_artifact(ps, ArtifactIn(kind="stt", code_path="rk.test:x", code_version="v", input_hashes=[],
+                                      values={"display": {"estimate": 0.5}}, output_path=None),
+                       stage="synthesize", attempt=2, actor="k")
+    save_settings(load_settings().model_copy(update={"revise_max_rounds": 1}))
+    ex = _exec([ask(("introduction", 1), ("theme-1", 1))],
+               [revision(drop=_main_sentence(ps, main)),
+                revision(add=f"Another pooled analysis was made [[stat:{sid}]].")])
+    w = ReviseWorker()
+    assert _done(w.run(_ctx(env, ex)))
+    intro, theme = revise_notes(ps, 1, kind="decided")
+    assert not intro["accepted"] and any(f"the main claim {main} is cited in no section" in r
+                                         for r in intro["reasons"]), intro["reasons"]
+    assert not theme["accepted"] and any(f"[[stat:{sid}]] is not an artifact of synthesize's passed attempt" in r
+                                         for r in theme["reasons"]), theme["reasons"]
+    assert all(len(draft_versions(ps, sec)) == 1 for sec in REVISABLE)
+
+
+def test_p1_degrade_deletes_questioned_and_failing_sentences(env):
+    _, ps, _ = env
+    _ready(env)
+    main = main_claim(ps, 1)
+    (reason,) = [c for c in argument_claims(ps, 1) if c != main]
+
+    def with_reason(inputs):
+        if inputs["section"]["id"] != "conclusion":
+            return writes()(inputs)
+        r = next(c for c in inputs["claims"] if c["claim_id"] == reason)
+        return writes(extra=_sentence(r))(inputs)
+
+    _drafted(env, writer=with_reason)
+    save_settings(load_settings().model_copy(update={"revise_max_rounds": 1}))
+    questioned = parse_section(draft_text(ps, "introduction", 1))[1].text
+    w = ReviseWorker()
+    ex = _exec([ask(("introduction", 1, 1))], [revision(how="declined", note="out of scope")])
+    assert _done(w.run(_ctx(env, ex)))
+    _p1_objection(ps, reason)  # the conclusion's sentence citing the reason cannot verify any more
+    failures = w.gate(ps, 1).failures
+    assert any("declined" in f for f in failures) and any(f.startswith("section conclusion v1") for f in failures)
+    assert _done(w.degrade(_ctx(env, _exec([], [])), failures))
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    (q,) = revise_notes(ps, 1, kind="questions")[0]["questions"]
+    for sec, gone in (("introduction", questioned), ("conclusion", _main_sentence(ps, reason))):
+        v = draft_versions(ps, sec)[-1]
+        assert (v["stage"], v["round"], v["by_task"]) == ("revise", 0, None) and v["verdict"]["ok"]
+        assert gone not in draft_text(ps, sec, v["version"])
+    (deg,) = _degraded(ps)
+    assert deg["stage"] == "revise" and deg["questions"] == [q["id"]]
+    assert any(questioned in r for r in deg["removed"]) and any(reason in r for r in deg["removed"])
+    assert all(len(draft_versions(ps, sec)) == 1 for sec in ("theme-1", "gaps-agenda"))
+
+
+def test_p1_degrade_fails_on_a_section_level_question_of_a_required_section(env):
+    _, ps, _ = env
+    _drafted(env)
+    save_settings(load_settings().model_copy(update={"revise_max_rounds": 1}))
+    w = ReviseWorker()
+    ex = _exec([ask(("theme-1", 1, None))], [revision(how="declined", note="out of scope")])
+    assert _done(w.run(_ctx(env, ex)))
+    (q,) = revise_notes(ps, 1, kind="questions")[0]["questions"]
+    out = w.degrade(_ctx(env, _exec([], [])), w.gate(ps, 1).failures)
+    assert out.status == "failed" and q["id"] in out.reason and "theme-1" in out.reason and "required" in out.reason
+    assert all(len(draft_versions(ps, sec)) == 1 for sec in REVISABLE) and not _degraded(ps)
+    assert not w.gate(ps, 1).ok
+
+
+def test_p1_degrade_fails_when_a_deletion_would_break_coverage(env):
+    _, ps, _ = env
+    _drafted(env, writer=_placed)
+    main = main_claim(ps, 1)
+    save_settings(load_settings().model_copy(update={"revise_max_rounds": 1}))
+    w = ReviseWorker()
+    ex = _exec([ask(("introduction", 1, 0))], [revision(how="declined", note="out of scope")])
+    assert _done(w.run(_ctx(env, ex)))
+    out = w.degrade(_ctx(env, _exec([], [])), w.gate(ps, 1).failures)
+    assert out.status == "failed" and f"the main claim {main} is cited in no section" in out.reason
+    assert len(draft_versions(ps, "introduction")) == 1 and not _degraded(ps)
+
+
+def test_p1_degrade_fails_when_a_deletion_would_empty_a_section(env):
+    _, ps, _ = env
+    _drafted(env)
+    save_settings(load_settings().model_copy(update={"revise_max_rounds": 1}))
+    w = ReviseWorker()
+    n = len(parse_section(draft_text(ps, "gaps-agenda", 1)))
+    ex = _exec([ask(*[("gaps-agenda", 1, i) for i in range(n)])], [revision(how="declined", note="no")])
+    assert _done(w.run(_ctx(env, ex)))
+    out = w.degrade(_ctx(env, _exec([], [])), w.gate(ps, 1).failures)
+    assert out.status == "failed" and "gaps-agenda" in out.reason and "empty" in out.reason
+    assert len(draft_versions(ps, "gaps-agenda")) == 1 and not _degraded(ps)
+
+
+def test_new_attempt_carries_unresolved_priority1_questions(env):
+    _, ps, _ = env
+    _drafted(env)
+    main = main_claim(ps, 1)
+    save_settings(load_settings().model_copy(update={"revise_max_rounds": 1}))
+    w = ReviseWorker()
+    assert _done(w.run(_ctx(env, _exec([ask(("introduction", 1), ("theme-1", 2))],
+                                       [revision(how="declined", note="out of scope")] * 2))))
+    (asked,) = [q for q in revise_notes(ps, 1, kind="questions")[0]["questions"] if q["priority"] == 1]
+    assert not w.gate(ps, 1).ok
+    ex = _exec([ask()], [revision(add=_restated(ps, main))])
+    assert _done(w.run(_ctx(env, ex, attempt=2)))
+    carried = revise_notes(ps, 2, kind="questions")[0]
+    assert carried["round"] == 0 and [q["id"] for q in carried["questions"]] == [asked["id"]]  # not the priority 2
+    (q,) = ex.of("writer", "Revision")[0]["inputs"]["revise"]["questions"]
+    assert q["id"] == asked["id"] and q["earlier_answer"]["how"] == "declined"
+    assert [e["id"] for e in ex.of("simreader")[0]["inputs"]["earlier_questions"]] == [asked["id"]]
+    assert w.gate(ps, 2).ok, w.gate(ps, 2).failures
+
+
+def test_rounds_stop_when_the_budget_cannot_cover_a_round(env):
+    _, ps, _ = env
+    _drafted(env)
+    main = main_claim(ps, 1)
+    w = ReviseWorker()
+    w.budget = 6  # a round needs 1 + 4 revisable sections; after round 1 (2 tasks) 4 are left
+    ex = _exec([ask(("introduction", 1))] * 3, [revision(add=_restated(ps, main))] * 3)
+    assert _done(w.run(_ctx(env, ex)))
+    assert len(ex.of("simreader")) == 1 and _written(ex) == ["introduction"]
+    (note,) = revise_notes(ps, 1, kind="budget")
+    assert (note["round"], note["used"], note["needed"], note["budget"]) == (2, 2, 5, 6)
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures

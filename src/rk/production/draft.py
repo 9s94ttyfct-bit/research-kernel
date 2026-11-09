@@ -35,12 +35,14 @@ again, an unverified version is verified (no Writer task), the retries already s
 noted is returned again. A new attempt drafts every section afresh.
 
 The gate reads every required section's latest text (a missing, unreadable or altered file is a failure naming the
-section and version): each was written in the attempt and verified ok, and passes V-BALANCE now (an objection answered
-since counts); every cited ``fig`` and ``stat`` is an artifact of synthesize's passed attempt; the main claim and every
-supported synthesis claim are cited in some section. A failing gate reruns the stage (``draft->draft``) with the
-failures as guidance. P1 at an edge limit deletes the failing sentences and those citing another attempt's artifact
-(spec §5.3 delete-or-narrow; ``stage.degraded``); it fails naming a section that would be left empty, or naming the
-failures when there is no such sentence to delete; the engine gates again.
+section and version): each was written in the attempt and verified ok, and verifies now too (``section_verdict``: a
+claim withdrawn, an objection answered or a conflict decided since counts); and the manuscript as a whole
+(``manuscript_problems``, which revise checks too): every cited ``fig`` and ``stat`` is an artifact of synthesize's
+passed attempt, the main claim and every supported synthesis claim are cited in some section. A failing gate reruns the
+stage (``draft->draft``) with the failures as guidance. P1 at an edge limit deletes the failing sentences and those
+citing another attempt's artifact (spec §5.3 delete-or-narrow; ``deletable``, ``delete_sentences``;
+``stage.degraded``); it fails naming a section that would be left empty, or naming the failures when there is no such
+sentence to delete; the engine gates again.
 No checkpoint in either mode."""
 
 from __future__ import annotations
@@ -61,6 +63,7 @@ from rk.production.artifacts import artifacts
 from rk.production.common import RoleOut
 from rk.production.design import approved_design, design_limitations
 from rk.production.manuscript import (
+    Sentence,
     draft_text,
     draft_versions,
     parse_section,
@@ -82,6 +85,7 @@ from rk.verify.balance import argued, balance_requirements, check_balance
 from rk.verify.cover import (
     EVENT_NUMBERS,
     SectionVerdict,
+    SentenceVerdict,
     reported_values,
     verify_section,
 )
@@ -239,6 +243,62 @@ def version_failures(markdown: str, verdict: dict) -> list[str]:
     return out
 
 
+def section_verdict(ps: ProjectStore, section: str, markdown: str, *, paper_type: str,
+                    known: dict[int, SentenceVerdict] | None = None, version: int | None = None) -> SectionVerdict:
+    """The section's verdict as draft and revise record it: every sentence (``verify_section``; ``known``: the verdicts
+    a caller keeps, see ``rk.verify.cover``) and V-BALANCE (``check_balance``), whose problems are section-level
+    ones."""
+    verdict = verify_section(ps, section, markdown, paper_type=paper_type, version=version, known=known)
+    if problems := check_balance(ps, section, parse_section(markdown)):
+        verdict = verdict.model_copy(update={"ok": False, "problems": [*verdict.problems, *problems]})
+    return verdict
+
+
+def latest_version(ps: ProjectStore, section: str) -> tuple[dict, str] | str:
+    """The section's latest version (its ``drafts`` row) and its markdown, else the failure naming why not: ``section S
+    has no draft`` or ``section S vN: <why its file cannot be read>``."""
+    versions = draft_versions(ps, section)
+    if not versions:
+        return f"section {section} has no draft"
+    last = versions[-1]
+    try:
+        return last, draft_text(ps, section, last["version"])
+    except (KeyError, ValueError) as e:
+        return f"section {section} v{last['version']}: {e}"
+
+
+def manuscript_problems(ps: ProjectStore, s: DraftInputs, texts: dict[str, str]) -> list[str]:
+    """What the manuscript ``texts`` (section id -> markdown) must give as a whole: every cited ``fig`` and ``stat`` is
+    an artifact of synthesize's passed attempt; the main claim (unless withdrawn) and every supported synthesis finding
+    are cited in some section."""
+    cited = [(sec, m.kind, m.target) for sec, md in texts.items() for m in source_markers(md) if m.target]
+    out = [f"section {sec}: [[{kind}:{t}]] is not an artifact of synthesize's passed attempt"
+           for sec, kind, t in cited if kind in ("fig", "stat") and t not in s.artifact_ids]
+    claims = {t for _, kind, t in cited if kind == "clm"}
+    svc = ArgumentService(ps)
+    if s.main and svc.get_claim(s.main)["status"] != "withdrawn" and s.main not in claims:
+        out.append(f"the main claim {s.main} is cited in no section")
+    out += [f"the supported finding {c} is cited in no section" for c in s.findings
+            if c not in claims and svc.get_claim(c)["status"] == "supported"]
+    return out
+
+
+def deletable(s: DraftInputs, sentences: list[Sentence], verdict: SectionVerdict | dict) -> set[int]:
+    """The sentences P1 deletes at an edge limit (spec §5.3): those that fail the verdict and those citing a ``fig`` or
+    ``stat`` that is no artifact of synthesize's passed attempt."""
+    v = SectionVerdict.model_validate(verdict)
+    return {x.index for x in v.sentences if not x.ok} | {
+        x.index for x in sentences
+        if any(m.kind in ("fig", "stat") and m.target and m.target not in s.artifact_ids for m in x.markers)}
+
+
+def delete_sentences(markdown: str, dropped: list[Sentence]) -> str:
+    """``markdown`` without the ``dropped`` sentences (their source spans, with the spaces after them)."""
+    for x in sorted(dropped, key=lambda x: x.span[0], reverse=True):
+        markdown = markdown[:x.span[0]] + markdown[x.span[1]:].lstrip(" ")
+    return markdown
+
+
 def _quotable(note: dict) -> bool:
     """Whether a note may be quoted (V-QUOTE): a quote note whose quote was verified."""
     return note["kind"] == "quote" and bool(((note.get("verified") or {}).get("quote") or {}).get("ok"))
@@ -372,12 +432,11 @@ class DraftWorker:
         verify."""
         ps = ctx.ps
         md = draft_text(ps, section, version)
-        verdict = verify_section(ps, section, md, paper_type=s.paper_type, version=version)
+        verdict = section_verdict(ps, section, md, paper_type=s.paper_type, version=version)
         by_task = next(v["by_task"] for v in draft_versions(ps, section) if v["version"] == version)
-        problems = [*check_balance(ps, section, parse_section(md)),
-                    *(p for n in draft_notes(ps, ctx.attempt, kind="refused")
-                      if by_task is not None and (n["section"], n.get("task")) == (section, by_task)
-                      for p in n["problems"])]
+        problems = [p for n in draft_notes(ps, ctx.attempt, kind="refused")
+                    if by_task is not None and (n["section"], n.get("task")) == (section, by_task)
+                    for p in n["problems"]]
         if problems:
             verdict = verdict.model_copy(update={"ok": False, "problems": [*verdict.problems, *problems]})
         record_section_verdict(ps, section, version, verdict, actor=ctx.actor)
@@ -427,35 +486,26 @@ class DraftWorker:
         if isinstance(s, str):
             return GateResult(False, [s])
         failures: list[str] = []
-        cited: list[tuple[str, str, str]] = []
+        texts: dict[str, str] = {}
         for spec in s.sections:
             versions = draft_versions(ps, spec.id)
             if not versions or (versions[-1]["stage"], versions[-1]["attempt"]) != (STAGE, attempt):
                 failures.append(f"section {spec.id} has no draft from this attempt")
                 continue
-            last = versions[-1]
-            tag = f"section {spec.id} v{last['version']}"
-            try:
-                md = draft_text(ps, spec.id, last["version"])
-            except (KeyError, ValueError) as e:
-                failures.append(f"{tag}: {e}")
+            got = latest_version(ps, spec.id)
+            if isinstance(got, str):
+                failures.append(got)
                 continue
-            cited += [(spec.id, m.kind, m.target) for m in source_markers(md) if m.target]
+            last, md = got
+            texts[spec.id] = md
+            tag = f"section {spec.id} v{last['version']}"
+            recorded = version_failures(md, last["verdict"]) if last["verdict"] else []
             if last["verdict"] is None:
                 failures.append(f"{tag} was not verified")
-            elif not last["verdict"]["ok"]:
-                failures += [f"{tag}: {f}" for f in version_failures(md, last["verdict"])]
-            # V-BALANCE now: an objection answered or a conflict decided since the version was verified counts too
-            recorded = set(last["verdict"]["problems"]) if last["verdict"] else set()
-            failures += [f"{tag}: {p}" for p in check_balance(ps, spec.id, parse_section(md)) if p not in recorded]
-        failures += [f"section {sec}: [[{kind}:{t}]] is not an artifact of synthesize's passed attempt"
-                     for sec, kind, t in cited if kind in ("fig", "stat") and t not in s.artifact_ids]
-        claims = {t for _, kind, t in cited if kind == "clm"}
-        svc = ArgumentService(ps)
-        if s.main and svc.get_claim(s.main)["status"] != "withdrawn" and s.main not in claims:
-            failures.append(f"the main claim {s.main} is cited in no section")
-        failures += [f"the supported finding {c} is cited in no section" for c in s.findings
-                     if c not in claims and svc.get_claim(c)["status"] == "supported"]
+            # verified now too: a claim withdrawn, an objection answered or a conflict decided since counts
+            now = version_failures(md, section_verdict(ps, spec.id, md, paper_type=s.paper_type))
+            failures += [f"{tag}: {f}" for f in dict.fromkeys([*recorded, *now])]
+        failures += manuscript_problems(ps, s, texts)
         return GateResult(not failures, failures)
 
     def degrade(self, ctx: StageContext, failures: list[str]) -> StageOutcome:
@@ -487,9 +537,7 @@ class DraftWorker:
             except (KeyError, ValueError) as e:
                 return StageOutcome("failed", reason=f"cannot degrade section {spec.id} v{last['version']}: {e}")
             sentences = parse_section(md)
-            drop = {v["index"] for v in last["verdict"]["sentences"] if not v["ok"]}
-            drop |= {x.index for x in sentences if any(m.kind in ("fig", "stat") and m.target
-                                                       and m.target not in s.artifact_ids for m in x.markers)}
+            drop = deletable(s, sentences, last["verdict"])
             if not drop:
                 continue
             if {x.index for x in sentences} <= drop:
@@ -511,9 +559,8 @@ class DraftWorker:
                 + ("; ".join(failures) or "no failures given")))
         removed: list[str] = []
         for section, md, dropped in plans:
-            for x in sorted(dropped, key=lambda x: x.span[0], reverse=True):
-                md = md[:x.span[0]] + md[x.span[1]:].lstrip(" ")
-                removed.append(f"{section}: “{x.text.strip()}”")
+            md = delete_sentences(md, dropped)
+            removed += [f"{section}: “{x.text.strip()}”" for x in sorted(dropped, key=lambda x: x.span[0])]
             v = write_draft(ps, section, md, stage=STAGE, attempt=ctx.attempt, round=0, by_task=None, actor=ctx.actor)
             self._verify(ctx, s, section, v)
         record_degraded(ps, stage=STAGE, attempt=ctx.attempt, removed=removed,
