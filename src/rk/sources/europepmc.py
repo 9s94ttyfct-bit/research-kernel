@@ -70,11 +70,11 @@ def search(http: HttpClient, query: str, *, open_access_only: bool = False, page
     return [result_to_item(r) for r in rows]
 
 
-def count(http: HttpClient, query: str) -> int | None:
-    """How many records match ``query`` (``hitCount`` of a one-result id list); ``None`` when the response gives
-    none."""
-    data, _ = http.get_json(f"{BASE}/search", {"query": query, "format": "json", "resultType": "idlist",
-                                               "pageSize": 1})
+def count(http: HttpClient, query: str, *, date_from: int | None = None, date_to: int | None = None) -> int | None:
+    """How many records match ``query`` (``hitCount`` of a one-result id list), published in the years
+    ``date_from``..``date_to`` (inclusive, either end open) when given; ``None`` when the response gives none."""
+    data, _ = http.get_json(f"{BASE}/search", {"query": _query(query, False, date_from, date_to), "format": "json",
+                                               "resultType": "idlist", "pageSize": 1})
     n = (data or {}).get("hitCount")
     return int(n) if isinstance(n, int | str) and str(n).isdigit() else None
 

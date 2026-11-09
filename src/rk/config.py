@@ -48,6 +48,10 @@ class Settings(BaseModel):
     # ---- V-STATS (spec §9.1): {"version": rk.stats.STATS_VERSION, "report": path}, written by a passing
     # ``rk eval stats --write-config``; meta-analysis is off unless its version is the current one ----
     stats_validated: dict | None = None
+    # ---- protocol (Plan 5c Task 9 fix): drafts per attempt (a draft failing the structural checks is asked again in
+    # the attempt) and the Scout's tries to bring the record-cap probe under the cap, within one attempt ----
+    protocol_tries: int = Field(3, ge=1)
+    protocol_narrow_tries: int = Field(3, ge=0)
     # ---- built-in browser (spec §8.5) and library access ----
     browser_enabled: bool = True
     browser_headless: bool = False  # RK_BROWSER_HEADLESS=1 overrides (tests, agent smoke runs)

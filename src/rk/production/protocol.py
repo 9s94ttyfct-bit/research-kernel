@@ -2,24 +2,45 @@
 systematic review, the PRISMA-P items) for the frozen RQ, the Scout its search strategy; the kernel builds the
 ``Protocol`` (the question is the frozen RQ's), stores it as the next version, checks it (``check_strategy``,
 ``check_protocol``), sizes the strategy (the record-cap probe: ``sources.count`` per query on each counted source of
-the strategy, summed and stored as ``protocol.probed``) and then:
+the strategy within its publication years, summed and stored as ``protocol.probed``) and then:
 
 - P2 (``collab``) opens ``protocol_approval`` (hard human; every section rendered, ``options.protocol_id`` and
   ``options.version`` name the protocol);
 - P1 (``auto``) asks the two-vendor ``vote`` (``conservative="revise"``, ``generator_vendors`` = the Ideator's and the
   Scout's): ``approve`` freezes the protocol, ``revise`` reruns with the judges' reasons as guidance.
 
-The probe is advisory: it is shown to you and to the judges but fails nothing. Each count runs inside the per-item
-boundary (a source error or an exhausted source API budget leaves that count ``None`` with its ``error``), so the probe
-never fails or interrupts the stage. It overestimates (no date range, duplicates across queries and sources count
-again) and leaves out the sources without a count; the record cap is enforced by ``search_screen`` on the deduplicated
-records.
+Tries inside the attempt (Plan 5c Task 9 fix: in P1 every rerun spends a ``protocol->protocol`` edge use, and nothing
+else could narrow a search):
 
-A rerun after an unfrozen draft (a revision asked by you or by the vote, a failed check) gives both roles that draft as
-``previous_draft`` (its body and probe) to change as the guidance asks, but only a draft of the current frozen RQ that no
-back-edge left behind (``protocol->question`` reopens the stage without one); a rerun after a freeze gives them the
-version in force as ``frozen_protocol`` when it answers the current frozen RQ (after ``protocol->question`` and a new
-RQ it does not, and they draft afresh).
+1. **Structural failures.** A version that fails the checks is drafted again in the attempt, up to
+   ``Settings.protocol_tries`` versions: the role whose part failed (the Ideator for the draft, the Scout for the
+   strategy, both when both failed) gets that version as ``previous_draft`` and its failures as guidance; the other
+   part is kept. Only when the tries run out does the stage rerun, with the last version's failures as its reason.
+2. **Narrowing.** When the probe of the sound version is above the project's record cap, the Scout is asked again in
+   the attempt, up to ``Settings.protocol_narrow_tries`` times, for a narrower strategy (``narrowing``: the cap, the
+   per-query and per-source counts of the best strategy so far, the failed tries). Each answer is a version (the
+   draft kept, the strategy replaced), probed in turn. An answer that does not lower the total below the best so far
+   (a repeated strategy, which takes the earlier probe and is not counted again, one that fails the checks or has no
+   count, or a higher total) is a failed try. Narrowing stops when the best total is within the cap or the tries run
+   out; the best version (the lowest total) then goes to your approval or the vote, its probe shown.
+
+Every try is a version (append-only), recorded with how it was drafted (``protocol.added`` ``tried``: its kind, the
+vendors of its Ideator and Scout, its failures). An interrupted attempt runs again in place (``resumes_in_place``): it
+goes on from the attempt's versions and probes, asks nothing it already has, takes the vote already recorded and the
+approval already opened.
+
+The probe is advisory: it is shown to you and to the judges, with the cap, as an upper bound, but fails nothing. Each
+count runs inside the per-item boundary (a source error or an exhausted source API budget leaves that count ``None``
+with its ``error``), so the probe never fails or interrupts the stage. It is an upper bound (duplicates across queries
+and sources count again) and leaves out the sources without a count; the record cap is enforced by ``search_screen``
+on the deduplicated records.
+
+A rerun after an unfrozen draft (a revision asked by you or by the vote, failed checks) gives both roles the version
+the earlier attempt offered (the best of its narrowing), else its last version, as ``previous_draft`` (its body and
+probe) to change as the guidance asks, but only a draft of the current frozen RQ that no back-edge left behind
+(``protocol->question`` reopens the stage without one); a rerun after a freeze gives them the version in force as
+``frozen_protocol`` when it answers the current frozen RQ (after ``protocol->question`` and a new RQ it does not, and
+they draft afresh).
 
 Answers to ``protocol_approval``:
 - ``{"decision": "approve"}`` freezes the protocol; ``"record_cap": N`` (a whole number >= 1) sets the project's
@@ -36,8 +57,8 @@ back-edge reopened ``protocol``), as after a ``search_screen->protocol`` back-ed
 G-PREREG input; only the systematic and scoping reviews count the freeze as preregistration
 (``counts_as_preregistration``), the others freeze for traceability only.
 
-Budget per attempt (protocol is an open stage, 40 role tasks per run session): 1 ideator + 1 scout task, plus 2 judge
-tasks in P1 (4).
+Budget per attempt (protocol is an open stage, 40 role tasks per run session): at most ``protocol_tries`` ideator and
+scout tasks each, plus ``protocol_narrow_tries`` scout tasks, plus 2 judge tasks in P1 (11 with the defaults 3 and 3).
 
 Gate: a frozen protocol in the latest attempt that passes ``check_protocol`` and has a deviation from the frozen
 version before it, if any. A P1 degrade fails: P1 never freezes a protocol the vote did not approve."""
@@ -49,7 +70,13 @@ from typing import get_args
 
 from pydantic import BaseModel
 
-from rk.checkpoints import answered_by_actor, create_checkpoint, opened_in_place_of
+from rk.checkpoints import (
+    answered_by_actor,
+    create_checkpoint,
+    opened_for_attempt,
+    opened_in_place_of,
+)
+from rk.config import load_settings
 from rk.discovery.boundary import error_text, per_item
 from rk.discovery.models import PaperType, RQBody
 from rk.discovery.sources import COUNTED_SOURCES
@@ -111,8 +138,19 @@ STRATEGY_TASK = (
     "Write the search strategy for the protocol: at least 3 English search queries that together cover the research "
     "question and the eligibility criteria, at least 2 sources taken from `available_sources` exactly as given, and "
     "the publication-year range (date_from, date_to; null for an open end). When a previous draft is given (with the "
-    "record counts of its queries), revise its strategy: change only what the guidance asks for. The kernel runs the "
-    "searches; do not search yourself. Follow the guidance when there is any.")
+    "record counts of its queries), revise its strategy: change only what the guidance asks for. When `narrowing` is "
+    "given, the record-cap probe of the previous draft's strategy (`total`: the record counts of each query on each "
+    "counted source within its years, summed, an upper bound since duplicates count again) is above `record_cap`: "
+    "return a narrower strategy with fewer records. Drop or tighten the broadest queries (`counts` shows which), "
+    "for example with quoted phrases and AND between the concepts every record needs; restrict fields (title or "
+    "abstract) only in a syntax every chosen source reads; keep every eligibility criterion covered. A strategy that "
+    "repeats one already tried or does not lower the total below the best so far is a failed try (`failed_tries` "
+    "lists them). The kernel runs the searches; do not search yourself. Follow the guidance when there is any.")
+# what the judges are told the probe is
+PROBE_NOTE = ("advisory, an upper bound: the record counts of each query on each counted source within the strategy's "
+              "publication years, summed, so duplicates across queries and sources count again; search_screen "
+              "enforces the record cap on the deduplicated records")
+DRAFT_KEYS = ("eligibility", "extraction_schema", "synthesis_plan", "prisma_p")  # the Ideator's part of a protocol
 VOTE_QUESTION = (
     "Is this review protocol complete and fit to freeze for the research question: its eligibility criteria, search "
     "strategy, extraction schema, synthesis plan and, for a systematic review, the PRISMA-P items? Answer approve to "
@@ -233,24 +271,28 @@ def counts_as_preregistration(paper_type: str) -> bool:
 
 
 # ---- the record-cap probe (advisory) ----
-def _count(ctx: StageContext, query: str, source: str) -> dict:
-    """One count of the probe through the per-item boundary: a source error, or an exhausted source API budget, gives
-    ``count: None`` and the ``error`` (the probe is advisory: it never fails or interrupts the stage)."""
+def _count(ctx: StageContext, query: str, source: str, strategy: SearchStrategy) -> dict:
+    """One count of the probe, within the strategy's publication years, through the per-item boundary: a source
+    error, or an exhausted source API budget, gives ``count: None`` and the ``error`` (the probe is advisory: it never
+    fails or interrupts the stage)."""
     what = f"record count of {query!r} on {source}"
     try:
-        n, err = per_item(what, lambda: ctx.sources.count(query, source))
+        n, err = per_item(what, lambda: ctx.sources.count(query, source, date_from=strategy.date_from,
+                                                          date_to=strategy.date_to))
     except BudgetExhausted as e:
         n, err = None, f"{what} failed ({error_text(e)})"
     return {"query": query, "source": source, "count": n} | ({"error": err} if err else {})
 
 
 def _probe(ctx: StageContext, strategy: SearchStrategy) -> dict:
-    """``sources.count`` of every query on every counted source of the strategy (``_count``), and the sum of the
-    counts given (duplicates across queries and sources count again). A source that gave no count keeps ``count:
-    None`` (and its ``error`` when the count failed); the strategy's sources without a count at all are listed as
-    ``uncounted``. ``total`` is ``None`` when nothing was counted."""
+    """``sources.count`` of every query on every counted source of the strategy within its publication years
+    (``_count``), and the sum of the counts given: an upper bound, since duplicates across queries and sources count
+    again. A source that gave no count keeps ``count: None`` (and its ``error`` when the count failed); the
+    strategy's sources without a count at all are listed as ``uncounted``. ``total`` is ``None`` when nothing was
+    counted."""
     sources = _unique(strategy.sources)
-    counts = [_count(ctx, q, s) for q in _unique(strategy.queries) for s in sources if s in COUNTED_SOURCES]
+    counts = [_count(ctx, q, s, strategy) for q in _unique(strategy.queries) for s in sources
+              if s in COUNTED_SOURCES]
     given = [c["count"] for c in counts if c["count"] is not None]
     return {"counts": counts, "uncounted": [s for s in sources if s not in COUNTED_SOURCES],
             "total": sum(given) if given else None}
@@ -414,8 +456,8 @@ def probe_lines(probe: dict | None, cap: int) -> list[str]:
     if probe["total"] is None:
         lines = [f"Record-cap probe (advisory): not counted (no source gave a record count; {per})."]
     else:
-        lines = [(f"Record-cap probe (advisory): {probe['total']} records (summed per query and counted source, so "
-                  f"duplicates count again, with no date range; {per}).")]
+        lines = [(f"Record-cap probe (advisory): {probe['total']} records (an upper bound: summed per query and "
+                  f"counted source within the publication years, so duplicates count again; {per}).")]
     if probe["uncounted"]:
         lines.append(f"Not counted (no record count): {', '.join(probe['uncounted'])}.")
     if probe["total"] is not None and probe["total"] > cap:
@@ -481,15 +523,90 @@ def _topic(ps: ProjectStore, topic_id: str) -> dict | None:
     return {"title": t["title"], "summary": t["summary"], "data_needed": t["data_needed"], "risks": t["risks"]}
 
 
-def _previous_draft(ps: ProjectStore, question: str) -> dict | None:
-    """The draft this attempt revises, with its probe: the latest protocol when it is an unfrozen draft of the current
-    research question (``question``, the frozen RQ's sentence) and ``protocol`` was not reopened since by an edge
-    from another stage (a back-edge to question). ``None`` otherwise: a frozen latest protocol, a draft of another
-    question, or one an edge left behind."""
-    rows = query_rows(ps, "SELECT * FROM protocols ORDER BY rowid DESC LIMIT 1", (), ("body",))
+# ---- the attempt's tries ----
+def _tries(ps: ProjectStore, attempt: int) -> list[dict]:
+    """The attempt's tries in order: each version the stage drafted in the attempt (``id``, ``version``, ``body``)
+    with how (``protocol.added`` ``tried``): ``kind`` (``"draft"``: the Ideator's draft and a strategy; ``"narrow"``:
+    the Scout's narrowing of the best strategy so far), ``vendors`` (``ideator``, ``scout``: those of its body's
+    parts) and ``failures`` (its structural ones, ``strategy`` and ``draft``). A version you added (a raised record
+    cap) is no try."""
+    rows = ps.db.execute("SELECT entity_id, payload FROM events WHERE type='protocol.added' AND "
+                         "json_extract(payload, '$.attempt')=? AND json_extract(payload, '$.tried') IS NOT NULL "
+                         "ORDER BY seq", (attempt,)).fetchall()
+    out = []
+    for r in rows:
+        p = json.loads(r["payload"])
+        out.append({"id": r["entity_id"], "version": p["version"], "body": p["body"], **p["tried"]})
+    return out
+
+
+def _failures(body: Protocol, paper_type: str, available: list[str]) -> dict[str, list[str]]:
+    """The structural failures of the protocol by the role that answers for them: ``strategy``, the Scout's
+    (``check_strategy`` and the search-strategy items of ``check_protocol``), and ``draft``, the Ideator's (the rest
+    of ``check_protocol``)."""
+    found = check_protocol(body, paper_type)
+    return {"strategy": check_strategy(body.search_strategy, available)
+            + [f for f in found if f.startswith("search_strategy")],
+            "draft": [f for f in found if not f.startswith("search_strategy")]}
+
+
+def _failed(tried: dict) -> list[str]:
+    return tried["failures"]["strategy"] + tried["failures"]["draft"]
+
+
+def _last_draft(tries: list[dict]) -> int | None:
+    """The index of the attempt's last draft try (the narrowing tries come after it), else ``None``."""
+    return max((i for i, t in enumerate(tries) if t["kind"] == "draft"), default=None)
+
+
+def _narrowed(ps: ProjectStore, chain: list[dict]) -> tuple[dict, list[dict]]:
+    """The best version of a sound draft try and its narrowing tries (``chain``, the draft try first), with its
+    ``probe``: the latest try that lowered the probe total below every version before it. And the failed narrowing
+    tries, each ``{version, total, why}``: a repeated strategy, one that fails the checks or has no count, or a total
+    not below the best so far."""
+    best = {**chain[0], "probe": probe_of(ps, chain[0]["id"])}
+    failed = []
+    for i, t in enumerate(chain[1:], 1):
+        probe = probe_of(ps, t["id"])
+        total = probe["total"] if probe else None
+        low = best["probe"]["total"] if best["probe"] else None
+        same = next((e for e in chain[:i] if e["body"]["search_strategy"] == t["body"]["search_strategy"]), None)
+        if same is not None:
+            why = f"the same strategy as version {same['version']}"
+        elif _failed(t):
+            why = "it fails the checks: " + "; ".join(_failed(t))
+        elif total is None:
+            why = "no source gave a record count"
+        elif low is not None and total >= low:
+            why = f"{total} records, not fewer than the {low} of version {best['version']}"
+        else:
+            best = {**t, "probe": probe}
+            continue
+        failed.append({"version": t["version"], "total": total, "why": why})
+    return best, failed
+
+
+def _offered(ps: ProjectStore, attempt: int) -> dict | None:
+    """The version the attempt offered for approval (to you or the vote): the best of its narrowing (``_narrowed``)
+    when its last draft try passed the checks; ``None`` when there is none (its tries failed, or no try was
+    recorded)."""
+    tries = _tries(ps, attempt)
+    last = _last_draft(tries)
+    if last is None or _failed(tries[last]):
+        return None
+    return _narrowed(ps, tries[last:])[0]
+
+
+def _previous_draft(ps: ProjectStore, question: str, attempt: int) -> dict | None:
+    """The draft this attempt revises, with its probe: the version the latest earlier attempt offered for approval
+    (``_offered``), else its latest version, when the latest protocol is an unfrozen draft of the current research
+    question (``question``, the frozen RQ's sentence) and ``protocol`` was not reopened since by an edge from another
+    stage (a back-edge to question). ``None`` otherwise: a frozen latest protocol, a draft of another question, or one
+    an edge left behind."""
+    rows = query_rows(ps, "SELECT * FROM protocols WHERE attempt<? ORDER BY rowid DESC LIMIT 1", (attempt,), ("body",))
     if not rows or rows[0]["status"] == "frozen" or rows[0]["body"]["question"] != question:
         return None
-    row = rows[0]
+    row = _offered(ps, rows[0]["attempt"]) or rows[0]
     added = ps.db.execute("SELECT MIN(seq) FROM events WHERE type='protocol.added' AND entity_id=?",
                           (row["id"],)).fetchone()[0]
     left_behind = ps.db.execute(
@@ -500,6 +617,15 @@ def _previous_draft(ps: ProjectStore, question: str) -> dict | None:
     return {"version": row["version"], "body": row["body"], "record_probe": probe_of(ps, row["id"])}
 
 
+def _with_guidance(guidance: str, more: str) -> str:
+    return f"{guidance}\n\n{more}" if guidance.strip() else more
+
+
+def _strategy_of(out: SearchStrategyOut) -> SearchStrategy:
+    return SearchStrategy(queries=_unique(out.queries), sources=_unique(out.sources), date_from=out.date_from,
+                          date_to=out.date_to)
+
+
 def _revise_reason(res) -> str:
     why = "; ".join(f"{o['role']} ({o['vendor']}): {o['reason']}" for o in res.opinions if o["reason"])
     head = (f"the protocol vote did not approve it ({res.reason})" if res.conservative_used
@@ -508,6 +634,11 @@ def _revise_reason(res) -> str:
 
 
 class ProtocolWorker:
+    # An interrupted attempt runs again in place (rk.orchestrator.engine): ``run`` goes on from the attempt's tries
+    # (its versions with their ``tried`` and probes), so nothing it stored is asked or counted again; the vote already
+    # recorded and the approval already opened are taken. A role task whose output was not yet stored is asked again.
+    resumes_in_place = True
+
     def run(self, ctx: StageContext) -> StageOutcome:
         ps = ctx.ps
         intake = intake_of(ps)
@@ -529,42 +660,124 @@ class ProtocolWorker:
             context["topic"] = topic
         if (prior := frozen_protocol(ps)) is not None and prior["body"]["question"] == question:
             context["frozen_protocol"] = {"version": prior["version"], "body": prior["body"]}
-        if (draft := _previous_draft(ps, question)) is not None:
+        if (draft := _previous_draft(ps, question, ctx.attempt)) is not None:
             context["previous_draft"] = draft
         if ctx.guidance:
             context["guidance"] = ctx.guidance
-        d = ctx.executor.run("ideator", DRAFT_TASK, context, ProtocolDraftOut, stage=ctx.stage, attempt=ctx.attempt,
-                             tools=[])
-        if not d.ok or d.output is None:
-            return StageOutcome("rerun", reason=f"the ideator gave no protocol draft ({d.error})")
-        s = ctx.executor.run("scout", STRATEGY_TASK,
-                             {**context, "eligibility": d.output.eligibility.model_dump(mode="json")},
-                             SearchStrategyOut, stage=ctx.stage, attempt=ctx.attempt, tools=[])
-        if not s.ok or s.output is None:
-            return StageOutcome("rerun", reason=f"the scout gave no search strategy ({s.error})")
-        strategy = SearchStrategy(queries=_unique(s.output.queries), sources=_unique(s.output.sources),
-                                  date_from=s.output.date_from, date_to=s.output.date_to)
-        body = Protocol(question=question, search_strategy=strategy, eligibility=d.output.eligibility,
-                        extraction_schema=d.output.extraction_schema, synthesis_plan=d.output.synthesis_plan,
-                        prisma_p=d.output.prisma_p or None, record_cap=_current_cap(ps))
-        pid = add_protocol(ps, ctx.attempt, body, version=_next_version(ps), actor=ctx.actor)
-        failures = check_strategy(strategy, ctx.sources.sources()) + check_protocol(body, intake.paper_type)
-        if failures:
-            return StageOutcome("rerun", reason="; ".join(failures))
-        _record_probe(ps, pid, _probe(ctx, strategy), actor=ctx.actor)
+        settings = load_settings()
+        while True:
+            tries = _tries(ps, ctx.attempt)
+            last = _last_draft(tries)
+            if last is None or _failed(tries[last]):
+                if last is not None and sum(t["kind"] == "draft" for t in tries) >= settings.protocol_tries:
+                    return StageOutcome("rerun", reason="; ".join(_failed(tries[last])))
+                out = self._draft(ctx, context, tries[last] if last is not None else None, question,
+                                  intake.paper_type)
+                if out is not None:
+                    return out
+                continue
+            chain = tries[last:]
+            self._probe_tries(ctx, chain)
+            best, failed = _narrowed(ps, chain)
+            total = best["probe"]["total"]
+            if total is None or total <= best["body"]["record_cap"] or len(chain) - 1 >= settings.protocol_narrow_tries:
+                break
+            out = self._narrow(ctx, context, best, failed, intake.paper_type)
+            if out is not None:
+                return out
         if intake.production_mode == "collab":
-            return StageOutcome("waiting_human", checkpoint_id=_open(ctx, pid),
-                                reason="the protocol awaits your approval")
-        return self._vote(ctx, pid, {vendor_of(d.provider, d.model), vendor_of(s.provider, s.model)})
+            cid = opened_for_attempt(ps, KIND, ctx.stage, ctx.attempt) or _open(ctx, best["id"])
+            return StageOutcome("waiting_human", checkpoint_id=cid, reason="the protocol awaits your approval")
+        return self._vote(ctx, best["id"], set(best["vendors"].values()))
+
+    @staticmethod
+    def _draft(ctx: StageContext, context: dict, last: dict | None, question: str,
+               paper_type: str) -> StageOutcome | None:
+        """One draft try, stored as the next version with its try: the Ideator's draft and the Scout's strategy, or,
+        after a failed try (``last``), only the part that failed asked again, with that version as ``previous_draft``
+        and its failures as guidance. An outcome when a role gave nothing, else ``None``."""
+        ps = ctx.ps
+        inputs = dict(context)
+        vendors = dict(last["vendors"]) if last is not None else {}
+        if last is not None:
+            inputs["previous_draft"] = {"version": last["version"], "body": last["body"], "record_probe": None}
+            inputs["guidance"] = _with_guidance(ctx.guidance, (
+                f"Version {last['version']} of this attempt failed the protocol's checks: {'; '.join(_failed(last))}. "
+                f"Fix these and keep the rest."))
+        if last is None or last["failures"]["draft"]:
+            d = ctx.executor.run("ideator", DRAFT_TASK, inputs, ProtocolDraftOut, stage=ctx.stage, attempt=ctx.attempt,
+                                 tools=[])
+            if not d.ok or d.output is None:
+                return StageOutcome("rerun", reason=f"the ideator gave no protocol draft ({d.error})")
+            part = d.output.model_dump(mode="json")
+            part["prisma_p"] = part["prisma_p"] or None
+            vendors["ideator"] = vendor_of(d.provider, d.model)
+        else:
+            part = {k: last["body"][k] for k in DRAFT_KEYS}
+        if last is None or last["failures"]["strategy"]:
+            s = ctx.executor.run("scout", STRATEGY_TASK, {**inputs, "eligibility": part["eligibility"]},
+                                 SearchStrategyOut, stage=ctx.stage, attempt=ctx.attempt, tools=[])
+            if not s.ok or s.output is None:
+                return StageOutcome("rerun", reason=f"the scout gave no search strategy ({s.error})")
+            strategy = _strategy_of(s.output).model_dump(mode="json")
+            vendors["scout"] = vendor_of(s.provider, s.model)
+        else:
+            strategy = last["body"]["search_strategy"]
+        body = Protocol.model_validate({**part, "question": question, "search_strategy": strategy,
+                                        "record_cap": _current_cap(ps)})
+        add_protocol(ps, ctx.attempt, body, version=_next_version(ps), actor=ctx.actor,
+                     tried={"kind": "draft", "vendors": vendors,
+                            "failures": _failures(body, paper_type, ctx.sources.sources())})
+        return None
+
+    @staticmethod
+    def _probe_tries(ctx: StageContext, chain: list[dict]) -> None:
+        """Probe every try of the chain that passed the checks and has no probe yet; a strategy an earlier try of the
+        chain had takes that try's probe (nothing is counted twice)."""
+        ps = ctx.ps
+        for i, t in enumerate(chain):
+            if _failed(t) or probe_of(ps, t["id"]) is not None:
+                continue
+            same = next((e for e in chain[:i] if e["body"]["search_strategy"] == t["body"]["search_strategy"]
+                         and probe_of(ps, e["id"]) is not None), None)
+            probe = (probe_of(ps, same["id"]) if same is not None
+                     else _probe(ctx, SearchStrategy.model_validate(t["body"]["search_strategy"])))
+            _record_probe(ps, t["id"], probe, actor=ctx.actor)
+
+    @staticmethod
+    def _narrow(ctx: StageContext, context: dict, best: dict, failed: list[dict],
+                paper_type: str) -> StageOutcome | None:
+        """One narrowing try: the Scout, given the best version so far (``previous_draft``, with its probe) and
+        ``narrowing`` (the cap, that version's total and per-query, per-source counts, the failed tries), answers with
+        a strategy, stored with that version's draft as the next version. An outcome when the Scout gave nothing,
+        else ``None``."""
+        probe, cap = best["probe"], best["body"]["record_cap"]
+        inputs = {**context, "eligibility": best["body"]["eligibility"],
+                  "previous_draft": {"version": best["version"], "body": best["body"], "record_probe": probe},
+                  "narrowing": {"record_cap": cap, "version": best["version"], "total": probe["total"],
+                                "counts": probe["counts"], "failed_tries": failed},
+                  "guidance": _with_guidance(ctx.guidance, (
+                      f"The record-cap probe of version {best['version']} counts {probe['total']} records (an upper "
+                      f"bound), above the record cap {cap}: narrow its search strategy to fewer records (see "
+                      f"narrowing)."))}
+        s = ctx.executor.run("scout", STRATEGY_TASK, inputs, SearchStrategyOut, stage=ctx.stage, attempt=ctx.attempt,
+                             tools=[])
+        if not s.ok or s.output is None:
+            return StageOutcome("rerun", reason=f"the scout gave no narrower search strategy ({s.error})")
+        body = Protocol.model_validate({**best["body"], "search_strategy": _strategy_of(s.output).model_dump(mode="json")})
+        add_protocol(ctx.ps, ctx.attempt, body, version=_next_version(ctx.ps), actor=ctx.actor,
+                     tried={"kind": "narrow", "vendors": {**best["vendors"], "scout": vendor_of(s.provider, s.model)},
+                            "failures": _failures(body, paper_type, ctx.sources.sources())})
+        return None
 
     @staticmethod
     def _vote(ctx: StageContext, protocol_id: str, generator_vendors: set[str | None]) -> StageOutcome:
         row = protocol_row(ctx.ps, protocol_id)
         probe = probe_of(ctx.ps, protocol_id)
         inputs = {"paper_type": intake_of(ctx.ps).paper_type, "protocol": row["body"],
-                  "record_probe": probe and {**probe, "note": "advisory: no date range, duplicates count again"}}
+                  "record_probe": probe and {**probe, "record_cap": row["body"]["record_cap"], "note": PROBE_NOTE}}
         res = vote(ctx, "protocol", protocol_id, VOTE_QUESTION, VOTE_OPTIONS, "revise", inputs,
-                   generator_vendors=generator_vendors)
+                   generator_vendors=generator_vendors, reuse=True)
         if res.decision == "approve":
             _freeze(ctx, protocol_id, actor=ctx.actor, actor_kind="kernel")
             return StageOutcome("done", reason="protocol approved by the P1 vote (not reviewed by a human)")

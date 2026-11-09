@@ -148,9 +148,24 @@ def year_counts(http: HttpClient, query: str, *, api_key: str | None) -> dict[in
     return dict(sorted(counts.items()))
 
 
-def count(http: HttpClient, query: str, *, api_key: str | None) -> int | None:
-    """How many works match ``query`` (``meta.count`` of a one-result page); ``None`` when the response gives none."""
-    data, _ = http.get_json(f"{BASE}/works", _params(api_key, search=query, per_page=1, select="id"),
+def publication_years(after_year: int | None, date_from: int | None, date_to: int | None) -> str | None:
+    """The ``publication_year`` filter value of a (non-empty) year range (``date_from``..``date_to``, inclusive,
+    either end open) and ``after_year`` (only later years); ``None`` when neither is given."""
+    if date_from is None and date_to is None:
+        return f">{after_year}" if after_year is not None else None
+    lows = [y for y in (date_from, after_year + 1 if after_year is not None else None) if y is not None]
+    if not lows:
+        return f"<{date_to + 1}"
+    return f"{max(lows)}-{date_to}" if date_to is not None else f">{max(lows) - 1}"
+
+
+def count(http: HttpClient, query: str, *, api_key: str | None, date_from: int | None = None,
+          date_to: int | None = None) -> int | None:
+    """How many works match ``query`` (``meta.count`` of a one-result page), published in the years
+    ``date_from``..``date_to`` (inclusive, either end open) when given; ``None`` when the response gives none."""
+    years = publication_years(None, date_from, date_to)
+    data, _ = http.get_json(f"{BASE}/works", _params(api_key, search=query, per_page=1, select="id",
+                                                     filter=f"publication_year:{years}" if years else None),
                             budget_key=BUDGET)
     n = ((data or {}).get("meta") or {}).get("count")
     return int(n) if isinstance(n, int | str) and str(n).isdigit() else None

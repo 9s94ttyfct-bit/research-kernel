@@ -28,10 +28,14 @@ def _check(name: str, value: str, allowed: Any) -> None:
 
 # ---- protocols ----
 def add_protocol(ps: ProjectStore, attempt: int, body: Protocol, *, version: int, actor: str,
-                 actor_kind: ActorKind = "agent") -> str:
+                 actor_kind: ActorKind = "agent", tried: dict | None = None) -> str:
+    """Add the protocol as ``version`` of the attempt. ``tried``: how the protocol stage drafted it in the attempt
+    (``rk.production.protocol``: the kind of try, the generators' vendors and its structural failures), recorded
+    with it so an attempt resumed in place goes on from its tries."""
     pid = new_id("prt")
+    payload = {"attempt": attempt, "version": version, "body": body.model_dump(mode="json")}
     ps.apply(NewEvent(type="protocol.added", entity_id=pid, actor_kind=actor_kind, actor=actor,
-                      payload={"attempt": attempt, "version": version, "body": body.model_dump(mode="json")}))
+                      payload=payload | ({"tried": tried} if tried is not None else {})))
     return pid
 
 

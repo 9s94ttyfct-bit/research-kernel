@@ -39,9 +39,10 @@ class DiscoverySources(Protocol):
 
     def year_counts(self, query: str) -> dict[int, int]: ...
 
-    def count(self, query: str, source: str) -> int | None:
+    def count(self, query: str, source: str, *, date_from: int | None = None, date_to: int | None = None) -> int | None:
         """How many works ``query`` matches on ``source`` (one of ``COUNTED_SOURCES``; another raises
-        ``ValueError``); ``None`` when the source gave no count."""
+        ``ValueError``), published in the years ``date_from``..``date_to`` (inclusive; None: open) when given;
+        ``None`` when the source gave no count."""
         ...
 
     def verify(self, item_id: str) -> str: ...
@@ -84,13 +85,15 @@ class KernelSources:
         ctx = self.kernel.ctx()
         return openalex.year_counts(ctx.http, query, api_key=ctx.settings.openalex_key)
 
-    def count(self, query: str, source: str) -> int | None:
-        """OpenAlex ``meta.count`` or Europe PMC ``hitCount`` of the query (``None`` when the response has none)."""
+    def count(self, query: str, source: str, *, date_from: int | None = None, date_to: int | None = None) -> int | None:
+        """OpenAlex ``meta.count`` or Europe PMC ``hitCount`` of the query in the years ``date_from``..``date_to``
+        when given, filtered on the source's server (``None`` when the response has none)."""
         ctx = self.kernel.ctx()
         if source == "openalex":
-            return openalex.count(ctx.http, query, api_key=ctx.settings.openalex_key)
+            return openalex.count(ctx.http, query, api_key=ctx.settings.openalex_key, date_from=date_from,
+                                  date_to=date_to)
         if source == "europepmc":
-            return europepmc.count(ctx.http, query)
+            return europepmc.count(ctx.http, query, date_from=date_from, date_to=date_to)
         raise ValueError(f"no record count for source {source!r}; counted: {', '.join(COUNTED_SOURCES)}")
 
     def verify(self, item_id: str) -> str:

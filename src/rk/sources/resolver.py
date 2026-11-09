@@ -137,21 +137,11 @@ def search(ctx: SourceContext, query: str, source: SearchSource, limit: int = 25
     return Hits(kept, hits.dropped, hits.total)
 
 
-def _openalex_years(after_year: int | None, date_from: int | None, date_to: int | None) -> str | None:
-    """The OpenAlex ``publication_year`` filter of a (non-empty) year range and ``after_year``."""
-    if date_from is None and date_to is None:
-        return f">{after_year}" if after_year is not None else None
-    lows = [y for y in (date_from, after_year + 1 if after_year is not None else None) if y is not None]
-    if not lows:
-        return f"<{date_to + 1}"
-    return f"{max(lows)}-{date_to}" if date_to is not None else f">{max(lows) - 1}"
-
-
 def _search(ctx: SourceContext, query: str, source: SearchSource, limit: int, after_year: int | None, offset: int,
             date_from: int | None, date_to: int | None) -> list[ItemIn]:
     http, st = ctx.http, ctx.settings
     if source == "openalex":
-        years = _openalex_years(after_year, date_from, date_to)
+        years = openalex.publication_years(after_year, date_from, date_to)
         return openalex.search(http, query, api_key=st.openalex_key, per_page=limit, offset=offset,
                                filters={"publication_year": years} if years else None)
     if source == "europepmc":

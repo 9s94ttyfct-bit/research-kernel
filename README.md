@@ -176,9 +176,13 @@ frozen), `search_screen` (search, deduplication, title/abstract and full-text sc
   a field tag one source understands (PubMed `[tiab]`, Europe PMC `TITLE_ABS:`) breaks the query on the other; Europe
   PMC and OpenAlex also match full texts, so their hit counts are much higher than PubMed's. The kernel checks the
   draft (its free texts may not claim novelty, the same rule as for topics and RQs) and sizes it: the record-cap probe
-  counts each query on each source that reports counts (not PubMed). The probe is advisory and overestimates (no date
-  range, duplicates count again). In P2 you approve, revise or go back in a `protocol_approval` checkpoint (a revise,
-  like a failed check, reruns the stage and uses one of its two reruns); in P1 a two-vendor vote
+  counts each query on each source that reports counts (not PubMed) within the strategy's publication years. The probe
+  is advisory and an upper bound (duplicates count again). A draft that fails the checks is drafted again within the
+  attempt (up to `protocol_tries`, default 3, versions; only the role whose part failed is asked), and a probe above
+  the record cap sends the strategy back to the Scout to narrow, with the counts (up to `protocol_narrow_tries`,
+  default 3, tries; a strategy that does not lower the total is a failed try); the version with the lowest total goes
+  on. In P2 you approve, revise or go back in a `protocol_approval` checkpoint (a revise, like checks still failing
+  after the tries, reruns the stage and uses one of its two reruns); in P1 a two-vendor vote
   approves or asks for a revision. Approving freezes the protocol (`frozen_hash`, the sha256 of its canonical JSON);
   only you set the record cap (default 3000), with the approval. A frozen protocol is never edited: a later frozen
   version records a deviation from it. For systematic and scoping reviews the freeze counts as preregistration

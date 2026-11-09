@@ -20,6 +20,7 @@ from rk.orchestrator.state import latest_attempt, record_attempt, start_run
 from rk.production import store
 from rk.production.models import Protocol, SynthesisPlan
 from rk.production.protocol import (
+    STRATEGY_TASK,
     VOTE_QUESTION,
     ProtocolWorker,
     check_protocol,
@@ -94,6 +95,14 @@ def _events(ps, type_: str) -> list:
     return [e for e in ps.log.iter() if e.type == type_]
 
 
+def _settings(k, **values) -> None:
+    cfg = k.settings()
+    for key, value in values.items():
+        setattr(cfg, key, value)
+    save_settings(cfg)
+
+
+
 # ---- structure per paper type ----
 def test_sr_protocol_needs_prisma_p_items():
     body = a_protocol()  # PRISMA-P: only the rationale
@@ -109,13 +118,53 @@ def test_sr_protocol_needs_prisma_p_items():
 
 
 @pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
-def test_sr_draft_without_prisma_p_items_is_rerun(env):
+def test_structural_failure_is_retried_in_the_attempt_without_an_edge(env):
+    """Task 9: a draft that fails the structural checks is asked again inside the attempt, with its failures as
+    guidance, so no protocol->protocol edge is spent on it."""
+    k, ps, _ = env
+    ex = _executor([_draft(prisma=False), _draft()], [_strategy()], votes=_votes(("approve", "approve")))
+    workers = {s: FakeWorker() for s in ("landscape", "gaps", "topics", "question")}
+    workers["protocol"] = ProtocolWorker()
+    assert _run_to(k, ps, workers, ex, "protocol")[-1] == "done"
+    assert latest_attempt(ps, "protocol") == 1 and _events(ps, "edge.taken") == []
+    assert [c["role"] for c in ex.calls] == ["ideator", "scout", "ideator", "judge", "judge_2"]
+    v1, v2 = store.protocols(ps, 1)
+    retry = ex.calls[2]["inputs"]
+    assert retry["previous_draft"] == {"version": 1, "body": v1["body"], "record_probe": None}
+    assert "PRISMA-P item 'rationale' is missing" in retry["guidance"]
+    assert v2["body"]["search_strategy"] == v1["body"]["search_strategy"]  # the strategy passed: the Scout's is kept
+    assert probe_of(ps, v1["id"]) is None and probe_of(ps, v2["id"])["total"] == 0  # only a sound draft is probed
+    assert store.frozen_protocol(ps)["id"] == v2["id"]
+
+
+def test_a_failed_strategy_re_asks_the_scout_only(env):
     _, ps, _ = env
-    ex = _executor([_draft(prisma=False)])
+    ex = _executor([_draft()], [_strategy(queries=["aspirin"]), _strategy()], votes=_votes(("approve", "approve")))
+    assert ProtocolWorker().run(_ctx(env, ex)).status == "done"
+    assert [c["role"] for c in ex.calls] == ["ideator", "scout", "scout", "judge", "judge_2"]
+    v1, v2 = store.protocols(ps, 1)
+    retry = ex.calls[2]["inputs"]
+    assert retry["previous_draft"]["version"] == 1 and "1 distinct queries (need at least 3)" in retry["guidance"]
+    assert retry["eligibility"] == v1["body"]["eligibility"]
+    assert {**v2["body"], "search_strategy": None} == {**v1["body"], "search_strategy": None}  # the draft is kept
+    assert v2["body"]["search_strategy"]["queries"] == QUERIES
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_sr_draft_without_prisma_p_items_is_rerun_when_the_tries_run_out(env):
+    k, ps, _ = env
+    ex = _executor([_draft(prisma=False)] * 3, [_strategy()])
     out = ProtocolWorker().run(_ctx(env, ex))
     assert out.status == "rerun" and "PRISMA-P item 'rationale' is missing" in out.reason
-    assert [c["role"] for c in ex.calls] == ["ideator", "scout"]  # no probe, no vote
-    assert store.frozen_protocol(ps) is None
+    assert [c["role"] for c in ex.calls] == ["ideator", "scout", "ideator", "ideator"]  # protocol_tries 3; no vote
+    assert [r["version"] for r in store.protocols(ps, 1)] == [1, 2, 3]  # each try is a version
+    assert _events(ps, "protocol.probed") == [] and store.frozen_protocol(ps) is None
+    guidance = ex.calls[3]["inputs"]["guidance"]
+    assert ex.calls[3]["inputs"]["previous_draft"]["version"] == 2 and "Version 2" in guidance
+    _settings(k, protocol_tries=1)
+    one = _executor([_draft(prisma=False)])
+    assert ProtocolWorker().run(_ctx(env, one, attempt=2)).status == "rerun"
+    assert [c["role"] for c in one.calls] == ["ideator", "scout"]
 
 
 @pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
@@ -130,7 +179,7 @@ def test_meta_analysis_draft_without_typed_fields_fails_the_gate_and_is_redrafte
     typed = _draft(extraction_schema=schema,
                    synthesis_plan={"method": "meta_analysis", "effect_measure": "RR", "model": "random effects",
                                    "pool_model": "DL", "hksj": False, "outcomes": [stroke]})
-    ex = _executor([old, typed], votes=_votes(("approve", "approve")))
+    ex = _executor([old] * 3 + [typed], [_strategy()] * 2, votes=_votes(("approve", "approve")))
     w = ProtocolWorker()
     out = w.run(_ctx(env, ex))
     assert out.status == "rerun"
@@ -199,7 +248,7 @@ def test_light_protocol_for_critical_review(env):
 def test_novelty_claims_and_a_thin_strategy_are_rerun_reasons(env):
     draft = _draft(eligibility={"include": [{"id": "I1", "text": "The first study to test aspirin over 80"}],
                                 "exclude": []})
-    ex = _executor([draft], [_strategy(queries=["aspirin", "aspirin"], sources=["openalex", "scopus"])])
+    ex = _executor([draft] * 3, [_strategy(queries=["aspirin", "aspirin"], sources=["openalex", "scopus"])] * 3)
     out = ProtocolWorker().run(_ctx(env, ex))
     assert out.status == "rerun"
     assert "eligibility.include.I1 claims novelty" in out.reason
@@ -212,7 +261,7 @@ def test_a_novelty_refusal_names_the_matched_words(env):
     # claim that the review is novel" to its rationale on every rerun and the stage looped on the same failure
     rationale = ("Within the searched scope no review pairs non-ICU settings with these agents. This is a statement "
                  "about what was not found; it is not a claim that the review is novel or the first study to ask.")
-    ex = _executor([_draft(prisma_p={**SR_ITEMS, "rationale": rationale})], [_strategy()])
+    ex = _executor([_draft(prisma_p={**SR_ITEMS, "rationale": rationale})] * 3, [_strategy()])
     out = ProtocolWorker().run(_ctx(env, ex))
     assert out.status == "rerun"
     assert out.reason == ('prisma_p.rationale claims novelty ("novel", "first study"): do not use these words, not '
@@ -521,7 +570,8 @@ def _big(n_openalex: int, n_epmc: int) -> FakeSources:
 
 
 def test_record_cap_probe_is_advisory(env):
-    _, ps, _ = env
+    k, ps, _ = env
+    _settings(k, protocol_narrow_tries=0)  # no narrowing: the over-cap strategy goes to the vote as it is
     ex = _executor([_draft()], [_strategy(sources=["openalex", "europepmc", "pubmed"])],
                    votes=_votes(("approve", "approve")))
     sources = _big(2500, 1500)
@@ -536,7 +586,116 @@ def test_record_cap_probe_is_advisory(env):
     assert {"query": QUERIES[1], "source": "openalex", "count": None} in probe["counts"]  # no count: recorded, not 0
     assert w.gate(ps, 1).ok
     (judged, _) = [c for c in ex.calls if c["schema"] == "VoteOut"]
-    assert judged["inputs"]["subject"]["record_probe"]["total"] == 4000  # the judges see it
+    seen = judged["inputs"]["subject"]["record_probe"]  # the judges see it, as an upper bound with the cap
+    assert (seen["total"], seen["record_cap"]) == (4000, 3000) and "upper bound" in seen["note"]
+    assert "no date range" not in seen["note"]
+    assert judged["inputs"]["question"] == VOTE_QUESTION and judged["inputs"]["options"] == ["approve", "revise"]
+
+
+def test_the_probe_counts_within_the_strategy_years(env):
+    sources = FakeSources({})
+    ex = _executor([_draft()], [_strategy(date_from=2005, date_to=2020)], votes=_votes(("approve", "approve")))
+    assert ProtocolWorker().run(_ctx(env, ex, sources=sources)).status == "done"
+    assert sources.count_args == [{"query": q, "source": s, "date_from": 2005, "date_to": 2020}
+                                  for q in QUERIES for s in ("openalex", "europepmc")]
+
+
+NARROW = ["aspirin stroke elderly randomized trial", QUERIES[1], QUERIES[2]]
+WIDER = [*QUERIES, "aspirin"]
+SOMEWHAT = ["aspirin stroke elderly trial", QUERIES[1], QUERIES[2]]
+COUNTS = {(QUERIES[0], "openalex"): 2500, (QUERIES[0], "europepmc"): 1500,  # 4000: over the cap 3000
+          (NARROW[0], "openalex"): 900, (NARROW[0], "europepmc"): 600,  # 1500
+          ("aspirin", "openalex"): 40000, ("aspirin", "europepmc"): 10000,  # WIDER: 54000
+          (SOMEWHAT[0], "openalex"): 2000, (SOMEWHAT[0], "europepmc"): 1500}  # 3500
+
+
+def _counted(sources: FakeSources) -> list[str]:
+    return [c[1] for c in sources.calls if c[0] == "count"]
+
+
+def test_an_over_cap_probe_has_the_scout_narrow_and_the_narrower_strategy_goes_to_the_vote(env):
+    _, ps, _ = env
+    sources = FakeSources({}, record_counts=COUNTS)
+    ex = _executor([_draft()], [_strategy(), _strategy(queries=NARROW)], votes=_votes(("approve", "approve")))
+    w = ProtocolWorker()
+    assert w.run(_ctx(env, ex, sources=sources)).status == "done"
+    assert [c["role"] for c in ex.calls] == ["ideator", "scout", "scout", "judge", "judge_2"]
+    v1, v2 = store.protocols(ps, 1)
+    narrow = ex.calls[2]
+    assert narrow["instructions"] == STRATEGY_TASK and "narrowing" in STRATEGY_TASK
+    asked = narrow["inputs"]["narrowing"]
+    assert (asked["record_cap"], asked["version"], asked["total"], asked["failed_tries"]) == (3000, 1, 4000, [])
+    assert {"query": QUERIES[0], "source": "openalex", "count": 2500} in asked["counts"]
+    assert narrow["inputs"]["previous_draft"] == {"version": 1, "body": v1["body"],
+                                                  "record_probe": probe_of(ps, v1["id"])}
+    assert narrow["inputs"]["eligibility"] == v1["body"]["eligibility"]
+    assert "4000" in narrow["inputs"]["guidance"] and "3000" in narrow["inputs"]["guidance"]
+    assert v2["body"] == {**v1["body"], "search_strategy": {**v1["body"]["search_strategy"], "queries": NARROW}}
+    assert (probe_of(ps, v1["id"])["total"], probe_of(ps, v2["id"])["total"]) == (4000, 1500)  # each try probed
+    (judged, _) = [c for c in ex.calls if c["schema"] == "VoteOut"]
+    assert judged["inputs"]["subject"]["protocol"] == v2["body"]
+    assert judged["inputs"]["subject"]["record_probe"]["total"] == 1500
+    assert store.frozen_protocol(ps)["id"] == v2["id"] and w.gate(ps, 1).ok
+
+
+def test_narrowing_that_does_not_lower_the_total_fails_and_the_best_strategy_goes_to_the_vote(env):
+    _, ps, _ = env
+    sources = FakeSources({}, record_counts=COUNTS)
+    ex = _executor([_draft()], [_strategy(), _strategy(), _strategy(queries=WIDER), _strategy(queries=SOMEWHAT)],
+                   votes=_votes(("revise", "revise")))
+    out = ProtocolWorker().run(_ctx(env, ex, sources=sources))
+    assert out.status == "rerun" and "judge: revise" in out.reason  # the vote decides: no approval by the kernel
+    assert [c["role"] for c in ex.calls] == ["ideator"] + ["scout"] * 4 + ["judge", "judge_2"]
+    rows = store.protocols(ps, 1)
+    assert [probe_of(ps, r["id"])["total"] for r in rows] == [4000, 4000, 54000, 3500]
+    assert _counted(sources) == [q for q in QUERIES + WIDER + SOMEWHAT for _ in ("openalex", "europepmc")]
+    third, fourth = ex.calls[3]["inputs"]["narrowing"], ex.calls[4]["inputs"]["narrowing"]
+    assert (third["version"], third["total"]) == (1, 4000)
+    (same,) = third["failed_tries"]
+    assert same["version"] == 2 and "the same strategy as version 1" in same["why"]
+    wider = fourth["failed_tries"][1]
+    assert wider["version"] == 3 and wider["total"] == 54000 and "not fewer than the 4000" in wider["why"]
+    (judged, _) = [c for c in ex.calls if c["schema"] == "VoteOut"]  # tries exhausted: the best one is voted on
+    assert judged["inputs"]["subject"]["protocol"] == rows[3]["body"]
+    assert judged["inputs"]["subject"]["record_probe"]["total"] == 3500
+    assert store.frozen_protocol(ps) is None
+
+
+class Crashing(ScriptedExecutor):
+    """A ``ScriptedExecutor`` whose ``n``-th task of ``role`` crashes the kernel."""
+
+    def __init__(self, script: dict, role: str, n: int):
+        super().__init__(script)
+        self.crash_role, self.crash_n = role, n
+
+    def run(self, role, instructions, inputs, output_schema, **kw):
+        if role == self.crash_role and sum(c["role"] == role for c in self.calls) + 1 == self.crash_n:
+            raise RuntimeError("the kernel crashed")
+        return super().run(role, instructions, inputs, output_schema, **kw)
+
+
+def test_an_interrupted_narrowing_resumes_in_place_from_its_versions_and_probes(env):
+    _, ps, _ = env
+    assert ProtocolWorker.resumes_in_place
+    sources = FakeSources({}, record_counts=COUNTS)
+    first = Crashing({("ideator", "ProtocolDraftOut"): [_draft()],
+                      ("scout", "SearchStrategyOut"): [_strategy(), _strategy()]}, "scout", 3)
+    w = ProtocolWorker()
+    with pytest.raises(RuntimeError, match="crashed"):
+        w.run(_ctx(env, first, sources=sources))
+    assert len(store.protocols(ps, 1)) == 2 and len(_counted(sources)) == 6
+    again = _executor([], [_strategy(queries=NARROW)], votes=_votes(("approve", "approve")))
+    assert w.run(_ctx(env, again, sources=sources)).status == "done"
+    assert [c["role"] for c in again.calls] == ["scout", "judge", "judge_2"]  # no draft or strategy asked again
+    assert again.calls[0]["inputs"]["narrowing"]["failed_tries"][0]["version"] == 2  # the spent try still counts
+    assert _counted(sources)[6:] == [q for q in NARROW for _ in ("openalex", "europepmc")]  # earlier probes reused
+    v3 = store.protocols(ps, 1)[2]
+    assert store.frozen_protocol(ps)["id"] == v3["id"]
+    # run again after the vote was recorded: nothing is asked or counted again
+    assert w.run(_ctx(env, ScriptedExecutor({}), sources=sources)).status == "done"
+    assert len(_counted(sources)) == 12 and len(votes_on(ps, "protocol", v3["id"])) == 1
+
+
 
 
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
@@ -555,12 +714,12 @@ def test_probe_without_any_count_says_not_counted(env):
 class FailingCounts(FakeSources):
     """A source whose count of the first query fails: an HTTP 400 on openalex, an exhausted budget on europepmc."""
 
-    def count(self, query: str, source: str) -> int | None:
+    def count(self, query: str, source: str, **years) -> int | None:
         if query == QUERIES[0] and source == "openalex":
             raise HttpError(400, "https://api.openalex.org/works")
         if query == QUERIES[0] and source == "europepmc":
             raise BudgetExhausted("europepmc", T0)
-        return super().count(query, source)
+        return super().count(query, source, **years)
 
 
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
@@ -581,8 +740,23 @@ def test_failed_count_fails_nothing_and_is_recorded_in_the_probe(env):
 
 
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
-def test_p2_raises_the_record_cap_on_approval(env):
+def test_p2_narrows_before_your_approval(env):
     _, ps, _ = env
+    ex = _executor([_draft()], [_strategy(), _strategy(queries=NARROW)])
+    out = ProtocolWorker().run(_ctx(env, ex, sources=FakeSources({}, record_counts=COUNTS)))
+    assert [c["role"] for c in ex.calls] == ["ideator", "scout", "scout"]
+    _, v2 = store.protocols(ps, 1)
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    assert (cp["options"]["protocol_id"], cp["options"]["version"]) == (v2["id"], 2)
+    assert "Record-cap probe (advisory): 1500 records" in cp["prompt"]
+    # resumed in place before the wait was linked: the checkpoint opened is the one returned, nothing is asked
+    assert ProtocolWorker().run(_ctx(env, ScriptedExecutor({}), sources=FakeSources({}))).checkpoint_id == cp["id"]
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_p2_raises_the_record_cap_on_approval(env):
+    k, ps, _ = env
+    _settings(k, protocol_narrow_tries=0)  # no narrowing: you see the over-cap strategy and raise the cap
     ex = _executor([_draft(), _draft()])
     w = ProtocolWorker()
     out = w.run(_ctx(env, ex, sources=_big(2500, 1500)))
@@ -661,11 +835,20 @@ def test_kernel_sources_count_reads_openalex_and_europepmc(tmp_home, tmp_path):
         src = KernelSources(k, "demo")
         assert src.count("aspirin stroke", "openalex") == 1234
         assert seen[-1][1]["search"] == "aspirin stroke" and seen[-1][1]["per_page"] == "1"
+        assert "filter" not in seen[-1][1]  # no years given: no year filter
         assert src.count("aspirin stroke", "europepmc") == 567
         assert seen[-1][1]["query"] == "aspirin stroke" and seen[-1][1]["pageSize"] == "1"
         assert src.count("nothing", "openalex") is None and src.count("nothing", "europepmc") is None
         with pytest.raises(ValueError, match="pubmed"):
             src.count("aspirin stroke", "pubmed")
+        # the strategy's publication years (inclusive, either end open) are counted on each source's server
+        for date_from, date_to, oa, epmc in ((2000, 2020, "publication_year:2000-2020", "[2000 TO 2020]"),
+                                             (2000, None, "publication_year:>1999", "[2000 TO 9999]"),
+                                             (None, 2020, "publication_year:<2021", "[1000 TO 2020]")):
+            assert src.count("aspirin stroke", "openalex", date_from=date_from, date_to=date_to) == 1234
+            assert (seen[-1][1]["search"], seen[-1][1]["filter"]) == ("aspirin stroke", oa)
+            assert src.count("aspirin stroke", "europepmc", date_from=date_from, date_to=date_to) == 567
+            assert seen[-1][1]["query"] == f"(aspirin stroke) AND (PUB_YEAR:{epmc})"
     finally:
         k.close()
 
