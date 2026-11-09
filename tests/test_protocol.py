@@ -24,6 +24,7 @@ from rk.production.protocol import (
     VOTE_QUESTION,
     ProtocolWorker,
     check_protocol,
+    check_strategy,
     counts_as_preregistration,
     probe_of,
     protocol_prereg_ok,
@@ -115,6 +116,20 @@ def test_sr_protocol_needs_prisma_p_items():
         "extraction_schema has no field", "synthesis_plan is missing"]
     assert check_protocol(no_plan, "scoping_review") == ["extraction_schema has no field", "synthesis_plan is missing"]
     assert counts_as_preregistration("systematic_review") and counts_as_preregistration("scoping_review")
+
+
+def test_a_query_openalex_cannot_read_fails_when_openalex_is_a_source():
+    """OpenAlex answers HTTP 400 to wildcards (``*``, ``?``) and fails on fuzzy ``~`` (checked live 2026-11-09), so
+    such a query would fail both the probe and the search there: the Scout's check names it and the fix."""
+    available = ["openalex", "europepmc", "pubmed"]
+    wild = a_protocol().search_strategy.model_copy(update={"queries": ["probiotic* diarrh?ea", *QUERIES],
+                                                          "sources": ["openalex", "europepmc"]})
+    (failure,) = check_strategy(wild, available)
+    assert "'probiotic* diarrh?ea'" in failure and "OpenAlex" in failure and "OR" in failure
+    fuzzy = wild.model_copy(update={"queries": ["probiotic~", *QUERIES]})
+    assert len(check_strategy(fuzzy, available)) == 1
+    no_openalex = wild.model_copy(update={"sources": ["europepmc", "pubmed"]})  # their syntax reads wildcards
+    assert check_strategy(no_openalex, available) == []
 
 
 @pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)

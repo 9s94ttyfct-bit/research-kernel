@@ -66,6 +66,7 @@ version before it, if any. A P1 degrade fails: P1 never freezes a protocol the v
 from __future__ import annotations
 
 import json
+import re
 from typing import get_args
 
 from pydantic import BaseModel
@@ -180,9 +181,13 @@ def _unique(values: list[str]) -> list[str]:
     return list(dict.fromkeys(v.strip() for v in values if v.strip()))
 
 
+# OpenAlex's search answers HTTP 400 to wildcards (* and ?) and fails on fuzzy ~ (checked live 2026-11-09)
+OPENALEX_UNREAD = re.compile(r"[*?~]")
+
+
 def check_strategy(strategy: SearchStrategy, available: list[str]) -> list[str]:
-    """What keeps the Scout's strategy from its required size: ``QUERIES_MIN`` distinct queries, ``SOURCES_MIN``
-    distinct available sources."""
+    """What keeps the Scout's strategy from its required size and its sources: ``QUERIES_MIN`` distinct queries,
+    ``SOURCES_MIN`` distinct available sources, and with OpenAlex no query it cannot read (``OPENALEX_UNREAD``)."""
     out = []
     n = len({q.lower() for q in _unique(strategy.queries)})
     if n < QUERIES_MIN:
@@ -193,6 +198,10 @@ def check_strategy(strategy: SearchStrategy, available: list[str]) -> list[str]:
     usable = [s for s in sources if s in available]
     if len(usable) < SOURCES_MIN:
         out.append(f"{len(usable)} usable sources (need at least {SOURCES_MIN})")
+    if "openalex" in usable:
+        out += [f"query {q!r} uses a wildcard or fuzzy operator (*, ?, ~), which OpenAlex cannot read (its search "
+                "fails): spell the variants out with OR (e.g. diarrhea OR diarrhoea), or leave OpenAlex out of the "
+                "sources" for q in _unique(strategy.queries) if OPENALEX_UNREAD.search(q)]
     return out
 
 
