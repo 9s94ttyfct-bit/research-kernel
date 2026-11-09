@@ -661,6 +661,28 @@ def test_narrowing_that_does_not_lower_the_total_fails_and_the_best_strategy_goe
     assert store.frozen_protocol(ps) is None
 
 
+def test_a_rerun_revises_the_version_offered_to_the_vote_not_a_failed_later_try(env):
+    """The best try went to the vote; a later, failed narrowing try is newer. The judges' revise reruns protocol, and
+    the next attempt revises the version they voted on."""
+    _, ps, _ = env
+    sources = FakeSources({}, record_counts=COUNTS)
+    ex = _executor([_draft(), _draft()],
+                   [_strategy(), _strategy(queries=SOMEWHAT), _strategy(queries=WIDER), _strategy(queries=WIDER),
+                    _strategy(queries=NARROW)],
+                   votes=_votes(("revise", "revise"), ("approve", "approve")))
+    w = ProtocolWorker()
+    assert w.run(_ctx(env, ex, sources=sources)).status == "rerun"
+    rows = store.protocols(ps, 1)
+    assert [probe_of(ps, r["id"])["total"] for r in rows] == [4000, 3500, 54000, 54000]
+    (judged, _) = [c for c in ex.calls if c["schema"] == "VoteOut"]
+    assert judged["inputs"]["subject"]["protocol"] == rows[1]["body"]  # the best try, not the last
+    asked = len(ex.calls)
+    assert w.run(_ctx(env, ex, attempt=2, sources=sources)).status == "done"
+    revising = [c for c in ex.calls[asked:] if c["role"] in ("ideator", "scout")]
+    assert revising and all(c["inputs"]["previous_draft"]["version"] == 2 for c in revising)
+    assert revising[0]["inputs"]["previous_draft"]["record_probe"]["total"] == 3500
+
+
 class Crashing(ScriptedExecutor):
     """A ``ScriptedExecutor`` whose ``n``-th task of ``role`` crashes the kernel."""
 
