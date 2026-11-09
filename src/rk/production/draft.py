@@ -35,7 +35,11 @@ sentence and the section's balance.
 
 An interrupted attempt runs again in place: a section whose latest version in the attempt verified ok is not drafted
 again, an unverified version is verified (no Writer task), the retries already spent count, and a back-edge already
-noted is returned again. A new attempt drafts every section afresh.
+noted is returned again. A new attempt drafts every section afresh, except in a rerun of draft's own failing gate
+(reopened by ``draft->draft``, also after a stage_blocked allow_one_more): a section whose last version of the previous
+attempt passed and verifies now is carried (``_carry``: the same text as a version of the new attempt, no Writer task),
+so sections that passed are not lost again; when every section passed (only the manuscript as a whole failed), every
+section is drafted again.
 
 The gate reads every required section's latest text (a missing, unreadable or altered file is a failure naming the
 section and version): each was written in the attempt and verified ok, and verifies now too (``section_verdict``: a
@@ -421,7 +425,13 @@ class DraftWorker:
         prisma = (prisma_event(ps, ctx.attempt, s.search_attempt, s.protocol["id"] if s.protocol else None,
                                actor=ctx.actor)
                   if reports_prisma(s.paper_type) and s.search_attempt is not None else None)
+        carry = self._carry(ctx, s)
         for spec in s.sections:
+            if spec.id in carry and not _mine(ps, spec.id, ctx.attempt):
+                md, verdict = carry[spec.id]
+                v = write_draft(ps, spec.id, md, stage=STAGE, attempt=ctx.attempt, round=0, by_task=None,
+                                actor=ctx.actor)
+                record_section_verdict(ps, spec.id, v, verdict, actor=ctx.actor)
             mine = _mine(ps, spec.id, ctx.attempt)
             if mine and mine[-1]["verdict"] is None:  # stored, interrupted before its verification
                 self._verify(ctx, s, spec.id, mine[-1]["version"])
@@ -440,6 +450,29 @@ class DraftWorker:
                     return out
                 mine = _mine(ps, spec.id, ctx.attempt)
         return StageOutcome("done")
+
+    @staticmethod
+    def _carry(ctx: StageContext, s: DraftInputs) -> dict[str, tuple[str, SectionVerdict]]:
+        """The Writer sections a rerun of draft's own gate keeps (see the module docstring), each with its text and its
+        verdict now: only when the attempt was reopened by ``draft->draft``, a section whose last version of the
+        previous attempt passed and still verifies; nothing when every Writer section passed there."""
+        ps = ctx.ps
+        r = ps.db.execute("SELECT payload FROM events WHERE type='stage.reopened' "
+                          "AND json_extract(payload, '$.stage')=? ORDER BY seq DESC LIMIT 1", (STAGE,)).fetchone()
+        if ctx.attempt < 2 or r is None or json.loads(r["payload"])["by_edge"] != f"{STAGE}->{STAGE}":
+            return {}
+        writers = [spec for spec in s.sections if not spec.kernel_written]
+        passed = {spec.id: prev[-1] for spec in writers
+                  if (prev := _mine(ps, spec.id, ctx.attempt - 1)) and prev[-1]["verdict"]
+                  and prev[-1]["verdict"]["ok"]}
+        if len(passed) == len(writers):
+            return {}
+        out = {}
+        for sec, last in passed.items():
+            md = draft_text(ps, sec, last["version"])
+            if (verdict := section_verdict(ps, sec, md, paper_type=s.paper_type)).ok:
+                out[sec] = (md, verdict)
+        return out
 
     def _write(self, ctx: StageContext, s: DraftInputs, spec: SectionSpec, mine: list[dict],
                prisma: str | None) -> StageOutcome | None:

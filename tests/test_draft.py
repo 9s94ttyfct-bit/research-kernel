@@ -13,7 +13,12 @@ from rk.argument import ArgumentService
 from rk.config import load_settings, save_settings
 from rk.orchestrator.engine import default_workers
 from rk.orchestrator.graph import BACK_EDGES
-from rk.orchestrator.state import record_attempt, record_passed, record_ran
+from rk.orchestrator.state import (
+    record_attempt,
+    record_passed,
+    record_ran,
+    record_reopened,
+)
 from rk.production.argue import argument_claims, main_claim
 from rk.production.artifacts import ArtifactIn, add_artifact
 from rk.production.design import DesignWorker, approved_design
@@ -180,6 +185,57 @@ def test_ungrounded_number_fails_sentence_and_redrafts(env):
     (named,) = [f for f in res.failures if f.startswith("section introduction")]
     assert "v3" in named and "Aspirin was studied in 1234 older people" in named and "1234" in named
     assert not any("theme-1" in f for f in res.failures)
+
+
+def test_a_rerun_after_drafts_own_gate_keeps_the_sections_that_passed(env):
+    """Task 9: each draft->draft rerun rewrote every section, so a manuscript whose sections each passed at some attempt
+    never passed all at once. A rerun of draft's own gate failure carries a section whose latest draft version passed
+    and still verifies (same text, a new version of the attempt, no Writer task); the failed ones are drafted again. A
+    reopen by another edge (revise, audit, an upstream stage) drafts every section again."""
+    _, ps, _ = env
+    _ready(env)
+    main = main_claim(ps, 1)
+    bad = f"Aspirin was studied in 1234 older people [[clm:{main}]]."
+    w = DraftWorker()
+    w.run(_ctx(env, _writer([writes(bad=bad)] * 3 + [writes(bad=bad), writes()] + [writes()] * 2)))
+    assert not w.gate(ps, 1).ok  # introduction failed its three tries; the other sections passed
+    record_reopened(ps, "draft", by_edge="draft->draft", guidance="introduction: 1234", actor="t")
+    ex = _writer([writes()])
+    assert w.run(_ctx(env, ex, attempt=2)).status == "done"
+    assert _writer_sections(ex) == ["introduction"]
+    for sec in ("theme-1", "gaps-agenda", "conclusion"):
+        before, carried = draft_versions(ps, sec)[-2:]
+        assert (carried["attempt"], carried["by_task"], carried["verdict"]["ok"]) == (2, None, True)
+        assert draft_text(ps, sec, carried["version"]) == draft_text(ps, sec, before["version"])
+    assert w.gate(ps, 2).ok
+    # reopened by another edge: every section is drafted again
+    record_reopened(ps, "draft", by_edge="revise->draft", guidance="say more", actor="t")
+    ex = _writer([writes()] * 4)
+    assert w.run(_ctx(env, ex, attempt=3)).status == "done"
+    assert _writer_sections(ex) == ["introduction", "theme-1", "gaps-agenda", "conclusion"]
+
+
+def test_a_rerun_whose_sections_all_passed_drafts_them_again(env):
+    """When every section passed and only the manuscript as a whole failed (the main claim cited nowhere), carrying them
+    all would fail the same way: every section is drafted again."""
+    _, ps, _ = env
+    _ready(env)
+    w = DraftWorker()
+    w.run(_ctx(env, _writer([_no_main()] * 4)))
+    assert any("cited in no section" in f for f in w.gate(ps, 1).failures)
+    record_reopened(ps, "draft", by_edge="draft->draft", guidance="the main claim is cited in no section", actor="t")
+    ex = _writer([writes()] * 4)
+    assert w.run(_ctx(env, ex, attempt=2)).status == "done"
+    assert _writer_sections(ex) == ["introduction", "theme-1", "gaps-agenda", "conclusion"]
+
+
+def _no_main():
+    """A Writer output that cites only the findings (no main claim), every sentence verifying."""
+    def out(inputs):
+        cs = [c for c in inputs["claims"] if c["status"] == "supported" and c["role"] == "finding"]
+        return {"markdown": " ".join(_sentence(c) for c in cs) + "\n"}
+    return out
+
 
 
 def test_draft_resumes_in_place_without_rewriting_verified_sections(env):
