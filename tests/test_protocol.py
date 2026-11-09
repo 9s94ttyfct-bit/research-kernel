@@ -572,7 +572,7 @@ def _big(n_openalex: int, n_epmc: int) -> FakeSources:
 def test_record_cap_probe_is_advisory(env):
     k, ps, _ = env
     _settings(k, protocol_narrow_tries=0)  # no narrowing: the over-cap strategy goes to the vote as it is
-    ex = _executor([_draft()], [_strategy(sources=["openalex", "europepmc", "pubmed"])],
+    ex = _executor([_draft()], [_strategy(sources=["openalex", "europepmc", "arxiv"])],
                    votes=_votes(("approve", "approve")))
     sources = _big(2500, 1500)
     w = ProtocolWorker()
@@ -582,7 +582,7 @@ def test_record_cap_probe_is_advisory(env):
                                                              for s in ("openalex", "europepmc")]
     (row,) = store.protocols(ps, 1)
     probe = probe_of(ps, row["id"])
-    assert (probe["total"], probe["uncounted"]) == (4000, ["pubmed"])
+    assert (probe["total"], probe["uncounted"]) == (4000, ["arxiv"])
     assert {"query": QUERIES[1], "source": "openalex", "count": None} in probe["counts"]  # no count: recorded, not 0
     assert w.gate(ps, 1).ok
     (judged, _) = [c for c in ex.calls if c["schema"] == "VoteOut"]
@@ -724,13 +724,13 @@ def test_an_interrupted_narrowing_resumes_in_place_from_its_versions_and_probes(
 def test_probe_without_any_count_says_not_counted(env):
     _, ps, _ = env
     sources = FakeSources({}, record_counts={(q, "openalex"): None for q in QUERIES})
-    ex = _executor([_draft()], [_strategy(sources=["openalex", "pubmed"])])
+    ex = _executor([_draft()], [_strategy(sources=["openalex", "arxiv"])])
     out = ProtocolWorker().run(_ctx(env, ex, sources=sources))
     (row,) = store.protocols(ps, 1)
     assert probe_of(ps, row["id"])["total"] is None
     prompt = get_checkpoint(ps, out.checkpoint_id)["prompt"]
     assert "Record-cap probe (advisory): not counted" in prompt and "probe (advisory): 0" not in prompt
-    assert "Not counted (no record count): pubmed." in prompt
+    assert "Not counted (no record count): arxiv." in prompt
 
 
 class FailingCounts(FakeSources):
@@ -837,15 +837,18 @@ def test_p1_degrade_fails(env):
 
 
 # ---- sources.count ----
-def test_kernel_sources_count_reads_openalex_and_europepmc(tmp_home, tmp_path):
+def test_kernel_sources_count_reads_openalex_europepmc_and_pubmed(tmp_home, tmp_path):
     seen: list[tuple[str, dict]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append((request.url.host, dict(request.url.params)))
-        if request.url.params.get("search") == "nothing" or request.url.params.get("query") == "nothing":
-            return httpx.Response(200, json={"results": []})  # no count field
+        params = request.url.params
+        if "nothing" in (params.get("search"), params.get("query"), params.get("term")):
+            return httpx.Response(200, json={"results": [], "esearchresult": {}})  # no count field
         if "openalex" in request.url.host:
             return httpx.Response(200, json={"meta": {"count": 1234}, "results": [{"id": "https://openalex.org/W1"}]})
+        if "eutils" in request.url.host:
+            return httpx.Response(200, json={"esearchresult": {"count": "89", "idlist": []}})
         return httpx.Response(200, json={"version": "6.9", "hitCount": 567, "resultList": {"result": []}})
 
     http = HttpClient(tmp_path / "mock-http.sqlite", user_agent="rk-test", sleep=lambda s: None,
@@ -860,9 +863,12 @@ def test_kernel_sources_count_reads_openalex_and_europepmc(tmp_home, tmp_path):
         assert "filter" not in seen[-1][1]  # no years given: no year filter
         assert src.count("aspirin stroke", "europepmc") == 567
         assert seen[-1][1]["query"] == "aspirin stroke" and seen[-1][1]["pageSize"] == "1"
-        assert src.count("nothing", "openalex") is None and src.count("nothing", "europepmc") is None
-        with pytest.raises(ValueError, match="pubmed"):
-            src.count("aspirin stroke", "pubmed")
+        assert src.count("aspirin stroke", "pubmed") == 89
+        assert (seen[-1][1]["term"], seen[-1][1]["retmax"], seen[-1][1]["db"]) == ("aspirin stroke", "0", "pubmed")
+        assert "mindate" not in seen[-1][1]
+        assert all(src.count("nothing", s) is None for s in ("openalex", "europepmc", "pubmed"))
+        with pytest.raises(ValueError, match="arxiv"):
+            src.count("aspirin stroke", "arxiv")
         # the strategy's publication years (inclusive, either end open) are counted on each source's server
         for date_from, date_to, oa, epmc in ((2000, 2020, "publication_year:2000-2020", "[2000 TO 2020]"),
                                              (2000, None, "publication_year:>1999", "[2000 TO 9999]"),
@@ -871,6 +877,9 @@ def test_kernel_sources_count_reads_openalex_and_europepmc(tmp_home, tmp_path):
             assert (seen[-1][1]["search"], seen[-1][1]["filter"]) == ("aspirin stroke", oa)
             assert src.count("aspirin stroke", "europepmc", date_from=date_from, date_to=date_to) == 567
             assert seen[-1][1]["query"] == f"(aspirin stroke) AND (PUB_YEAR:{epmc})"
+            assert src.count("aspirin stroke", "pubmed", date_from=date_from, date_to=date_to) == 89
+            assert (seen[-1][1]["datetype"], seen[-1][1]["mindate"], seen[-1][1]["maxdate"]) == (
+                "pdat", str(date_from or 1000), str(date_to or 9999))
     finally:
         k.close()
 

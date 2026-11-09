@@ -11,7 +11,7 @@ from rk.fulltext import fulltext_with_fallback, latest_snapshot
 from rk.library.add import add_source
 from rk.library.models import ItemIn
 from rk.library.service import Library
-from rk.sources import europepmc, openalex, resolver
+from rk.sources import europepmc, openalex, pubmed, resolver
 from rk.sources.hits import Hits, as_hits
 from rk.sources.identifiers import Identifier, parse_identifier
 from rk.store.project import ProjectStore
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 HITS_COLLECTION = "Search hits"
 CITED_BY_LIMIT = 25  # citing works per cited_by lookup (one OpenAlex page)
-COUNTED_SOURCES = ("openalex", "europepmc")  # the sources ``count`` can size a query on
+COUNTED_SOURCES = ("openalex", "europepmc", "pubmed")  # the sources ``count`` can size a query on
 
 
 class DiscoverySources(Protocol):
@@ -86,14 +86,17 @@ class KernelSources:
         return openalex.year_counts(ctx.http, query, api_key=ctx.settings.openalex_key)
 
     def count(self, query: str, source: str, *, date_from: int | None = None, date_to: int | None = None) -> int | None:
-        """OpenAlex ``meta.count`` or Europe PMC ``hitCount`` of the query in the years ``date_from``..``date_to``
-        when given, filtered on the source's server (``None`` when the response has none)."""
+        """OpenAlex ``meta.count``, Europe PMC ``hitCount`` or PubMed esearch ``count`` of the query in the years
+        ``date_from``..``date_to`` when given, filtered on the source's server (``None`` when the response has
+        none)."""
         ctx = self.kernel.ctx()
         if source == "openalex":
             return openalex.count(ctx.http, query, api_key=ctx.settings.openalex_key, date_from=date_from,
                                   date_to=date_to)
         if source == "europepmc":
             return europepmc.count(ctx.http, query, date_from=date_from, date_to=date_to)
+        if source == "pubmed":
+            return pubmed.count(ctx.http, query, date_from=date_from, date_to=date_to)
         raise ValueError(f"no record count for source {source!r}; counted: {', '.join(COUNTED_SOURCES)}")
 
     def verify(self, item_id: str) -> str:

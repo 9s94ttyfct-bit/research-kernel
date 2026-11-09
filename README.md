@@ -176,7 +176,7 @@ frozen), `search_screen` (search, deduplication, title/abstract and full-text sc
   a field tag one source understands (PubMed `[tiab]`, Europe PMC `TITLE_ABS:`) breaks the query on the other; Europe
   PMC and OpenAlex also match full texts, so their hit counts are much higher than PubMed's. The kernel checks the
   draft (its free texts may not claim novelty, the same rule as for topics and RQs) and sizes it: the record-cap probe
-  counts each query on each source that reports counts (not PubMed) within the strategy's publication years. The probe
+  counts each query on each source that reports counts (OpenAlex, Europe PMC, PubMed) within the strategy's publication years. The probe
   is advisory and an upper bound (duplicates count again). A draft that fails the checks is drafted again within the
   attempt (up to `protocol_tries`, default 3, versions; only the role whose part failed is asked), and a probe above
   the record cap sends the strategy back to the Scout to narrow, with the counts (up to `protocol_narrow_tries`,

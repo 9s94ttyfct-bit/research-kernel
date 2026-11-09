@@ -12,18 +12,31 @@ EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 BIOC = "https://www.ncbi.nlm.nih.gov/research/bionlp/RESTful/pmcoa.cgi/BioC_json"
 
 
+def _search_params(term: str, retmax: int, date_from: int | None, date_to: int | None) -> dict:
+    params: dict = {"db": "pubmed", "term": term, "retmode": "json", "retmax": retmax}
+    if date_from is not None or date_to is not None:  # E-utilities takes mindate and maxdate only together
+        params.update(datetype="pdat", mindate=date_from if date_from is not None else 1000,
+                      maxdate=date_to if date_to is not None else 9999)
+    return params
+
+
 def esearch(http: HttpClient, term: str, retmax: int = 50, *, retstart: int = 0, date_from: int | None = None,
             date_to: int | None = None) -> list[str]:
     """PMIDs matching ``term``: ``retmax`` from ``retstart``, published (``pdat``) in the years ``date_from``..
     ``date_to`` (inclusive) when given."""
-    params: dict = {"db": "pubmed", "term": term, "retmode": "json", "retmax": retmax}
+    params = _search_params(term, retmax, date_from, date_to)
     if retstart:
         params["retstart"] = retstart
-    if date_from is not None or date_to is not None:  # E-utilities takes mindate and maxdate only together
-        params.update(datetype="pdat", mindate=date_from if date_from is not None else 1000,
-                      maxdate=date_to if date_to is not None else 9999)
     data, _ = http.get_json(f"{EUTILS}/esearch.fcgi", params)
     return ((data or {}).get("esearchresult") or {}).get("idlist", [])
+
+
+def count(http: HttpClient, term: str, *, date_from: int | None = None, date_to: int | None = None) -> int | None:
+    """How many PubMed records match ``term`` (esearch ``count`` with no ids), published in the years
+    ``date_from``..``date_to`` (inclusive, either end open) when given; ``None`` when the response gives none."""
+    data, _ = http.get_json(f"{EUTILS}/esearch.fcgi", _search_params(term, 0, date_from, date_to))
+    n = ((data or {}).get("esearchresult") or {}).get("count")
+    return int(n) if isinstance(n, int | str) and str(n).isdigit() else None
 
 
 def _name(n: str) -> Creator:
