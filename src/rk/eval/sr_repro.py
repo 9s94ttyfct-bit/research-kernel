@@ -61,7 +61,7 @@ from rk.orchestrator.state import (
     record_ran,
     stage_row,
 )
-from rk.production.argue import main_claim
+from rk.production.argue import argument_objection_ids, main_claim
 from rk.production.audit import audit_reports
 from rk.production.common import entity_row
 from rk.production.extraction import included_studies
@@ -390,8 +390,10 @@ def match_included(expected: list[Study], found: list[dict]) -> tuple[list[dict]
     for n, s in enumerate(expected):
         if n in matched or not free:
             continue
-        ratios, i = max((_title_ratios(s.title, found[j]["title"] or ""), j) for j in free)
-        if ratios[0] >= TITLE_MATCH and ratios[1] >= TITLE_SORT_MATCH:
+        passing = [(r, j) for j in free if (r := _title_ratios(s.title, found[j]["title"] or ""))[0] >= TITLE_MATCH
+                   and r[1] >= TITLE_SORT_MATCH]
+        if passing:  # the best among the titles that match (a subset title cannot hide the real one)
+            _, i = max(passing)
             free.remove(i)
             matched[n] = {**s.model_dump(), "by": "title", "item_id": found[i].get("item_id")}
     return ([matched[n] for n in sorted(matched)],
@@ -452,6 +454,21 @@ def final_main_claim(ps: ProjectStore) -> dict | None:
     return {"id": cid, **entity_row(ps, "claims", cid)} if cid else None
 
 
+def objection_sources(ps: ProjectStore) -> set[str]:
+    """The library items the objections of argue's passed attempt (``argument_objection_ids``) cite as their
+    ``source_id``; empty before argue passed."""
+    row = stage_row(ps, "argue")
+    if row is None or row["status"] != "passed" or not row["passed_attempt"]:
+        return set()
+    out = set()
+    for oid in argument_objection_ids(ps, row["passed_attempt"]):
+        r = ps.db.execute("SELECT data FROM objections WHERE id=?", (oid,)).fetchone()
+        src = json.loads(r["data"]).get("source_id") if r else None
+        if src:
+            out.add(src)
+    return out
+
+
 def judge_direction(ctx: StageContext, entry: Entry, claim: dict):
     """The vote (``rk.production.vote``) on the direction the main claim states for the entry's outcome (the main
     conclusion's, which names what the review compares); the main claim's author's vendor is no judge. Recorded in
@@ -466,9 +483,11 @@ def score(ps: ProjectStore, entry: Entry, *, ctx: StageContext | None = None) ->
     """The project against the review (module docstring): ``recall_included``, ``conclusion_direction_agrees``,
     ``gates_passed`` and ``missed`` (the review's included studies the project did not include), with the matches,
     the direction decided and why none was, whether export passed and the protocol's search window. Leakage:
-    ``review_included`` (the reproduced review is one of the project's included studies) and ``claim_from_review``
-    (an evidence note of the main claim or of its reasons comes from it) each make ``direction_compromised`` the
-    reason the direction does not count; ``review_in_library`` (retrieved, perhaps unused) is information only. The
+    ``review_included`` (the reproduced review is one of the project's included studies), ``claim_from_review``
+    (an evidence note of the main claim or of its reasons comes from it) and ``objection_from_review`` (an objection
+    of argue's passed attempt cites it as its source: the Skeptic may search outside the window) each make
+    ``direction_compromised`` the reason the direction does not count; ``review_in_library`` (retrieved, perhaps
+    unused) is information only. The
     direction is judged only with ``ctx`` (the judges' executor; its ``stage`` and ``attempt`` key the recorded
     vote)."""
     found = found_studies(ps)
@@ -489,9 +508,12 @@ def score(ps: ProjectStore, entry: Entry, *, ctx: StageContext | None = None) ->
     out["review_included"] = any(f["item_id"] in review or is_review(entry, f) for f in found)
     claim = final_main_claim(ps)
     out["claim_from_review"] = bool(claim) and bool(argument_items(ps, claim["id"]) & review)
+    out["objection_from_review"] = bool(review) and bool(objection_sources(ps) & review)
     why = ([*(["the reproduced review is one of the project's included studies"] if out["review_included"] else []),
             *(["an evidence note of the main claim or of one of its reasons comes from the reproduced review"]
-              if out["claim_from_review"] else [])])
+              if out["claim_from_review"] else []),
+            *(["an objection of the argument cites the reproduced review as its source"]
+              if out["objection_from_review"] else [])])
     out["direction_compromised"] = "; ".join(why) or None
     if claim is None:
         out["direction_note"] = "argue has not passed: there is no main claim to judge"
@@ -629,6 +651,7 @@ def report_row(entry: Entry, run: dict, got: dict) -> dict:
             "gates_passed": got["gates_passed"], "protocol_window": got["protocol_window"],
             "search_window": [entry.date_from, entry.date_to], "review_in_library": got["review_in_library"],
             "review_included": got["review_included"], "claim_from_review": got["claim_from_review"],
+            "objection_from_review": got["objection_from_review"],
             "meets": meets, "meets_all": all(meets.values())}
 
 
@@ -660,7 +683,7 @@ def write_report(rows: list[dict], out_dir: Path, *, date: str | None = None) ->
                   f"- search window: {r['search_window']}; the frozen protocol's: {_cell(r['protocol_window'])}",
                   (f"- the reproduced review in the project's library: {_cell(r['review_in_library'])} "
                    f"(information); included: {_cell(r['review_included'])}; the main claim rests on it: "
-                   f"{_cell(r['claim_from_review'])}"),
+                   f"{_cell(r['claim_from_review'])}; an objection cites it: {_cell(r['objection_from_review'])}"),
                   *([f"- the direction does not count: {r['direction_compromised']}"] if r["direction_compromised"]
                     else []),
                   f"- main claim: {_cell(r['main_claim'])}",

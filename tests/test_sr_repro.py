@@ -301,6 +301,41 @@ def test_title_match_refuses_a_title_whose_words_are_a_subset():
     pairs, _ = sr.match_included([studies["ref-63"]], [{"title": studies["ref-63"].title.upper() + ".",
                                                          "doi": None, "pmid": None, "item_id": "i1"}])
     assert [p["by"] for p in pairs] == ["title"]
+    # a subset title beside the real one does not hide it: the best candidate is taken among those passing both
+    real = {"title": "Effect of Salix tetrasperma Roxb. on fructose-induced hypertension in rats", "doi": None,
+            "pmid": None, "item_id": "real"}  # set and sort ratio 91.9
+    subset = {"title": "Fructose induced hypertension in rats", "doi": None, "pmid": None,
+              "item_id": "subset"}  # set ratio 100, sort ratio 66
+    assert [p["item_id"] for p in sr.match_included([studies["ref-63"]], [real])[0]] == ["real"]
+    assert [p["item_id"] for p in sr.match_included([studies["ref-63"]], [subset, real])[0]] == ["real"]
+
+
+def test_objection_from_review_compromises_the_direction(tmp_home, replay_http):
+    from rk.argument import ArgumentService, ObjectionIn
+    from rk.production.argue import _note
+
+    k, ps, lib, _ = make_frozen_project(tmp_home, replay_http, paper_type="systematic_review",
+                                        production_mode="auto")
+    _ready((k, ps, lib))
+    attempt = stage_row(ps, "argue")["passed_attempt"]
+    main = main_claim(ps, attempt)
+    entry = _entry("objected", doi="10.5555/the-review", title="A pooled analysis of drug A and outcome B in adults")
+    # the Skeptic found the review (outside the search window) and put it in the library: information only
+    review = lib.add_item(ItemIn(title=entry.title, ids=Ids(doi=entry.doi)), added_by="agent", actor="tester").item_id
+    got = sr.score(ps, entry)
+    assert got["review_in_library"] is True and got["objection_from_review"] is False
+    assert got["direction_compromised"] is None
+    # then objected to the main claim with the review's pooled result
+    oid = ArgumentService(ps).add_objection(ObjectionIn(target_id=main, category="counterexample", priority=1,
+                                                        text="The pooled analysis finds the opposite.",
+                                                        source_id=review), actor="tester")
+    _note(ps, attempt, "critique", actor="tester", round=99, objection_ids=[oid])
+    got = sr.score(ps, entry)
+    assert got["objection_from_review"] is True and got["claim_from_review"] is False
+    assert "objection" in got["direction_compromised"]
+    row = sr.report_row(entry, RUN, {**got, "conclusion_direction_agrees": True})
+    assert row["meets"]["conclusion_direction_agrees"] is False and row["objection_from_review"] is True
+    k.close()
 
 
 def test_review_included_compromises_the_direction(kernel):
