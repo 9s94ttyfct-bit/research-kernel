@@ -391,3 +391,26 @@ def test_the_kernel_written_disclosure_keeps_its_part_headings(env):
     assert not verify_section(ps, "discussion", md, paper_type="systematic_review").ok
     v = verify_section(ps, "disclosure", md, paper_type="systematic_review")
     assert not any("heading" in p for p in v.problems), v.problems
+
+
+def test_a_run_marker_in_a_writer_section_cites_only_a_research_operation(env):
+    """I2 of the final review: in a Writer's section ``[[run:evt_…]]`` names a research operation (a search, the
+    PRISMA counts, …, ``stage.passed``); any other event (``project.created``) verifies nothing. The kernel-written
+    disclosure cites every kind of event."""
+    ps, claim = env
+    created = ps.db.execute("SELECT evt_id FROM events WHERE type='project.created'").fetchone()["evt_id"]
+    text = f"Melatonin is completely safe and always effective in children [[run:{created}]]."
+    v = _one(ps, text)
+    assert not v.ok and any(created in p and "project.created" in p and "research operation" in p
+                            for p in v.problems), v.problems
+    (s,) = parse_section(text)
+    assert verify_sentence(ps, s, paper_type="systematic_review", kernel_written=True).ok
+    assert verify_section(ps, "disclosure", text, paper_type="systematic_review").sentences[0].ok
+    assert not verify_section(ps, "discussion", text, paper_type="systematic_review").sentences[0].ok
+    cid = claim("Copper catalysts may reduce CO2.")
+    added = ps.db.execute("SELECT evt_id FROM events WHERE type='claim.added' AND entity_id=?", (cid,)).fetchone()[0]
+    assert not _one(ps, f"Copper always works [[run:{added}]].").ok
+    sid = log_search(ps, stage="search_screen", attempt=1, purpose="records", source="openalex",
+                     query="melatonin children", limit=50, item_ids=["itm_1", "itm_2"], actor="k")
+    search = ps.db.execute("SELECT evt_id FROM events WHERE entity_id=?", (sid,)).fetchone()[0]
+    assert _one(ps, f"The search returned 2 records [[run:{search}]].").ok

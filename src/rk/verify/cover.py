@@ -3,10 +3,11 @@ check reads the sentence's ``prose``: its rendered text with code spans blanked 
 a code span is not checked and does not count).
 
 - **V-COVER:** at least one source marker; each ``clm``/``run``/``fig``/``stat``/``plan`` marker names a target that
-  exists (a statistic is ``stt_``, a figure ``fig_``; a ``run`` is an event or the frozen protocol; a ``plan`` a frozen
-  design or a hypothesis that was not dropped) and, where it has a hash, still matches it (an artifact's file, the
-  frozen protocol's body, the frozen design's body, and the frozen design a hypothesis is pre-registered in by its
-  ``prereg_hash``). ``inf`` and ``ck`` take no target.
+  exists (a statistic is ``stt_``, a figure ``fig_``; a ``run`` is the frozen protocol or an event, in a Writer's
+  section a research operation's (``RESEARCH_EVENTS``; the kernel-written Disclosure cites any event it reports); a
+  ``plan`` a frozen design or a hypothesis that was not dropped) and, where it has a hash, still matches it (an
+  artifact's file, the frozen protocol's body, the frozen design's body, and the frozen design a hypothesis is
+  pre-registered in by its ``prereg_hash``). ``inf`` and ``ck`` take no target.
 - **V-NUM:** every number of the sentence is in a marker's target (``number_pool``): a claim's text and its evidence
   notes, as written; an artifact's reported values (a pooled statistic's ``display`` values and ``k``, a map table's
   counts), an event's whitelisted fields (``EVENT_NUMBERS``) and the protocol's stored values, exactly or rounded as
@@ -84,6 +85,10 @@ EVENT_NUMBERS: dict[str, tuple[str, ...]] = {
     "draft.prisma": ("identified", "duplicates_removed", "screened", "excluded_ta", "sought", "not_retrieved",
                      "assessed_ft", "excluded_ft_total", "included", "excluded_language", "abstract_only"),
 }
+# What a [[run:evt_…]] marker in a Writer's section may cite (spec §9.1 V-COVER ②: the system's own research
+# operations): the producers of a run event's numbers, and a stage's pass (the draft's Disclosure stub cites it). The
+# kernel-written Disclosure cites any event it reports (a checkpoint answer, a vote, a degrade, …).
+RESEARCH_EVENTS = frozenset({*EVENT_NUMBERS, "stage.passed"})
 
 
 class SentenceVerdict(BaseModel):
@@ -153,8 +158,9 @@ def _hypothesis_problem(ps: ProjectStore, hyp_id: str) -> str | None:
     return None
 
 
-def _target_problem(ps: ProjectStore, m: Marker, paper_type: str) -> str | None:
-    """Why the marker's target is not a valid one (V-COVER, G-SUPPORT), else ``None``."""
+def _target_problem(ps: ProjectStore, m: Marker, paper_type: str, kernel_written: bool = False) -> str | None:
+    """Why the marker's target is not a valid one (V-COVER, G-SUPPORT), else ``None``. In a Writer's section (not
+    ``kernel_written``) a ``run`` event is a research operation (``RESEARCH_EVENTS``)."""
     if m.kind in ("inf", "ck"):
         return f"[[{m.kind}]] takes no target" if m.target else None
     if not m.target:
@@ -177,7 +183,13 @@ def _target_problem(ps: ProjectStore, m: Marker, paper_type: str) -> str | None:
             if p["frozen_hash"] != protocol_hash(p["body"]):
                 return f"protocol {m.target} no longer matches its frozen hash"
             return None
-        return None if _event(ps, m.target) is not None else f"no event {m.target}"
+        got = _event(ps, m.target)
+        if got is None:
+            return f"no event {m.target}"
+        if not kernel_written and got[0] not in RESEARCH_EVENTS:
+            return (f"{m.target} ({got[0]}) is not a research operation: a [[run:]] marker cites what the kernel ran "
+                    f"for the research (an event of {', '.join(sorted(RESEARCH_EVENTS))}) or the frozen protocol")
+        return None
     # plan
     if paper_type != "research_proposal":
         return f"[[plan:{m.target}]] belongs only in a research proposal"
@@ -317,13 +329,14 @@ def _quotations(s: Sentence, prose: str) -> list[tuple[int, int, str]]:
     return [(q.start(), q.end(), next(g for g in q.groups() if g is not None)) for q in _QUOTED.finditer(prose)]
 
 
-def verify_sentence(ps: ProjectStore, s: Sentence, *, paper_type: str) -> SentenceVerdict:
-    """The sentence against every rule of the module docstring."""
+def verify_sentence(ps: ProjectStore, s: Sentence, *, paper_type: str, kernel_written: bool = False) -> SentenceVerdict:
+    """The sentence against every rule of the module docstring; ``kernel_written``: of a section only the kernel
+    writes (its ``run`` markers may cite any event)."""
     problems: list[str] = []
     if not s.markers:
         problems.append("the sentence has no source marker")
     for m in s.markers:
-        if (why := _target_problem(ps, m, paper_type)) is not None:
+        if (why := _target_problem(ps, m, paper_type, kernel_written)) is not None:
             problems.append(why)
     kinds = {m.kind for m in s.markers}
     prose = _MARKER_TEXT.sub(lambda x: " " * len(x.group(0)), s.prose)
@@ -361,8 +374,8 @@ def verify_section(ps: ProjectStore, section: str, markdown: str, *, paper_type:
     kernel_written = section in KERNEL_WRITTEN
     sentences = parse_section(markdown)
     known = known or {}
-    verdicts = [known[s.index] if s.index in known else verify_sentence(ps, s, paper_type=paper_type)
-                for s in sentences]
+    verdicts = [known[s.index] if s.index in known
+                else verify_sentence(ps, s, paper_type=paper_type, kernel_written=kernel_written) for s in sentences]
     ck = sum(1 for s in sentences if any(m.kind == "ck" for m in s.markers))
     share = ck / len(sentences) if sentences else 0.0
     problems = section_problems(markdown, kernel_written=kernel_written)
