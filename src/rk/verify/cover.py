@@ -12,7 +12,8 @@ a code span is not checked and does not count).
 - **V-NUM:** every number of the sentence is in a marker's target (``number_pool``): a claim's text and its evidence
   notes, as written; an artifact's reported values (a pooled statistic's ``display`` values and ``k``, a map table's
   counts), an event's whitelisted fields (``EVENT_NUMBERS``) and the protocol's stored values, exactly or rounded as
-  the sentence writes them; a design's or hypothesis's text. ``[[inf]]`` and ``[[ck]]`` cover no number.
+  the sentence writes them; a protocol's, design's or hypothesis's text (e.g. an eligibility age). ``[[inf]]`` and
+  ``[[ck]]`` cover no number.
 - **V-HEDGE:** the sentence is no stronger than the strongest claim it cites; an ``[[inf]]`` sentence is worded
   tentatively (level ≤ 1: "[[inf]] 转为推断性措辞"). Quoted text that V-QUOTE checks is the source's wording, not the
   sentence's, and is left out of the measure.
@@ -316,6 +317,7 @@ def number_pool(ps: ProjectStore, markers: list[Marker]) -> NumberPool:
             pool.values += numeric_leaves(reported_values(a["values"]))
         elif m.kind == "run" and m.target.startswith("prt_") and (p := protocol_row(ps, m.target)) is not None:
             pool.values += numeric_leaves(p["body"])
+            pool.nums += [n for t in _strings(p["body"]) for n in extract_numbers(t)]  # e.g. an eligibility age
         elif m.kind == "run" and (ev := _event(ps, m.target)) is not None:
             pool.values += _event_values(*ev)
         elif m.kind == "plan" and m.target.startswith("dsg_") and (d := design(ps, m.target)) is not None:

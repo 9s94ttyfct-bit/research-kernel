@@ -349,7 +349,8 @@ def _quotable(note: dict) -> bool:
 def writer_inputs(ps: ProjectStore, s: DraftInputs, spec: SectionSpec, prisma: str | None) -> dict:
     """What every Writer task gets for ``spec`` (draft and revise alike): the paper type, audience and question, the
     section and the sections, the marker grammar, the claims (ids, texts, statuses, evidence notes with whether each is
-    a verified quote, and their balance facts: ``rk.verify.balance.balance_requirements``), the artifacts with their
+    a verified quote, and their balance facts: ``rk.verify.balance.balance_requirements``; a withdrawn claim is not
+    offered, since it cannot be cited: the limitations list it), the artifacts with their
     reported values only (``rk.verify.cover.reported_values``), the protocol, the search events and the PRISMA event
     ``prisma``, a proposal's design and hypotheses, and the limitations."""
     svc = ArgumentService(ps)
@@ -367,6 +368,7 @@ def writer_inputs(ps: ProjectStore, s: DraftInputs, spec: SectionSpec, prisma: s
 
     claims = ([claim(s.main, "main")] if s.main else []) + [claim(c, "argument") for c in s.argument] \
         + [claim(c, "finding") for c in s.findings]
+    claims = [c for c in claims if c["status"] != "withdrawn"]  # never citable: only the limitations list them
     arts = [{"id": a["id"], "kind": a["kind"], "values": reported_values(a["values"])}
             for a in artifacts(ps, "synthesize", s.synth_attempt) if a["kind"] in ("stt", "fig")]
     events = []

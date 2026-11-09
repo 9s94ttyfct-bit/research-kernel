@@ -241,6 +241,9 @@ def test_protocol_and_design_pools(env):
     store.freeze_protocol(ps, pid, actor="t")
     assert _one(ps, f"We searched works published since 2000 [[run:{pid}]].").ok
     assert not _one(ps, f"We searched works published since 2001 [[run:{pid}]].").ok
+    # Task 9: a number in the protocol's texts (an eligibility criterion "People over 80") is in its target too
+    assert _one(ps, f"Eligible studies enrolled people over 80 [[run:{pid}]].").ok
+    assert not _one(ps, f"Eligible studies enrolled people over 75 [[run:{pid}]].").ok
     did = _frozen_design(ps)
     assert _one(ps, f"We will test 40 cells per arm [[plan:{did}]].", "research_proposal").ok
     assert not _one(ps, f"We will test 41 cells per arm [[plan:{did}]].", "research_proposal").ok

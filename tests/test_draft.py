@@ -9,6 +9,7 @@ from dataclasses import replace
 
 import pytest
 
+from rk.argument import ArgumentService
 from rk.config import load_settings, save_settings
 from rk.orchestrator.engine import default_workers
 from rk.orchestrator.graph import BACK_EDGES
@@ -298,6 +299,25 @@ def test_a_bare_id_marker_is_named_in_the_writers_retry(env):
     failures = ex.of("writer", "SectionDraft")[1]["inputs"]["retry"]["failures"]
     assert any("[[clm_01ABC]] is not a source marker" in f and "write [[clm:clm_01ABC]]" in f for f in failures), \
         failures
+
+
+def test_the_writer_is_not_offered_a_withdrawn_claim(env):
+    """Task 9: the Writer (haiku) cited withdrawn claims it was given in its claims input; a withdrawn claim cannot be
+    cited, so only the limitations list it."""
+    _, ps, _ = env
+    _ready(env)
+    first = _writer([writes()])
+    with pytest.raises(AssertionError):  # only the first task's inputs are needed
+        DraftWorker().run(_ctx(env, first))
+    claims = first.of("writer", "SectionDraft")[0]["inputs"]["claims"]
+    gone = next(c["claim_id"] for c in claims if c["role"] == "finding")
+    ArgumentService(ps).withdraw_claim(gone, reason="the objection holds", actor="tester")
+    ex = _writer([writes()])
+    with pytest.raises(AssertionError):
+        DraftWorker().run(_ctx(env, ex, attempt=2))
+    inputs = ex.of("writer", "SectionDraft")[0]["inputs"]
+    assert gone not in [c["claim_id"] for c in inputs["claims"]] and inputs["claims"]
+    assert gone in json.dumps(inputs["limitations"])
 
 
 def test_disclosure_section_is_kernel_written(env):
