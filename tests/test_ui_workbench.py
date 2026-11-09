@@ -89,6 +89,21 @@ def test_progress_lists_events_and_tasks(ui, project, kernel):
     assert {"project.created", "item.added", "attachment.added"} <= {e["type"] for e in p["events"]}
 
 
+def test_progress_shows_an_interrupted_task(ui, project):
+    """Spec §11.6: a task cut off by a restart is listed with status ``interrupted`` (text in the task table)."""
+    from rk.llm.runner import INTERRUPTED, interrupt_orphaned_tasks
+    from rk.store.events import NewEvent
+
+    ps, _ = project
+    ps.apply(NewEvent(type="task.created", entity_id="tsk_cut", actor_kind="kernel", actor="t", payload={
+        "role": "judge", "driver": "codex_cli", "vendor": "openai", "instructions": "x", "inputs": {}, "tools": [],
+        "output_schema": {}}))
+    assert interrupt_orphaned_tasks(ps) == ["tsk_cut"]
+    (t,) = ui.get("/ui/api/progress", params={"project": "demo"}).json()["result"]["tasks"]
+    assert (t["id"], t["status"], t["attempts"], t["error"]) == ("tsk_cut", "interrupted", 0, INTERRUPTED)
+    assert t["finished"]
+
+
 def test_settings_never_returns_secrets(ui, project):
     save_settings(load_settings().model_copy(update={"openalex_key": "secret-oa", "anthropic_api_key": "sk-x"}))
     s = ui.get("/ui/api/settings").json()["result"]

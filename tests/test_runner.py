@@ -8,7 +8,7 @@ from rk.config import Settings, save_settings
 from rk.fulltext import attach_pdf
 from rk.library.models import Creator, ItemIn
 from rk.llm.drivers import DriverSpec
-from rk.llm.runner import run_task, task_row
+from rk.llm.runner import interrupt_orphaned_tasks, run_task, task_row
 from rk.llm.types import Availability, TaskResult
 from rk.notes import list_notes
 from rk.store.projections import rebuild
@@ -127,6 +127,40 @@ def test_driver_exception_is_recorded_not_raised(env):
 
     r = _run(env, Boom([]))
     assert not r.ok and "driver bug" in r.error and task_row(ps, r.task_id)["attempts"] == 3
+
+
+def test_a_task_cut_off_by_a_restart_is_marked_interrupted(env, tmp_home, replay_http):
+    """Spec §11.6: a process killed during a provider call writes no ``task.finished``; on restart the sweep marks the
+    task left ``running`` as ``interrupted`` (an event, so a rebuild keeps it) and leaves finished tasks alone."""
+    k, _, ps = env
+    done = _run(env, FakeProvider([(True, None)]))
+
+    class Killed(FakeProvider):
+        def run(self, spec, ctx):
+            self.calls.append((spec, ctx))
+            raise SystemExit(1)  # like a kill: gets past ``except Exception``
+
+    p = Killed([])
+    with pytest.raises(SystemExit):
+        _run(env, p)
+    orphan = p.calls[0][0].task_id
+    assert task_row(ps, orphan)["status"] == "running"
+    k.close()
+
+    k2 = Kernel(tmp_home, http=replay_http)
+    try:
+        ps2, _ = k2.project("rt")
+        assert interrupt_orphaned_tasks(ps2) == [orphan]
+        row = task_row(ps2, orphan)
+        assert (row["status"], row["output"], row["attempts"]) == ("interrupted", None, 0)
+        assert row["finished"] and row["error"] == "interrupted: rk serve stopped before the task returned"
+        assert [e.type for e in ps2.log.iter() if e.entity_id == orphan] == ["task.created", "task.finished"]
+        assert task_row(ps2, done.task_id)["status"] == "done"
+        assert interrupt_orphaned_tasks(ps2) == []
+        rebuild(ps2.db)
+        assert task_row(ps2, orphan) == row
+    finally:
+        k2.close()
 
 
 # ---------------- live demo: the same reader task on three drivers ----------------

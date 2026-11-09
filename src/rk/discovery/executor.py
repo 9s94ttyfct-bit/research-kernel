@@ -51,11 +51,12 @@ class TaskExecutor(Protocol):
 
 
 class KernelExecutor:
-    """Runs role tasks with ``run_task`` and links each to its stage attempt (event ``run.task``). With a ``run_id``
-    (D2) a task in an open stage (``OPEN_STAGES``) first checks the stage budget of the run session; the other stages,
-    including those that work through every record or included study, have none, and neither has D1 (no
-    ``run_id``). The hourly call caps apply to every task. ``provider_for`` (role -> provider) replaces the configured
-    drivers, e.g. in tests; a ``provider`` given to ``run`` takes precedence."""
+    """Runs role tasks with ``run_task`` and links each to its stage attempt (event ``run.task``) as soon as it is
+    created, so a task cut off by a restart (``interrupted``, spec §11.6) still counts against the stage budget. With
+    a ``run_id`` (D2) a task in an open stage (``OPEN_STAGES``) first checks the stage budget of the run session; the
+    other stages, including those that work through every record or included study, have none, and neither has D1
+    (no ``run_id``). The hourly call caps apply to every task. ``provider_for`` (role -> provider) replaces the
+    configured drivers, e.g. in tests; a ``provider`` given to ``run`` takes precedence."""
 
     def __init__(self, kernel, registry, project: str, *, run_id: str | None, session: int | None,
                  max_tasks_per_stage: int = STAGE_TASK_BUDGET, provider_for: Callable[[str], Provider] | None = None,
@@ -76,11 +77,14 @@ class KernelExecutor:
         if provider is None and self.provider_for:
             provider = self.provider_for(role)
         limits = {k: v for k, v in (("max_turns", max_turns), ("timeout_s", timeout_s)) if v is not None}
+
+        def link(task_id: str) -> None:
+            record_run_task(ps, task_id=task_id, run_id=self.run_id, session=self.session, stage=stage,
+                            attempt=attempt, actor=self.actor)
+
         result = run_task(self.kernel, self.registry, project=self.project, role=role, instructions=instructions,
                           inputs=inputs, output_schema=output_schema, driver=driver, provider=provider, tools=tools,
-                          actor=self.actor, **limits)
-        record_run_task(ps, task_id=result.task_id, run_id=self.run_id, session=self.session, stage=stage,
-                        attempt=attempt, actor=self.actor)
+                          actor=self.actor, on_created=link, **limits)
         if result.error == "rate_capped":
             raise RateCapped(result.provider, self.kernel.caps.wait_s(result.provider))
         if result.error == SESSION_LIMITED:

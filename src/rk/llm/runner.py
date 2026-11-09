@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from collections.abc import Callable
 from dataclasses import replace
 
 from pydantic import BaseModel
@@ -23,6 +24,7 @@ from rk.store.projections import projection
 
 MAX_ATTEMPTS = 3
 RAW_LIMIT = 64 * 1024
+INTERRUPTED = "interrupted: rk serve stopped before the task returned"
 NO_RETRY = frozenset({"waiting_human", "rate_capped", SESSION_LIMITED})
 
 
@@ -37,7 +39,10 @@ def _clip(raw: str) -> str:
 def run_task(kernel, registry, *, project: str, role: str, instructions: str, inputs: dict | None = None,
              output_schema: type[BaseModel] = FreeText, driver: DriverSpec | None = None,
              provider: Provider | None = None, tools: list[str] | None = None, max_turns: int = 12,
-             timeout_s: int = 600, actor: str = "kernel") -> TaskResult:
+             timeout_s: int = 600, actor: str = "kernel",
+             on_created: Callable[[str], None] | None = None) -> TaskResult:
+    """``on_created(task_id)`` runs right after ``task.created``, before any call: a caller links the task there (e.g.
+    to its stage attempt), so a task cut off by a restart is linked too."""
     settings = kernel.settings()
     spec_driver = driver or DriverSpec.parse(settings.drivers[role])
     prov = provider or build_provider(spec_driver, settings)
@@ -51,6 +56,8 @@ def run_task(kernel, registry, *, project: str, role: str, instructions: str, in
     ps.apply(NewEvent(type="task.created", entity_id=task_id, actor_kind="kernel", actor=actor, payload={
         "role": role, "driver": str(spec_driver), "vendor": prov.vendor, "instructions": instructions,
         "inputs": spec.inputs, "tools": granted, "output_schema": output_schema.model_json_schema()}))
+    if on_created is not None:
+        on_created(task_id)
 
     token = None
     if prov.kind == "agentic_cli" and granted:
@@ -91,6 +98,17 @@ def run_task(kernel, registry, *, project: str, role: str, instructions: str, in
         "status": status, "output": result.output.model_dump(mode="json") if result.output else None,
         "error": result.error}))
     return result
+
+
+def interrupt_orphaned_tasks(ps) -> list[str]:
+    """Spec §11.6: mark every task still ``running`` as ``interrupted`` (event ``task.finished``, so a rebuild keeps
+    it) and return their ids. A process killed during a provider call writes no ``task.finished``; ``rk serve`` calls
+    this for every project at startup, before anything can start a task. Never call it while a task may be live."""
+    ids = [r["id"] for r in ps.db.execute("SELECT id FROM tasks WHERE status='running' ORDER BY created, id")]
+    for task_id in ids:
+        ps.apply(NewEvent(type="task.finished", entity_id=task_id, actor_kind="kernel", actor="kernel", payload={
+            "status": "interrupted", "output": None, "error": INTERRUPTED}))
+    return ids
 
 
 def task_row(ps, task_id: str) -> dict:

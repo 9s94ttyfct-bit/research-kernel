@@ -21,6 +21,7 @@ from rk.discovery.store import (
     rounds,
 )
 from rk.llm.drivers import DriverSpec
+from rk.llm.runner import interrupt_orphaned_tasks, task_row
 from rk.orchestrator.engine import Orchestrator, StageOutcome
 from rk.orchestrator.graph import DISCOVERY
 from rk.orchestrator.runs import RunManager
@@ -29,6 +30,7 @@ from rk.orchestrator.state import (
     latest_run,
     run_row,
     stage_rows,
+    start_run,
     tasks_used,
 )
 from rk.tools.builtin import build_registry
@@ -139,6 +141,112 @@ def test_run_resumes_after_restart_without_rerunning_passed_stages(tmp_home, rep
         assert run_row(ps2, run_id)["session"] == 1
     finally:
         k2.close()
+
+
+def test_a_task_cut_off_by_a_restart_is_interrupted_and_counted(tmp_home, replay_http):
+    """Spec §11.6: the first judge of an open stage dies with the process (SystemExit gets past every ``except
+    Exception``, like a kill). After the restart (sweep, new RunManager, ``resume_all``) the run passes; the orphan is
+    ``interrupted``, linked to its stage attempt and counted against the stage budget, since its call may have used
+    quota."""
+
+    class KilledOnce(FakeJudge):
+        orphan: str | None = None
+
+        def run(self, spec, ctx):
+            if self.orphan is None:
+                self.orphan = spec.task_id
+                raise SystemExit(1)
+            return super().run(spec, ctx)
+
+    judge, seen = KilledOnce("supported", []), []
+
+    def judged(ctx):
+        seen.append(ctx.attempt)
+        ctx.executor.run("judge", "Judge.", {}, JudgeVerdict, stage=ctx.stage, attempt=ctx.attempt, tools=[])
+        return StageOutcome("done")
+
+    def executors(kern, reg):
+        return lambda project, run_id, session: KernelExecutor(kern, reg, project, run_id=run_id, session=session,
+                                                               provider_for=lambda role: judge)
+
+    w = _workers(landscape=FakeWorker(runs=[judged, judged]))
+    k, ps, _ = make_project(tmp_home, replay_http)
+    reg = build_registry(k)
+    o = _orch(k, reg, w, executors(k, reg))
+    run_id = start_run(ps, until="topics", actor="tester", clock=o.clock)
+    with pytest.raises(SystemExit):
+        for _ in range(5):
+            o.step("demo", run_id, actor="tester")
+    assert judge.orphan and task_row(ps, judge.orphan)["status"] == "running"
+    k.close()
+
+    k2 = Kernel(tmp_home, http=replay_http)
+    try:
+        ps2, _ = k2.project("demo")
+        assert interrupt_orphaned_tasks(ps2) == [judge.orphan]
+        reg2 = build_registry(k2)
+        m2 = RunManager(k2, reg2, _orch(k2, reg2, w, executors(k2, reg2)), poll_s=0.02)
+        try:
+            assert m2.resume_all() == [run_id]
+            _wait(lambda: run_row(ps2, run_id)["status"] == "done")
+        finally:
+            m2.close()
+        assert task_row(ps2, judge.orphan)["status"] == "interrupted"
+        link = ps2.db.execute("SELECT run_id, session, stage, attempt FROM run_tasks WHERE task_id=?",
+                              (judge.orphan,)).fetchone()
+        assert tuple(link) == (run_id, 1, "landscape", seen[0])
+        assert len(seen) == 2 and tasks_used(ps2, run_id, 1, "landscape") == 2
+    finally:
+        k2.close()
+
+
+def test_serve_marks_orphaned_tasks_interrupted_before_it_serves_or_resumes(tmp_home, replay_http, monkeypatch):
+    """``rk serve`` sweeps the tasks left ``running`` (spec §11.6) right after the Kernel opens: before uvicorn starts
+    (a chat or MCP task started there must never be swept) and before ``resume_all``."""
+    import sqlite3
+
+    import uvicorn
+    from typer.testing import CliRunner
+
+    from rk.cli.main import app
+    from rk.store.events import NewEvent
+
+    k, ps, _ = make_project(tmp_home, replay_http)
+    ps.apply(NewEvent(type="task.created", entity_id="tsk_orphan", actor_kind="kernel", actor="tester", payload={
+        "role": "judge", "driver": "codex_cli", "vendor": "openai", "instructions": "x", "inputs": {}, "tools": [],
+        "output_schema": {}}))
+    k.close()
+    db = tmp_home / "projects" / "demo" / "rk.sqlite"
+    order: list[tuple[str, str]] = []
+
+    def status() -> str:
+        conn = sqlite3.connect(db)
+        try:
+            return conn.execute("SELECT status FROM tasks WHERE id='tsk_orphan'").fetchone()[0]
+        finally:
+            conn.close()
+
+    class Server:
+        def __init__(self, config):
+            self.started = self.should_exit = False
+
+        def run(self, sockets=None):
+            order.append(("server", status()))
+            self.started = True
+            _wait(lambda: len(order) == 2)  # the resume thread waits for the server to start
+
+    def resume_all(self):
+        order.append(("resume_all", status()))
+        return []
+
+    monkeypatch.setattr(uvicorn, "Server", Server)
+    monkeypatch.setattr(RunManager, "resume_all", resume_all)
+    monkeypatch.setattr("signal.signal", lambda *a: None)
+    r = CliRunner().invoke(app, ["serve", "--no-browser"])
+    assert r.exit_code == 0, r.output
+    assert order == [("server", "interrupted"), ("resume_all", "interrupted")]
+    assert "marked 1 task(s) interrupted" in r.output
+
 
 
 def test_one_run_per_project(env):

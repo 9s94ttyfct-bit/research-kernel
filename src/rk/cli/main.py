@@ -172,6 +172,25 @@ def mcp(project: str = typer.Option(..., "--project"),
 
 
 # ---------------- daemon ----------------
+def _interrupt_orphaned_tasks(kernel) -> None:
+    """Spec §11.6, at ``rk serve`` start: the tasks a stopped serve left ``running`` become ``interrupted``. Only
+    while the serve lock is held and before anything can start a task (uvicorn, ``resume_all``)."""
+    from rk.llm.runner import interrupt_orphaned_tasks
+
+    for d in sorted(kernel.projects_dir.iterdir()):
+        if not (d / "rk.sqlite").exists():
+            continue
+        try:
+            ids = interrupt_orphaned_tasks(kernel.project(d.name)[0])
+        except Exception as e:  # noqa: BLE001 - one broken project does not keep serve from starting
+            typer.secho(f"could not mark the interrupted tasks of {d.name} ({type(e).__name__}: {e})",
+                        fg="yellow", err=True)
+            continue
+        if ids:
+            typer.echo(f"{d.name}: marked {len(ids)} task(s) interrupted (rk serve stopped before they returned)",
+                       err=True)
+
+
 @app.command()
 def serve(detach: bool = typer.Option(False, help="Start in the background and return"),
           no_browser: bool = typer.Option(False, "--no-browser", help="Do not start the built-in browser")) -> None:
@@ -203,6 +222,7 @@ def serve(detach: bool = typer.Option(False, help="Start in the background and r
         typer.secho(str(e), fg="yellow", err=True)
         raise typer.Exit(0) from e
     kernel = Kernel(home)
+    _interrupt_orphaned_tasks(kernel)  # before uvicorn and resume_all: nothing can have started a task yet
     settings = kernel.settings()
     origin = f"http://127.0.0.1:{rt.port}"
     ui = UiAuth(origin)

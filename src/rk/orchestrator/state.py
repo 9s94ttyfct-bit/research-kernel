@@ -30,15 +30,16 @@ def _emit(ps: ProjectStore, type_: str, entity_id: str, payload: dict, actor: st
 # ---- role tasks ----
 def record_run_task(ps: ProjectStore, *, task_id: str, run_id: str | None, session: int | None, stage: str,
                     attempt: int, actor: str = "kernel") -> None:
-    """Link a finished role task to its stage attempt (and, in D2, to its run session)."""
+    """Link a role task to its stage attempt (and, in D2, to its run session). ``KernelExecutor`` links it as soon as
+    it is created, so a task cut off by a restart is linked too."""
     _emit(ps, "run.task", task_id, {"task_id": task_id, "run_id": run_id, "session": session, "stage": stage,
                                     "attempt": attempt}, actor)
 
 
 def tasks_used(ps: ProjectStore, run_id: str, session: int | None, stage: str) -> int:
-    """Role tasks counted against the stage budget of one run session. A task that came back ``rate_capped`` made no
-    model call, and one that came back ``session_limited`` did no work (its driver's usage limit was reached): neither
-    is counted."""
+    """Role tasks counted against the stage budget of one run session, those still running or ``interrupted`` by a
+    restart included (their call may have used quota). A task that came back ``rate_capped`` made no model call, and
+    one that came back ``session_limited`` did no work (its driver's usage limit was reached): neither is counted."""
     return ps.db.execute(
         "SELECT COUNT(*) FROM run_tasks r LEFT JOIN tasks t ON t.id = r.task_id WHERE r.run_id=? AND r.session IS ? "
         "AND r.stage=? AND COALESCE(t.error, '') NOT IN ('rate_capped', 'session_limited')",
