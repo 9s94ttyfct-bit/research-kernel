@@ -24,12 +24,14 @@ and packs a reproducible package. No role task, no model.
    lacks them is named before pandoc runs, never printed as "n.d." or "???" (Review Focus 4). ``refs.json`` is the
    items' CSL JSON (``to_csl``), ``refs.bib`` their BibTeX keyed by the same ids.
 4. **Pandoc** (``_render``; argv lists, never a shell, in a temporary directory, each with a timeout that kills the
-   process group, tectonic included). The reader is ``markdown-raw_tex-tex_math_dollars-yaml_metadata_block``: a
-   backslash, ``$…$`` and a ``---`` block in the prose are text. The document's metadata is the kernel's alone,
-   given on the command line (``--metadata-file metadata.yaml``: the title, the research question with every markup
-   character escaped, and the language and reference settings; ``--include-in-header preamble.tex`` for LaTeX).
+   process group, tectonic included). The reader is ``markdown-raw_tex-raw_html-tex_math_dollars-yaml_metadata_block``:
+   a backslash, HTML, ``$…$`` and a ``---`` block in the prose are text (as the audit's markdown-it reads HTML). The
+   document's metadata is the kernel's alone, given on the command line (``--metadata-file metadata.yaml``: the
+   title, the research question with every markup character escaped, and the language and reference settings;
+   ``--include-in-header preamble.tex`` for LaTeX).
    Before anything is rendered, each markdown's AST is checked against an allow-list (``ast_problems``): no math, no
-   raw output but the kernel's own figure blocks, no image but the kernel's ``figures/<id>.svg``, no metadata key but
+   raw output but the kernel's own figure blocks, no image but the one ``figures/<id>.svg`` the kernel inserted for
+   each figure in ``paper.md`` (none in ``paper-latex.md``: a Writer's image is refused in both), no metadata key but
    the kernel's; a section holding a raw ``{=format}`` block or span is refused even earlier, at conversion. So the
    Writer's text or the RQ can neither run LaTeX nor make pandoc or tectonic read a local file. The kernel's
    ``crossref.lua`` filter resolves ``@fig:``/``@tbl:`` before ``--citeproc`` (pandoc-crossref is not installed).
@@ -101,7 +103,7 @@ SOURCES = ("paper.md", "paper-latex.md", "metadata.yaml", "preamble.tex", "refs.
 OUTPUTS = ("paper.docx", "paper.tex", "paper.pdf")
 FOREST = "rk.stats.plots:forest_svg"
 MAP_TABLES = ("rk.stats.plots:map_table", "rk.verify.stats:map_markdown")
-READER = "markdown-raw_tex-tex_math_dollars-yaml_metadata_block"
+READER = "markdown-raw_tex-raw_html-tex_math_dollars-yaml_metadata_block"
 FILTER = Path(__file__).with_name("crossref.lua")
 TIMEOUT, PDF_TIMEOUT = 120, 600  # seconds; tectonic may fetch its package bundle on first use
 METHODS = "methods"
@@ -334,7 +336,7 @@ def metadata(question: str) -> str:
     return json.dumps(meta, ensure_ascii=False, indent=2) + "\n"
 
 
-def _problem_walk(node, out: list[str], raw: set[str], images: set[str]) -> None:
+def _problem_walk(node, out: list[str], raw: set[str], images: dict[str, int]) -> None:
     if isinstance(node, list):
         for v in node:
             _problem_walk(v, out, raw, images)
@@ -349,22 +351,29 @@ def _problem_walk(node, out: list[str], raw: set[str], images: set[str]) -> None
         if not (t == "RawBlock" and c[0] == "latex" and c[1].strip("\n") in raw):
             out.append(f"raw {c[0]} output is not the kernel's: {c[1][:120]!r}")
         return
-    if t == "Image" and c[2][0] not in images:
-        out.append(f"an image of {c[2][0]} is not one of the kernel's figures")
+    if t == "Image":
+        if images.get(c[2][0], 0) > 0:
+            images[c[2][0]] -= 1
+        else:
+            out.append(f"an image of {c[2][0]} is not one of the kernel's figures (or is that figure again: the "
+                       "kernel inserts each figure once, and an image the Writer wrote is refused)")
     for v in node.values():
         _problem_walk(v, out, raw, images)
 
 
 def ast_problems(ast: dict, *, raw: set[str], images: set[str]) -> list[str]:
     """What the allow-list refuses in a pandoc JSON AST before anything is rendered: any ``Math``; a ``RawInline`` or
-    ``RawBlock`` other than one of the kernel's figure blocks ``raw``; an ``Image`` whose source is not one of the
-    kernel's ``images``; a metadata key not in ``META_KEYS`` (the metadata's values are walked too)."""
+    ``RawBlock`` other than one of the kernel's figure blocks ``raw``; an ``Image`` other than the one the kernel
+    inserted for each of its figures ``images`` (each source once: a Writer's copy of a kernel figure is refused too;
+    the latex source passes none, its figures being raw TikZ); a metadata key not in ``META_KEYS`` (the metadata's
+    values are walked too)."""
     out: list[str] = []
     allowed = {r.strip("\n") for r in raw}
+    left = dict.fromkeys(images, 1)
     meta = ast.get("meta") or {}
     out += [f"the metadata key {k} is not the kernel's" for k in meta if k not in META_KEYS]
-    _problem_walk(meta, out, allowed, images)
-    _problem_walk(ast.get("blocks") or [], out, allowed, images)
+    _problem_walk(meta, out, allowed, {})
+    _problem_walk(ast.get("blocks") or [], out, allowed, left)
     return out
 
 
@@ -478,7 +487,9 @@ def _render(out_dir: Path, refmap: dict) -> tuple[list[str], list[str]]:
         reader = ["--from", READER, "--metadata-file", "metadata.yaml"]
         opts = [*reader, "--lua-filter", FILTER.name, "--citeproc", "--bibliography", "refs.json"]
         latex = ["--include-in-header", "preamble.tex"]
-        raw, images = set(refmap.get("raw") or []), {f"{FIGURES}/{aid}.svg" for aid in refmap["figures"]}
+        raw = set(refmap.get("raw") or [])
+        # docx: each cited forest plot's SVG, which the kernel inserted once; latex: no image (its figures are TikZ)
+        images = {"paper.md": {f"{FIGURES}/{aid}.svg" for aid in refmap["figures"]}, "paper-latex.md": set()}
         for src in ("paper.md", "paper-latex.md"):
             # the allow-list, before anything is rendered or citeproc reads anything
             plain, err = _run([pandoc, src, *reader, "--to", "json"], work, f"pandoc ({src} → AST)", TIMEOUT)
@@ -486,7 +497,7 @@ def _render(out_dir: Path, refmap: dict) -> tuple[list[str], list[str]]:
                 failures.append(err)
                 continue
             ast = json.loads(plain.stdout)
-            if problems := ast_problems(ast, raw=raw, images=images):
+            if problems := ast_problems(ast, raw=raw, images=images[src]):
                 failures += [f"{src}: {p} (only the kernel's figures and metadata are allowed)" for p in problems]
                 continue
             # the round trip: the keys pandoc reads are the entries citeproc renders, without a warning

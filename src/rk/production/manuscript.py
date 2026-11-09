@@ -10,12 +10,12 @@ section problem). An escaped, entity-encoded or emphasis-split form, or one brok
 preview substitutes exactly these.
 
 ``parse_section`` reads the markdown with markdown-it (raw HTML off, so it stays text) and keeps the prose of
-paragraphs and list items; headings, tables, table captions and code blocks are not prose. A table or a pandoc
-caption line (``Table: …`` / ``: …``) is a section problem (``section_problems``): tables come from code artifacts at
-export. A paragraph inside a block quote is one sentence of quoted text (``quoted``). A sentence's ``text`` is its
-rendered prose (emphasis and link markup gone, code spans kept with their backticks); its ``prose`` is that text with
-every code span blanked, which is what every prose check reads; its ``span`` and its markers' spans are offsets into
-the section markdown.
+paragraphs and list items; headings, tables, table captions and code blocks are not prose. A table, a pandoc
+caption line (``Table: …`` / ``: …``) or a code block (a paper has none) is a section problem (``section_problems``):
+tables come from code artifacts at export. A paragraph inside a block quote is one sentence of quoted text
+(``quoted``). A sentence's ``text`` is its rendered prose (emphasis and link markup gone, code spans kept with their
+backticks); its ``prose`` is that text with every code span blanked, which is what every prose check reads; its
+``span`` and its markers' spans are offsets into the section markdown.
 
 Sentences end at ``.``, ``?`` or ``!`` (with any closing quotes or brackets, and any markers right after them, which
 belong to the sentence they follow) followed by whitespace and anything but a marker (a capital, a digit, a lowercase
@@ -295,13 +295,17 @@ def _is_caption(b: _Block) -> bool:
 
 
 def section_problems(markdown: str) -> list[str]:
-    """What the section may not contain at all: a markdown table, a pandoc table caption line, a marker where the
-    reader cannot see it."""
+    """What the section may not contain at all: a markdown table, a pandoc table caption line, a code block (fenced or
+    indented: a paper has none, so the exported PDF never needs a verbatim environment), a marker where the reader
+    cannot see it."""
     doc = _parse(markdown)
     out = [f"line {n + 1}: a markdown table is not allowed in a draft: tables come from code artifacts at export "
            "(cite a [[stat:…]] or [[fig:…]] instead)" for n in doc.tables]
     out += [f"line {b.line + 1}: a table caption (“{b.text.strip()[:60]}”) is not a sentence and is not allowed in a "
             "draft: tables and their captions come from code artifacts at export" for b in doc.blocks if _is_caption(b)]
+    out += [f"line {markdown.count(chr(10), 0, start) + 1}: a code block (fenced or indented) is not allowed in a "
+            "draft: a paper has no code blocks; write prose (a short code span in a sentence is text)"
+            for start, _ in doc.code_blocks]
     out += [f"line {markdown.count(chr(10), 0, m.span[0]) + 1}: the marker {markdown[m.span[0]:m.span[1]]} is where "
             "the reader cannot see it (a heading, a table, a link's destination or title, an autolink, an image's alt "
             "text or a reference definition): it counts for no sentence; put markers in the prose"

@@ -127,6 +127,16 @@ def test_tables_and_table_captions_are_section_problems_not_sentences():
     assert section_problems("Text [[inf]].\n\nMore: 3 points [[inf]].\n") == []
 
 
+@pytest.mark.parametrize("block", ["```\nprint(1)\n```\n", "~~~python\nx = 1\n~~~\n", "    indented code\n"],
+                         ids=["fenced", "tilde", "indented"])
+def test_code_blocks_are_section_problems(block):
+    """Export round 2: a paper has no code blocks (fenced or indented), so the PDF never needs fancyvrb."""
+    md = f"Delirium fell [[clm:clm_A]].\n\n{block}\nMore text [[inf]].\n"
+    problems = section_problems(md)
+    assert len(problems) == 1 and "line 3" in problems[0] and "code block" in problems[0], problems
+    assert section_problems("Inline `code` stays a code span [[inf]].\n") == []
+
+
 def test_spans_are_source_offsets_into_the_section_markdown():
     md = ("# Results\n\n> Quoted *text* here [[clm:clm_A]].\n\n- Item **one** [[inf]]. Item two [[clm:clm_B]].\n\n"
           "A [link](https://doi.org/10.1/x) and `code` [[inf]].\n")

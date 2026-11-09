@@ -327,6 +327,32 @@ def test_the_ast_allow_list():
     clean = {"meta": {"title": {"t": "MetaInlines", "c": [{"t": "Str", "c": "T"}]}},
              "blocks": [{"t": "RawBlock", "c": ["latex", "KERNEL FIGURE\n"]}, para(image("figures/fig_a.svg"))]}
     assert export_mod.ast_problems(clean, raw={"KERNEL FIGURE"}, images={"figures/fig_a.svg"}) == []
+    # each kernel figure is inserted once: a second image of it (the Writer's copy) is refused
+    twice = {**clean, "blocks": [*clean["blocks"], para(image("figures/fig_a.svg"))]}
+    problems = export_mod.ast_problems(twice, raw={"KERNEL FIGURE"}, images={"figures/fig_a.svg"})
+    assert len(problems) == 1 and "figures/fig_a.svg" in problems[0], problems
+    # the latex source has no image at all: its figures are raw TikZ blocks
+    assert export_mod.ast_problems(clean, raw={"KERNEL FIGURE"}, images=set()) != []
+
+
+def test_tex_escape_and_figure_labels_collapse_whitespace(env, monkeypatch):
+    """A library label with newlines cannot put a line of its own into the raw LaTeX block (so it can never close the
+    raw fence): ``tex_escape`` collapses whitespace as ``_md`` does."""
+    _, ps, _ = env
+    assert figures.tex_escape("a\n\n```\n\\input{x}\t b") == "a ``` \\textbackslash{}input\\{x\\} b"
+    _ready(env)
+    _, fig = _pool(env)
+    a = artifact(ps, fig)
+    bad = json.loads(json.dumps(a["values"]))
+    bad["labels"] = {k: f"{v}\n\n```\n\\input{{/etc/hosts}}\n```\n" for k, v in bad["labels"].items()}
+    orig = export_mod.artifact
+    monkeypatch.setattr(export_mod, "artifact", lambda ps, aid: {**a, "values": bad} if aid == fig else orig(ps, aid))
+    latex, _, refmap = to_pandoc_markdown(ps, [(_spec("results", "Results"), f"Shown [[fig:{fig}]].\n")],
+                                          target="latex")
+    (raw,) = refmap["raw"]
+    assert f"```{{=latex}}\n{raw}\n```" in latex
+    assert not [line for line in raw.splitlines() if line.lstrip().startswith("```")], raw
+    assert [line for line in latex.splitlines() if line.startswith("```")] == ["```{=latex}", "```"]  # the kernel's
 
 
 def test_export_refuses_item_without_csl_metadata(env, monkeypatch):
@@ -503,6 +529,39 @@ def test_writer_text_and_the_title_cannot_read_a_local_file_into_the_outputs(env
         if (out / name).is_file():
             for text in _texts((out / name).read_bytes()):
                 assert SECRET.encode() not in text, name
+
+
+@pytest.mark.binaries
+def test_a_writer_image_is_refused_in_both_targets(env, tmp_path, monkeypatch):
+    """An image the Writer wrote is refused even when it shows a kernel figure: the latex source holds no image (its
+    figures are TikZ), and the docx keeps only the figure the kernel inserted itself."""
+    _binaries(tmp_path)
+    _, ps, _ = env
+    _ready(env)
+    _, fig = _pool(env)
+    s = load_inputs(ps)
+    body = f"The forest plot shows the pool [[fig:{fig}]].\n\n![A copy](figures/{fig}.svg)\n"
+    monkeypatch.setattr(export_mod, "audited_manuscript", lambda ps: (s, {}, [(_spec("results", "Results"), body)]))
+    res = export(ps)
+    assert not res.ok
+    for src in ("paper.md", "paper-latex.md"):
+        assert any(f.startswith(f"{src}:") and f"figures/{fig}.svg" in f for f in res.failures), (src, res.failures)
+    assert not any((ps.root / "artifacts/export" / n).exists() for n in OUTPUTS)
+
+
+@pytest.mark.binaries
+def test_html_looking_prose_is_text_in_the_export(env, tmp_path, monkeypatch):
+    """The pandoc reader has ``-raw_html`` (as the audit's markdown-it has ``html: False``): HTML in the prose is
+    text, never raw output, so it exports and is typeset as the characters written."""
+    _binaries(tmp_path)
+    _, ps, _ = env
+    body = "Raw <b>bold</b> and <img src=x onerror=alert(1)> stay text [[ck]].\n"
+    _crafted(env, monkeypatch, [(_spec("discussion", "Discussion"), body)])
+    res = export(ps)
+    assert res.ok, res.failures
+    tex = res.files["paper.tex"].read_text(encoding="utf-8")
+    assert "\\textbf{bold}" not in tex and "\\textless b\\textgreater bold\\textless/b\\textgreater" in tex
+    assert "\\textless img src=x onerror=alert(1)\\textgreater" in tex
 
 
 @pytest.mark.binaries

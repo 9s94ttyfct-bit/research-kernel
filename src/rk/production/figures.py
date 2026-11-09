@@ -26,8 +26,10 @@ _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
 
 def tex_escape(s: str) -> str:
-    """``s`` as LaTeX text: its special characters escaped, control characters dropped."""
-    return "".join(_TEX.get(c, c) for c in _CONTROL.sub("", s))
+    """``s`` as LaTeX text on one line: its whitespace collapsed (newlines and blank lines too, as ``_md`` does, so a
+    label can never put a line of its own into the kernel's raw block), its special characters escaped, control
+    characters dropped."""
+    return "".join(_TEX.get(c, c) for c in _CONTROL.sub("", " ".join(s.split())))
 
 
 def _t(x: float) -> str:
