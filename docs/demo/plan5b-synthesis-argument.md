@@ -160,13 +160,16 @@ Fix wave 4 made the Arguer's `needs_synthesis` an input: the Arguer argues on th
 review (P2) or a P1 vote decides whether argue goes back to synthesize. On the same home, `rk serve` was restarted
 on that code; the stand-in answered the parked `stage_blocked` checkpoint with **stop** (not `allow_one_more`, which
 would have sent argue back on the old request), which ended the old run, and started a new run `--until argue`
-(`run_01M6YTC5J6EHX9F1KBGMGN9C1A`, 00:12 UTC). Argue attempt 4 ran without spending an edge. At 00:15 UTC `rk serve`
-was restarted once more, onto main with an unrelated Plan 5c change; the run resumed attempt 4 in place
-(`stage.resumed`).
+(`run_01M6YTC5J6EHX9F1KBGMGN9C1A`, `run.started` 00:12:21 UTC). Argue attempt 4 ran without spending an edge. At
+00:15 UTC `rk serve` was restarted once more, onto main with an unrelated Plan 5c change; the run resumed attempt 4 in
+place (`stage.resumed` 00:15:18 UTC).
 
-**Rounds.** Round 1: the Arguer's draft (main claim, reasons under six warrants), verified by the judges; the
-Skeptic's critique raised 4 objections. Round 2: the Arguer's responses and a new reason and response claim, verified;
-the Skeptic's second critique raised none, so the rounds ended at a fixed point (`end`: `fixed_point`).
+**Rounds.** Round 1: the Arguer's draft (main claim and five reasons, each under a warrant), verified by the judges;
+the Skeptic's first critique raised 4 objections, and the warrant tests 2 more. Round 2: the Arguer's responses, with
+a new reason under a new warrant (six warrants from then on) and a response claim, verified; the Skeptic's second
+critique raised none, so the rounds ended at a fixed point (`end`: `fixed_point`). In the closing Arguer turn its one
+re-response was refused ("objection obj_01M6YTFAYVHZ6SWZ0SF7W6HNJY: clm_01M6YTGV9X3BMVGXR4J0VDYSWA is not a supported
+claim", event seq 10289), since that response claim was still uncertain; the final review then decided it.
 
 **Objections** (6):
 
@@ -179,17 +182,20 @@ the Skeptic's second critique raised none, so the rounds ended at a fixed point 
 | 1 | soundness | the safety warrant (its consequence concerns recommendations, not efficacy) | conceded: the link is dropped |
 | 1 | soundness | the community warrant (fails all five tests) | conceded: the link is dropped, replaced by a reason under a new warrant (prophylaxis given only in hospital says nothing about community prophylaxis) |
 
-None of the three trials the Skeptic named is in the included set. The stand-in's answer treated them as outside the
-2024-to-now window: Al-Aama et al. and Hatta et al. are earlier trials as far as the stand-in knew (not looked up in
-this run), and RECOVER's publication year was not checked. They stand as conceded limitations.
+None of the three trials the Skeptic named is in the included set, and all three predate the 2024-to-now window:
+the library holds them, reference-checked (V-REF) in this project, with their stored years: Al-Aama 2011 (doi
+10.1002/gps.2582), Hatta 2014 (JAMA Psychiatry) and RECOVER 2020 (doi 10.1016/j.jagp.2020.05.006). They stand as
+conceded limitations.
 
 **Warrant tests** (six warrants, five tests each): four passed all five (three of the first draft and the new
 community warrant of round 2); the safety warrant failed `consequence_fits`; the first community warrant failed all
 five. Both failed links were dropped (`dropped_link` notes). **Conflicts:** none.
 
-**Synthesis request** (round 1): "an analysed per-arm denominator for the general-ward delirium counts. The notes give
-only the randomised total (115) …; nothing else the question needs (ramelteon data, community data, a pooled
-estimate, subgroups) can come from the included studies' extracted data." The final review offered `back`
+**Synthesis request** (round 1), quoted exactly: "The two included studies could still yield one thing: an analysed
+per-arm denominator for the general-ward delirium counts. The notes give only the randomised total (115) and no
+per-arm analysed numbers, so the ward result cannot be stated as a risk comparison without it. Nothing else the
+question needs (ramelteon data, community data, a pooled estimate, subgroups) can come from the included studies'
+extracted data." The final review offered `back`
 (argue→synthesize used 2 of 2: it would have asked for one more use). The stand-in did **not** go back: the per-arm
 sizes of the ward trial are already extracted (`n_intervention` 55, `n_control` 54, with verified quotes). Recorded as
 `synthesis_decision`: proceed.
@@ -199,27 +205,31 @@ than ramelteon, do not show that melatonin prevents delirium in older adults out
 evidence does not establish whether melatonin receptor agonists, including ramelteon, prevent delirium in
 general-ward, surgical or community settings." The Arguer's own check said it does not answer the question as asked
 (no ramelteon, community-dwelling, pooled or subgroup evidence). Three claims failed the gate on V-SUPPORT
-"uncertain" (the main claim, the new community reason, the hospital-setting response). The stand-in answered
+"uncertain" (the kernel's verdict; the claims were the main claim, the new community
+reason, the hospital-setting response; the two judges answered partial/partial, unsupported/partial and
+partial/partial). The stand-in answered
 `answers_rq` **yes** (within the 2024-to-now scope the honest answer is that a benefit outside the ICU is not
 established, and the gaps are limitations) and **supported** all three after checking them against the extraction.
 argue passed at 00:16:52 UTC. **Withdrawn in argue: none; narrowed: none** (the two failed links were dropped
-instead). The argument rests on the eight supported synthesis findings; the three findings withdrawn in synthesize
-stay out.
+instead). The argument rests on the seven supported findings of synthesize attempt 4; its two withdrawn findings stay
+out.
 
 **Tasks** (created from 00:12 UTC): arguer 3 (Haiku), skeptic 2 (`codex_cli`), judge 3 done (`codex_cli:gpt-6-luna`),
 judge_2 3 (`ollama:deepseek-v4.1-flash:cloud`); no `rate_capped` failure. One judge task created at 00:15:01, while
 the server was being restarted, stayed `running` with no attempt (left behind by the restart; the resumed attempt
-asked again). **No task ran on a local model**: the three queries above return 0, 0 and 0. **Wall time:** 00:12:12 –
-00:16:52 UTC (4 min 40 s, including 1 min for the stand-in's answer).
+asked again). **No task ran on a local model**: the three queries above return 0, 0 and 0. **Wall time:** 00:12:21
+(`run.started`) – 00:16:52 UTC (4 min 32 s, including 1 min for the stand-in's answer).
 
 **What failed or was weak:**
 
 1. **The Arguer's synthesis request was wrong about the data**: it asked for per-arm sizes that are already extracted.
    As an input, the request now costs nothing unless you accept it.
 2. **A task left `running` by the server restart** (above); the run was not affected.
-3. **Judges again said "uncertain"** on all three new argument claims, so the final review decided them.
-4. **The Skeptic's counterexamples come from outside the included set** (older trials); the kernel has no check
-   that objections stay within the protocol's searched scope, so they become limitations by concession.
+3. **Judges again answered "partial"** (or "unsupported") on all three new argument claims, so the final review
+   decided them.
+4. **The Skeptic's counterexamples come from outside the included set**: three trials published before the 2024
+   window (verified, above). Unverified claim about the code: the kernel does not check that objections stay within
+   the protocol's searched scope, so such objections become limitations by concession.
 
 ### What failed or was weak (calibration input)
 
