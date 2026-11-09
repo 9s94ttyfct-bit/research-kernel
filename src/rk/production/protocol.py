@@ -284,8 +284,8 @@ def counts_as_preregistration(paper_type: str) -> bool:
 def _count(ctx: StageContext, query: str, source: str, strategy: SearchStrategy) -> dict:
     """One count of the probe, within the strategy's publication years, through the per-item boundary: a source error
     gives ``count: None`` and the ``error`` (the probe is advisory: a source error fails nothing). An exhausted source
-    API budget (``BudgetExhausted``) is not a count: it pauses the run until the reset, and the stage, which resumes in
-    place, probes the version then, so no vote is spent on a probe the budget cut short."""
+    API budget (``BudgetExhausted``) is not a count: it pauses the run (``paused_budget``, resumed after the reset), and
+    the stage, which resumes in place, probes the version then, so no vote is spent on a probe the budget cut short."""
     what = f"record count of {query!r} on {source}"
     n, err = per_item(what, lambda: ctx.sources.count(query, source, date_from=strategy.date_from,
                                                       date_to=strategy.date_to))

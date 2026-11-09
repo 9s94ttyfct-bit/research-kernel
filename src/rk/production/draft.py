@@ -142,7 +142,7 @@ def _note(ps: ProjectStore, attempt: int, kind: str, *, actor: str, **fields) ->
 def draft_notes(ps: ProjectStore, attempt: int, *, kind: str | None = None) -> list[dict]:
     """What draft noted in the attempt, in order: ``back_edge`` (``to``, ``reason``, ``section``) and ``refused`` (what
     made a Writer task's output unusable besides its verification, noted before its version is stored: ``section``,
-    ``task``, ``problems``)."""
+    ``task``, ``problems``; a refused ``missing_support`` also has its ``needs``)."""
     rows = ps.db.execute("SELECT payload FROM events WHERE type='draft.noted' "
                          "AND json_extract(payload, '$.attempt')=? ORDER BY seq", (attempt,))
     notes = [json.loads(r["payload"]) for r in rows]
@@ -156,6 +156,27 @@ def asked_of_argue(ps: ProjectStore, section: str) -> list[str]:
                          "AND json_extract(payload, '$.kind')='back_edge' AND json_extract(payload, '$.to')='argue' "
                          "AND json_extract(payload, '$.section')=? ORDER BY seq", (section,))
     return [json.loads(r["payload"])["reason"] for r in rows]
+
+
+def unmet_support(ps: ProjectStore) -> list[dict]:
+    """What sections lacked from the argument, for the disclosure (the kernel's record of the gap, whatever the Writer
+    then wrote), in event order: ``{"evt_id", "section", "asked"}`` for each ``draft->argue`` back-edge (its reason),
+    ``{"evt_id", "section", "needs"}`` for each later ``missing_support`` that was refused (argue had been asked
+    already), the first event of each distinct section and needs."""
+    rows = ps.db.execute("SELECT evt_id, payload FROM events WHERE type='draft.noted' ORDER BY seq").fetchall()
+    out, seen = [], set()
+    for r in rows:
+        n = json.loads(r["payload"])
+        if n["kind"] == "back_edge" and n.get("to") == "argue":
+            entry = {"section": n["section"], "asked": n["reason"]}
+        elif n["kind"] == "refused" and n.get("needs"):
+            entry = {"section": n["section"], "needs": n["needs"]}
+        else:
+            continue
+        if (key := json.dumps(entry, sort_keys=True)) not in seen:
+            seen.add(key)
+            out.append({"evt_id": r["evt_id"], **entry})
+    return out
 
 
 def prisma_event(ps: ProjectStore, attempt: int, search_attempt: int, protocol_id: str | None, *,
@@ -438,7 +459,8 @@ class DraftWorker:
             refusal = (f"missing_support: this section already asked argue for what it lacks ({asked[-1]}); write it "
                        "from the claims given and state what is still missing as a limitation ([[inf]], worded "
                        "tentatively), not as a claim")
-            _note(ps, ctx.attempt, "refused", actor=ctx.actor, section=spec.id, task=res.task_id, problems=[refusal])
+            _note(ps, ctx.attempt, "refused", actor=ctx.actor, section=spec.id, task=res.task_id, problems=[refusal],
+                  needs=needs)
         if d.missing_design.strip() and s.paper_type == PROPOSAL:
             why = f"the section {spec.id} needs what the approved design lacks: {d.missing_design.strip()}"
             _note(ps, ctx.attempt, "back_edge", actor=ctx.actor, to="design", reason=why, section=spec.id)

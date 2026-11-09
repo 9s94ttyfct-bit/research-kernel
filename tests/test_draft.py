@@ -243,6 +243,21 @@ def test_a_section_that_already_went_back_to_argue_writes_without_what_it_lacks(
     assert not draft_notes(ps, 2, kind="back_edge")
     assert [v["verdict"]["ok"] for v in draft_versions(ps, "theme-1")] == [False, True]
     assert w.gate(ps, 2).ok
+    # the kernel discloses the gap whatever the Writer wrote (the passing draft here states no limitation)
+    from rk.production.disclosure import disclosure_problems, render_disclosure
+    from rk.production.draft import unmet_support
+
+    asked_u, still_u = unmet_support(ps)
+    assert (asked_u["section"], still_u["section"]) == ("theme-1", "theme-1") and "asked" in asked_u
+    assert still_u["needs"] == need["missing_support"]
+    md = render_disclosure(ps)
+    limitations = md.split("### Limitations")[1].split("###")[0]
+    assert f"[[run:{asked_u['evt_id']}]]" in limitations and f"[[run:{still_u['evt_id']}]]" in limitations
+    assert "still lacked support for `a claim on the bleeding risk of aspirin in older people`" in limitations
+    missing = [p for p in disclosure_problems(ps, md.replace(f"[[run:{still_u['evt_id']}]]", ""), [])
+               if "lacked from the argument" in p]
+    assert missing == [(f"what the theme-1 section lacked from the argument is not listed (event {still_u['evt_id']} "
+                        "is not cited)")]
 
 
 @pytest.mark.parametrize("env", [{"paper_type": "research_proposal"}], indirect=True)

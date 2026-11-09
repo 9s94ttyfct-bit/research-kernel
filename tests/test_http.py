@@ -107,12 +107,19 @@ def test_retry_after_and_budget(client, clock):
 @respx.mock
 def test_a_429_that_spends_the_budget_or_asks_for_a_long_wait_raises_instead_of_sleeping(client, clock):
     """Task 9: OpenAlex's anonymous daily budget answers 429 with retry-after ~6 h; the request must not sleep for hours
-    (the run hung in landscape) but raise BudgetExhausted, which pauses the run until the reset."""
+    (the run hung in landscape) but raise BudgetExhausted, which pauses the run (resumed after the reset)."""
     spent = {"Retry-After": "21529", "x-ratelimit-remaining": "0", "x-ratelimit-reset": "21529"}
     respx.get("https://api.openalex.org/works").mock(return_value=httpx.Response(429, headers=spent))
     with pytest.raises(BudgetExhausted) as ei:
         client.get("https://api.openalex.org/works", params={"search": "x"}, budget_key="openalex", ttl_s=0)
     assert ei.value.reset_at == pytest.approx(1000.0 + 21529) and max(clock.slept, default=0) < 60
+    # a 429 that spends the recorded budget raises at once, even with a short Retry-After (no retry burns it again)
+    clock.slept.clear()
+    short = {"Retry-After": "1", "x-ratelimit-remaining": "0", "x-ratelimit-reset": "30"}
+    respx.get("https://api.openalex.org/works/W9").mock(return_value=httpx.Response(429, headers=short))
+    with pytest.raises(BudgetExhausted) as ei:
+        client.get("https://api.openalex.org/works/W9", budget_key="openalex-w")
+    assert ei.value.budget_key == "openalex-w" and max(clock.slept, default=0) < 1  # host pacing only, no retry wait
     # no budget header: a long Retry-After alone raises too, keyed by the host
     respx.get("https://api.crossref.org/works/z").mock(return_value=httpx.Response(429, headers={"Retry-After": "7200"}))
     with pytest.raises(BudgetExhausted) as ei:

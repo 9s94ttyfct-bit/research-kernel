@@ -30,7 +30,7 @@ DEFAULT_MIN_INTERVALS: dict[str, float] = {
 DEFAULT_INTERVAL = 1.0
 SECRET_PARAMS = frozenset({"api_key", "key", "apikey", "token"})
 MAX_RETRIES = 4
-MAX_RETRY_WAIT_S = 60.0  # a longer Retry-After raises BudgetExhausted (the run pauses) instead of sleeping
+MAX_RETRY_WAIT_S = 60.0  # a 429 asking for longer raises BudgetExhausted (the run pauses) instead of sleeping
 
 
 class HttpError(Exception):
@@ -210,7 +210,7 @@ class HttpClient:
                     except ValueError:
                         pass
                 if delay > MAX_RETRY_WAIT_S:  # never sleep for hours inside a request
-                    if status == 429:  # a rate limit that long is a spent budget: the run pauses until it lifts
+                    if status == 429:  # a rate limit that long is a spent budget: the run pauses (resume after it)
                         raise BudgetExhausted(budget_key or host, self._wall() + delay)
                     delay = MAX_RETRY_WAIT_S  # a server error stays transient: retried, then an HttpError
                 self._sleep(delay)

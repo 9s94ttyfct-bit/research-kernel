@@ -16,8 +16,10 @@ reads):
 4. **Limitations:** the limitations inputs of synthesize's, argue's and (a research proposal) design's passed attempts
    (``synthesis_limitations``, ``argue_limitations``, ``design_limitations``), each entry citing the event that
    records it where there is one (a deviation, a withdrawal, a narrowed claim, a conceded objection, a contested
-   claim, a dropped hypothesis), else the stage's pass; and every cited claim with a conceded sourced objection
-   (``balance_requirements(...).conceded_sourced``: claim, objection and source), the gap V-BALANCE leaves (Task 3).
+   claim, a dropped hypothesis), else the stage's pass; every cited claim with a conceded sourced objection
+   (``balance_requirements(...).conceded_sourced``: claim, objection and source), the gap V-BALANCE leaves (Task 3);
+   and what a section lacked from the argument (``draft.unmet_support``: each ``draft->argue`` back-edge and what a
+   section still lacked after it, each citing its ``draft.noted`` event), whatever the Writer then wrote.
 5. **Preregistration deviations:** every protocol deviation (``version`` and ``analysis``).
 
 A part with nothing to list says so, citing the intake (who answers checkpoints follows from its production mode),
@@ -37,7 +39,13 @@ from rk.orchestrator.state import passed_attempt
 from rk.production.argue import argue_limitations
 from rk.production.common import write_atomic
 from rk.production.design import design_limitations
-from rk.production.draft import STAGE_NAMES, latest_version, section_verdict, themes
+from rk.production.draft import (
+    STAGE_NAMES,
+    latest_version,
+    section_verdict,
+    themes,
+    unmet_support,
+)
 from rk.production.manuscript import (
     parse_section,
     record_section_verdict,
@@ -288,6 +296,21 @@ def _conceded(ps: ProjectStore) -> list[tuple[str, str]]:
     return out
 
 
+def _unmet(ps: ProjectStore) -> list[tuple[str, str]]:
+    """``(event id, line)`` for what a section lacked from the argument (``unmet_support``): each time drafting sent
+    the stage back to argue for it, and what a section still lacked after that and was written without."""
+    out = []
+    for u in unmet_support(ps):
+        if "asked" in u:
+            text = (f"Drafting the {_code(u['section'])} section asked the argument for support it lacked, and the "
+                    f"argument stage ran again: {_code(u['asked'])}")
+        else:
+            text = (f"After that, the {_code(u['section'])} section still lacked support for "
+                    f"{_code('; '.join(u['needs']))} and was written without it")
+        out.append((u["evt_id"], _line(text, u["evt_id"])))
+    return out
+
+
 def _limitations(ps: ProjectStore) -> list[str]:
     sources = [("synthesis", "synthesize", synthesis_limitations), ("argument", "argue", argue_limitations)]
     if ps.meta("paper_type") == "research_proposal":
@@ -308,6 +331,7 @@ def _limitations(ps: ProjectStore) -> list[str]:
             out.append(_line(f"The {where} limitations list, under {what}: {_fields(entry)}",
                              _entry_event(ps, path, entry) or passed))
     out += [line for _, line in conceded]
+    out += [line for _, line in _unmet(ps)]
     synth = passed_attempt(ps, "synthesize")
     return out or [_line("No limitation was recorded by the synthesis, the argument or the design",
                          _last(ps, "stage.passed", stage="synthesize", attempt=synth) if synth else _intake(ps))]
@@ -359,9 +383,10 @@ def write_disclosure(ps: ProjectStore, *, attempt: int, paper_type: str, actor: 
 
 def disclosure_problems(ps: ProjectStore, markdown: str, cited_claims: list[str]) -> list[str]:
     """G-DISCLOSE of the disclosure section's ``markdown``: it has the five parts; it cites the event of every
-    checkpoint answer (a human's or the P1 vote's), every P1 vote, every P1 degrade and an agent's choice of the
-    research question; it names, in one sentence, each of ``cited_claims`` (the live claims the manuscript cites) with a
-    conceded sourced objection, with the objection and the source; and ``disclosure.md`` holds the same text."""
+    checkpoint answer (a human's or the P1 vote's), every P1 vote, every P1 degrade, an agent's choice of the research
+    question and what a section lacked from the argument (``unmet_support``); it names, in one sentence, each of
+    ``cited_claims`` (the live claims the manuscript cites) with a conceded sourced objection, with the objection and the
+    source; and ``disclosure.md`` holds the same text."""
     out = []
     heads = {ln[4:].strip() for ln in markdown.splitlines() if ln.startswith("### ")}
     out += [f"the disclosure has no “{p}” part" for p in PARTS if p not in heads]
@@ -369,6 +394,8 @@ def disclosure_problems(ps: ProjectStore, markdown: str, cited_claims: list[str]
     for by, who in (("human", "a human"), ("vote", "the P1 vote")):
         out += [f"the {cp['kind']} checkpoint {cp['id']}, answered by {who}, is not listed (its answer, event {evt}, "
                 f"is not cited)" for evt, cp, _ in _answers(ps, by) if evt not in cited]
+    out += [f"what the {u['section']} section lacked from the argument is not listed (event {u['evt_id']} is not "
+            "cited)" for u in unmet_support(ps) if u["evt_id"] not in cited]
     for r in _rows(ps, "vote.decided"):
         p = json.loads(r["payload"])
         if r["evt_id"] not in cited and p.get("stage") not in EVALUATION_STAGES:
