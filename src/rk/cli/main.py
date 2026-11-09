@@ -878,9 +878,12 @@ def eval_sr_repro(entry: str | None = typer.Option(None, "--entry", help="One re
     rows = []
     for e in chosen:
         run = _call("rk_sr_repro_run", {"entry": e.id}, write=True)
-        got = _call("rk_sr_repro_score", {"entry": e.id}, write=True)
+        # judging the direction waits on two judges: as long as a support check may take
+        got = _call("rk_sr_repro_score", {"entry": e.id}, write=True, timeout=3 * 3600)
         rows.append(report_row(e, run, got))
         agrees = {True: "agrees", False: "disagrees", None: "not judged"}[got["conclusion_direction_agrees"]]
+        if got["direction_compromised"]:
+            agrees += f", does not count: {got['direction_compromised']}"
         typer.echo(f"{e.id} ({e.domain}, {len(e.included)} included): {run['project']} {run['action']} "
                    f"(run {run['run_id'] or '-'}: {run['run_status'] or '-'}, stage {run['stage'] or 'done'}); "
                    f"recall {got['recall_included']:.2f} ({len(got['matched'])}/{got['included_total']}); "

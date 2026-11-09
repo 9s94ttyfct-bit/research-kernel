@@ -6,6 +6,7 @@
    "id": "cade-colonoscopy",
    "pmcid": "PMC7691740",
    "doi": "10.1016/j.eclinm.2020.100622",
+   "pmid": "33294821",
    "title": "Real-time computer aided colonoscopy versus standard colonoscopy for improving adenoma detection rate: A meta-analysis of randomized-controlled trials",
    "domain": "medicine",
    "question": "whether real-time computer-aided detection with deep convolutional neural networks during colonoscopy changes the adenoma detection rate compared with standard colonoscopy",
@@ -88,6 +89,7 @@
    "id": "ozone-bleaching",
    "pmcid": "PMC8222366",
    "doi": "10.1038/s41598-021-92733-8",
+   "pmid": "34162984",
    "title": "A meta-analysis of ozone effect on tooth bleaching",
    "domain": "medicine",
    "question": "whether ozone, alone or with hydrogen peroxide, changes tooth colour in in-office bleaching of vital teeth differently from conventional hydrogen peroxide bleaching",
@@ -157,12 +159,13 @@
    "id": "fructose-rats-sbp",
    "pmcid": "PMC12721104",
    "doi": "10.7717/peerj.20097",
+   "pmid": "41438109",
    "title": "Fructose consumption and metabolic hypertension in rats: a systematic review and meta-analysis",
    "domain": "biology",
-   "question": "whether dietary fructose, in drinking water or in the diet, raises systolic blood pressure in rats compared with control feeding",
+   "question": "whether dietary fructose, in drinking water or in the diet, changes systolic blood pressure in rats compared with control feeding",
    "pico": {
     "population": "rats",
-    "intervention": "dietary fructose (10–30% solution or 60–75% diet)",
+    "intervention": "dietary fructose added to drinking water or feed",
     "comparison": "control feeding without added fructose",
     "outcome": "systolic blood pressure"
    },
@@ -312,7 +315,7 @@
     "outcome": "systolic blood pressure of fructose-fed rats compared with controls",
     "direction": "harm"
    },
-   "note": "An animal-physiology review: 24 studies listed in Table 1 (22 with DOI), one outcome (systolic blood pressure) with a clear direction (raised by fructose); studies published 2010–2022. Selection search (2026-11-09, model-free, the kernel's sources and query syntax, publication years 2010–2022): europepmc: TITLE_ABS:(fructose AND (hypertension OR \"blood pressure\") AND (rat OR rats)); pubmed: fructose[tiab] AND (hypertension[tiab] OR \"blood pressure\"[tiab]) AND (rat[tiab] OR rats[tiab]). 919 records, 470 after deduplication by DOI, PMID and title (budget 3,000); it finds 19 of the 24 included studies; not found by it: “Anti-hypertensive effect of abelmoschus esculentus (Okra) seed extracts in fructose-induced hypertensive rats” (no DOI); “Effect of the aqueous extract of Catharanthus roseus leaves against hypertention induced by fructose in rats” (10.22271/tpi.2020.v9.i9a.5170); “Effect of salix tetraspermaroxbugh on fructose induced hypertension in rats” (10.22159/ijpps.2017v9i9.18232); “An experimental model to induce metabolic syndrome in rats. The fructose-enriched diet” (no DOI); “Renin inhibition improves metabolic syndrome, and reduces angiotensin II levels and oxidative stress in visceral fat tissues in fructose-fed rats” (10.1371/journal.pone.0180712).",
+   "note": "An animal-physiology review: 24 studies listed in Table 1 (22 with DOI), one outcome (systolic blood pressure) with a clear direction (raised by fructose); studies published 2010–2022. Selection search (2026-11-09, model-free, the kernel's sources and query syntax, publication years 2010–2022): europepmc: TITLE_ABS:(fructose AND (hypertension OR \"blood pressure\") AND (rat OR rats)); pubmed: fructose[tiab] AND (hypertension[tiab] OR \"blood pressure\"[tiab]) AND (rat[tiab] OR rats[tiab]); openalex: (\"fructose-induced hypertension\" OR \"fructose-induced hypertensive\" OR \"fructose induced hypertension\" OR \"fructose-fed hypertensive\") AND (rats OR rat) AND \"systolic blood pressure\". 1206 records, 678 after deduplication by DOI, PMID and title (budget 3,000); it finds 22 of the 24 included studies; not found by it: “Anti-hypertensive effect of abelmoschus esculentus (Okra) seed extracts in fructose-induced hypertensive rats” (no DOI); “An experimental model to induce metabolic syndrome in rats. The fructose-enriched diet” (no DOI). Indexed ceiling: 22 of 24 are in the kernel's sources (Okra and 'An experimental model to induce metabolic syndrome in rats' are in none of Europe PMC, PubMed and OpenAlex by title, 2026-11-09); the selection's first search (Europe PMC TITLE_ABS and PubMed [tiab] only: 919 records, 470 deduplicated) found 19; the OpenAlex query added here reaches the indexed ceiling. A broader OpenAlex query (fructose AND (\"systolic blood pressure\" OR hypertension) AND (rats OR rat) AND (\"high fructose\" OR \"fructose-fed\" OR \"fructose-induced\")) has 8,509 records, over the budget. The review cites ref-67 with DOI 10.22271/tpi.2020.v9.i9a.5170, which Crossref and OpenAlex resolve to another paper of the same group (Catharanthus roseus, The Pharma Innovation); the manifest keeps the review's citation.",
    "search": {
     "searches": [
      {
@@ -322,13 +325,17 @@
      {
       "source": "pubmed",
       "query": "fructose[tiab] AND (hypertension[tiab] OR \"blood pressure\"[tiab]) AND (rat[tiab] OR rats[tiab])"
+     },
+     {
+      "source": "openalex",
+      "query": "(\"fructose-induced hypertension\" OR \"fructose-induced hypertensive\" OR \"fructose induced hypertension\" OR \"fructose-fed hypertensive\") AND (rats OR rat) AND \"systolic blood pressure\""
      }
     ],
     "date_from": 2010,
     "date_to": 2022,
-    "records": 919,
-    "deduplicated": 470,
-    "included_found": 19,
+    "records": 1206,
+    "deduplicated": 678,
+    "included_found": 22,
     "retrieved": "2026-11-09"
    },
    "provenance": {
@@ -341,13 +348,14 @@
    "id": "tfa-heated-oils",
    "pmcid": "PMC9002916",
    "doi": "10.3390/nu14071489",
+   "pmid": "35406103",
    "title": "Influence of Heating during Cooking on Trans Fatty Acid Content of Edible Oils: A Systematic Review and Meta-Analysis",
    "domain": "chemistry",
    "question": "how heating edible oils during cooking (heating, frying, baking) at different temperatures changes their trans fatty acid content",
    "pico": {
     "population": "edible cooking oils and fats in experimental studies",
-    "intervention": "heating or frying above 200 °C",
-    "comparison": "unheated oil or oil heated at common cooking temperatures (below 200 °C)",
+    "intervention": "heating or frying at stated temperatures and durations",
+    "comparison": "unheated or less-heated oil",
     "outcome": "trans fatty acid content (% of total fatty acids)"
    },
    "date_from": null,
@@ -540,7 +548,7 @@
     "outcome": "trans fatty acid content of edible oils heated above 200 °C",
     "direction": "harm"
    },
-   "note": "The food-chemistry review: experimental studies of trans-fatty-acid formation in heated oils, every included study with a DOI; its main conclusion has a clear direction above 200 °C (heating raises trans fatty acids; below 200 °C no appreciable change). 33 studies, a little over the preferred 30: PMC holds few chemistry systematic reviews that list their included studies. Selection search (2026-11-09, model-free, the kernel's sources and query syntax, publication years inception–2020): europepmc: TITLE_ABS:((\"trans fatty acids\" OR \"trans fatty acid\" OR \"trans isomers\" OR \"trans fat\" OR elaidic OR isomerization) AND (frying OR fried OR heating OR heated OR cooking OR thermal) AND (oil OR oils OR fat OR fats)); openalex: (\"trans fatty acids\" OR \"trans isomers\" OR elaidic) AND (frying OR \"heat treatment\" OR heating) AND (\"vegetable oil\" OR \"edible oil\" OR \"frying oil\" OR \"cooking oil\"). 2476 records, 2336 after deduplication by DOI, PMID and title (budget 3,000); it finds 26 of the 33 included studies; not found by it: “Formation of fatty acid geometrical isomers and of cyclic fatty acid monomers during the finish frying of frozen prefried potatoes” (10.1016/0963-9969(95)00024-0); “Changes in the characteristics and composition of oils during deep-fat frying” (10.1007/BF02523926); “Trans fatty acid production in deep fat frying of frozen foods with different oils and frying modalities” (10.1016/S0271-5317(00)00150-0); “Olive oil stability under deep-frying conditions” (10.1016/j.fct.2010.07.036); “Comparison of the stability of palm olein and a palm olein/canola oil blend during deep-fat frying of chicken nuggets and French fries” (10.1111/j.1365-2621.2011.02627.x); “Effects of frying oils’ fatty acids profile on the formation of polar lipids components and their retention in French fries over deep-frying process” (10.1016/j.foodchem.2017.05.100); “Thermal deterioration of virgin olive oil monitored by ATR-FTIR analysis of trans content” (10.1021/jf9012828).",
+   "note": "The food-chemistry review: experimental studies of trans-fatty-acid formation in heated oils, every included study with a DOI; its main conclusion has a clear direction above 200 °C (heating raises trans fatty acids; below 200 °C no appreciable change). 33 studies, a little over the preferred 30: PMC holds few chemistry systematic reviews that list their included studies. Selection search (2026-11-09, model-free, the kernel's sources and query syntax, publication years inception–2020): europepmc: TITLE_ABS:((\"trans fatty acids\" OR \"trans fatty acid\" OR \"trans isomers\" OR \"trans fat\" OR elaidic OR isomerization) AND (frying OR fried OR heating OR heated OR cooking OR thermal) AND (oil OR oils OR fat OR fats)); openalex: (\"trans fatty acids\" OR \"trans isomers\" OR elaidic) AND (frying OR \"heat treatment\" OR heating) AND (\"vegetable oil\" OR \"edible oil\" OR \"frying oil\" OR \"cooking oil\"); openalex: (\"trans fatty acid\" OR \"trans fatty acids\" OR \"trans content\" OR \"geometrical isomers\" OR \"trans isomers\") AND (\"deep-fat frying\" OR \"deep frying\" OR \"frying oil\" OR \"frying oils\"). 3879 records, 2816 after deduplication by DOI, PMID and title (budget 3,000); it finds 29 of the 33 included studies; not found by it: “Changes in the characteristics and composition of oils during deep-fat frying” (10.1007/BF02523926); “Olive oil stability under deep-frying conditions” (10.1016/j.fct.2010.07.036); “Comparison of the stability of palm olein and a palm olein/canola oil blend during deep-fat frying of chicken nuggets and French fries” (10.1111/j.1365-2621.2011.02627.x); “Effects of frying oils’ fatty acids profile on the formation of polar lipids components and their retention in French fries over deep-frying process” (10.1016/j.foodchem.2017.05.100). Indexed ceiling: 33 of 33 (every included study's DOI resolves in OpenAlex, 2026-11-09). The selection's first search (the Europe PMC query and the first OpenAlex query: 2,476 records, 2,336 deduplicated) found 26; the second OpenAlex query (deep-fat frying) added here brings it to 29 of 33 within the budget.",
    "search": {
     "searches": [
      {
@@ -550,13 +558,17 @@
      {
       "source": "openalex",
       "query": "(\"trans fatty acids\" OR \"trans isomers\" OR elaidic) AND (frying OR \"heat treatment\" OR heating) AND (\"vegetable oil\" OR \"edible oil\" OR \"frying oil\" OR \"cooking oil\")"
+     },
+     {
+      "source": "openalex",
+      "query": "(\"trans fatty acid\" OR \"trans fatty acids\" OR \"trans content\" OR \"geometrical isomers\" OR \"trans isomers\") AND (\"deep-fat frying\" OR \"deep frying\" OR \"frying oil\" OR \"frying oils\")"
      }
     ],
     "date_from": null,
     "date_to": 2020,
-    "records": 2476,
-    "deduplicated": 2336,
-    "included_found": 26,
+    "records": 3879,
+    "deduplicated": 2816,
+    "included_found": 29,
     "retrieved": "2026-11-09"
    },
    "provenance": {
@@ -569,9 +581,10 @@
    "id": "ai-pulmonary-hypertension",
    "pmcid": "PMC12835279",
    "doi": "10.3389/frai.2025.1709489",
+   "pmid": "41608032",
    "title": "Comparative accuracy of artificial intelligence versus manual interpretation in detecting pulmonary hypertension across chest imaging modalities: a diagnostic test accuracy meta-analysis",
    "domain": "cs",
-   "question": "whether artificial intelligence detects pulmonary hypertension on chest imaging (chest radiographs, echocardiography, CT, cardiac MRI) more accurately than manual interpretation",
+   "question": "how the diagnostic accuracy of artificial intelligence for pulmonary hypertension on chest imaging (chest radiographs, echocardiography, CT, cardiac MRI) compares with that of manual interpretation",
    "pico": {
     "population": "patients assessed for pulmonary hypertension with chest imaging",
     "intervention": "artificial-intelligence (machine-learning or deep-learning) image interpretation",
@@ -675,6 +688,7 @@
    "id": "ai-prostate-mri",
    "pmcid": "PMC12838035",
    "doi": "10.3390/biomedicines14010020",
+   "pmid": "41595557",
    "title": "Comparison of Artificial Intelligence and Radiologists in MRI-Based Prostate Cancer Diagnosis: A Meta-Analysis of Accuracy and Effectiveness",
    "domain": "cs",
    "question": "how the diagnostic accuracy of artificial intelligence for clinically significant prostate cancer on MRI compares with that of radiologists",
@@ -752,7 +766,7 @@
     "outcome": "diagnostic accuracy for clinically significant prostate cancer of AI versus radiologists",
     "direction": "no_difference"
    },
-   "note": "A second computing-method evaluation with the other direction (AI comparable to radiologists): 10 studies, all with DOI and PMID, one outcome; the review searched PubMed only (to 14 March 2025), a kernel source. Selection search (2026-11-09, model-free, the kernel's sources and query syntax, publication years inception–2025): pubmed: (\"artificial intelligence\" OR \"machine learning\" OR \"deep learning\" OR algorithm) AND (\"prostatic neoplasms\" OR \"prostate cancer\") AND (\"magnetic resonance imaging\" OR MRI) AND (radiologist OR radiologists OR \"PI-RADS\"). 559 records, 559 after deduplication by DOI, PMID and title (budget 3,000); it finds 10 of the 10 included studies.",
+   "note": "A second computing-method evaluation with the other direction (AI comparable to radiologists): 10 studies, all with DOI and PMID, one outcome; the review searched PubMed only (to 14 March 2025), a kernel source. Selection search (2026-11-09, model-free, the kernel's sources and query syntax, publication years inception–2025): pubmed: (\"artificial intelligence\" OR \"machine learning\" OR \"deep learning\" OR algorithm) AND (\"prostatic neoplasms\" OR \"prostate cancer\") AND (\"magnetic resonance imaging\" OR MRI) AND (radiologist OR radiologists OR \"PI-RADS\"). 559 records, 559 after deduplication by DOI, PMID and title (budget 3,000); it finds 10 of the 10 included studies. Domain limitation: this entry is medicine in substance (a radiology diagnostic-accuracy review whose included studies all carry PMIDs), so no entry exercises computer-science literature (conference or arXiv papers without PMIDs). A replacement was looked for (2026-11-09): of the 52 systematic reviews and meta-analyses of PeerJ Computer Science in PMC, nearly all are taxonomic surveys without a directional conclusion; the one meta-analysis with a pooled direction and listed studies (PMC10280400, real-time classroom interactive competition and academic performance: 23 studies, 16 without PMID) has no kernel search within the budget that finds its studies: OpenAlex (Kahoot OR Socrative OR Quizizz OR \"student response system\" OR \"audience response system\" OR clickers OR \"gamified quiz\" OR \"gamified quizzes\") AND (\"academic performance\" OR \"learning performance\" OR \"academic achievement\") AND \"control group\" AND \"experimental group\", 2010–2022: 2,161 deduplicated, 4 of 23 found; broader queries have 3,014 to 17,219 records. It is kept.",
    "search": {
     "searches": [
      {

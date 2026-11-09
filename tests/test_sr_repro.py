@@ -170,7 +170,10 @@ def test_direction_needs_two_vendor_agreement(tmp_home, replay_http):
     assert got["conclusion_direction_agrees"] is True and got["direction"] == "benefit"
     assert got["main_claim_id"] == claim
     assert len(ex.of("judge")) == len(ex.of("judge_2")) == 1 and ex.of("judge_3") == []  # the author's vendor
-    assert ex.of("judge")[0]["inputs"]["subject"]["outcome"] == "outcome B"
+    subject = ex.of("judge")[0]["inputs"]["subject"]
+    assert subject["outcome"] == "outcome B"
+    # the judges get the conclusion's outcome, not the PICO's intervention or comparison
+    assert "intervention_or_exposure" not in subject and "comparison" not in subject
     again = _votes("harm", "harm")  # scored again: the recorded vote is reused, no judge is asked
     assert judged("agree", again)["conclusion_direction_agrees"] is True and again.calls == []
     assert judged("opposite", _votes("harm", "harm"))["conclusion_direction_agrees"] is False
@@ -234,13 +237,25 @@ def served(serve_rk, tmp_home):
     return serve_rk(orchestrator=orchestrator)
 
 
-def test_eval_sr_repro_seeds_runs_continues_and_reports(served, tmp_path):
+def test_eval_sr_repro_seeds_runs_continues_and_reports(served, tmp_path, monkeypatch):
+    import rk.cli.main as cli_main
+
+    timeouts: dict = {}
+    real_call = cli_main._call
+
+    def spy(name, args, **kw):
+        timeouts[name] = kw.get("timeout")
+        return real_call(name, args, **kw)
+
+    monkeypatch.setattr(cli_main, "_call", spy)
     entries = sr.load_manifest()
     assert entries, "the manifest has no entry"
     entry = entries[0]
     out = tmp_path / "eval"
     r = CliRunner().invoke(app, ["eval", "sr-repro", "--entry", entry.id, "--out", str(out)])
     assert r.exit_code == 0, r.output
+    # scoring may wait on two judges: the call is not cut at the client's default 300 s
+    assert (timeouts["rk_sr_repro_score"] or 0) >= 3600
     assert f"srrepro-{entry.id}" in r.output and "seeded" in r.output
     ps, _ = served.kernel.project(sr.slug_of(entry))
     assert current_stage(ps) is not None or stage_row(ps, "export")["status"] == "passed"
@@ -259,7 +274,165 @@ def test_eval_sr_repro_seeds_runs_continues_and_reports(served, tmp_path):
     data = json.loads(js.read_text())
     (row,) = data["entries"]
     assert row["id"] == entry.id and row["recall_included"] == 0.0 and row["exported"] is True
+    assert row["selection_ceiling"] == pytest.approx(entry.search.included_found / len(entry.included))
     assert data["targets"] == {"recall_included": 0.85, "conclusion_direction_agrees": True, "gates_passed": True}
     assert entry.id in md.read_text() and "recall" in md.read_text()
     unknown = CliRunner().invoke(app, ["eval", "sr-repro", "--entry", "nope"])
     assert unknown.exit_code != 0 and "nope" in unknown.output
+
+
+# ---- round 1 (the Task 8 review) --------------------------------------------------------------------------------
+RUN = {"project": "srrepro-x", "action": "scored", "run_id": None, "run_status": None}
+
+
+def _studies() -> dict[str, sr.Study]:
+    return {s.ref: s for e in sr.load_manifest() for s in e.included if s.ref}
+
+
+def test_title_match_refuses_a_title_whose_words_are_a_subset():
+    studies = _studies()
+    # token_set_ratio alone scores these 100: the found title's words are a subset of the included study's
+    for found, ref in (("Fructose induced hypertension in rats", "ref-63"),
+                       ("Trans fatty acids in edible oils", "B17-nutrients-14-01489")):
+        pairs, missed = sr.match_included([studies[ref]], [{"title": found, "doi": None, "pmid": None,
+                                                             "item_id": "i1"}])
+        assert pairs == [] and missed == [studies[ref]], found
+    # the same title with case and punctuation changed still matches
+    pairs, _ = sr.match_included([studies["ref-63"]], [{"title": studies["ref-63"].title.upper() + ".",
+                                                         "doi": None, "pmid": None, "item_id": "i1"}])
+    assert [p["by"] for p in pairs] == ["title"]
+
+
+def test_review_included_compromises_the_direction(kernel):
+    entry = _entry("leaky")
+    ps = sr.seed_project(kernel, entry)
+    _, lib = kernel.project(sr.slug_of(entry))
+    # the review only retrieved (in the library, not included): information, not a compromise
+    lib.add_item(ItemIn(title=entry.title, ids=Ids(doi=entry.doi)), added_by="agent", actor="tester")
+    got = sr.score(ps, entry)
+    assert got["review_in_library"] is True and got["review_included"] is False
+    assert got["claim_from_review"] is False and got["direction_compromised"] is None
+    row = sr.report_row(entry, RUN, {**got, "conclusion_direction_agrees": True})
+    assert row["meets"]["conclusion_direction_agrees"] is True and row["review_in_library"] is True
+    # the review included as one of the project's studies
+    _include(ps, lib, [ItemIn(title=entry.title, ids=Ids(doi=entry.doi))])
+    got = sr.score(ps, entry)
+    assert got["review_included"] is True and "included" in got["direction_compromised"]
+    row = sr.report_row(entry, RUN, {**got, "conclusion_direction_agrees": True})
+    assert row["meets"]["conclusion_direction_agrees"] is False and row["direction_compromised"]
+    assert "included" in sr.write_report([row], kernel.home / "eval-out")[0].read_text()
+
+
+def test_claim_from_review_compromises_the_direction(tmp_home, replay_http):
+    from rk.argument import ArgumentService
+
+    k, ps, lib, _ = make_frozen_project(tmp_home, replay_http, paper_type="systematic_review",
+                                        production_mode="auto")
+    _ready((k, ps, lib))
+    svc = ArgumentService(ps)
+    main = main_claim(ps, stage_row(ps, "argue")["passed_attempt"])
+
+    def items(cid: str) -> set[str]:
+        return {n["item_id"] for e in svc.get_claim(cid)["evidence"] for n in e["notes"] if n}
+
+    reasons = [e["from_id"] for e in svc.list_edges(to_id=main, type="reason_of")]
+    main_items = items(main)
+    reason_items = set().union(*(items(r) for r in reasons))
+    assert reasons and main_items - reason_items and reason_items, "the fixture's argument has a reason"
+
+    def review_of(eid: str, iid: str) -> sr.Entry:
+        data = json.loads(ps.db.execute("SELECT data FROM items WHERE id=?", (iid,)).fetchone()["data"])
+        return _entry(eid, doi=(data.get("ids") or {}).get("doi") or "10.9999/no-doi", title=data["title"])
+
+    def judged(entry: sr.Entry) -> dict:
+        ctx = replace(production_ctx(k, ps, lib, _votes("benefit", "benefit"), stage=sr.STAGE), guidance="")
+        return sr.score(ps, entry, ctx=ctx)
+
+    def compromised(eid: str, iid: str) -> None:
+        got = judged(review_of(eid, iid))
+        assert got["claim_from_review"] is True and got["conclusion_direction_agrees"] is True, eid
+        row = sr.report_row(review_of(eid, iid), RUN, got)
+        assert row["meets"]["conclusion_direction_agrees"] is False and "main claim" in row["direction_compromised"]
+
+    only_main = min(main_items - reason_items)
+    compromised("from-main", only_main)  # an evidence note of the main claim itself
+    # a study only a reason rests on: the main claim's own evidence taken out of the projection, so the review is
+    # reached through the reason_of edge alone
+    ps.db.execute("DELETE FROM evidence WHERE claim_id=?", (main,))
+    ps.db.commit()
+    compromised("from-reason", min(reason_items))
+    assert judged(review_of("main-gone", only_main))["claim_from_review"] is False
+    clean = judged(_entry("clean", doi="10.9999/elsewhere", title="An unrelated review of sleep in shift workers"))
+    assert clean["claim_from_review"] is False and clean["direction_compromised"] is None
+    k.close()
+
+
+def test_agents_never_get_the_main_conclusion():
+    entries = {e.id: e for e in sr.load_manifest()}
+    for e in entries.values():
+        seen = json.dumps([sr.rq_body(e).model_dump(), sr._topic(e).model_dump(),
+                           [h.model_dump() for h in sr._hypotheses(e)]], ensure_ascii=False)
+        assert e.main_conclusion.outcome not in seen, e.id
+        # a PICO states the question, not the review's finding (tfa: the 200 °C threshold; fructose: its subgroups)
+        assert "200 °C" not in seen and "10–30%" not in seen and "60–75%" not in seen, e.id
+    # a clinical PICO makes the RQ clinical, whatever the domain
+    assert sr.rq_body(entries["ai-pulmonary-hypertension"]).clinical is True
+
+
+def test_gates_passed_reads_the_latest_report_of_the_passed_audit(tmp_home, replay_http, monkeypatch):
+    from rk.production.audit import AuditWorker
+    from tests.test_audit import _ctx, _judges, revised
+
+    k, ps, lib, _ = make_frozen_project(tmp_home, replay_http, paper_type="critical_review")
+    env = (k, ps, lib)
+    revised(env)
+    assert sr.gates_passed(ps) is False  # no audit yet
+    assert AuditWorker().run(_ctx(env, _judges("approve"))).status == "done"
+    assert sr.gates_passed(ps) is False  # its report is ok, but the audit has not passed
+    record_attempt(ps, "audit", 1, run_id=None, guidance="", requested=None, actor="tester")
+    record_ran(ps, "audit", 1, "done", "", actor="tester")
+    record_passed(ps, "audit", 1, actor="tester")
+    assert sr.gates_passed(ps) is True
+    reports = sr.audit_reports(ps)
+    monkeypatch.setattr(sr, "audit_reports", lambda _ps: [*reports, {**reports[-1], "version": 99, "ok": False}])
+    assert sr.gates_passed(ps) is False  # the latest report of the passed attempt fails a gate
+    k.close()
+
+
+def test_seeding_resumes_after_each_interruption(kernel, monkeypatch):
+    def crash_once(name: str) -> None:
+        real = getattr(sr, name)
+
+        def crash(*a, **kw):
+            monkeypatch.setattr(sr, name, real)
+            raise RuntimeError(f"interrupted in {name}")
+        monkeypatch.setattr(sr, name, crash)
+
+    def count(ps, sql: str, *args) -> int:
+        return ps.db.execute(sql, args).fetchone()[0]
+
+    # the project was created, its seed record never written: it is yours, so seeding goes on
+    a = _entry("crash-created")
+    kernel.create_project(sr.slug_of(a), f"Reproduction set: {a.id}", field=a.domain, paper_type=sr.PAPER_TYPE,
+                          actor="tester")
+    ps = sr.seed_project(kernel, a)
+    assert sr.seeded(ps)["entry"] == a.id and current_stage(ps) == "protocol"
+    assert count(ps, "SELECT COUNT(*) FROM events WHERE type=?", sr.SEEDED) == 1
+    # a discovery stage ran, its pass not recorded: it passes without running twice
+    b = _entry("crash-ran")
+    crash_once("record_passed")
+    with pytest.raises(RuntimeError):
+        sr.seed_project(kernel, b)
+    ps = sr.seed_project(kernel, b)
+    for s in DISCOVERY:
+        assert count(ps, "SELECT COUNT(*) FROM events WHERE type='stage.ran' AND json_extract(payload, '$.stage')=?",
+                     s) == 1, s
+    assert current_stage(ps) == "protocol"
+    # the topic was added, its RQ not: the topic is used, not added again
+    c = _entry("crash-topic")
+    crash_once("add_rq")
+    with pytest.raises(RuntimeError):
+        sr.seed_project(kernel, c)
+    ps = sr.seed_project(kernel, c)
+    assert count(ps, "SELECT COUNT(*) FROM topics") == 1 and frozen_rq(ps) is not None
+    assert current_stage(ps) == "protocol"
