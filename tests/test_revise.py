@@ -16,7 +16,12 @@ from rk.config import load_settings, save_settings
 from rk.discovery.executor import RateCapped
 from rk.orchestrator.engine import default_workers
 from rk.orchestrator.graph import BACK_EDGES, OPEN_STAGES
-from rk.orchestrator.state import record_attempt, record_passed, record_ran
+from rk.orchestrator.state import (
+    record_attempt,
+    record_passed,
+    record_ran,
+    record_reopened,
+)
 from rk.production.argue import argument_claims, main_claim
 from rk.production.artifacts import ArtifactIn, add_artifact
 from rk.production.draft import DraftWorker
@@ -530,6 +535,47 @@ def test_new_attempt_carries_unresolved_priority1_questions(env):
     (q,) = ex.of("writer", "Revision")[0]["inputs"]["revise"]["questions"]
     assert q["id"] == asked["id"] and q["earlier_answer"]["how"] == "declined"
     assert [e["id"] for e in ex.of("simreader")[0]["inputs"]["earlier_questions"]] == [asked["id"]]
+    assert w.gate(ps, 2).ok, w.gate(ps, 2).failures
+
+
+def _reopened_by_the_final_review(ps, attempt: int, request: str) -> None:
+    """revise reopened by ``audit->revise`` with ``request`` (as the engine does), then its attempt started."""
+    record_reopened(ps, "revise", by_edge="audit->revise", guidance=request, actor="tester")
+    record_attempt(ps, "revise", attempt, run_id=None, guidance=request, requested=request, actor="tester")
+
+
+def test_a_final_review_request_is_a_manuscript_question_every_writer_gets_and_the_gate_needs(env):
+    """I3 of the final review: the final review's revise comment (or P1's not-approved reasons) becomes a carried
+    priority-1 question on the whole manuscript; every revisable section's Writer gets it in round 1, even when the
+    SimReader asks nothing, and the gate needs an accepted answer with a note for it."""
+    _, ps, _ = env
+    _drafted(env)
+    save_settings(load_settings().model_copy(update={"revise_max_rounds": 1}))
+    request = "final_review: revise: Say who the audience is."
+    _reopened_by_the_final_review(ps, 1, request)
+    w = ReviseWorker()
+    ex = _exec([ask()], [revision(how="declined", note="not mine")] * 4)
+    assert _done(w.run(_ctx(env, ex)))
+    (carried,) = revise_notes(ps, 1, kind="questions")[:1]
+    (q,) = carried["questions"]
+    assert carried["round"] == 0 and (q["section"], q["priority"], q["text"]) == ("manuscript", 1, request)
+    assert sorted(_written(ex)) == sorted(REVISABLE)
+    for call in ex.of("writer", "Revision"):
+        assert [x["id"] for x in call["inputs"]["revise"]["questions"]] == [q["id"]]
+    gate = w.gate(ps, 1)
+    assert not gate.ok and any(q["id"] in f and "declined" in f for f in gate.failures), gate.failures
+    # P1 at the edge limit: nothing can be deleted for a question on the whole manuscript, so the run fails
+    out = w.degrade(_ctx(env, _exec([], [])), gate.failures)
+    assert out.status == "failed" and q["id"] in out.reason and "whole manuscript" in out.reason
+    # the next attempt carries it; one Writer's accepted answer with a note resolves it
+    record_ran(ps, "revise", 1, "done", "", actor="tester")
+    record_reopened(ps, "revise", by_edge="revise->revise", guidance="; ".join(gate.failures), actor="tester")
+    record_attempt(ps, "revise", 2, run_id=None, guidance="", requested=None, actor="tester")
+    ex2 = _exec([ask()], [revision(how="answered", note="the introduction names the audience"),
+                          *[revision(how="declined", note="not mine")] * 3])
+    assert _done(w.run(_ctx(env, ex2, attempt=2)))
+    (again,) = revise_notes(ps, 2, kind="questions")[0]["questions"]
+    assert again["id"] == q["id"] and len(_written(ex2)) == 4
     assert w.gate(ps, 2).ok, w.gate(ps, 2).failures
 
 

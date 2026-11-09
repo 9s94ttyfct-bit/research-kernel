@@ -45,7 +45,7 @@ from rk.production.audit import (
     quote_note_problem,
 )
 from rk.production.disclosure import DISCLOSURE_PATH, write_disclosure
-from rk.production.draft import PRISMA_EVENT, DraftWorker
+from rk.production.draft import PRISMA_EVENT, DraftWorker, load_inputs
 from rk.production.manuscript import (
     draft_text,
     draft_versions,
@@ -612,22 +612,72 @@ def test_other_failures_no_stage_can_mend_fail_the_audit_at_once(env, monkeypatc
     assert list(_report(ps)["routes"]) == ["fail"]
 
 
-def test_p1_not_approved_takes_audit_to_revise_through_the_engine_and_fails_at_the_limit(env):
+def _revision(how: str, note: str):
+    """A Writer's revision of revise: the section unchanged, every question it was asked answered ``how``."""
+    def out(inputs):
+        return {"section": inputs["section"]["id"], "markdown": inputs["revise"]["markdown"],
+                "answers": [{"question_id": q["id"], "how": how, "note": note} for q in inputs["revise"]["questions"]]}
+    return out
+
+
+def _revisable(ps) -> list[str]:
+    return [s.id for s in load_inputs(ps).sections if not s.kernel_written]
+
+
+def test_p1_not_approved_reasons_reach_every_writer_and_gate_revise_through_the_engine(env):
+    """I3 of the final review: the judges' not-approved reasons become a priority-1 question on the whole manuscript
+    that every revisable section's Writer gets, though the SimReader asks nothing; revise passes only with an accepted
+    answer to it. At the edge limit P1 still never exports the manuscript unapproved."""
     k, ps, lib = env
     revised(env)
+    n = len(_revisable(ps))
     ex = Exec({**_votes(["not_approved"] * 2, ["not_approved"] * 2),
-               ("simreader", "ReaderQuestions"): [{"questions": []}]})
+               ("simreader", "ReaderQuestions"): [{"questions": []}],
+               ("writer", "Revision"): [_revision("answered", "the scope is stated in the introduction")] * n})
     o, run_id = stage_run(k, ps, lib, "audit", ex)
     assert o.step("demo", run_id, actor="tester") == "running"
     assert current_stage(ps) == "revise" and edge_rows(ps)["audit->revise"]["count"] == 1
     assert "judge says not_approved" in stage_row(ps, "revise")["guidance"]
-    assert o.step("demo", run_id, actor="tester") == "running"  # revise again: no question, it passes
+    assert o.step("demo", run_id, actor="tester") == "running"  # revise: the Writers answer the judges, it passes
     assert current_stage(ps) == "audit"
+    writers = ex.of("writer", "Revision")
+    assert sorted(c["inputs"]["section"]["id"] for c in writers) == sorted(_revisable(ps))
+    for c in writers:
+        (q,) = c["inputs"]["revise"]["questions"]
+        assert q["priority"] == 1 and "judge says not_approved" in q["text"] and "not reviewed by a human" in q["text"]
     record_edge_taken(ps, "audit->revise", EDGE_LIMIT, actor="tester")
     assert o.step("demo", run_id, actor="tester") == "failed"  # P1 at the limit never exports it unapproved
     run = run_row(ps, run_id)
     assert "never exported" in run["reason"] and "judge says not_approved" in run["reason"], run
     assert len(ex.of("judge", "VoteOut")) == 2
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_p2_final_review_revise_comment_reaches_every_writer_and_gates_revise(env):
+    """I3 of the final review: the researcher's revise comment reaches every revisable section's Writer; Writers that
+    only decline it fail revise's gate, and the next attempt asks them again until one answers it."""
+    k, ps, lib = env
+    revised(env)
+    n = len(_revisable(ps))
+    ex = Exec({("simreader", "ReaderQuestions"): [{"questions": []}] * 2,
+               ("writer", "Revision"): [_revision("declined", "not my section")] * n
+               + [_revision("revised", "the introduction now names the audience")] * n})
+    o, run_id = stage_run(k, ps, lib, "audit", ex)
+    assert o.step("demo", run_id, actor="tester") == "paused_waiting_human"
+    (cp,) = [c for c in list_checkpoints(ps) if c["kind"] == "final_review" and c["status"] == "open"]
+    _answer(ps, cp["id"], {"decision": "revise", "comment": "Say who the audience is."})
+    assert o.step("demo", run_id, actor="tester") == "running"
+    assert current_stage(ps) == "revise"
+    assert o.step("demo", run_id, actor="tester") == "running"  # every Writer declined: the gate fails, revise again
+    assert current_stage(ps) == "revise" and edge_rows(ps)["revise->revise"]["count"] == 1
+    assert "Say who the audience is." in "; ".join(stage_row(ps, "revise")["guidance"].split("\n"))
+    assert o.step("demo", run_id, actor="tester") == "running"
+    assert current_stage(ps) == "audit"
+    writers = ex.of("writer", "Revision")
+    assert len(writers) == 2 * n
+    for c in writers:
+        (q,) = c["inputs"]["revise"]["questions"]
+        assert q["priority"] == 1 and q["text"] == "final_review: revise: Say who the audience is."
 
 
 def test_quote_note_whose_locator_no_longer_holds_its_text_fails_v_quote(env):
