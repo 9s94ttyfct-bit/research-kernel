@@ -42,6 +42,10 @@ extraction_app = typer.Typer(help="Extracted values of the read_extract stage", 
 synthesis_app = typer.Typer(help="The synthesis of the synthesize stage", no_args_is_help=True)
 argument_app = typer.Typer(help="The argument of the argue stage", no_args_is_help=True)
 design_app = typer.Typer(help="The method design of the design stage (research proposals)", no_args_is_help=True)
+draft_app = typer.Typer(help="The manuscript's sections, each sentence with its verdict", no_args_is_help=True)
+revise_app = typer.Typer(help="The reader's questions of the revise stage and how each was handled",
+                         no_args_is_help=True)
+audit_app = typer.Typer(help="The audit of the manuscript: the hard gates and the final review", no_args_is_help=True)
 limits_app = typer.Typer(help="Model drivers blocked by a usage limit (rk.llm.limits), and their hourly call caps",
                          invoke_without_command=True)
 app.add_typer(project_app, name="project")
@@ -59,6 +63,9 @@ app.add_typer(extraction_app, name="extraction")
 app.add_typer(synthesis_app, name="synthesis")
 app.add_typer(argument_app, name="argument")
 app.add_typer(design_app, name="design")
+app.add_typer(draft_app, name="draft")
+app.add_typer(revise_app, name="revise")
+app.add_typer(audit_app, name="audit")
 app.add_typer(limits_app, name="limits")
 
 
@@ -1303,6 +1310,192 @@ def design_show(attempt: int | None = typer.Option(None, "--attempt", help="Defa
             typer.echo(f"problem: {p}")
 
     _out(r, as_json, render)
+
+
+# ---------------- production: the manuscript, revise, the audit and the export ----------------
+def _verdict_word(ok: bool | None) -> str:
+    return "verified" if ok is True else "failing" if ok is False else "not verified yet"
+
+
+@draft_app.command("show")
+def draft_show(section: str | None = typer.Option(None, "--section", help="One section (default: every required "
+                                                                          "section)"),
+               version: int | None = typer.Option(None, "--version", help="With --section: that version (default: "
+                                                                          "the latest)"),
+               project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
+    """The manuscript: each section's latest version (or --section at --version), each sentence with the verdict
+    recorded for it ([ok], [FAIL] with its problems, [--] not verified yet) and the section's own problems."""
+    args: dict = {"project": _project(project)}
+    if section:
+        args["section"] = section
+    if version is not None:
+        args["version"] = version
+    r = _call("rk_manuscript_get", args)
+
+    def render(d):
+        if not d["sections"]:
+            typer.echo(f"{d['project']}: no draft yet" + (f" ({d['inputs_error']})" if d["inputs_error"] else ""))
+        for s in d["sections"]:
+            if s["version"] is None:
+                typer.echo(f"{s['section']}: no draft yet")
+                continue
+            where = s["stage"] + (f", round {s['round']}" if s["round"] else "")
+            typer.echo(f"{s['section']} v{s['version']} ({where}): "
+                       + ("unreadable" if s["error"] else _verdict_word(s["ok"])))
+            if s["error"]:
+                typer.echo(f"  error: {s['error']}")
+            for p in s["problems"]:
+                typer.echo(f"  section problem: {p}")
+            for x in s["sentences"]:
+                mark = "ok" if x["ok"] is True else "FAIL" if x["ok"] is False else "--"
+                typer.echo(f"  [{mark}] {x['index']}. {x['text']}")
+                for p in x["problems"]:
+                    typer.echo(f"        - {p}")
+
+    _out(r, as_json, render)
+
+
+def _handled(q: dict) -> str:
+    """How a reader question was handled, in words."""
+    if q["outcome"] in ("revised", "answered", "declined", "deleted"):
+        return f"{q['outcome']}: {q['note'] or 'no note'}"
+    if q["outcome"] == "rejected":
+        last = [r for r in q["revisions"] if r["accepted"] is False][-1]
+        return "rejected: the revision answering it was not accepted: " + "; ".join(last["reasons"])
+    return "not answered yet"
+
+
+@revise_app.command("show")
+def revise_show(project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
+    """The reader's questions of revise (the attempt it shows), each with how it was handled: revised, answered or
+    declined with the Writer's note, or a rejected revision with the reasons; then the stage's gate."""
+    r = _call("rk_manuscript_get", {"project": _project(project)})
+
+    def render(d):
+        rv = d["revise"]
+        if rv["attempt"] is None:
+            typer.echo(f"{d['project']}: revise has not run yet")
+            return
+        typer.echo(f"revise attempt {rv['attempt']} ({_gate_text(rv['gate'])})")
+        if not rv["questions"]:
+            typer.echo("the reader asked no question")
+        for q in rv["questions"]:
+            at = (f" sentence {q['sentence_index']} “{q['sentence']}”" if q["sentence"]
+                  else " (the section as a whole)" if q["sentence_index"] is None else "")
+            typer.echo(f"{q['id']} (round {q['round']}, priority {q['priority']}) on {q['section']}{at}: {q['text']}")
+            typer.echo(f"  -> {_handled(q)}")
+        for q in rv["refused"]:
+            typer.echo(f"refused question {q['id']} on {q['section']}: {q['why']}")
+        for q in rv["dropped"]:
+            typer.echo(f"not carried: {q.get('id')}: {q.get('reason')}")
+        if rv["back_edge"]:
+            typer.echo(f"back to {rv['back_edge']['to']}: {rv['back_edge']['reason']}")
+
+    _out(r, as_json, render)
+
+
+def _export_lines(e: dict) -> None:
+    typer.echo("export: ready" if e["ready"] is None else f"export: not ready: {e['ready']}")
+    if e["built"]:
+        typer.echo(f"package: {e['built']['package']}")
+    for f in e["files"]:
+        typer.echo(f"  {f['name']} ({f['media_type']}, {f['bytes']} bytes)")
+
+
+@audit_app.command("show")
+def audit_show(version: int | None = typer.Option(None, "--version", help="Default: the latest audit report"),
+               project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
+    """The audit report: every hard gate with its failures, the stage owning them and the warnings; the final review;
+    and whether the manuscript can be exported now (else why not), with the exported files."""
+    args: dict = {"project": _project(project)}
+    if version is not None:
+        args["version"] = version
+    r = _call("rk_audit_get", args)
+
+    def render(d):
+        rep = d["report"]
+        if rep is None:
+            typer.echo(f"{d['project']}: no audit report yet")
+        else:
+            typer.echo(f"Audit report v{rep['version']} (attempt {rep['attempt']}): "
+                       + ("passed every hard gate" if rep["ok"] else "failed")
+                       + ("; final review approved" if rep["approved"] else "; final review not approved yet"))
+            typer.echo("sections: " + ", ".join(f"{s} v{v}" for s, v in rep["sections"].items()))
+            for g in rep["gates"]:
+                typer.echo(f"{g['gate']}: " + (f"{len(g['failures'])} failure(s)" if g["failures"] else "pass"))
+                for f in g["failures"]:
+                    typer.echo(f"  - {f}")
+            for owner, fs in rep["routes"].items():
+                if fs:
+                    typer.echo(("fails the stage (no stage the audit can go back to mends it)" if owner == "fail"
+                                else f"goes back to {owner}") + f": {len(fs)} failure(s)")
+            for w in rep["warnings"]:
+                typer.echo(f"warning: {w}")
+        for c in d["final_review"]:
+            typer.echo(f"final review {c['id']}: {c['status']}"
+                       + (f" ({json.dumps(c['answer'], ensure_ascii=False)})" if c["answer"] else ""))
+        _export_lines(d["export"])
+
+    _out(r, as_json, render)
+
+
+EXPORT_WAIT_S = 900.0  # the PDF may take up to 600 s (tectonic)
+
+
+def _stdout_is_tty() -> bool:
+    return sys.stdout.isatty()
+
+
+def _open_file(path: Path) -> None:
+    """Open ``path`` with the OS default app (``rk export --open``)."""
+    import os
+    import subprocess
+
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", str(path)])
+    elif sys.platform == "win32":
+        os.startfile(str(path))  # type: ignore[attr-defined]
+    else:
+        subprocess.Popen(["xdg-open", str(path)])
+
+
+def _wait_run(project: str, run_id: str) -> dict:
+    """The run once it no longer runs (done, failed, cancelled or waiting), polling rk serve."""
+    import time
+
+    deadline = time.monotonic() + EXPORT_WAIT_S
+    while True:
+        run = _call("rk_run_status", {"project": project})["run"]
+        if run is not None and run["id"] == run_id and run["status"] != "running":
+            return run
+        if time.monotonic() > deadline:
+            typer.secho(f"the export run {run_id} is still running after {EXPORT_WAIT_S:.0f} s: follow it with rk run "
+                        "status", fg="red", err=True)
+            raise typer.Exit(1)
+        time.sleep(0.5)
+
+
+@app.command("export")
+def export_cmd(open_pdf: bool = typer.Option(False, "--open", help="Then open paper.pdf with your default app (only "
+                                                                   "when run in a terminal)"),
+               project: str | None = typer.Option(None, "--project")) -> None:
+    """Export the manuscript the audit passed and the final review approved: the export stage (pandoc + citeproc +
+    tectonic: paper.pdf, paper.docx, paper.md, and the reproducible package) runs in rk serve. Refused, with the reason,
+    unless the audit passed and the final review approved the manuscript as it stands."""
+    p = _project(project)
+    r = _call("rk_export", {"project": p}, write=True)
+    typer.echo(f"exporting {p} (run {r['run_id']})")
+    run = _wait_run(p, r["run_id"])
+    if run["status"] != "done":
+        typer.secho(f"the export run {run['status']}: {run['reason'] or 'no reason given'}", fg="red", err=True)
+        raise typer.Exit(1)
+    _export_lines(_call("rk_audit_get", {"project": p})["export"])
+    if open_pdf:
+        if _stdout_is_tty():
+            _open_file(Path(r["pdf"]))
+            typer.echo(f"opened {r['pdf']}")
+        else:
+            typer.echo(f"--open: the output is not a terminal, so the PDF is not opened ({r['pdf']})")
 
 
 # ---------------- tokens ----------------

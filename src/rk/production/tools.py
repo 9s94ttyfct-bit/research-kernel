@@ -1,6 +1,8 @@
 """The production read tools: the protocol (``rk_protocol_get``), the PRISMA flow or the selection reasons
 (``rk_prisma_get``), the screening decisions (``rk_screening_list``), the extraction (``rk_extraction_get``), the
-synthesis (``rk_synthesis_get``), the argument (``rk_argument_get``) and the design (``rk_design_get``). Registered by
+synthesis (``rk_synthesis_get``), the argument (``rk_argument_get``), the design (``rk_design_get``), the manuscript
+with each sentence's stored verdict and revise's questions (``rk_manuscript_get``) and the audit with the export
+(``rk_audit_get``); and the researcher's ``rk_export``, which starts the export stage. Registered by
 ``build_registry``; ``rk.roles.policy`` says which roles read which. Each shows the attempt its stage shows
 (``rk.orchestrator.state.shown_attempt``: the one that passed, else the latest that ran) unless an attempt is given."""
 
@@ -10,11 +12,12 @@ import json
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
 from rk.argument import ArgumentService
-from rk.checkpoints import get_checkpoint, opened_in_place_of
+from rk.checkpoints import get_checkpoint, list_checkpoints, opened_in_place_of
 from rk.discovery.models import RQBody
 from rk.discovery.store import frozen_rq, hypotheses, intake_of
 from rk.orchestrator.state import attempt_ran, shown_attempt, stage_row
@@ -31,12 +34,24 @@ from rk.production.argue import (
     soundness_ids,
 )
 from rk.production.artifacts import ARTIFACT_MEDIA_TYPES, artifacts
+from rk.production.audit import GATES, audit_notes, audit_reports
+from rk.production.audit import KIND as FINAL_REVIEW
+from rk.production.audit import STAGE as AUDIT
 from rk.production.common import by_group, entity_row
 from rk.production.design import design_notes, design_problems, feasibility_claims
+from rk.production.draft import load_inputs
+from rk.production.export import EXPORT_DIR, audited_manuscript, built, downloads
+from rk.production.export import STAGE as EXPORT
 from rk.production.extraction import (
     extraction_limitations,
     included_studies,
     usable_evidence,
+)
+from rk.production.manuscript import (
+    draft_text,
+    draft_versions,
+    drafted_sections,
+    parse_section,
 )
 from rk.production.models import PHASES, ScreeningPhase
 from rk.production.protocol import (
@@ -46,6 +61,8 @@ from rk.production.protocol import (
     protocol_prereg_ok,
     render_protocol,
 )
+from rk.production.revise import STAGE as REVISE
+from rk.production.revise import revise_notes
 from rk.production.screening import reports_prisma
 from rk.production.store import (
     decisions,
@@ -78,6 +95,9 @@ from rk.verify.prisma import (
 )
 from rk.verify.stats import StatsResult, check_stats
 from rk.verify.support import check_claim_hedge, claim_problems, link_gone
+
+if TYPE_CHECKING:
+    from rk.orchestrator.runs import RunManager
 
 SEARCH_SCREEN, READ_EXTRACT = "search_screen", "read_extract"
 SYNTHESIZE, ARGUE, DESIGN = "synthesize", "argue", "design"
@@ -118,6 +138,21 @@ class ArgumentGet(BaseModel):
 class DesignGet(BaseModel):
     project: str
     attempt: int | None = None  # default: the attempt design shows
+
+
+class ManuscriptGet(BaseModel):
+    project: str
+    section: str | None = None  # default: every required section (then any other drafted one)
+    version: int | None = None  # with section: that version (default: the latest)
+
+
+class AuditGet(BaseModel):
+    project: str
+    version: int | None = None  # default: the latest audit report
+
+
+class ExportRun(BaseModel):
+    project: str
 
 
 def paper_type_of(ps: ProjectStore) -> str | None:
@@ -578,8 +613,143 @@ def extraction_view(ps: ProjectStore, item_id: str | None = None) -> dict:
     return {"attempt": attempt, "fields": fields, "studies": studies, "limitations": limitations, "gate": gate}
 
 
-def register_production_tools(tool: Callable, kernel) -> None:
-    """``tool(name, summary, input_model, writes)`` is ``build_registry``'s decorator."""
+# ---- the manuscript, revise and the audit (Plan 5c) ----
+def _sentences(markdown: str, verdict: dict | None) -> list[dict]:
+    """Each sentence of the markdown with the verdict recorded for it (``ok`` ``None``: not verified)."""
+    by_index = {x["index"]: x for x in verdict["sentences"]} if verdict else {}
+    return [{"index": x.index, "text": x.text, "quoted": x.quoted,
+             "markers": [{"kind": m.kind, "target": m.target} for m in x.markers],
+             "ok": by_index[x.index]["ok"] if x.index in by_index else None,
+             "problems": list(by_index[x.index]["problems"]) if x.index in by_index else []}
+            for x in parse_section(markdown)]
+
+
+def _section_view(ps: ProjectStore, section: str, title: str | None, version: int | None) -> dict:
+    """A stored version of ``section`` (default: the latest) as stored: each sentence with its recorded verdict, never
+    verified again here; ``error`` when the version's file cannot be read (missing, or changed since it was stored).
+    ``LookupError`` for a version that was never stored."""
+    rows = draft_versions(ps, section)
+    base = {"section": section, "title": title, "versions": [r["version"] for r in rows]}
+    if not rows:
+        return {**base, "version": None, "stage": None, "attempt": None, "round": None, "by_task": None, "ok": None,
+                "problems": [], "sentences": [], "error": f"section {section} has no draft"}
+    row = rows[-1] if version is None else next((r for r in rows if r["version"] == version), None)
+    if row is None:
+        raise LookupError(f"section {section} has no version {version}")
+    base |= {k: row[k] for k in ("version", "stage", "attempt", "round", "by_task")}
+    verdict = row["verdict"]
+    try:
+        md = draft_text(ps, section, row["version"])
+    except (KeyError, ValueError) as e:
+        return {**base, "ok": None, "problems": [], "sentences": [], "error": f"section {section} v{row['version']}: {e}"}
+    return {**base, "ok": verdict["ok"] if verdict else None, "problems": list(verdict.get("problems") or [])
+            if verdict else [], "sentences": _sentences(md, verdict), "error": None}
+
+
+def revise_view(ps: ProjectStore, attempt: int | None = None) -> dict:
+    """revise's questions (of the attempt it shows, or ``attempt``), each with how it was handled: ``outcome``
+    ``revised`` / ``answered`` / ``declined`` (its answer in an accepted revision, with the ``note``), ``rejected`` (only
+    rejected revisions answered it), ``deleted`` (P1's degrade deleted its sentence) or ``open``; and every revision
+    asked for it (accepted or not, with the reasons); the refused questions, those not carried into the attempt and
+    the gate."""
+    attempt = attempt if attempt is not None else shown_attempt(ps, REVISE)
+    if attempt is None:
+        return {"attempt": None, "questions": [], "refused": [], "dropped": [], "back_edge": None, "gate": None}
+    notes = revise_notes(ps, attempt)
+    decided = {n["task"]: n for n in notes if n["kind"] == "decided"}
+    tries = [{**n, "accepted": decided[n["task"]]["accepted"] if n["task"] in decided else None,
+              "reasons": decided[n["task"]]["reasons"] if n["task"] in decided else []}
+             for n in notes if n["kind"] == "revision"]
+    deleted = {q for r in ps.db.execute("SELECT payload FROM events WHERE type='stage.degraded' AND "
+                                        "json_extract(payload, '$.stage')=? AND json_extract(payload, '$.attempt')=?",
+                                        (REVISE, attempt))
+               for q in json.loads(r["payload"]).get("questions") or []}
+    questions = []
+    for qn in (n for n in notes if n["kind"] == "questions"):
+        for q in qn["questions"]:
+            revisions = []
+            for t in (t for t in tries if q["id"] in t["asked"]):
+                a = next((x for x in t["answers"] if x["question_id"] == q["id"]), None)
+                revisions.append({"round": t["round"], "task": t["task"], "accepted": t["accepted"],
+                                  "reasons": t["reasons"], "how": a["how"] if a else None,
+                                  "note": a["note"] if a else None})
+            answered = [r for r in revisions if r["accepted"] and r["how"]]
+            if q["id"] in deleted:
+                outcome, note = "deleted", "P1's degrade deleted the sentence it was about"
+            elif answered:
+                outcome, note = answered[-1]["how"], answered[-1]["note"]
+            else:
+                outcome, note = ("rejected" if any(r["accepted"] is False for r in revisions) else "open"), None
+            questions.append({"id": q["id"], "round": qn["round"], "section": q["section"],
+                              "sentence_index": q.get("sentence_index"), "sentence": q.get("sentence"),
+                              "text": q["text"], "priority": q["priority"], "carried_from": q.get("carried_from"),
+                              "outcome": outcome, "note": note, "revisions": revisions})
+    back = [n for n in notes if n["kind"] == "back_edge"]
+    return {"attempt": attempt, "questions": questions,
+            "refused": [q for n in notes if n["kind"] == "questions" for q in n.get("refused") or []],
+            "dropped": [q for n in notes if n["kind"] == "carry_dropped" for q in n["questions"]],
+            "back_edge": {"to": back[-1]["to"], "reason": back[-1]["reason"]} if back else None,
+            "gate": gate_of(ps, REVISE, attempt)}
+
+
+def manuscript_view(ps: ProjectStore, section: str | None = None, version: int | None = None) -> dict:
+    """The manuscript: every required section's latest version (then any other drafted section), or the one
+    ``section`` (at ``version``), each sentence with its stored verdict (``_section_view``); and revise's questions
+    with how each was handled (``revise_view``). ``LookupError`` for a section without a draft or an unknown
+    version."""
+    s = load_inputs(ps)
+    specs = [] if isinstance(s, str) else s.sections
+    titles = {x.id: x.title for x in specs}
+    drafted = [d["section"] for d in drafted_sections(ps)]
+    if section is not None:
+        if section not in drafted:
+            raise LookupError(f"section {section} has no draft")
+        ids = [section]
+    else:
+        ids = [*titles, *(d for d in drafted if d not in titles)]
+    return {"paper_type": paper_type_of(ps), "inputs_error": s if isinstance(s, str) else None,
+            "sections": [_section_view(ps, sid, titles.get(sid), version) for sid in ids],
+            "revise": revise_view(ps)}
+
+
+def export_view(ps: ProjectStore) -> dict:
+    """Whether the manuscript can be exported now (``ready``: ``None``, else the reason the export worker refuses
+    it, ``audited_manuscript``), the export attempt it shows with its package, and the files to download."""
+    got = audited_manuscript(ps)
+    attempt = shown_attempt(ps, EXPORT)
+    b = built(ps, attempt) if attempt is not None else None
+    return {"ready": got if isinstance(got, str) else None, "attempt": attempt,
+            "built": {k: b[k] for k in ("package", "sha256", "warnings")} if b else None, "files": downloads(ps)}
+
+
+def audit_view(ps: ProjectStore, version: int | None = None) -> dict:
+    """The audit: its report ``version`` (default: the latest) with every hard gate in order and its failures, the
+    owners of the failures (``routes``) and the warnings; every report; the final review of the attempt the audit
+    shows (its checkpoints and the approval); and the export (``export_view``). ``LookupError`` for an unknown
+    version."""
+    reports = audit_reports(ps)
+    rep = reports[-1] if reports and version is None else next((r for r in reports if r["version"] == version), None)
+    if rep is None and version is not None:
+        raise LookupError(f"there is no audit report v{version}")
+    attempt = shown_attempt(ps, AUDIT)
+    report = None
+    if rep is not None:
+        report = {k: rep[k] for k in ("version", "attempt", "ok", "approved", "sections", "routes", "warnings",
+                                      "md_path", "json_path")}
+        report["gates"] = [{"gate": g, "failures": list(rep["gates"].get(g) or [])}
+                           for g in [*GATES, *(g for g in rep["gates"] if g not in GATES)]]
+    reviews = [{k: c[k] for k in ("id", "status", "answer", "answered_by", "answered_at")}
+               for c in list_checkpoints(ps) if c["kind"] == FINAL_REVIEW
+               and (c["options"] or {}).get("attempt") == attempt] if attempt is not None else []
+    approved = audit_notes(ps, attempt, kind="approved") if attempt is not None else []
+    return {"attempt": attempt, "gate": gate_of(ps, AUDIT, attempt) if attempt is not None else None,
+            "report": report, "reports": [{k: r[k] for k in ("version", "attempt", "ok", "approved")} for r in reports],
+            "final_review": reviews, "approved": approved[-1] if approved else None, "export": export_view(ps)}
+
+
+def register_production_tools(tool: Callable, kernel, runs: Callable[[], RunManager | None] = lambda: None) -> None:
+    """``tool(name, summary, input_model, writes)`` is ``build_registry``'s decorator; ``runs()`` returns ``rk serve``'s
+    RunManager (``rk_export`` starts the export stage in a run), or None."""
 
     def project(slug: str) -> ProjectStore:
         try:
@@ -639,3 +809,41 @@ def register_production_tools(tool: Callable, kernel) -> None:
           "structural problems and the gate.", DesignGet, False)
     def _design_get(ctx: CallContext, a: DesignGet) -> dict:
         return {"project": a.project, **design_view(project(a.project), a.attempt)}
+
+    @tool("rk_manuscript_get", "The manuscript: every required section's latest version (or one section, at a "
+          "version), each sentence with its markers and the verdict recorded for it (ok, problems; null: not verified "
+          "yet) and the section's own problems; and revise's questions (the attempt it shows), each with how it was "
+          "handled (revised, answered or declined with the note, a rejected revision with its reasons) and the gate.",
+          ManuscriptGet, False)
+    def _manuscript_get(ctx: CallContext, a: ManuscriptGet) -> dict:
+        if a.version is not None and a.section is None:
+            raise ToolError("invalid", "a version needs its section", status=422)
+        try:
+            return {"project": a.project, **manuscript_view(project(a.project), a.section, a.version)}
+        except LookupError as e:
+            raise ToolError("not_found", str(e), status=404) from e
+
+    @tool("rk_audit_get", "The audit: its latest report (or version) with every hard gate and its failures, the stage "
+          "owning each failure and the warnings; every report; the final review of the attempt it shows; and the "
+          "export: whether the manuscript can be exported now (else why not), the package built and the files.",
+          AuditGet, False)
+    def _audit_get(ctx: CallContext, a: AuditGet) -> dict:
+        try:
+            return {"project": a.project, **audit_view(project(a.project), a.version)}
+        except LookupError as e:
+            raise ToolError("not_found", str(e), status=404) from e
+
+    # the researcher's alone (rk.roles.policy): it starts a run
+    @tool("rk_export", "Export the manuscript (human only): starts a run of the export stage in rk serve (follow it "
+          "with rk_run_status). Refused, with the reason the export would give, unless the audit passed and the final "
+          "review approved the manuscript as it stands.", ExportRun, True)
+    def _export(ctx: CallContext, a: ExportRun) -> dict:
+        ps = project(a.project)
+        if isinstance(why := audited_manuscript(ps), str):
+            raise ToolError("not_exportable", why, status=409)
+        m = runs()
+        if m is None:
+            raise ToolError("unavailable", "runs are driven by rk serve's orchestrator, which is not available here",
+                            status=503)
+        run_id = m.start(a.project, EXPORT, actor=ctx.actor)
+        return {"project": a.project, "run_id": run_id, "pdf": str((ps.root / EXPORT_DIR / "paper.pdf").resolve())}

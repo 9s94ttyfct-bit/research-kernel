@@ -771,6 +771,40 @@ def built(ps: ProjectStore, attempt: int) -> dict | None:
     return json.loads(r["payload"]) if r else None
 
 
+# ---- downloads (the Workbench's links, through the artifact route) ----
+DOWNLOAD_TYPES = {"paper.pdf": "application/pdf",
+                  "paper.docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                  "paper.md": "text/markdown"}
+PACKAGE_NAME = re.compile(r"package-[0-9a-f]{8}\.zip")
+PACKAGE_TYPE = "application/zip"
+
+
+def download(ps: ProjectStore, name: str) -> tuple[Path, str] | None:
+    """The export file ``name`` with its media type, for download: only the paper (PDF, Word, markdown) and the
+    package, and only as a regular file of the project's own ``artifacts/export`` (no symlink on the way, the resolved
+    path inside that directory); else ``None``."""
+    media = DOWNLOAD_TYPES.get(name) or (PACKAGE_TYPE if PACKAGE_NAME.fullmatch(name) else None)
+    if media is None:
+        return None
+    path = ps.root / EXPORT_DIR / name
+    if any(p.is_symlink() for p in (ps.root / "artifacts", ps.root / EXPORT_DIR, path)) or not path.is_file():
+        return None
+    if path.resolve().parent != ps.root.resolve() / EXPORT_DIR:
+        return None
+    return path, media
+
+
+def downloads(ps: ProjectStore) -> list[dict]:
+    """The export files that can be downloaded now (``download``), each with its media type and size in bytes."""
+    out_dir = ps.root / EXPORT_DIR
+    packages = sorted(p.name for p in out_dir.glob("package-*.zip")) if out_dir.is_dir() else []
+    out = []
+    for name in (*DOWNLOAD_TYPES, *packages):
+        if (got := download(ps, name)) is not None:
+            out.append({"name": name, "media_type": got[1], "bytes": got[0].stat().st_size})
+    return out
+
+
 # ---- the worker ----
 class ExportWorker:
     """Kernel only (no role task): ``export`` + ``build_package``. An interrupted attempt runs again as a new one (it

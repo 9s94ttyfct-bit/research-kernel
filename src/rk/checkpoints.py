@@ -27,6 +27,7 @@ HARD_HUMAN_KINDS = frozenset({
 # ``final_review`` (the audit's, spec §5.3; hard-human, so P2 only: P1's judges vote instead): the answer is
 # ``{"decision": "approve" | "revise" | "back", "comment"?, "to"?}``; ``revise`` needs a ``comment`` (what to change,
 # the guidance revise gets), ``back`` a ``to`` among ``FINAL_REVIEW_BACK`` (the stage the manuscript goes back to).
+FINAL_REVIEW_KIND = "final_review"
 FINAL_REVIEW_DECISIONS = ("approve", "revise", "back")
 FINAL_REVIEW_BACK = ("draft", "argue", "read_extract")
 

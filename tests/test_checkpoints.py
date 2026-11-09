@@ -31,7 +31,7 @@ def env(tmp_home, replay_http):
 
 def test_answer_tool_is_cli_only(env):
     _, reg, ps = env
-    chk = create_checkpoint(ps, "final_review", "Approve?", ["yes", "no"], actor="kernel")
+    chk = create_checkpoint(ps, "topic_review", "Approve?", ["yes", "no"], actor="kernel")
     for role in ROLES:
         with pytest.raises(PermissionDenied):
             reg.call("rk_checkpoint_answer", {"project": "cp", "checkpoint_id": chk, "answer": {"choice": "yes"}},
@@ -84,7 +84,7 @@ def test_checkpoints_rebuild(env):
 def test_cli_answer_requires_confirmation(live_server, monkeypatch):
     live_server.call("rk_project_create", {"slug": "cpc", "title": "C"}, write=True)
     ps, _ = live_server.kernel.project("cpc")
-    chk = create_checkpoint(ps, "final_review", "Ship it?", actor="kernel")
+    chk = create_checkpoint(ps, "topic_review", "Ship it?", actor="kernel")
     runner = CliRunner()
     monkeypatch.setenv("RK_ALLOW_NONINTERACTIVE_ANSWER", "1")  # CliRunner stdin is not a TTY
     r = runner.invoke(app, ["checkpoint", "answer", chk, "--project", "cpc", "--json", '{"ship": true}'], input="n\n")
@@ -98,7 +98,7 @@ def test_cli_answer_requires_confirmation(live_server, monkeypatch):
 def test_cli_answer_refuses_non_tty_without_override(live_server, monkeypatch):
     live_server.call("rk_project_create", {"slug": "cpn", "title": "N"}, write=True)
     ps, _ = live_server.kernel.project("cpn")
-    chk = create_checkpoint(ps, "final_review", "Ship it?", actor="kernel")
+    chk = create_checkpoint(ps, "topic_review", "Ship it?", actor="kernel")
     monkeypatch.delenv("RK_ALLOW_NONINTERACTIVE_ANSWER", raising=False)
     r = CliRunner().invoke(app, ["checkpoint", "answer", chk, "--project", "cpn", "--json", "{}", "--yes"])
     assert r.exit_code == 2 and list_checkpoints(ps, "open")

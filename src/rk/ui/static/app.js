@@ -953,16 +953,68 @@ async function designCard(c, answer) {
   ];
 }
 
+// The audit report: whether it passed, the sections it audited, every hard gate with its failures (as text) and the
+// warnings. Used by the final_review card and the Audit page.
+function gatesList(rep) {
+  return el("ul", { class: "gates" }, rep.gates.map((g) => el("li", { "data-gate": g.gate },
+    el("span", { class: `badge ${g.failures.length ? "bad" : "ok"}` }, g.failures.length ? count(g.failures.length, "failure") : "passes"), " ",
+    el("strong", {}, g.gate),
+    g.failures.length ? el("ul", { class: "failures" }, g.failures.map((f) => el("li", {}, f))) : null)));
+}
+
+function auditSummary(rep) {
+  return [
+    el("p", { class: rep.ok ? "check ok" : "check bad" }, `Audit report v${rep.version} (attempt ${rep.attempt}): `,
+      rep.ok ? "the manuscript passed every hard gate." : "the manuscript failed the audit."),
+    facts([["Sections", Object.entries(rep.sections).map(([s, v]) => `${s} v${v}`).join(", ")],
+      ["Final review", rep.approved ? "approved" : "not approved yet"]]),
+    gatesList(rep),
+    rep.warnings.length ? [el("h4", {}, "Warnings"), el("ul", { class: "warnings" }, rep.warnings.map((w) => el("li", {}, w)))] : null,
+  ];
+}
+
+// final_review (the audit's, P2): approve for export, ask for a revision (what to change) or send the manuscript back
+// to a stage (where to, and optionally why). The server checks the answer with the audit's own check
+// (final_review_problem) and refuses one it could not apply; the card only gates its buttons.
+async function finalReviewCard(c, answer) {
+  const o = c.options || {};
+  const d = await api("/ui/api/audit", { query: { project: state.project, version: o.report_version } });
+  const rep = d.report;
+  let to = null;
+  const send = el("button", { type: "submit", class: "secondary", disabled: true }, "Send it back");
+  const why = el("textarea", { name: "back_comment" });
+  const back = el("form", { class: "revise back-review" },
+    el("div", { class: "field" }, el("span", { class: "hint" }, "Where it goes back to"),
+      choices(`back-${c.id}`, "Where the manuscript goes back to", (o.back_to || []).map((s) => [s, `Back to ${words(s)}`, `Back to ${words(s)}`]),
+        (v) => { to = v; send.disabled = false; })),
+    el("label", { class: "field" }, "Why send it back (optional)", why), send);
+  back.addEventListener("submit", (e) => {
+    e.preventDefault();
+    if (!to) return;
+    const comment = why.value.trim();
+    answer(comment ? { decision: "back", to, comment } : { decision: "back", to });
+  });
+  return [
+    rep ? auditSummary(rep) : el("p", { class: "error" }, `The audit report v${o.report_version} was not found.`),
+    el("p", { class: "hint" }, "Read the manuscript on the ", el("a", { href: "#/drafts" }, "Drafts"), " page and the reports on the ",
+      el("a", { href: "#/audit" }, "Audit"), " page."),
+    el("div", { class: "other-answers" },
+      el("div", { class: "toolbar" }, el("button", { type: "button", disabled: !(rep && rep.ok), onclick: () => answer({ decision: "approve" }) }, "Approve for export")),
+      reviseForm("What should change in the manuscript", (comment) => answer({ decision: "revise", comment })),
+      back),
+  ];
+}
+
 const CARDS = { topic_review: topicReviewCard, rq_approval: rqCard, significance_novelty: rqCard, stage_blocked: blockedCard,
   protocol_approval: protocolCard, screening_disagreements: disagreementCard, pooling_approval: poolingCard,
-  uncertain_support: uncertainCard, evidence_conflict: conflictCard, design_approval: designCard };
+  uncertain_support: uncertainCard, evidence_conflict: conflictCard, design_approval: designCard, final_review: finalReviewCard };
 // The card of a checkpoint, else null (the plain card): an uncertain_support without listed claims predates them.
 const cardFor = (c) => (c.kind === "uncertain_support" && !Array.isArray(c.options?.claim_ids) ? null : CARDS[c.kind] || null);
 const KINDS = { topic_review: "Topic review", rq_approval: "Research question approval",
   significance_novelty: "Already answered? The judges split", stage_blocked: "Stage blocked at its back-edge limit",
   protocol_approval: "Protocol approval", screening_disagreements: "Screening disagreements",
   pooling_approval: "Pooling approval", uncertain_support: "Supported? Your review",
-  evidence_conflict: "Contradicting claims", design_approval: "Design approval" };
+  evidence_conflict: "Contradicting claims", design_approval: "Design approval", final_review: "Final review" };
 
 const DECIDED_BY = { agreement: "both screeners", single: "one screener", human: "you", vote: "the P1 vote (not reviewed by a human)", rule: "the language rule" };
 const PHASE_NAMES = { title_abstract: "Title and abstract", full_text: "Full text" };
@@ -1442,6 +1494,45 @@ pages.argument = async (root) => {
     box);
 };
 
+// The stored verdict of each sentence of the shown version (as text; the server never verifies again to show it):
+// verified, failing with its problems, or not verified yet; the section's own problems first.
+function verdictPanel(s) {
+  const status = s.error ? el("p", { class: "hint bad" }, s.error)
+    : el("p", { class: s.ok === true ? "check ok" : s.ok === false ? "check bad" : "hint" },
+      `v${s.version}: `, s.ok === true ? "every sentence verified." : s.ok === false ? "it fails verification." : "not verified yet.");
+  const badge = (ok) => (ok === true ? ["ok", "Verified"] : ok === false ? ["bad", "Fails"] : ["neutral", "Not verified"]);
+  return el("section", { class: "verdicts" }, el("h2", {}, "Verification"), status,
+    s.problems.length ? el("ul", { class: "check bad" }, s.problems.map((p) => el("li", {}, p))) : null,
+    el("ol", { class: "sentences" }, s.sentences.map((x) => {
+      const [cls, word] = badge(x.ok);
+      return el("li", { "data-index": x.index }, el("span", { class: `badge ${cls}` }, word), " ", el("span", { class: "sentence" }, x.text),
+        x.problems.length ? el("ul", { class: "problems" }, x.problems.map((p) => el("li", {}, p))) : null);
+    })));
+}
+
+// revise's questions (the attempt it shows), each with how it was handled, as text.
+const OUTCOMES = { revised: ["ok", "Revised"], answered: ["ok", "Answered"], declined: ["warn", "Declined"],
+  deleted: ["neutral", "Deleted by the P1 degrade"], rejected: ["bad", "Rejected"], open: ["warn", "Not answered yet"] };
+function revisePanel(rv) {
+  const gate = rv.gate ? (rv.gate.passed ? "It passed its gate." : rv.gate.failures.length ? `Its gate failed: ${rv.gate.failures.join("; ")}` : "Not gated yet.") : "";
+  return el("section", { class: "revise-panel" }, el("h2", {}, "Revise"),
+    rv.attempt === null ? el("p", { class: "empty" }, "revise has not run yet.") : [
+      el("p", { class: "hint" }, `The reader's questions of attempt ${rv.attempt} and how each was handled. ${gate}`),
+      rv.questions.length ? el("ol", { class: "questions" }, rv.questions.map((q) => {
+        const [cls, word] = OUTCOMES[q.outcome] || ["neutral", label(q.outcome)];
+        const rejected = q.revisions.filter((r) => r.accepted === false);
+        return el("li", { "data-question": q.id },
+          el("div", { class: "badges" }, el("span", { class: `badge ${cls}` }, word), el("span", { class: "badge neutral" }, `priority ${q.priority}`),
+            el("span", { class: "hint" }, `${q.section}, round ${q.round}`)),
+          el("p", { class: "question" }, q.text),
+          q.sentence ? el("blockquote", { class: "note" }, q.sentence) : null,
+          q.note ? el("p", { class: "hint" }, `The Writer's note: ${q.note}`) : null,
+          q.outcome === "rejected" && rejected.length ? [el("p", { class: "hint" }, "The revision answering it was not accepted:"),
+            el("ul", { class: "check bad" }, rejected.at(-1).reasons.map((r) => el("li", {}, r)))] : null);
+      })) : el("p", { class: "empty" }, "The reader asked no question."),
+      rv.back_edge ? el("p", { class: "hint warn" }, `Back to ${rv.back_edge.to}: ${rv.back_edge.reason}`) : null]);
+}
+
 pages.drafts = async (root, params) => {
   if (needProject()) return;
   const list = (await api("/ui/api/drafts", { query: { project: state.project } })).drafts;
@@ -1451,6 +1542,7 @@ pages.drafts = async (root, params) => {
   }
   const section = params.get("section") || list[0].section;
   const d = await api(`/ui/api/drafts/${encodeURIComponent(section)}`, { query: { project: state.project, version: params.get("version") } });
+  const m = await api("/ui/api/manuscript", { query: { project: state.project, section, version: d.version } });
   const picker = el("form", { class: "toolbar" },
     el("label", { class: "field" }, "Section", el("select", { name: "section" }, list.map((s) => el("option", { value: s.section, selected: s.section === section }, s.section)))),
     el("label", { class: "field" }, "Version", el("select", { name: "version" }, list.find((s) => s.section === section).versions.map((v) => el("option", { value: v, selected: v === d.version }, `v${v}`)))),
@@ -1460,15 +1552,15 @@ pages.drafts = async (root, params) => {
   body.innerHTML = d.html; // server-rendered with raw HTML escaped (markdown-it, html=False)
   const note = el("aside", { class: "margin-note", "aria-live": "polite" }, el("p", { class: "hint" }, "Choose a source marker in the text to see what supports the sentence."));
   const showMarker = (span) => {
-    body.querySelectorAll(".mk").forEach((m) => m.setAttribute("aria-expanded", "false"));
+    body.querySelectorAll(".mk").forEach((x) => x.setAttribute("aria-expanded", "false"));
     span.setAttribute("aria-expanded", "true");
-    const m = d.markers[Number(span.dataset.i)];
-    note.className = `margin-note${m.missing ? " missing" : ""}`;
-    fill(note, el("strong", {}, m.label || m.kind),
-      m.status ? el("div", { class: "hint" }, `Claim status: ${m.status}`) : null,
-      (m.evidence || []).map((ev) => el("blockquote", { class: "note" }, ev.text,
+    const mk = d.markers[Number(span.dataset.i)];
+    note.className = `margin-note${mk.missing ? " missing" : ""}`;
+    fill(note, el("strong", {}, mk.label || mk.kind),
+      mk.status ? el("div", { class: "hint" }, `Claim status: ${mk.status}`) : null,
+      (mk.evidence || []).map((ev) => el("blockquote", { class: "note" }, ev.text,
         el("div", { class: "hint" }, `${ev.item_title || ev.item_id}${ev.locator ? `, page ${ev.locator.page}` : ""}`))),
-      m.missing ? el("p", { class: "hint" }, "This marker points to nothing in the project. The sentence is not supported until it does.") : null);
+      mk.missing ? el("p", { class: "hint" }, "This marker points to nothing in the project. The sentence is not supported until it does.") : null);
   };
   body.querySelectorAll(".mk").forEach((span) => {
     span.tabIndex = 0;
@@ -1478,7 +1570,44 @@ pages.drafts = async (root, params) => {
     span.addEventListener("mouseenter", () => showMarker(span));
     span.addEventListener("keydown", (e) => { if (e.key === "Enter") showMarker(span); });
   });
-  fill(root, el("h1", {}, "Drafts"), picker, el("div", { class: "draft-layout" }, body, note));
+  fill(root, el("h1", {}, "Drafts"), picker, el("div", { class: "draft-layout" }, body, note),
+    verdictPanel(m.sections[0]), revisePanel(m.revise));
+};
+
+// The Audit page: a report (the latest, or the one picked) with every hard gate and its failures, the stage owning
+// them, the final review, and the export: why it cannot run yet, or the files to download (through the artifact
+// route, export files only).
+const OWNERS = { fail: "No stage the audit can go back to mends these: the audit stops", read_extract: "They take the manuscript back to read_extract",
+  argue: "They take the manuscript back to argue", draft: "They take the manuscript back to draft" };
+const MEDIA = { "application/pdf": "PDF", "application/zip": "reproducible package (zip)", "text/markdown": "markdown",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "Word" };
+const exportUrl = (name) => `/ui/api/artifacts/${encodeURIComponent(state.project)}/export/${encodeURIComponent(name)}`;
+const kib = (n) => (n < 1024 ? `${n} bytes` : `${Math.round(n / 1024)} KiB`);
+pages.audit = async (root, params) => {
+  if (needProject()) return;
+  const d = await api("/ui/api/audit", { query: { project: state.project, version: params.get("version") } });
+  const rep = d.report, e = d.export;
+  const picker = d.reports.length > 1 ? el("form", { class: "toolbar" },
+    el("label", { class: "field" }, "Report", el("select", { name: "version" }, d.reports.map((r) =>
+      el("option", { value: r.version, selected: r.version === rep.version }, `v${r.version} (attempt ${r.attempt}, ${r.ok ? "passed" : "failed"})`)))),
+    el("button", { type: "submit" }, "Show")) : null;
+  picker?.addEventListener("submit", (ev) => { ev.preventDefault(); location.hash = `#/audit?${new URLSearchParams(new FormData(picker))}`; });
+  const owners = rep ? Object.entries(rep.routes).filter(([, fs]) => fs.length) : [];
+  fill(root, el("h1", {}, "Audit"),
+    el("p", { class: "lead" }, "Every hard gate of the kernel over the final manuscript, the final review and the export."), picker,
+    el("div", { class: "audit" },
+      rep ? [auditSummary(rep), owners.length ? [el("h3", {}, "Who mends the failures"),
+        el("ul", { class: "owners" }, owners.map(([o, fs]) => el("li", {}, `${OWNERS[o] || words(o)}: ${count(fs.length, "failure")}.`)))] : null]
+        : el("p", { class: "empty" }, "The audit has not run yet."),
+      d.final_review.length ? [el("h2", {}, "Final review"), el("ul", { class: "reviews" }, d.final_review.map((c) =>
+        el("li", {}, `${c.id}: ${c.status}`, c.answer ? ` (${JSON.stringify(c.answer)})` : "")))] : null,
+      el("section", { class: "export" }, el("h2", {}, "Export"),
+        e.ready === null ? el("p", { class: "check ok" }, "The audit passed and the final review approved the manuscript: it can be exported (rk export, or a run until export).")
+          : el("p", { class: "hint" }, `Not exportable now: ${e.ready}`),
+        e.built ? el("p", { class: "hint" }, "Package ", el("code", {}, e.built.package)) : null,
+        e.files.length ? el("ul", { class: "downloads" }, e.files.map((f) => el("li", {},
+          el("a", { href: exportUrl(f.name), download: f.name }, f.name), ` — ${MEDIA[f.media_type] || f.media_type}, ${kib(f.bytes)}`)))
+          : el("p", { class: "empty" }, "Nothing exported yet."))));
 };
 
 // The Models section of Settings: one model per role. The catalog loads after the page (omp may be slow), and the

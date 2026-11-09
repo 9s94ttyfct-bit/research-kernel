@@ -284,6 +284,20 @@ ol.stages { list-style: none; display: flex; flex-wrap: wrap; gap: 0.5rem; paddi
 .mk[aria-expanded="true"] { outline: 2px solid currentColor; }
 .margin-note { position: sticky; top: 1rem; background: var(--panel); border-left: 3px solid var(--verified); padding: 0.8rem 1rem; font-size: 0.9rem; border-radius: 0 var(--radius-control) var(--radius-control) 0; }
 .margin-note.missing { border-left-color: var(--refuted); }
+.verdicts, .revise-panel { max-width: 80ch; }
+ol.sentences, ol.questions { list-style: none; padding: 0; margin: 0.4rem 0; }
+ol.sentences > li, ol.questions > li { padding: 0.45rem 0; border-bottom: 1px dotted var(--rule); }
+ol.sentences .sentence { font-family: var(--serif); overflow-wrap: anywhere; }
+ol.sentences ul.problems { margin: 0.25rem 0 0; padding-left: 1.2rem; font-size: 0.88rem; color: var(--refuted); }
+ol.questions .question { font-family: var(--serif); margin: 0.2rem 0; overflow-wrap: anywhere; }
+.audit { max-width: 80ch; }
+ul.gates { list-style: none; padding: 0; margin: 0.4rem 0; }
+ul.gates > li { padding: 0.35rem 0; border-bottom: 1px dotted var(--rule); }
+ul.gates ul.failures { margin: 0.25rem 0 0; padding-left: 1.2rem; font-size: 0.88rem; color: var(--refuted); overflow-wrap: anywhere; }
+ul.downloads { list-style: none; padding: 0; margin: 0.4rem 0; }
+ul.downloads > li { padding: 0.3rem 0; }
+.checkpoints li[data-kind="final_review"] { border-left-color: var(--verified); }
+form.back-review > .field { flex: 1 1 100%; }
 
 .toast { position: fixed; right: 1.5rem; bottom: 1.5rem; max-width: 30rem; padding: 0.7rem 1rem; border-radius: var(--radius-control); background: var(--ink); color: #fff; }
 .toast.error { background: var(--refuted); }

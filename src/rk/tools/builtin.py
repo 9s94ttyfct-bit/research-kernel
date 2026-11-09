@@ -19,7 +19,13 @@ from rk.argument import (
 )
 from rk.browser.service import BrowserService
 from rk.browser.tools import register_browser_tools
-from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
+from rk.checkpoints import (
+    FINAL_REVIEW_KIND,
+    answer_checkpoint,
+    final_review_problem,
+    get_checkpoint,
+    list_checkpoints,
+)
 from rk.discovery.models import Intake
 from rk.discovery.store import intake_of, record_intake
 from rk.discovery.tools import register_discovery_tools
@@ -132,7 +138,7 @@ def build_registry(k: Kernel, browser: Callable[[], BrowserService | None] | Non
 
     register_browser_tools(tool, browser)
     register_discovery_tools(tool, k, runs or (lambda: None))
-    register_production_tools(tool, k)
+    register_production_tools(tool, k, runs or (lambda: None))
 
     # ---- projects ----
     class ProjectCreate(BaseModel):
@@ -216,10 +222,17 @@ def build_registry(k: Kernel, browser: Callable[[], BrowserService | None] | Non
         checkpoint_id: str
         answer: dict
 
-    # Policy: cli only. No agent role can answer; the CLI asks the human to confirm before calling this.
+    # Policy: cli only. No agent role can answer; the CLI asks the human to confirm before calling this. A final_review
+    # answer the audit could not apply is refused here with the reason the worker would give (one check for both).
     @tool("rk_checkpoint_answer", "Answer a checkpoint (human only).", CheckpointAnswer, True)
     def _chk_answer(ctx: CallContext, a: CheckpointAnswer) -> Out:
         ps, _ = _project(k, a.project)
+        try:
+            kind = get_checkpoint(ps, a.checkpoint_id)["kind"]
+        except KeyError as e:
+            raise ToolError("not_found", f"no checkpoint {a.checkpoint_id}", status=404) from e
+        if kind == FINAL_REVIEW_KIND and (why := final_review_problem(a.answer)):
+            raise ToolError("invalid", f"this final_review answer cannot be applied: {why}", status=422)
         try:
             answer_checkpoint(ps, a.checkpoint_id, a.answer, answered_by="human", actor=ctx.actor)
         except KeyError as e:

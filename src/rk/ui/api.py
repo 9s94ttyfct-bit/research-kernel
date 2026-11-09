@@ -51,6 +51,7 @@ from rk.orchestrator.state import (
     orchestrator_drives,
 )
 from rk.production.artifacts import ARTIFACT_MEDIA_TYPES, ARTIFACTS_DIR, artifact
+from rk.production.export import download
 from rk.production.manuscript import drafted_sections
 from rk.production.models import PHASE_WORDS
 from rk.production.screening import KIND as DISAGREEMENTS
@@ -566,6 +567,20 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
                    "sandbox; default-src 'none'; style-src 'unsafe-inline'"}
         return FileResponse(path, media_type=media, headers=headers, content_disposition_type="inline")
 
+    @r.get("/ui/api/artifacts/{slug}/export/{name}", response_model=None)
+    def export_file(slug: str, name: str, request: Request) -> FileResponse:
+        """A file of the project's export, for download: the paper (``application/pdf``, Word, ``text/markdown``) and
+        the package (``application/zip``), only from the project's own ``artifacts/export`` (``download``: no other
+        file, no path out of it, no symlink)."""
+        ctx_dep(request)
+        ps, _ = project(slug)
+        got = download(ps, name)
+        if got is None:
+            raise HTTPException(status_code=404, detail=f"no export file {name} in {slug}")
+        path, media = got
+        headers = {"X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox; default-src 'none'"}
+        return FileResponse(path, media_type=media, headers=headers, filename=name)
+
     @r.get("/ui/api/argument")
     def argument_get(request: Request, attempt: int | None = None, claim_id: str | None = None) -> JSONResponse:
         """The argument of argue, of the attempt it shows or of ``attempt``; optionally one claim
@@ -604,6 +619,26 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
         except ValueError as e:  # the stored file is missing or changed on disk
             raise HTTPException(status_code=409, detail=str(e)) from e
         return ok({"section": section, "version": n, "markdown": text, **render_draft(ps, lib, text)})
+
+    @r.get("/ui/api/manuscript")
+    def manuscript_get(request: Request, section: str | None = None, version: int | None = None) -> JSONResponse:
+        """Every required section's latest version (or ``section`` at ``version``), each sentence with its stored
+        verdict, and revise's questions with how each was handled (``rk_manuscript_get``)."""
+        args: dict[str, Any] = {"project": request.query_params.get("project", "")}
+        if section:
+            args["section"] = section
+        if version is not None:
+            args["version"] = version
+        return ok(call("rk_manuscript_get", args, ctx_dep(request)))
+
+    @r.get("/ui/api/audit")
+    def audit_get(request: Request, version: int | None = None) -> JSONResponse:
+        """The audit report (the latest, or ``version``) with its gates and their failures, the final review and the
+        export with its downloads (``rk_audit_get``)."""
+        args: dict[str, Any] = {"project": request.query_params.get("project", "")}
+        if version is not None:
+            args["version"] = version
+        return ok(call("rk_audit_get", args, ctx_dep(request)))
 
     # ---- settings and browser ---------------------------------------------------------------------------------
     @r.get("/ui/api/settings")

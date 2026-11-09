@@ -71,6 +71,10 @@ TOOL_ROLES: dict[str, frozenset[str]] = {
     # synthesis, argument and design (Plan 5b): the roles that reason over the whole project; the screeners, the Scout
     # and the Reader work before them and read none
     **{name: _r(*_FULL_READERS) for name in ("rk_synthesis_get", "rk_argument_get", "rk_design_get")},
+    # the manuscript and the audit (Plan 5c): the roles that reason over the whole project; the screeners, the Scout
+    # and the Reader work before them and read neither. Exporting starts a run: yours alone.
+    **{name: _r(*_FULL_READERS) for name in ("rk_manuscript_get", "rk_audit_get")},
+    "rk_export": _r(),
 }
 
 # Spec §5.3/§7.2: the P1/P2 checkpoints and the discovery path depend on these intake fields. The intake cannot change

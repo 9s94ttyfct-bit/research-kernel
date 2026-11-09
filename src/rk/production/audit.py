@@ -79,6 +79,7 @@ from rk.canon import sha256_hex
 from rk.checkpoints import (
     FINAL_REVIEW_BACK,
     FINAL_REVIEW_DECISIONS,
+    FINAL_REVIEW_KIND,
     answered_by_actor,
     create_checkpoint,
     final_review_problem,
@@ -124,7 +125,7 @@ from rk.verify.stats import check_stats
 from rk.verify.support import claim_problems
 
 STAGE = "audit"
-KIND = "final_review"
+KIND = FINAL_REVIEW_KIND
 APPROVE, REVISE, BACK = FINAL_REVIEW_DECISIONS
 NOT_APPROVED = "not_approved"
 NOT_HUMAN = "P1 vote, not reviewed by a human"

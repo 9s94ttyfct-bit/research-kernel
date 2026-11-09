@@ -50,7 +50,7 @@ from .test_ui_discovery import (
 
 pytestmark = pytest.mark.browser
 PAGES = {"chat": "Chat", "library": "Library", "checkpoints": "Checkpoints", "progress": "Progress",
-         "drafts": "Drafts", "projects": "Projects", "settings": "Settings"}
+         "drafts": "Drafts", "audit": "Audit", "projects": "Projects", "settings": "Settings"}
 
 
 @pytest.fixture
