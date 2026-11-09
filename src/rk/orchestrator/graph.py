@@ -34,6 +34,8 @@ BACK_EDGES: frozenset[tuple[str, str]] = frozenset({
     ("synthesize", "read_extract"), ("argue", "synthesize"), ("argue", "question"), ("design", "argue"),
     ("design", "question"), ("draft", "argue"), ("draft", "design"),  # draft->design: research proposals only
     ("revise", "draft"),
+    # audit: a failing hard gate goes to the stage that owns it; the final review's revise and back answers too
+    ("audit", "draft"), ("audit", "argue"), ("audit", "read_extract"), ("audit", "revise"),
 })
 EDGE_LIMIT = 2  # uses of each edge per project before P2 asks and P1 degrades (§7.2)
 

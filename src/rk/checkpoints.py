@@ -24,6 +24,27 @@ HARD_HUMAN_KINDS = frozenset({
     "screening_disagreements", "evidence_conflict", "significance_novelty", "final_review", "stage_blocked",
     "pooling_approval", "design_approval",
 })
+# ``final_review`` (the audit's, spec §5.3; hard-human, so P2 only: P1's judges vote instead): the answer is
+# ``{"decision": "approve" | "revise" | "back", "comment"?, "to"?}``; ``revise`` needs a ``comment`` (what to change,
+# the guidance revise gets), ``back`` a ``to`` among ``FINAL_REVIEW_BACK`` (the stage the manuscript goes back to).
+FINAL_REVIEW_DECISIONS = ("approve", "revise", "back")
+FINAL_REVIEW_BACK = ("draft", "argue", "read_extract")
+
+
+def final_review_problem(answer: dict) -> str:
+    """Why a ``final_review`` answer cannot be applied, else ``""``."""
+    decision = answer.get("decision")
+    if decision not in FINAL_REVIEW_DECISIONS:
+        return f"decision {decision!r} is not one of {', '.join(FINAL_REVIEW_DECISIONS)}"
+    comment = answer.get("comment")
+    if comment is not None and not isinstance(comment, str):
+        return "comment must be text"
+    if decision == "revise" and not (comment or "").strip():
+        return "revise needs a comment saying what to change"
+    if decision == "back" and answer.get("to") not in FINAL_REVIEW_BACK:
+        return (f"back needs \"to\": one of {', '.join(FINAL_REVIEW_BACK)} (the stage the manuscript goes back to), "
+                f"not {answer.get('to')!r}")
+    return ""
 
 
 def _now() -> str:

@@ -34,6 +34,9 @@ from rk.production.manuscript import Sentence
 from rk.store.project import ProjectStore
 
 NOT_ARGUED = "argue has not passed"
+# in the problem of an objection whose response claim was withdrawn: argue must answer it again (the audit routes it
+# there), no draft can
+UNANSWERED = "the objection is unanswered"
 
 
 @dataclass(frozen=True)
@@ -136,7 +139,7 @@ def check_balance(ps: ProjectStore, section: str, sentences: list[Sentence]) -> 
         for a in r.unanswered:
             oid = a["objection_id"]
             out.append(f"section {section} is one-sided: the objection {oid} to {_to(r, cid, oid)} was answered by "
-                       f"{a['response_claim_id']}, which is withdrawn: the objection is unanswered, and nothing the "
+                       f"{a['response_claim_id']}, which is withdrawn: {UNANSWERED}, and nothing the "
                        f"section could cite answers it for {cid}")
     return list(dict.fromkeys(out))
 

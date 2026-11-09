@@ -243,14 +243,15 @@ def answer(wb, cp: dict, body: dict) -> None:
 def test_stages_route_marks_plan5_stages(wb):
     g = wb.client.get("/ui/api/stages", params={"project": "demo"}).json()["result"]
     assert [s["stage"] for s in g["graph"]] == stages_for("critical_review")
-    # protocol, search_screen, read_extract, synthesize, argue, draft and revise have workers
-    assert [s["status"] for s in g["graph"]] == ["pending"] * 12 + ["plan5"] * 2
+    # protocol, search_screen, read_extract, synthesize, argue, draft, revise and audit have workers
+    assert [s["status"] for s in g["graph"]] == ["pending"] * 13 + ["plan5"]
     assert (g["paper_type"], g["discovery_mode"], g["run"], g["runs_available"]) == ("critical_review", "d2", None,
                                                                                       True)
     assert {(e["edge"], e["count"], e["limit"]) for e in g["back_edges"]} == {
         ("gaps->landscape", 0, 2), ("topics->gaps", 0, 2), ("question->topics", 0, 2), ("protocol->question", 0, 2),
         ("search_screen->protocol", 0, 2), ("read_extract->search_screen", 0, 2), ("synthesize->read_extract", 0, 2),
-        ("argue->synthesize", 0, 2), ("argue->question", 0, 2), ("draft->argue", 0, 2), ("revise->draft", 0, 2)}
+        ("argue->synthesize", 0, 2), ("argue->question", 0, 2), ("draft->argue", 0, 2), ("revise->draft", 0, 2),
+        ("audit->draft", 0, 2), ("audit->argue", 0, 2), ("audit->read_extract", 0, 2), ("audit->revise", 0, 2)}
 
     wb.orch.workers["gaps"] = FakeWorker(runs=[StageOutcome("rerun", reason="too few gaps")])
     wb.orch.workers["topics"] = FakeWorker(runs=[lambda ctx: StageOutcome(
@@ -262,7 +263,7 @@ def test_stages_route_marks_plan5_stages(wb):
     assert [s["status"] for s in g["graph"][:5]] == ["passed", "passed", "passed", "active", "pending"]
     assert (by["topics"]["state"], by["topics"]["attempt"]) == ("waiting", 1)
     assert [(e["edge"], e["count"]) for e in by["gaps"]["back_edges"]] == [("gaps->gaps", 1)]
-    assert by["audit"] == {"stage": "audit", "status": "plan5"}
+    assert by["export"] == {"stage": "export", "status": "plan5"}
     assert (g["run"]["id"], g["run"]["status"], g["run_active"]) == (run_id, "paused_waiting_human", True)
     assert g["current"] == "topics"
 
@@ -291,16 +292,17 @@ def test_stages_route_without_the_orchestrator(ui, kernel):
 
 
 def test_stages_route_marks_the_stages_with_a_worker_and_offers_their_runs(wb):
-    later = ("protocol", "search_screen", "read_extract", "synthesize", "argue", "draft", "revise")
+    later = ("protocol", "search_screen", "read_extract", "synthesize", "argue", "draft", "revise", "audit")
     for s in later:
         wb.orch.workers[s] = FakeWorker()
     g = wb.client.get("/ui/api/stages", params={"project": "demo"}).json()["result"]
-    assert [s["status"] for s in g["graph"]] == ["pending"] * 12 + ["plan5"] * 2
+    assert [s["status"] for s in g["graph"]] == ["pending"] * 13 + ["plan5"]
     assert {e["edge"] for e in g["back_edges"]} == {"gaps->landscape", "topics->gaps", "question->topics",
                                                    "protocol->question", "search_screen->protocol",
                                                    "read_extract->search_screen", "synthesize->read_extract",
                                                    "argue->synthesize", "argue->question", "draft->argue",
-                                                   "revise->draft"}
+                                                   "revise->draft", "audit->draft", "audit->argue",
+                                                   "audit->read_extract", "audit->revise"}
     assert (g["until_options"], g["discovery_passed"]) == (["topics", "question", *later], False)
     run_id = start(wb, "question")
     until(lambda: run_row(wb.ps, run_id)["status"] == "done")
@@ -314,8 +316,8 @@ def test_stages_route_marks_the_stages_with_a_worker_and_offers_their_runs(wb):
     run_id = start(wb, "read_extract")
     until(lambda: run_row(wb.ps, run_id)["status"] == "done")
     g = wb.client.get("/ui/api/stages", params={"project": "demo"}).json()["result"]
-    assert [s["status"] for s in g["graph"]] == ["passed"] * 8 + ["pending"] * 4 + ["plan5"] * 2
-    assert (g["current"], g["until_options"]) == ("synthesize", ["synthesize", "argue", "draft", "revise"])
+    assert [s["status"] for s in g["graph"]] == ["passed"] * 8 + ["pending"] * 5 + ["plan5"]
+    assert (g["current"], g["until_options"]) == ("synthesize", ["synthesize", "argue", "draft", "revise", "audit"])
 
 
 def test_stages_route_keeps_the_run_controls_of_a_d1_project_sent_back_to_question(wb):
@@ -341,7 +343,7 @@ def test_stages_route_keeps_the_run_controls_of_a_d1_project_sent_back_to_questi
     until(lambda: run_row(wb.ps, run_id)["status"] == "cancelled")
     g = wb.client.get("/ui/api/stages", params={"project": "demo"}).json()["result"]
     assert g["until_options"] == ["question", "protocol", "search_screen", "read_extract", "synthesize",
-                                  "argue", "draft", "revise"]  # a run goes on
+                                  "argue", "draft", "revise", "audit"]  # a run goes on
 
 
 

@@ -110,7 +110,7 @@ def test_run_continues_past_question_until_read_extract(project):
     w = _workers()
     o = _orch(k, w)
     assert stages_of(ps) == stages_for("critical_review")
-    assert o.runnable(ps) == [*DISCOVERY, *FIRST, "synthesize", "argue", "draft", "revise"]
+    assert o.runnable(ps) == [*DISCOVERY, *FIRST, "synthesize", "argue", "draft", "revise", "audit"]
     run_id = start_run(ps, until="read_extract", actor="tester", clock=lambda: T0)
     assert _drive(o, run_id)[-1] == "done"
     assert [r["stage"] for r in stage_rows(ps)] == stages_for("critical_review")
@@ -139,7 +139,7 @@ def test_one_run_from_intake_through_question_into_production(tmp_home, replay_h
         m = RunManager(k, reg, _orch(k, w, reg), poll_s=0.02)
         try:
             assert m.status("demo")["until_options"] == ["topics", "question", *FIRST, "synthesize", "argue", "draft",
-                                                         "revise"]
+                                                         "revise", "audit"]
             run_id = m.start("demo", "read_extract", actor="tester")
             _wait(lambda: run_row(ps, run_id)["status"] == "done")
             assert current_stage(ps) == "synthesize"
@@ -194,20 +194,20 @@ def test_third_use_of_a_production_edge_asks_in_p2(project):
 
 def test_unrunnable_stage_is_unavailable(project):
     k, ps = project
-    o = _orch(k, {**_workers(), **{s: FakeWorker() for s in ("synthesize", "argue", "draft", "revise")}})
-    assert "audit" not in o.runnable(ps)
-    run_id = start_run(ps, until="audit", actor="tester", clock=lambda: T0)
+    o = _orch(k, {**_workers(), **{s: FakeWorker() for s in ("synthesize", "argue", "draft", "revise", "audit")}})
+    assert "export" not in o.runnable(ps)
+    run_id = start_run(ps, until="export", actor="tester", clock=lambda: T0)
     with pytest.raises(ToolError) as e:
         _drive(o, run_id)
     assert e.value.type == "stage_unavailable" and "no worker yet" in e.value.message
-    assert current_stage(ps) == "audit"
+    assert current_stage(ps) == "export"
     with pytest.raises(ToolError) as e:  # a stage the paper type does not have
         start_run(ps, until="design", actor="tester", clock=lambda: T0)
     assert e.value.type == "stage_unavailable"
 
     bare = _orch(k, {s: FakeWorker() for s in DISCOVERY if s != "intake"})  # the default production workers only
     assert bare.runnable(ps) == [*DISCOVERY, "protocol", "search_screen", "read_extract", "synthesize", "argue",
-                                 "draft", "revise"]
+                                 "draft", "revise", "audit"]
     with pytest.raises(ToolError) as e:
         bare.run_stage("demo", "read_extract", actor="tester")
     assert e.value.type == "stage_unavailable"
@@ -219,17 +219,17 @@ def test_start_until_a_stage_without_worker_is_refused(tmp_home, replay_http):
         reg = build_registry(k)
         m = RunManager(k, reg, _orch(k, {s: FakeWorker() for s in DISCOVERY if s != "intake"}, reg), poll_s=0.02)
         try:
-            with pytest.raises(ToolError) as e:  # before question too: audit has no worker
-                m.start("demo", "audit", actor="tester")
+            with pytest.raises(ToolError) as e:  # before question too: export has no worker
+                m.start("demo", "export", actor="tester")
             assert e.value.type == "stage_unavailable" and "no worker yet" in e.value.message
             run_id = m.start("demo", "question", actor="tester")
             _wait(lambda: run_row(ps, run_id)["status"] == "done")
             freeze_an_rq(ps)
             with pytest.raises(ToolError) as e:
-                m.start("demo", "audit", actor="tester")
+                m.start("demo", "export", actor="tester")
             assert e.value.type == "stage_unavailable" and "no worker yet" in e.value.message
             assert m.status("demo")["until_options"] == ["protocol", "search_screen", "read_extract", "synthesize",
-                                                         "argue", "draft", "revise"]
+                                                         "argue", "draft", "revise", "audit"]
         finally:
             m.close()
     finally:
@@ -263,7 +263,7 @@ def test_d1_project_can_start_a_production_run_after_question(project):
         assert e.value.type == "rq_not_frozen"
         assert m.status("demo")["until_options"] == []
         freeze_an_rq(ps)
-        assert m.status("demo")["until_options"] == [*FIRST, "synthesize", "argue", "draft", "revise"]
+        assert m.status("demo")["until_options"] == [*FIRST, "synthesize", "argue", "draft", "revise", "audit"]
         for until in ("topics", "question"):  # passed already
             with pytest.raises(ToolError) as e:
                 m.start("demo", until, actor="tester")
@@ -319,12 +319,13 @@ def test_run_texts_list_runnable_stages(project):
     k, ps = project
     holder: dict = {}
     reg = build_registry(k, runs=lambda: holder.get("m"))
-    o = _orch(k, {**_workers(), **{s: FakeWorker() for s in ("synthesize", "argue", "design", "draft", "revise")}},
+    o = _orch(k, {**_workers(), **{s: FakeWorker() for s in ("synthesize", "argue", "design", "draft", "revise",
+                                                              "audit")}},
               reg)
     m = holder["m"] = RunManager(k, reg, o, poll_s=0.02)
     try:
         proposal = ps.meta("paper_type") == "research_proposal"
-        later = [*FIRST, "synthesize", "argue", *(["design"] if proposal else []), "draft", "revise"]
+        later = [*FIRST, "synthesize", "argue", *(["design"] if proposal else []), "draft", "revise", "audit"]
         assert o.stages_after_question(ps) == later
         with pytest.raises(ToolError) as e:  # a D2 project: guided calls are refused, naming where a run can end
             reg.call("rk_stage_run", {"project": "demo", "stage": "intake"}, _ctx())
