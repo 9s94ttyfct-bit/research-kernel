@@ -35,11 +35,12 @@ sentence and the section's balance.
 
 An interrupted attempt runs again in place: a section whose latest version in the attempt verified ok is not drafted
 again, an unverified version is verified (no Writer task), the retries already spent count, and a back-edge already
-noted is returned again. A new attempt drafts every section afresh, except in a rerun of draft's own failing gate
-(reopened by ``draft->draft``, also after a stage_blocked allow_one_more): a section whose last version of the previous
-attempt passed and verifies now is carried (``_carry``: the same text as a version of the new attempt, no Writer task),
-so sections that passed are not lost again; when every section passed (only the manuscript as a whole failed), every
-section is drafted again.
+noted is returned again. A new attempt drafts every section afresh, except when draft's latest reopen is
+``draft->draft`` (its own failing gate, a stage_blocked allow_one_more, a rerun outcome): a section whose last version
+of the previous attempt passed, verifies now and whose file still reads as recorded is carried (``_carry``: the same
+text as a version of the new attempt, recorded with the Writer task that wrote it; no new Writer task), so sections
+that passed are not lost again; when every section passed (only the manuscript as a whole failed), every section is
+drafted again. Every other reopening edge (revise, audit, an upstream stage) drafts every section again.
 
 The gate reads every required section's latest text (a missing, unreadable or altered file is a failure naming the
 section and version): each was written in the attempt and verified ok, and verifies now too (``section_verdict``: a
@@ -428,8 +429,8 @@ class DraftWorker:
         carry = self._carry(ctx, s)
         for spec in s.sections:
             if spec.id in carry and not _mine(ps, spec.id, ctx.attempt):
-                md, verdict = carry[spec.id]
-                v = write_draft(ps, spec.id, md, stage=STAGE, attempt=ctx.attempt, round=0, by_task=None,
+                md, verdict, by_task = carry[spec.id]
+                v = write_draft(ps, spec.id, md, stage=STAGE, attempt=ctx.attempt, round=0, by_task=by_task,
                                 actor=ctx.actor)
                 record_section_verdict(ps, spec.id, v, verdict, actor=ctx.actor)
             mine = _mine(ps, spec.id, ctx.attempt)
@@ -452,10 +453,12 @@ class DraftWorker:
         return StageOutcome("done")
 
     @staticmethod
-    def _carry(ctx: StageContext, s: DraftInputs) -> dict[str, tuple[str, SectionVerdict]]:
-        """The Writer sections a rerun of draft's own gate keeps (see the module docstring), each with its text and its
-        verdict now: only when the attempt was reopened by ``draft->draft``, a section whose last version of the
-        previous attempt passed and still verifies; nothing when every Writer section passed there."""
+    def _carry(ctx: StageContext, s: DraftInputs) -> dict[str, tuple[str, SectionVerdict, str | None]]:
+        """The Writer sections a new attempt keeps (see the module docstring), each with its text, its verdict now and
+        the Writer task that wrote the text (a carried version keeps it, so the audit counts that task's vendor): only
+        when draft's latest reopen is ``draft->draft`` (a failed gate, a stage_blocked allow_one_more, a rerun
+        outcome), a section whose last version of the previous attempt passed and still verifies and whose file still
+        reads as recorded (else it is drafted again); nothing when every Writer section passed there."""
         ps = ctx.ps
         r = ps.db.execute("SELECT payload FROM events WHERE type='stage.reopened' "
                           "AND json_extract(payload, '$.stage')=? ORDER BY seq DESC LIMIT 1", (STAGE,)).fetchone()
@@ -469,9 +472,12 @@ class DraftWorker:
             return {}
         out = {}
         for sec, last in passed.items():
-            md = draft_text(ps, sec, last["version"])
+            try:
+                md = draft_text(ps, sec, last["version"])
+            except (KeyError, ValueError):  # a missing, unreadable or altered file: the section is drafted again
+                continue
             if (verdict := section_verdict(ps, sec, md, paper_type=s.paper_type)).ok:
-                out[sec] = (md, verdict)
+                out[sec] = (md, verdict, last["by_task"])
         return out
 
     def _write(self, ctx: StageContext, s: DraftInputs, spec: SectionSpec, mine: list[dict],

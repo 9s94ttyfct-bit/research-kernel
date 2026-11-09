@@ -2,7 +2,7 @@
 
 The Plan 5c stages turn a review's argument into an exported manuscript: `draft → revise → audit → export`. This page
 records the live runs of Task 9 (in progress: the melatonin review and the research proposal have exported; the
-others are running or waiting, see each project's status below):
+others are waiting, see each project's status below):
 - a systematic review (melatonin for delirium), a critical review (large language models as screeners) and a research
   proposal (the melatonin question as a trial), each in P2 with the checkpoints answered;
 - one P1 project from intake to export, with every checkpoint the mode lets a vote answer voted;
@@ -145,7 +145,7 @@ project's first and last events are 11:26 and 21:46 UTC (10 h 20 min); that span
   sentence wrongly said that neither trial was powered. Attempt 8 failed on 4 more problems; its Methods also said
   that risk of bias was assessed with RoB 2, although the extraction records it as not reported. Attempts 9–12 did
   not converge (see the defects above). Draft passed at attempt 15 (21:34 UTC, on 0911b30), after 12 draft→draft
-  uses, each allowed by the stand-in with a comment naming the remaining failures.
+  uses, the last 10 allowed by the stand-in, each with a comment naming the remaining failures.
 - Revise passed at attempt 5 (21:41 UTC). The SimReader's priority-1 questions were about:
   - Oh et al. 2021 (ramelteon), which is outside the 2024 date limit and so not eligible;
   - the perioperative denominators. The stand-in checked the full text: 85 patients were randomized (43 + 42), and

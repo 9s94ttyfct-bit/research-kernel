@@ -190,7 +190,8 @@ def test_ungrounded_number_fails_sentence_and_redrafts(env):
 def test_a_rerun_after_drafts_own_gate_keeps_the_sections_that_passed(env):
     """Task 9: each draft->draft rerun rewrote every section, so a manuscript whose sections each passed at some attempt
     never passed all at once. A rerun of draft's own gate failure carries a section whose latest draft version passed
-    and still verifies (same text, a new version of the attempt, no Writer task); the failed ones are drafted again. A
+    and still verifies (same text, a new version of the attempt recorded with the Writer task that wrote it, no new
+    Writer task); the failed ones are drafted again. A
     reopen by another edge (revise, audit, an upstream stage) drafts every section again."""
     _, ps, _ = env
     _ready(env)
@@ -205,7 +206,8 @@ def test_a_rerun_after_drafts_own_gate_keeps_the_sections_that_passed(env):
     assert _writer_sections(ex) == ["introduction"]
     for sec in ("theme-1", "gaps-agenda", "conclusion"):
         before, carried = draft_versions(ps, sec)[-2:]
-        assert (carried["attempt"], carried["by_task"], carried["verdict"]["ok"]) == (2, None, True)
+        assert (carried["attempt"], carried["verdict"]["ok"]) == (2, True)
+        assert carried["by_task"] == before["by_task"] is not None  # the audit counts the vendor that wrote it
         assert draft_text(ps, sec, carried["version"]) == draft_text(ps, sec, before["version"])
     assert w.gate(ps, 2).ok
     # reopened by another edge: every section is drafted again
@@ -213,6 +215,71 @@ def test_a_rerun_after_drafts_own_gate_keeps_the_sections_that_passed(env):
     ex = _writer([writes()] * 4)
     assert w.run(_ctx(env, ex, attempt=3)).status == "done"
     assert _writer_sections(ex) == ["introduction", "theme-1", "gaps-agenda", "conclusion"]
+
+
+def _failed_introduction(env) -> DraftWorker:
+    """Attempt 1: introduction fails its three tries, the other sections pass; then reopened by draft->draft."""
+    _, ps, _ = env
+    _ready(env)
+    bad = f"Aspirin was studied in 1234 older people [[clm:{main_claim(ps, 1)}]]."
+    w = DraftWorker()
+    w.run(_ctx(env, _writer([writes(bad=bad)] * 3 + [writes(bad=bad), writes()] + [writes()] * 2)))
+    record_reopened(ps, "draft", by_edge="draft->draft", guidance="introduction: 1234", actor="t")
+    return w
+
+
+def test_a_passed_section_whose_file_was_altered_is_drafted_again_not_carried(env):
+    _, ps, _ = env
+    w = _failed_introduction(env)
+    (ps.root / f"artifacts/drafts/gaps-agenda.v{draft_versions(ps, 'gaps-agenda')[-1]['version']}.md").write_text(
+        "Unmarked text with 999 in it.\n")
+    ex = _writer([writes()] * 2)
+    assert w.run(_ctx(env, ex, attempt=2)).status == "done"
+    assert _writer_sections(ex) == ["introduction", "gaps-agenda"]
+    assert w.gate(ps, 2).ok
+
+
+def test_a_passed_section_that_no_longer_verifies_is_drafted_again(env):
+    """A claim it cites was withdrawn since: its fresh verdict fails, so it is not carried."""
+    _, ps, _ = env
+    w = _failed_introduction(env)
+    bad = f"Aspirin was studied in 1234 older people [[clm:{main_claim(ps, 1)}]]."
+    first = _writer([writes(bad=bad)] * 3)  # attempt 2: introduction fails again, the others are carried
+    w.run(_ctx(env, first, attempt=2))
+    assert _writer_sections(first) == ["introduction"] * 3
+    gone = next(c["claim_id"] for c in first.of("writer", "SectionDraft")[0]["inputs"]["claims"]
+                if c["role"] == "finding")
+    ArgumentService(ps).withdraw_claim(gone, reason="the objection holds", actor="tester")
+    record_reopened(ps, "draft", by_edge="draft->draft", guidance="introduction: 1234", actor="t")
+    ex = _writer([writes()] * 4)
+    w.run(_ctx(env, ex, attempt=3))
+    assert "theme-1" in _writer_sections(ex)  # it cited the withdrawn finding: drafted again, not carried
+
+
+def test_carrying_resumes_in_place_after_a_crash(env, monkeypatch):
+    import rk.production.draft as draft_mod
+
+    _, ps, _ = env
+    w = _failed_introduction(env)
+    real = draft_mod.write_draft
+
+    def crash(*a, **kw):
+        v = real(*a, **kw)
+        if a[1] == "theme-1":  # the first carried section of attempt 2 (introduction is drafted before it)
+            raise RuntimeError("crash after the carried version was stored")
+        return v
+
+    monkeypatch.setattr(draft_mod, "write_draft", crash)
+    with pytest.raises(RuntimeError):
+        w.run(_ctx(env, _writer([writes()]), attempt=2))
+    monkeypatch.setattr(draft_mod, "write_draft", real)
+    ex = _writer([])
+    assert w.run(_ctx(env, ex, attempt=2)).status == "done"
+    assert not ex.calls  # introduction passed before the crash; the rest is carried or verified, no Writer task
+    for sec in ("theme-1", "gaps-agenda", "conclusion"):  # each carried once, verified
+        (v,) = [x for x in draft_versions(ps, sec) if x["attempt"] == 2]
+        assert v["verdict"]["ok"]
+    assert w.gate(ps, 2).ok
 
 
 def test_a_rerun_whose_sections_all_passed_drafts_them_again(env):
