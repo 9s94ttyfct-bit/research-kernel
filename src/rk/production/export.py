@@ -765,7 +765,8 @@ def package_problems(path: Path) -> list[str]:
 
 
 def built(ps: ProjectStore, attempt: int) -> dict | None:
-    """The attempt's latest ``export.built`` event: the package's path and sha256, the manifest's files."""
+    """The attempt's latest ``export.built`` event: the package's path and sha256, the manifest's files and the audit
+    report it packaged (``audit_report``, the version)."""
     r = ps.db.execute("SELECT payload FROM events WHERE type=? AND json_extract(payload, '$.attempt')=? "
                       "ORDER BY seq DESC LIMIT 1", (BUILT, attempt)).fetchone()
     return json.loads(r["payload"]) if r else None
@@ -826,7 +827,7 @@ class ExportWorker:
         ps.apply(NewEvent(type=BUILT, entity_id=None, actor_kind="kernel", actor=ctx.actor,
                           payload={"attempt": ctx.attempt, "package": rel, "sha256": sha256_hex(path.read_bytes()),
                                    "files": manifest["files"], "event_log_head": manifest["event_log_head"],
-                                   "warnings": res.warnings}))
+                                   "audit_report": manifest["audit_report"], "warnings": res.warnings}))
         note = f"; pandoc warned: {'; '.join(res.warnings)}" if res.warnings else ""
         return StageOutcome("done", reason=f"exported paper.docx, paper.tex and paper.pdf and packaged {rel}{note}")
 

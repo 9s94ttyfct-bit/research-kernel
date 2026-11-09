@@ -17,7 +17,12 @@ import pytest
 import uvicorn
 from fastapi.testclient import TestClient
 
-from rk.checkpoints import create_checkpoint, final_review_problem, get_checkpoint
+from rk.checkpoints import (
+    answer_checkpoint,
+    create_checkpoint,
+    final_review_problem,
+    get_checkpoint,
+)
 from rk.orchestrator.engine import Orchestrator
 from rk.orchestrator.graph import DISCOVERY
 from rk.orchestrator.runs import RunManager
@@ -31,11 +36,13 @@ from rk.orchestrator.state import (
 )
 from rk.production import export as export_mod
 from rk.production.argue import main_claim
-from rk.production.audit import GATES, AuditWorker
+from rk.production.audit import GATES, AuditWorker, latest_audit_report
 from rk.production.draft import DraftWorker, load_inputs, section_verdict
 from rk.production.export import ExportWorker
 from rk.production.manuscript import record_section_verdict, write_draft
 from rk.production.revise import ReviseWorker
+from rk.production.revise import _note as revise_note
+from rk.production.tools import audit_view
 from rk.roles.policy import TOOL_ROLES, lead_closed_after_discovery, role_tools
 from rk.server.app import create_app
 from rk.server.chat import ChatManager
@@ -62,8 +69,8 @@ XSS = '<img src=x onerror="window.__rkxss=1">'
 DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
-def _cli() -> CallContext:
-    return CallContext(role="cli", actor="tester")
+def _cli(**kw) -> CallContext:
+    return CallContext(role="cli", actor="tester", **kw)
 
 
 @pytest.fixture
@@ -99,7 +106,7 @@ def revise_with_questions(env) -> None:
     assert out.status == "done", out.reason
     _passed(ps, "draft")
     main = main_claim(ps, 1)
-    ex = revise_exec([ask(("introduction", 1), ("discussion", 2)), ask()],
+    ex = revise_exec([ask(("introduction", 1), ("discussion", 2), ("appendix", 2)), ask()],
                      [revision(add=_restated(ps, main)), revision(add="An unmarked sentence here.")])
     ex.script[("simreader", "ReaderQuestions")][0]["questions"][0]["text"] = "Why <b>this</b> age group?"
     record_attempt(ps, "revise", 1, run_id=None, guidance="", requested=None, actor="tester")
@@ -184,6 +191,9 @@ def test_revise_view_lists_questions_and_how_each_was_handled(api):
     assert t["accepted"] is False and any("marker" in r for r in t["reasons"])
     assert _get(api, "/ui/api/manuscript")["revise"] == rv
     assert stage_row(ps, "revise")["attempt"] == 1
+    (r,) = rv["refused"]  # a question on a section the Writer does not revise is refused, with why
+    assert r["section"] == "appendix" and "no section the writer revises" in r["why"]
+    assert rv["dropped"] == []
 
 
 def test_audit_tool_shows_the_gates_with_their_failures_and_the_export(api):
@@ -212,6 +222,16 @@ def test_audit_tool_shows_the_gates_with_their_failures_and_the_export(api):
     assert rep["routes"]["draft"]
     assert _get(api, "/ui/api/audit", version=v)["report"]["ok"] is True
     assert api.client.get("/ui/api/audit", params={"project": "demo", "version": 7}).status_code == 404
+    # a report picked by version shows the final review of that report's attempt, not of the attempt the audit shows
+    # (attempt 1, which passed)
+    one = create_checkpoint(ps, "final_review", "Review v1.", {"attempt": 1}, stage="audit", actor="k")
+    two = create_checkpoint(ps, "final_review", "Review v2.", {"attempt": 2}, stage="audit", actor="k")
+    assert [c["id"] for c in _get(api, "/ui/api/audit")["final_review"]] == [one]
+    new = _get(api, "/ui/api/audit", version=v + 1)
+    assert (new["attempt"], [c["id"] for c in new["final_review"]], new["approved"]) == (2, [two], None)
+    old = _get(api, "/ui/api/audit", version=v)
+    assert old["attempt"] == 1 and [c["id"] for c in old["final_review"]] == [one]
+    assert old["approved"] is not None  # attempt 1's approval note
 
 
 def test_export_downloads_go_through_the_artifact_route_export_files_only(api, tmp_path):
@@ -251,6 +271,50 @@ def test_export_downloads_go_through_the_artifact_route_export_files_only(api, t
     out.symlink_to(elsewhere)
     assert api.client.get("/ui/api/artifacts/demo/export/paper.pdf").status_code == 404
     assert _get(api, "/ui/api/audit")["export"]["files"] == []
+    # an unknown project is not found; without the Workbench cookie nothing is served
+    assert api.client.get("/ui/api/artifacts/nope/export/paper.pdf").status_code == 404
+    api.client.cookies.clear()
+    assert api.client.get("/ui/api/artifacts/demo/export/paper.pdf").status_code == 401
+
+
+def test_rk_export_refusals(api, monkeypatch):
+    """rk_export needs rk serve's RunManager (503 without it), is refused while another run of the project is active,
+    and once the export passed says so instead of the RunManager's "already passed"."""
+    ps = api.ps
+    monkeypatch.setattr(export_mod, "_render", _fake_render)
+    audited(api.env)
+    _pass_before(ps, "export")
+    with pytest.raises(ToolError) as e:
+        api.reg.call("rk_export", {"project": "demo"}, _cli(idempotency_key="export-1"))
+    assert (e.value.type, e.value.status) == ("unavailable", 503)
+    go = threading.Event()
+
+    class Held(ExportWorker):
+        def run(self, ctx):
+            assert go.wait(20)
+            return super().run(ctx)
+
+    holder: dict = {}
+    reg = build_registry(api.kernel, runs=lambda: holder.get("m"))
+    fakes = {s: FakeWorker() for s in (*DISCOVERY, "protocol", "search_screen", "read_extract", "synthesize", "argue",
+                                       "draft", "revise", "audit") if s != "intake"}
+    orch = Orchestrator(api.kernel, reg, workers={**fakes, "export": Held()},
+                        sources_factory=lambda p: FakeSources({}, lib=api.lib))
+    m = holder["m"] = RunManager(api.kernel, reg, orch, poll_s=0.05)
+    try:
+        first = reg.call("rk_export", {"project": "demo"}, _cli(idempotency_key="export-2"))
+        with pytest.raises(ToolError) as e:
+            reg.call("rk_export", {"project": "demo"}, _cli(idempotency_key="export-3"))
+        assert e.value.type == "run_active" and first["run_id"] in e.value.message, e.value.message
+        go.set()
+        until(lambda: run_row(ps, first["run_id"])["status"] == "done", timeout=30)
+        with pytest.raises(ToolError) as e:
+            reg.call("rk_export", {"project": "demo"}, _cli(idempotency_key="export-4"))
+        assert (e.value.type, e.value.status) == ("already_exported", 409)
+        assert e.value.message == "already exported; reopen export to export again"
+    finally:
+        go.set()
+        m.close()
 
 
 def test_a_final_review_answer_is_checked_where_it_is_given(api):
@@ -365,10 +429,50 @@ def test_final_review_card_approve_reaches_the_worker_and_the_export_downloads(p
         r = page.request.get(served.ui.origin + href)
         assert r.status == 200 and r.headers["content-type"].split(";")[0] in (
             "application/pdf", DOCX, "text/markdown", "application/zip"), (href, r.headers["content-type"])
+    # the downloads are labelled with the export attempt and the audit report they were built from
+    built = audit_view(ps)["export"]["built"]
+    label = f"Export attempt 1, built from the audit report v{built['audit_report']}"
+    assert page.locator(".export").get_by_text(label, exact=False).count() == 1, label
     page.set_viewport_size({"width": 760, "height": 1600})
     page.goto_route("audit")
     page.locator(".audit .gates").wait_for()
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
+    # once the manuscript changes, the files are no longer the manuscript's export: no links
+    write_draft(ps, "conclusion", "Changed since [[inf]].\n", stage="revise", attempt=1, round=1, by_task=None,
+                actor="t")
+    page.goto("about:blank")
+    page.goto_route("audit")
+    page.get_by_text("Not exportable now", exact=False).wait_for()
+    assert page.locator(".downloads a").count() == 0
+    assert page.errors == []
+
+
+@pytest.mark.browser
+def test_final_review_card_on_a_failed_or_missing_report(page, served):
+    """Approve is disabled on a report that failed; a report that cannot be found still leaves revise and back."""
+    ps = served.ps
+    revised(served.env)
+    _pass_before(ps, "audit")
+    write_draft(ps, "conclusion", "Unmarked conclusion.\n", stage="revise", attempt=1, round=1, by_task=None,
+                actor="t")
+    out = AuditWorker().run(audit_ctx(served.env, Exec({})))
+    assert out.status == "back_edge", out.reason
+    rep = latest_audit_report(ps)
+    assert rep["ok"] is False
+    opts = {"attempt": 1, "back_to": ["draft", "argue", "read_extract"]}
+    create_checkpoint(ps, "final_review", "Review.", {**opts, "report_version": rep["version"]}, stage="audit",
+                      actor="k")
+    cp, card = _show(page, ps, "final_review")
+    card.get_by_text("G-COVER", exact=False).first.wait_for()
+    assert card.get_by_role("button", name="Approve for export").is_disabled()
+    assert card.get_by_role("button", name="Ask for a revision").count() == 1
+    answer_checkpoint(ps, cp["id"], {"decision": "revise", "comment": "x"}, answered_by="human", actor="tester")
+    create_checkpoint(ps, "final_review", "Review.", {**opts, "report_version": 99}, stage="audit", actor="k")
+    _, card = _show(page, ps, "final_review", n=2)
+    assert card.get_by_text("The audit report v99 cannot be shown", exact=False).count() == 1
+    assert card.get_by_role("button", name="Approve for export").is_disabled()
+    assert card.get_by_role("button", name="Ask for a revision").count() == 1
+    assert card.get_by_role("button", name="Send it back").count() == 1
     assert page.errors == []
 
 
@@ -423,6 +527,20 @@ def test_drafts_page_shows_sentence_verdicts_and_the_revise_panel_as_text(page, 
     for t in ("Why <b>this</b> age group?", "clarified", "Rejected", "priority 1"):
         assert panel.get_by_text(t, exact=False).count() >= 1, t
     assert panel.locator("b").count() == 0
+    # the refused questions (with why) and those not carried into the attempt (with the reason), as text
+    refused = panel.locator(".refused li")
+    assert refused.count() == 1 and "appendix" in refused.inner_text()
+    assert "no section the writer revises" in refused.inner_text()
+    assert panel.locator(".dropped").count() == 0
+    revise_note(ps, 1, "carry_dropped", actor="t", questions=[{
+        "id": "a0r1q2", "section": "methods", "sentence_index": 0, "sentence": "Gone.", "priority": 1,
+        "text": "Which <i>databases</i>?", "reason": "its sentence is gone from methods v2"}])
+    page.goto("about:blank")
+    page.goto_route("drafts?section=discussion")
+    dropped = page.locator(".revise-panel .dropped li")
+    dropped.first.wait_for()
+    assert "Which <i>databases</i>?" in dropped.inner_text() and "its sentence is gone" in dropped.inner_text()
+    assert page.locator(".revise-panel i").count() == 0
     page.goto_route("drafts?section=introduction")
     page.locator(".verdicts").get_by_text("Verified", exact=False).first.wait_for()
     assert page.errors == []

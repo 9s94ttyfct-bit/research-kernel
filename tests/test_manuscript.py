@@ -134,6 +134,8 @@ def test_code_blocks_are_section_problems(block):
     md = f"Delirium fell [[clm:clm_A]].\n\n{block}\nMore text [[inf]].\n"
     problems = section_problems(md)
     assert len(problems) == 1 and "line 3" in problems[0] and "code block" in problems[0], problems
+    # the message says what makes a code block, so a Writer can tell an indented paragraph is one
+    assert "a block indented by 4 spaces or a tab, or fenced, is a code block" in problems[0], problems
     assert section_problems("Inline `code` stays a code span [[inf]].\n") == []
 
 

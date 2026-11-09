@@ -714,24 +714,26 @@ def manuscript_view(ps: ProjectStore, section: str | None = None, version: int |
 
 def export_view(ps: ProjectStore) -> dict:
     """Whether the manuscript can be exported now (``ready``: ``None``, else the reason the export worker refuses
-    it, ``audited_manuscript``), the export attempt it shows with its package, and the files to download."""
+    it, ``audited_manuscript``), the export attempt it shows with its package and the audit report it was built from
+    (``built.audit_report``), and the files to download."""
     got = audited_manuscript(ps)
     attempt = shown_attempt(ps, EXPORT)
     b = built(ps, attempt) if attempt is not None else None
     return {"ready": got if isinstance(got, str) else None, "attempt": attempt,
-            "built": {k: b[k] for k in ("package", "sha256", "warnings")} if b else None, "files": downloads(ps)}
+            "built": {**{k: b[k] for k in ("package", "sha256", "warnings")}, "audit_report": b.get("audit_report")}
+            if b else None, "files": downloads(ps)}
 
 
 def audit_view(ps: ProjectStore, version: int | None = None) -> dict:
     """The audit: its report ``version`` (default: the latest) with every hard gate in order and its failures, the
-    owners of the failures (``routes``) and the warnings; every report; the final review of the attempt the audit
-    shows (its checkpoints and the approval); and the export (``export_view``). ``LookupError`` for an unknown
-    version."""
+    owners of the failures (``routes``) and the warnings; every report; the final review (its checkpoints and the
+    approval) of the attempt the audit shows, or with ``version`` of that report's attempt; and the export
+    (``export_view``). ``LookupError`` for an unknown version."""
     reports = audit_reports(ps)
     rep = reports[-1] if reports and version is None else next((r for r in reports if r["version"] == version), None)
     if rep is None and version is not None:
         raise LookupError(f"there is no audit report v{version}")
-    attempt = shown_attempt(ps, AUDIT)
+    attempt = rep["attempt"] if version is not None else shown_attempt(ps, AUDIT)
     report = None
     if rep is not None:
         report = {k: rep[k] for k in ("version", "attempt", "ok", "approved", "sections", "routes", "warnings",
@@ -845,5 +847,12 @@ def register_production_tools(tool: Callable, kernel, runs: Callable[[], RunMana
         if m is None:
             raise ToolError("unavailable", "runs are driven by rk serve's orchestrator, which is not available here",
                             status=503)
-        run_id = m.start(a.project, EXPORT, actor=ctx.actor)
+        try:
+            run_id = m.start(a.project, EXPORT, actor=ctx.actor)
+        except ToolError as e:
+            row = stage_row(ps, EXPORT)
+            if e.type == "stage_unavailable" and row is not None and row["status"] == "passed":
+                raise ToolError("already_exported", "already exported; reopen export to export again",
+                                status=409) from e
+            raise
         return {"project": a.project, "run_id": run_id, "pdf": str((ps.root / EXPORT_DIR / "paper.pdf").resolve())}

@@ -975,11 +975,20 @@ function auditSummary(rep) {
 
 // final_review (the audit's, P2): approve for export, ask for a revision (what to change) or send the manuscript back
 // to a stage (where to, and optionally why). The server checks the answer with the audit's own check
-// (final_review_problem) and refuses one it could not apply; the card only gates its buttons.
+// (final_review_problem) and refuses one it could not apply; the card only gates its buttons. A report that cannot be
+// shown (asked for only when it is listed, so no 404) leaves revise and back; approve stays disabled.
 async function finalReviewCard(c, answer) {
   const o = c.options || {};
-  const d = await api("/ui/api/audit", { query: { project: state.project, version: o.report_version } });
-  const rep = d.report;
+  let rep = null, missing = "there is no such report";
+  try {
+    const d = await api("/ui/api/audit", { query: { project: state.project } });
+    if (d.report?.version === o.report_version) rep = d.report;
+    else if (d.reports.some((r) => r.version === o.report_version))
+      rep = (await api("/ui/api/audit", { query: { project: state.project, version: o.report_version } })).report;
+  } catch (e) {
+    if (e.message === "signed out") throw e;
+    missing = e.message;
+  }
   let to = null;
   const send = el("button", { type: "submit", class: "secondary", disabled: true }, "Send it back");
   const why = el("textarea", { name: "back_comment" });
@@ -995,7 +1004,7 @@ async function finalReviewCard(c, answer) {
     answer(comment ? { decision: "back", to, comment } : { decision: "back", to });
   });
   return [
-    rep ? auditSummary(rep) : el("p", { class: "error" }, `The audit report v${o.report_version} was not found.`),
+    rep ? auditSummary(rep) : el("p", { class: "error" }, `The audit report v${o.report_version} cannot be shown: ${missing}.`),
     el("p", { class: "hint" }, "Read the manuscript on the ", el("a", { href: "#/drafts" }, "Drafts"), " page and the reports on the ",
       el("a", { href: "#/audit" }, "Audit"), " page."),
     el("div", { class: "other-answers" },
@@ -1530,6 +1539,11 @@ function revisePanel(rv) {
           q.outcome === "rejected" && rejected.length ? [el("p", { class: "hint" }, "The revision answering it was not accepted:"),
             el("ul", { class: "check bad" }, rejected.at(-1).reasons.map((r) => el("li", {}, r)))] : null);
       })) : el("p", { class: "empty" }, "The reader asked no question."),
+      rv.refused.length ? [el("h3", {}, "Refused questions"), el("ul", { class: "refused" }, rv.refused.map((q) => el("li", {},
+        el("span", { class: "hint" }, `${q.section}, priority ${q.priority}: `), q.text || "(empty)", el("div", { class: "hint" }, `Refused: ${q.why}`))))] : null,
+      rv.dropped.length ? [el("h3", {}, "Not carried into this attempt"), el("ul", { class: "dropped" }, rv.dropped.map((q) => el("li", {},
+        el("span", { class: "hint" }, `${q.section}, priority ${q.priority}: `), q.text || "",
+        q.sentence ? el("blockquote", { class: "note" }, q.sentence) : null, el("div", { class: "hint" }, `Not carried: ${q.reason}`))))] : null,
       rv.back_edge ? el("p", { class: "hint warn" }, `Back to ${rv.back_edge.to}: ${rv.back_edge.reason}`) : null]);
 }
 
@@ -1604,10 +1618,12 @@ pages.audit = async (root, params) => {
       el("section", { class: "export" }, el("h2", {}, "Export"),
         e.ready === null ? el("p", { class: "check ok" }, "The audit passed and the final review approved the manuscript: it can be exported (rk export, or a run until export).")
           : el("p", { class: "hint" }, `Not exportable now: ${e.ready}`),
-        e.built ? el("p", { class: "hint" }, "Package ", el("code", {}, e.built.package)) : null,
-        e.files.length ? el("ul", { class: "downloads" }, e.files.map((f) => el("li", {},
-          el("a", { href: exportUrl(f.name), download: f.name }, f.name), ` — ${MEDIA[f.media_type] || f.media_type}, ${kib(f.bytes)}`)))
-          : el("p", { class: "empty" }, "Nothing exported yet."))));
+        // the files are the manuscript's export only while it stands as audited and approved
+        e.ready !== null ? null : [
+          e.built ? el("p", { class: "hint" }, `Export attempt ${e.attempt}, built from the audit report v${e.built.audit_report ?? "?"}: package `, el("code", {}, e.built.package)) : null,
+          e.files.length ? el("ul", { class: "downloads" }, e.files.map((f) => el("li", {},
+            el("a", { href: exportUrl(f.name), download: f.name }, f.name), ` — ${MEDIA[f.media_type] || f.media_type}, ${kib(f.bytes)}`)))
+            : el("p", { class: "empty" }, "Nothing exported yet.")])));
 };
 
 // The Models section of Settings: one model per role. The catalog loads after the page (omp may be slow), and the

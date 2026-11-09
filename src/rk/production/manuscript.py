@@ -303,8 +303,9 @@ def section_problems(markdown: str) -> list[str]:
            "(cite a [[stat:…]] or [[fig:…]] instead)" for n in doc.tables]
     out += [f"line {b.line + 1}: a table caption (“{b.text.strip()[:60]}”) is not a sentence and is not allowed in a "
             "draft: tables and their captions come from code artifacts at export" for b in doc.blocks if _is_caption(b)]
-    out += [f"line {markdown.count(chr(10), 0, start) + 1}: a code block (fenced or indented) is not allowed in a "
-            "draft: a paper has no code blocks; write prose (a short code span in a sentence is text)"
+    out += [f"line {markdown.count(chr(10), 0, start) + 1}: a code block is not allowed in a draft (a block indented "
+            "by 4 spaces or a tab, or fenced, is a code block): a paper has no code blocks; write prose without "
+            "indenting it (a short code span in a sentence is text)"
             for start, _ in doc.code_blocks]
     out += [f"line {markdown.count(chr(10), 0, m.span[0]) + 1}: the marker {markdown[m.span[0]:m.span[1]]} is where "
             "the reader cannot see it (a heading, a table, a link's destination or title, an autolink, an image's alt "
