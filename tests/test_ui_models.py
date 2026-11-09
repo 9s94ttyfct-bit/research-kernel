@@ -64,7 +64,7 @@ def test_settings_drivers_are_validated(ui, omp_catalog):
 
     two_openai = {"judge_2": "codex_cli:gpt-6-sol"}
     r = ui.post("/ui/api/settings", json={"drivers": two_openai}, headers=W).json()["result"]
-    assert any("writer (claude_cli) are anthropic" in w for w in r["warnings"])
+    assert any("(omp_gateway:anthropic/claude-haiku-5-5) are anthropic" in w for w in r["warnings"])
     got = ui.get("/ui/api/settings").json()["result"]
     assert got["driver_warnings"] == r["warnings"] and got["driver_problems"] == []
 

@@ -32,3 +32,9 @@ class ChatApiProvider:
     def open_chat(self, spec: ChatSpec, ctx: RunContext) -> ChatApiSession:
         return ChatApiSession(self.backend, spec, ctx.registry, actor=self.actor(spec.role),
                               session_id=f"chat-{uuid.uuid4().hex[:12]}")
+
+    def close(self) -> None:
+        """End what the backend started (the omp auth-gateway child); it restarts on its next call."""
+        close = getattr(self.backend, "close", None)
+        if close is not None:
+            close()

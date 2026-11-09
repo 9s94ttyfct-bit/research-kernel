@@ -4,6 +4,8 @@
      "name": "Claude Haiku 5.5", "contextWindow": 200000},
     {"provider": "openai-codex", "kind": "chat", "id": "gpt-6-luna", "selector": "openai-codex/gpt-6-luna",
      "name": "GPT-6 Luna", "contextWindow": 400000},
+    {"provider": "openai-codex", "kind": "chat", "id": "gpt-6.1-sol", "selector": "openai-codex/gpt-6.1-sol",
+     "name": "GPT-6.1 Sol", "contextWindow": 400000},
     {"provider": "ollama-cloud", "kind": "chat", "id": "deepseek-v4.1-flash",
      "selector": "ollama-cloud/deepseek-v4.1-flash", "name": "deepseek-v4.1-flash", "contextWindow": 163840},
     {"provider": "ollama", "kind": "embedding", "id": "embeddinggemma-2:latest",

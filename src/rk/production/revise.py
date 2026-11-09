@@ -25,7 +25,7 @@ only when it verifies as well as the version it would replace.
    SimReader at least once and left no priority-1 question unresolved (or outside a run, where the budget is the
    attempt's own); otherwise the round is needed (spec §11.3: suspended, never skipped silently): ``BudgetExceeded``
    pauses the run, and resuming it goes on with the attempt in place in a new session with a fresh budget.
-3. **SimReader** (``ReaderQuestions``, ``codex_cli``): the manuscript's revisable sections as numbered sentences, the
+3. **SimReader** (``ReaderQuestions``): the manuscript's revisable sections as numbered sentences, the
    audience and the earlier questions with their answers. The kernel numbers the questions (``a<attempt>r<round>q<n>``),
    keeps the text of the sentence each is about, and refuses one on a section the Writer does not revise (``refused``);
    recorded (``questions``) before any Writer task.

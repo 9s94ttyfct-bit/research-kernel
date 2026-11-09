@@ -10,13 +10,16 @@ from typing import Literal
 import tomli_w
 from pydantic import BaseModel, Field, field_validator
 
+# Every model role defaults to omp's auth-gateway (`omp auth-gateway stdio`), which uses omp's own logins, so the
+# Claude Code and Codex CLI usage limits do not apply; claude_cli / codex_cli stay selectable (`rk driver set`).
 DEFAULT_DRIVERS: dict[str, str] = {
-    **{r: "claude_cli" for r in ("lead", "scout", "screener_a", "reader", "gapminer", "ideator", "arguer", "writer")},
-    **{r: "codex_cli" for r in ("screener_b", "skeptic", "simreader")},
+    **{r: "omp_gateway:anthropic/claude-haiku-5-5"
+       for r in ("lead", "scout", "screener_a", "reader", "gapminer", "ideator", "arguer", "writer")},
+    **{r: "omp_gateway:openai-codex/gpt-6.1-sol" for r in ("screener_b", "skeptic", "simreader")},
     # the V-SUPPORT and P1-vote judges: three vendors, so any one generator vendor still leaves two (spec §8.1)
-    "judge": "codex_cli:gpt-6-luna",
+    "judge": "omp_gateway:openai-codex/gpt-6-luna",
     "judge_2": "ollama:deepseek-v4.1-flash:cloud",
-    "judge_3": "claude_cli:claude-haiku-5-5",
+    "judge_3": "omp_gateway:anthropic/claude-haiku-5-5",
     "triage": "ollama:deepseek-v4.1-flash:cloud",
 }
 
@@ -45,13 +48,13 @@ class Settings(BaseModel):
     draft_section_retries: int = Field(2, ge=0)
     # ---- revise (spec §7.1; Plan 5c deviation 2): at most this many SimReader rounds per attempt ----
     revise_max_rounds: int = Field(3, ge=1)
-    # ---- V-STATS (spec §9.1): {"version": rk.stats.STATS_VERSION, "report": path}, written by a passing
-    # ``rk eval stats --write-config``; meta-analysis is off unless its version is the current one ----
-    stats_validated: dict | None = None
     # ---- protocol (Plan 5c Task 9 fix): drafts per attempt (a draft failing the structural checks is asked again in
     # the attempt) and the Scout's tries to bring the record-cap probe under the cap, within one attempt ----
     protocol_tries: int = Field(3, ge=1)
     protocol_narrow_tries: int = Field(3, ge=0)
+    # ---- V-STATS (spec §9.1): {"version": rk.stats.STATS_VERSION, "report": path}, written by a passing
+    # ``rk eval stats --write-config``; meta-analysis is off unless its version is the current one ----
+    stats_validated: dict | None = None
     # ---- built-in browser (spec §8.5) and library access ----
     browser_enabled: bool = True
     browser_headless: bool = False  # RK_BROWSER_HEADLESS=1 overrides (tests, agent smoke runs)

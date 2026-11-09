@@ -819,7 +819,7 @@ def ui_router(auth: UiAuth, *, kernel=None, registry=None, chats=None,
                 msg = await websocket.receive_json()
                 kind = msg.get("type")
                 if kind == "chat.open":
-                    driver = msg.get("driver") or load_settings().drivers.get("lead", "claude_cli")
+                    driver = msg.get("driver") or load_settings().drivers["lead"]
                     ref = msg.get("ref")  # echoed so a page binds only to the chat it asked for
                     try:
                         chat_id = await run_in_threadpool(chats.open, driver, "lead", slug)

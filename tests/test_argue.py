@@ -267,7 +267,7 @@ def test_argument_round_stores_claims_edges_and_verifies(env):
     assert all(e["from_id"].startswith("evd_") for e in svc.list_edges(type="evidence_of"))
     # the Skeptic is the codex vendor by default, with search tools; it writes no objection itself
     (sk,) = ex.of("skeptic", "Critique")
-    assert ex.drivers["skeptic"].startswith("codex_cli")
+    assert ex.drivers["skeptic"].startswith("omp_gateway:openai-codex/")
     assert {"rk_search_works", "rk_source_add", "rk_claim_list"} <= set(sk["tools"])
     assert "rk_objection_add" not in sk["tools"]
     assert [n["reason"] for n in argue_notes(ps, 1, kind="end")] == ["fixed_point"]

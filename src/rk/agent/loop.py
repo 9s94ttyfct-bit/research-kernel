@@ -151,3 +151,6 @@ class ChatApiSession:
 
     def close(self) -> None:
         self.messages.clear()
+        close = getattr(self.backend, "close", None)  # the session's own backend (ChatManager builds one per chat)
+        if close is not None:
+            close()

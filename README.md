@@ -44,7 +44,7 @@ State lives in `$RK_HOME`, which defaults to `~/ResearchKernel`:
 | V-QUOTE | A quote note must occur verbatim in the source's text layer after normalisation: ligatures, quote and dash styles, line-end hyphenation and whitespace. It is stored with a page and character locator. |
 | V-PARA | A paraphrase must not copy its source span. Limits: longest shared run ≤ 8 tokens, 4-gram containment ≤ 0.35, token-set ratio ≤ 85. This is a lexical flag only. |
 | V-HEDGE | A claim may not be worded more strongly than its sources. |
-| V-SUPPORT | Cloud judges only, no local model (user decision 2026-11-07). Three judge roles, `judge`, `judge_2` and `judge_3`, by default GPT-6 Luna (`codex_cli:gpt-6-luna`), DeepSeek v4.1 flash (`ollama:deepseek-v4.1-flash:cloud`, hosted by Ollama Cloud) and Claude Haiku 5.5 (`claude_cli:claude-haiku-5-5`). A judge's vendor must be known, not human, and differ from the claim author's and from every other admitted judge's; a judge that fails this is skipped and does not vote (`same_or_unknown_vendor`, or `duplicate_vendor` when another admitted judge has its vendor). A judge that answers supported, partial or contradicted must quote the evidence verbatim; otherwise its opinion counts as uncertain. **supported**, **unsupported** or **contradicted** needs at least `support_min_judges` (default 2) valid judges that all give that label, and V-NUM gates **supported**. Everything else is **uncertain**: one dissent, a "partial" or a single valid judge. In collaborative mode that opens an `uncertain_support` checkpoint. Latest run: `docs/eval/support-2026-11-07-judges.md`. |
+| V-SUPPORT | Cloud judges only, no local model (user decision 2026-11-07). Three judge roles, `judge`, `judge_2` and `judge_3`, by default GPT-6 Luna (`omp_gateway:openai-codex/gpt-6-luna`), DeepSeek v4.1 flash (`ollama:deepseek-v4.1-flash:cloud`, hosted by Ollama Cloud) and Claude Haiku 5.5 (`omp_gateway:anthropic/claude-haiku-5-5`). A judge's vendor must be known, not human, and differ from the claim author's and from every other admitted judge's; a judge that fails this is skipped and does not vote (`same_or_unknown_vendor`, or `duplicate_vendor` when another admitted judge has its vendor). A judge that answers supported, partial or contradicted must quote the evidence verbatim; otherwise its opinion counts as uncertain. **supported**, **unsupported** or **contradicted** needs at least `support_min_judges` (default 2) valid judges that all give that label, and V-NUM gates **supported**. Everything else is **uncertain**: one dissent, a "partial" or a single valid judge. In collaborative mode that opens an `uncertain_support` checkpoint. Latest run: `docs/eval/support-2026-11-07-judges.md`. |
 | V-NUM | Every number in a claim must occur, with the same value and unit, in its evidence. Formats are normalised: thousands separators, Unicode minus, `×10ⁿ`, `%`/percent and ranges. |
 | V-STATS | A statistic or figure is made only by the kernel (`rk.stats`), never by a model. It recomputes, with the current `rk.stats` code, from the extraction rows it was made from (their hashes recorded), to 1e-9; a changed row, a different code version or a different extraction attempt is a mismatch. |
 
@@ -302,7 +302,7 @@ Role tasks run on a configurable driver per role (`drivers` in `config.toml`; se
 | `codex_cli` | `codex exec`, read-only sandbox, shell/apps/browser features off, `--ignore-user-config` | `rk mcp`, tools pre-approved for that server only |
 | `anthropic_api:<model>`, `openai_api:<model>` | HTTP API with your key (`config.toml` or `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) | the in-process tool loop |
 | `ollama:<model>` | local `ollama serve` (cloud models via `:cloud`; output validated client-side) | the in-process tool loop |
-| `omp_gateway:<provider/model>` | available whenever `omp` is installed and logged in; `omp auth-gateway stdio` (`rk models` lists its models) | the in-process tool loop |
+| `omp_gateway:<provider/model>` | the default; `omp auth-gateway stdio` with omp's own logins (`rk models` lists its models). A reply from another model than the one asked for (omp's model fallback) is refused, so a role never silently changes vendor | the in-process tool loop |
 | `human` | turns the task into a checkpoint for you | — |
 
 - Every task is bound to one project and to its role's tools (`src/rk/roles/policy.py`). Agents can never answer
@@ -310,24 +310,25 @@ Role tasks run on a configurable driver per role (`drivers` in `config.toml`; se
 - Text from sources reaches models inside `untrusted` data blocks. Agents report embedded instructions with
   `rk_flag_injection`.
 - Every attempt (input, output, model, duration) is an event in the project log. A task gets at most 3 attempts.
-  Subscription CLIs are capped per hour (`calls_per_hour`, default claude 30, codex 20).
+  Subscription CLIs, when chosen, are capped per hour (`calls_per_hour`, default claude 30, codex 20).
 - Generator and reviewer must come from different model developers (`src/rk/llm/vendors.toml`). A model whose vendor
   is unknown (for example an `omp_gateway` model no vendor rule matches) can generate but never review; `rk models`
   and Settings → Models say so.
 
 **Choosing models.** `rk models` lists every model each driver can run, with its vendor and whether it is usable now;
 `rk driver set <role> <driver>` saves one (the vendor rules are checked first), and Settings → Models in the
-Workbench does the same. `omp_gateway` is a normal driver: when `omp` is installed and logged in, every chat model
-`omp models --json` lists is usable as `omp_gateway:<provider>/<model>`, with no flag to turn on. `omp` is not
-required. The default drivers need no local model: the subscription CLIs and Ollama Cloud models (`…:cloud`) run in
-the cloud.
+Workbench does the same. Every model role defaults to `omp_gateway` (user decision 2026-11-09: omp's logins, not the
+Claude Code / Codex CLI usage limits): the eight Claude roles (lead, scout, screener_a, reader, gapminer, ideator,
+arguer, writer) `omp_gateway:anthropic/claude-haiku-5-5`; screener_b, skeptic and simreader
+`omp_gateway:openai-codex/gpt-6.1-sol`; the judges as above; triage `ollama:deepseek-v4.1-flash:cloud`. So the
+defaults need `omp` installed and logged in (`claude_cli` / `codex_cli` remain selectable), and no local model.
 
 ```bash
 rk providers                                   # driver per role, vendor, availability, rule problems/warnings
 rk models                                      # the models each driver can run, with their vendors
 rk driver set judge omp_gateway:openai-codex/gpt-6-luna   # choose a role's model (vendor rules checked)
-rk task run --role reader --driver codex_cli --instructions "…"   # one recorded role task
-rk chat --driver claude_cli --role lead        # multi-turn chat with the role's tools
+rk task run --role reader --driver omp_gateway:anthropic/claude-haiku-5-5 --instructions "…"   # one recorded role task
+rk chat --driver claude_cli --role lead        # multi-turn chat with the role's tools (any driver)
 rk checkpoint list / rk checkpoint answer <id> --json '{…}'       # questions only you can answer
 rk token create --name my-client               # lead token for an external MCP client (RK_TASK_TOKEN=… rk mcp)
 ```

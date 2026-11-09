@@ -125,6 +125,9 @@ def test_omp_gateway_stdio_protocol(fake_omp):
         assert b.complete([Msg(role="user", content="again")], [], None).model == "openai-codex/gpt-6-luna"
         with pytest.raises(ProviderError, match="401"):
             b.complete([Msg(role="user", content="FAIL")], [], None)
+        # omp's model fallback answered with another vendor's model: a failed call, never this driver's answer
+        with pytest.raises(ProviderError, match="claude-sonnet-5-5 instead of openai-codex/gpt-6-luna"):
+            b.complete([Msg(role="user", content="FALLBACK")], [], None)
     finally:
         b.close()
 

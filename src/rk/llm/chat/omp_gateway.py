@@ -92,7 +92,13 @@ class OmpGatewayBackend:
                     self._pending[msg["id"]] = msg  # a reply for another request id: keep it, never consume it
         if reply.get("status") != 200:
             raise ProviderError(f"omp auth-gateway status {reply.get('status')}: {str(reply.get('body'))[:500]}")
-        return openai_turn(reply["body"])
+        turn = openai_turn(reply["body"])
+        # omp's retry.modelFallback may answer with another model (e.g. a Codex judge answered by Claude), which would
+        # silently change the vendor a judge or generator stands for: such a reply is a failed call, never accepted.
+        if turn.model and turn.model != self.model:
+            raise ProviderError(f"omp auth-gateway answered with {turn.model} instead of {self.model} "
+                                "(omp model fallback); reply not accepted")
+        return turn
 
     def close(self) -> None:
         if self._proc is not None and self._proc.poll() is None:

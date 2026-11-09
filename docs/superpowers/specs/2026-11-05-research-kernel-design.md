@@ -377,24 +377,24 @@ $RK_HOME/                         默认 ~/ResearchKernel
 
 ### 8.1 角色
 
-**默认驱动分配原则** `[决定]`：生成和审查分属不同厂商；批量粗筛用便宜的云端模型。
+**默认驱动分配原则** `[决定]`：生成和审查分属不同厂商；批量粗筛用便宜的云端模型。**2026-11-09 你决定：默认驱动全部改走 omp_gateway**（用 omp 自己的登录，避开 Claude Code / Codex CLI 的用量限额）：下表中 “Claude” = `omp_gateway:anthropic/claude-haiku-5-5`，“Codex” = `omp_gateway:openai-codex/gpt-6.1-sol`；claude_cli、codex_cli 仍可选。
 
 | 角色 | 职责 | 默认驱动 | 可用工具（MCP role） |
 |---|---|---|---|
-| Lead | Workbench 聊天中与你对话的 agent（任何 MCP 客户端接入时，是那个客户端里的 agent） | claude_cli（多轮会话，见 §8.2） | 全部读取；状态工具；可以列出、解释检查点，**不能回答硬性人类检查点**。**写权限按阶段开放**：在 intake 到 question 阶段（D1）可以用 Scout、Reader、GapMiner、Ideator 的工具，**包括浏览器工具**；进入 protocol 及之后的阶段，流水线写工具由编排器的角色负责，Lead 只能做读取和状态查询 |
-| Scout | 检索、引文扩展、去重；**浏览器检索**（图书馆、Google Scholar、PubMed 网页） | claude_cli | search_*, browser_search, source_add |
-| Screener-A / Screener-B | 双人独立筛选 | A = claude_cli，B = codex_cli | 读 source 元数据和摘要；screening_record |
-| Reader | 获取全文（API 渠道优先，其次通过浏览器经图书馆获取）、写笔记、提取数据 | claude_cli | source_fetch_fulltext, browser_fetch_fulltext, text_read, note_add, extraction_set |
-| GapMiner | 五类空白挖掘 | claude_cli | 读取全部；gap_add |
-| Ideator | 提出 topic、RQ 和方法设计 | claude_cli | 读取；topic_add, rq_propose, hypothesis_add, design_set |
-| Arguer | 组织 claim、证据、论证边 | claude_cli | 读取；claim_add, evidence_link, edge_add |
-| Skeptic | 红队：提异议、找反证 | codex_cli | 读取；search_*；objection_add |
-| SimReader | 按 `audience` 扮演目标读者质询 | codex_cli | 只读，输出质询列表 |
-| Writer | 起草和修改各节 | claude_cli | 读取；draft_write |
-| Judge | 独立意见，用于支持度判定和检查点投票 | 三个角色（2026-11-07 你决定）：`judge` = codex_cli `gpt-6-luna`（厂商 openai）、`judge_2` = ollama cloud `deepseek-v4.1-flash`（厂商 deepseek）、`judge_3` = claude_cli `claude-haiku-5-5`（厂商 anthropic）；与 claim 作者同厂商的评审自动跳过 | 无工具，输入内联 |
+| Lead | Workbench 聊天中与你对话的 agent（任何 MCP 客户端接入时，是那个客户端里的 agent） | Claude（多轮会话，见 §8.2） | 全部读取；状态工具；可以列出、解释检查点，**不能回答硬性人类检查点**。**写权限按阶段开放**：在 intake 到 question 阶段（D1）可以用 Scout、Reader、GapMiner、Ideator 的工具，**包括浏览器工具**；进入 protocol 及之后的阶段，流水线写工具由编排器的角色负责，Lead 只能做读取和状态查询 |
+| Scout | 检索、引文扩展、去重；**浏览器检索**（图书馆、Google Scholar、PubMed 网页） | Claude | search_*, browser_search, source_add |
+| Screener-A / Screener-B | 双人独立筛选 | A = Claude，B = Codex | 读 source 元数据和摘要；screening_record |
+| Reader | 获取全文（API 渠道优先，其次通过浏览器经图书馆获取）、写笔记、提取数据 | Claude | source_fetch_fulltext, browser_fetch_fulltext, text_read, note_add, extraction_set |
+| GapMiner | 五类空白挖掘 | Claude | 读取全部；gap_add |
+| Ideator | 提出 topic、RQ 和方法设计 | Claude | 读取；topic_add, rq_propose, hypothesis_add, design_set |
+| Arguer | 组织 claim、证据、论证边 | Claude | 读取；claim_add, evidence_link, edge_add |
+| Skeptic | 红队：提异议、找反证 | Codex | 读取；search_*；objection_add |
+| SimReader | 按 `audience` 扮演目标读者质询 | Codex | 只读，输出质询列表 |
+| Writer | 起草和修改各节 | Claude | 读取；draft_write |
+| Judge | 独立意见，用于支持度判定和检查点投票 | 三个角色（2026-11-07 你决定；2026-11-09 改走 omp_gateway）：`judge` = `omp_gateway:openai-codex/gpt-6-luna`（厂商 openai）、`judge_2` = ollama cloud `deepseek-v4.1-flash`（厂商 deepseek）、`judge_3` = `omp_gateway:anthropic/claude-haiku-5-5`（厂商 anthropic）；与 claim 作者同厂商的评审自动跳过 | 无工具，输入内联 |
 | Triage | 批量相关性粗筛、关键词抽取 | ollama cloud（deepseek-v4.1-flash） | 无工具，输入内联 |
 
-**驱动可以替换：** 每个角色的驱动在 `config.toml` 里配置，也可以用 `rk driver set <角色> <驱动>` 或 Workbench 的“设置 → 模型”（Settings → Models）选择；`rk models` 列出每个驱动能跑的模型、厂商和当前是否可用。配了 API key 时，可以把任意角色换成 `anthropic_api` 或 `openai_api`。**omp_gateway 是普通驱动**（2026-11-07 你决定）：装了 omp 并已登录就能用，不需要开关；`omp models --json` 列出的每个聊天模型都可以写成 `omp_gateway:<provider>/<model>`。厂商未知的模型可以做生成方，但永远不能做审查方，设置页会注明。产品不依赖 omp，不装也能运行；默认驱动都不用本地模型。唯一的约束不变：同一个 claim 的生成方和审查方必须属于不同厂商。
+**驱动可以替换：** 每个角色的驱动在 `config.toml` 里配置，也可以用 `rk driver set <角色> <驱动>` 或 Workbench 的“设置 → 模型”（Settings → Models）选择；`rk models` 列出每个驱动能跑的模型、厂商和当前是否可用。配了 API key 时，可以把任意角色换成 `anthropic_api` 或 `openai_api`。**omp_gateway 是默认驱动**（2026-11-07 成为普通驱动，2026-11-09 成为默认）：装了 omp 并已登录就能用；`omp models --json` 列出的每个聊天模型都可以写成 `omp_gateway:<provider>/<model>`。omp 的模型回退（`retry.modelFallback`）可能用别的模型作答；回复里的模型与所请求的不同时，这次调用算失败（重试），角色不会悄悄换厂商。厂商未知的模型可以做生成方，但永远不能做审查方，设置页会注明。默认驱动需要装好并登录 omp（换成 claude_cli、codex_cli 或 API 驱动则不需要）；默认驱动都不用本地模型。唯一的约束不变：同一个 claim 的生成方和审查方必须属于不同厂商。
 
 **"厂商"按模型的研发方认定，不按托管方** `[决定]`。映射表写在 `llm/vendors.toml` 里，可以修改：
 - `claude_cli`、`anthropic_api`、`omp_gateway:anthropic/*` → anthropic
@@ -617,7 +617,7 @@ class TaskResult:
 | V-QUOTE | 引语逐字一致 | 在规范文本层上，先用规范化键匹配：NFKC、连字展开、统一各种破折号和引号、合并空白，行末连字符既试"保留"也试"删除"两种变体；再用 `rapidfuzz.partial_ratio_alignment` 定位 | 规范化键完全一致才算 pass，并返回页码和字符区间；否则 fail，同时返回最接近的片段 |
 | V-PARA | 转述不过近（书中的"手指测试"） | **只做词面相似度检查**：与对应原文片段比，最长连续共有词 ≤8；4-gram 包含率 ≤0.35；`token_set_ratio` ≤85。它能发现近乎照抄，但发现不了意思走样；转述是否忠实原意由 V-SUPPORT（转述作 claim，原文片段作证据）判定，抽样交人复核 | pass / too_close |
 | V-HEDGE | 措辞强度单调 | 词表分 4 级：0 推测（may, might, possibly）、1 倾向（suggest, indicate, likely）、2 断言（show, find, demonstrate）、3 绝对（prove, establish, always, all, never）；claim 的等级 ≤ 其证据笔记中的最高等级；全称量词需要证据覆盖 | pass / overstated |
-| V-SUPPORT | 证据是否支持 claim | **只用云端评审，没有第一层模型**（2026-11-07 你决定：去掉第一层 MiniCheck，判定只来自三家云端评审；默认不用任何本地模型）。三个评审角色 `judge`、`judge_2`、`judge_3`，默认是 `codex_cli:gpt-6-luna`（openai）、`ollama:deepseek-v4.1-flash:cloud`（deepseek，由 Ollama Cloud 托管）、`claude_cli:claude-haiku-5-5`（anthropic），可以换成任意厂商已知的驱动（例如 `omp_gateway:…`）。每个评审各自给出结构化判定 {supported, partial, unsupported, contradicted}；判 supported、partial、contradicted 时须逐字引用证据，引文在证据里找不到的意见记为 uncertain。评审的厂商必须已知、不是 human、不同于 claim 作者的厂商，也不同于另一个已采纳评审的厂商；不符合的评审被跳过，不计票（厂商未知、是 human 或与作者相同记为 `same_or_unknown_vendor`，与已采纳评审同厂商记为 `duplicate_vendor`） | 有效评审（已采纳且调用成功）至少 `support_min_judges` 个（默认 2），且**全部**给出同一个标签时，取这个标签：**supported**（V-NUM 也须通过）、**unsupported** 或 **contradicted**；其余一律 **uncertain**（包括任一评审意见不同、判 partial、只有一个有效评审），触发 `uncertain_support` 检查点或降级。没有阈值，也不校准；`rk eval support` 在 SciFact dev 上按生成方场景（以 anthropic 为主，另有 openai、human）报告覆盖率和各判定的精确率，见 `docs/eval/support-2026-11-07-judges.md`（60 对：anthropic 场景覆盖率 0.533，supported 6/6）。2026-11-06 的两层规则和联合阈值作废 |
+| V-SUPPORT | 证据是否支持 claim | **只用云端评审，没有第一层模型**（2026-11-07 你决定：去掉第一层 MiniCheck，判定只来自三家云端评审；默认不用任何本地模型）。三个评审角色 `judge`、`judge_2`、`judge_3`，默认是 `omp_gateway:openai-codex/gpt-6-luna`（openai）、`ollama:deepseek-v4.1-flash:cloud`（deepseek，由 Ollama Cloud 托管）、`omp_gateway:anthropic/claude-haiku-5-5`（anthropic）（2026-11-09 由 codex_cli、claude_cli 改走 omp_gateway），可以换成任意厂商已知的驱动。每个评审各自给出结构化判定 {supported, partial, unsupported, contradicted}；判 supported、partial、contradicted 时须逐字引用证据，引文在证据里找不到的意见记为 uncertain。评审的厂商必须已知、不是 human、不同于 claim 作者的厂商，也不同于另一个已采纳评审的厂商；不符合的评审被跳过，不计票（厂商未知、是 human 或与作者相同记为 `same_or_unknown_vendor`，与已采纳评审同厂商记为 `duplicate_vendor`） | 有效评审（已采纳且调用成功）至少 `support_min_judges` 个（默认 2），且**全部**给出同一个标签时，取这个标签：**supported**（V-NUM 也须通过）、**unsupported** 或 **contradicted**；其余一律 **uncertain**（包括任一评审意见不同、判 partial、只有一个有效评审），触发 `uncertain_support` 检查点或降级。没有阈值，也不校准；`rk eval support` 在 SciFact dev 上按生成方场景（以 anthropic 为主，另有 openai、human）报告覆盖率和各判定的精确率，见 `docs/eval/support-2026-11-07-judges.md`（60 对：anthropic 场景覆盖率 0.533，supported 6/6）。2026-11-06 的两层规则和联合阈值作废 |
 | V-NUM | 数字出自证据 | 抽出 claim 和句子中的数字、百分比、单位，统一规范。数字必须出现在关联笔记的原文片段中，或者等于句子标记所引用的 `run`/`fig`/`stat` 产物中的值 | pass / ungrounded_number |
 | V-COVER | 句子来源标记覆盖 | 分句后，每句必须带**至少一个**来源标记（标记语法 `[[kind:id]]`），一句里可以同时出现多个：<br>① `[[clm:clm_…]]` 来自文献的 claim；<br>② `[[run:evt_…]]` 或 `[[run:prt_…]]` 描述系统自身做过的研究操作（检索、筛选、提取），指向事件日志中的具体事件或已冻结的 protocol；<br>③ `[[fig:fig_…]]` / `[[stat:stt_…]]` 计算结果，指向由代码生成的产物（含数据哈希）；<br>④ `[[plan:dsg_…]]` 或 `[[plan:hyp_…]]` research_proposal 中计划要做的工作；<br>⑤ `[[inf]]` 作者推断；<br>⑥ `[[ck]]` 常识（不超过 5%，且不能含数字）。<br>②—④ 的目标必须存在且哈希一致。句中的每个数字都必须至少能被句内某一个标记的目标覆盖（见 V-NUM）。导出时：`clm` 转为对其证据来源的 citeproc 引用；`run`、`fig`、`stat`、`plan` 转为指向正文中方法部分、图或表的交叉引用；`[[inf]]` 转为推断性措辞 | pass / fail |
 | V-BALANCE | 争议点有反方 | claim 被标为 `contested`，或存在有来源支撑的异议时，所在小节必须写出反方观点并引用回应 | pass / one_sided |

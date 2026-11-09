@@ -95,6 +95,8 @@ def run_task(kernel, registry, *, project: str, role: str, instructions: str, in
     finally:
         if token:
             kernel.tokens.revoke(task_id)
+        if provider is None and hasattr(prov, "close"):
+            prov.close()  # a provider built for this task alone: end what it started (an omp auth-gateway child)
     status = "done" if result.ok else ("waiting_human" if result.error == "waiting_human" else "failed")
     ps.apply(NewEvent(type="task.finished", entity_id=task_id, actor_kind="kernel", actor=actor, payload={
         "status": status, "output": result.output.model_dump(mode="json") if result.output else None,

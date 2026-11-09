@@ -73,9 +73,10 @@ def support_check(kernel, registry, *, project: str, text: str, source_ids: list
     ps, lib = kernel.project(project)
     for sid in source_ids:
         lib.get(sid)  # KeyError for unknown sources
-    prov = provider or build_provider(driver, kernel.settings())
+    # the tasks build (and close) their own provider unless one is given; the vendor is the driver's either way
+    vendor = (provider or build_provider(driver, kernel.settings())).vendor
     extracted = run_task(kernel, registry, project=project, role="arguer", instructions=ARGUER,
-                         inputs={"passage": text}, output_schema=ExtractedClaims, driver=driver, provider=prov,
+                         inputs={"passage": text}, output_schema=ExtractedClaims, driver=driver, provider=provider,
                          tools=[], max_turns=4, timeout_s=600, actor=actor)
     if not extracted.ok:
         raise RuntimeError(f"claim extraction failed: {extracted.error}")
@@ -85,11 +86,11 @@ def support_check(kernel, registry, *, project: str, text: str, source_ids: list
     svc = ArgumentService(ps)
     rows: list[CheckRow] = []
     for c in sorted(extracted.output.claims, key=lambda c: c.sentence_index):
-        cid = svc.add_claim(ClaimIn(text=c.text, kind=c.kind), generator_vendor=prov.vendor, actor=actor)
+        cid = svc.add_claim(ClaimIn(text=c.text, kind=c.kind), generator_vendor=vendor, actor=actor)
         known = {n["id"] for n in list_notes(ps)}
         reader = run_task(kernel, registry, project=project, role="reader", instructions=READER,
                           inputs={"claim": c.text, "source_ids": source_ids}, output_schema=QuotedEvidence,
-                          driver=driver, provider=prov, max_turns=16, timeout_s=900, actor=actor)
+                          driver=driver, provider=provider, max_turns=16, timeout_s=900, actor=actor)
         # Evidence = the verified quote notes the reader actually created on the given sources in this step.
         new = [n for n in list_notes(ps) if n["id"] not in known and n["kind"] == "quote" and n["item_id"] in source_ids]
         if new:
@@ -103,7 +104,7 @@ def support_check(kernel, registry, *, project: str, text: str, source_ids: list
                                        f"{n['text'][:120]}" for n in new],
                              numbers_ok=r.numbers_ok, gold=(gold or {}).get(c.sentence_index),
                              reader_error=None if reader.ok else (reader.error or "failed")))
-    report = CheckReport(driver=str(driver), vendor=prov.vendor, rows=rows,
+    report = CheckReport(driver=str(driver), vendor=vendor, rows=rows,
                          missing_gold=sorted(set(gold or {}) - set(indices)))
     if gold:
         # Every gold sentence is scored; one without a claim counts as an uncertain prediction.

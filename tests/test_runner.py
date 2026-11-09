@@ -1,10 +1,14 @@
+import os
 import shutil
+import stat
+import sys
 import uuid
+from pathlib import Path
 
 import pytest
 from pydantic import BaseModel
 
-from rk.config import Settings, save_settings
+from rk.config import Settings, load_settings, save_settings
 from rk.fulltext import attach_pdf
 from rk.library.models import Creator, ItemIn
 from rk.llm.drivers import DriverSpec
@@ -89,6 +93,25 @@ def test_waiting_human_not_retried(env):
     p = FakeProvider([(False, "waiting_human")])
     r = _run(env, p)
     assert len(p.calls) == 1 and task_row(ps, r.task_id)["status"] == "waiting_human"
+
+
+def test_task_ends_the_gateway_it_started(env, tmp_path, monkeypatch):
+    """A task's own omp_gateway driver ends its `omp auth-gateway` child when the task ends (rk serve runs thousands
+    of tasks: a child left behind per task piles up)."""
+    k, reg, _ = env
+    exe = tmp_path / "omp"
+    exe.write_text(f"#!{sys.executable}\n" + (Path(__file__).parent / "fakes" / "fake_omp.py").read_text())
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+    pids = tmp_path / "pids"
+    monkeypatch.setenv("FAKE_OMP_PIDS", str(pids))
+    save_settings(load_settings().model_copy(update={"cli_paths": {"omp": str(exe)}}))
+    run_task(k, reg, project="rt", role="judge", instructions="do", tools=[],
+             driver=DriverSpec.parse("omp_gateway:openai-codex/gpt-6-luna"))
+    started = [int(p) for p in pids.read_text().split()]
+    assert started
+    for pid in started:
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
 
 
 def test_rate_cap_blocks_and_records(env):

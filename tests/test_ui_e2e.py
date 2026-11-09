@@ -58,7 +58,8 @@ def workbench_env(tmp_home, replay_http, fake):
     """The served Workbench with ``rk serve``'s Orchestrator and RunManager (every stage after intake a FakeWorker;
     tests replace ``orch.workers[...]`` before they start a run)."""
     exe, _ = fake  # the chat page opens a chat on load, so every CLI driver must already be the fake
-    save_settings(Settings(email="rk-fixtures@users.noreply.github.com", cli_paths={"claude": exe, "codex": exe}))
+    save_settings(Settings(email="rk-fixtures@users.noreply.github.com", cli_paths={"claude": exe, "codex": exe},
+                           drivers={"lead": "claude_cli"}))
     rt = acquire_serve_lock(tmp_home)
     kernel = Kernel(tmp_home, http=replay_http)
     kernel.create_project("demo", "Demo project", actor="t")

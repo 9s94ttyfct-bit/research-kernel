@@ -97,12 +97,12 @@ def test_run_task_events_link_task_to_stage(env):
 
 def test_rate_capped_task_raises_with_wait_and_is_not_budgeted(env):
     _, _, ps, _ = env
-    save_settings(load_settings().model_copy(update={"calls_per_hour": {"claude_cli": 1}}))
+    save_settings(load_settings().model_copy(update={"calls_per_hour": {"omp_gateway": 1}}))
     ex = _executor(env, run_id="run_r", session=1)
     assert _task(ex, "gaps").ok
     with pytest.raises(RateCapped) as e:
         _task(ex, "gaps")
-    assert e.value.driver == "claude_cli"
+    assert e.value.driver == "omp_gateway"
     assert WINDOW_S - 60 < e.value.wait_s <= WINDOW_S
     assert tasks_used(ps, "run_r", 1, "gaps") == 1  # the capped task made no call
 
@@ -275,7 +275,8 @@ def test_scripted_executor_pops_outputs_and_records_calls():
                           drivers={"judge_2": "ollama:deepseek-v4.1-flash:cloud"})
     r1 = ex.run("judge", "do", {"x": 1}, Found, stage="question", attempt=2)
     r2 = ex.run("judge", "do", {"x": 2}, Found, stage="question", attempt=2)
-    assert (r1.ok, r1.output, r1.provider, r1.model) == (True, Found(found=True), "codex_cli", "gpt-6-luna")
+    assert (r1.ok, r1.output, r1.provider, r1.model) == (True, Found(found=True), "omp_gateway",
+                                                         "openai-codex/gpt-6-luna")
     assert r2.output == Found(found=False) and json.loads(r2.raw) == {"found": False}
     r3 = ex.run("judge_2", "do", {}, Found, stage="question", attempt=2)
     assert (r3.provider, r3.model) == ("ollama", "deepseek-v4.1-flash:cloud")

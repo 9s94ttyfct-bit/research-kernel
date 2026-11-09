@@ -16,7 +16,7 @@ from rk.checkpoints import (
     get_checkpoint,
     list_checkpoints,
 )
-from rk.config import Settings
+from rk.config import Settings, load_settings, save_settings
 from rk.discovery.executor import BudgetExceeded, KernelExecutor, RateCapped
 from rk.discovery.gaps import GapsWorker, MinerResult
 from rk.discovery.models import Gap, GapEvidence
@@ -550,6 +550,7 @@ def test_session_limit_waits_without_spending_a_rerun(project):
     """I2: the Claude CLI's "You've hit your session limit" reply is no failed task. The run waits (``waiting_rate``)
     until the limit resets: no rerun, no back-edge, no new attempt, and no call reaches the CLI before the reset."""
     k, ps = project
+    save_settings(load_settings().model_copy(update={"drivers": {**load_settings().drivers, "arguer": "claude_cli"}}))
     now = [T0]
     k.caps._clock = lambda: now[0]
     limit = json.dumps({"type": "result", "subtype": "success", "is_error": True, "num_turns": 1,

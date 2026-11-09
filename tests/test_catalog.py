@@ -22,7 +22,20 @@ from .conftest import FIXTURES
 
 OMP_JSON = (FIXTURES / "omp_models.json").read_text()
 GATEWAY = {"omp_gateway:anthropic/claude-haiku-5-5": "anthropic", "omp_gateway:openai-codex/gpt-6-luna": "openai",
+           "omp_gateway:openai-codex/gpt-6.1-sol": "openai",
            "omp_gateway:ollama-cloud/deepseek-v4.1-flash": "deepseek"}
+# the pre-2026-11-09 defaults (subscription CLIs): tests of the catalog's CLI entries and of the placeholder shown when
+# no gateway driver is configured start from these, as the shipped defaults are all omp_gateway drivers
+LEGACY_DRIVERS = {
+    **{r: "claude_cli" for r in ("lead", "scout", "screener_a", "reader", "gapminer", "ideator", "arguer", "writer")},
+    **{r: "codex_cli" for r in ("screener_b", "skeptic", "simreader")},
+    "judge": "codex_cli:gpt-6-luna", "judge_2": "ollama:deepseek-v4.1-flash:cloud",
+    "judge_3": "claude_cli:claude-haiku-5-5", "triage": "ollama:deepseek-v4.1-flash:cloud",
+}
+
+
+def legacy(**drivers) -> Settings:
+    return Settings(drivers={**LEGACY_DRIVERS, **drivers})
 
 
 def omp_ok(argv, timeout):
@@ -35,7 +48,7 @@ def no_ollama(settings):
 
 
 def test_omp_catalog_lists_gateway_models():
-    models = list_models(Settings(), omp_runner=omp_ok, ollama_runner=no_ollama)
+    models = list_models(legacy(), omp_runner=omp_ok, ollama_runner=no_ollama)
     gateway = {m.driver: m for m in models if m.driver.startswith("omp_gateway")}
     assert {d: m.vendor for d, m in gateway.items()} == GATEWAY  # the embedding model is not a chat model
     assert all(m.available and m.reason is None for m in gateway.values())
@@ -86,7 +99,7 @@ def test_omp_missing_or_failing_is_reported_not_raised(error, why):
     def unreachable(settings):
         raise OSError("connection refused")
 
-    models = list_models(Settings(), omp_runner=runner, ollama_runner=unreachable)
+    models = list_models(legacy(), omp_runner=runner, ollama_runner=unreachable)
     gateway = [m for m in models if m.provider == "omp_gateway"]
     assert len(gateway) == 1 and gateway[0].driver == "omp_gateway" and not gateway[0].available
     assert why in gateway[0].reason
@@ -146,7 +159,7 @@ def test_malformed_omp_entries_are_skipped_not_raised():
 @pytest.mark.parametrize("out", ["not json", '{"models": "x"}', "[1, 2]", '{"models": null}', "[" * 100_000])
 def test_unreadable_omp_listing_is_reported_and_not_cached_as_good(out, monkeypatch):
     monkeypatch.setattr(catalog, "default_omp_runner", lambda argv, t: out)
-    cat = model_catalog(Settings(), ollama_runner=no_ollama)
+    cat = model_catalog(legacy(), ollama_runner=no_ollama)
     gateway = [m for m in cat.models if m.provider == "omp_gateway"]
     assert len(gateway) == 1 and not gateway[0].available and "failed" in gateway[0].reason
     assert "claude_cli:claude-haiku-5-5" in {m.driver for m in cat.models}
@@ -159,7 +172,7 @@ def test_omp_status_shown_with_a_configured_gateway_driver():
     def missing(argv, timeout):
         raise FileNotFoundError("omp")
 
-    cat = model_catalog(Settings(drivers={"reader": "omp_gateway:openai-codex/gpt-6-luna"}), omp_runner=missing,
+    cat = model_catalog(legacy(reader="omp_gateway:openai-codex/gpt-6-luna"), omp_runner=missing,
                         ollama_runner=no_ollama)
     gateway = [m for m in cat.models if m.provider == "omp_gateway"]
     assert [m.driver for m in gateway] == ["omp_gateway:openai-codex/gpt-6-luna"] and not gateway[0].available
@@ -252,11 +265,11 @@ def test_unknown_vendor_cannot_judge():
 
 
 def test_validate_drivers_rejects_duplicate_judge_vendors():
-    openai = {"judge": "codex_cli:gpt-6-luna", "judge_2": "omp_gateway:openai-codex/gpt-6-luna",
+    openai = {**LEGACY_DRIVERS, "judge": "codex_cli:gpt-6-luna", "judge_2": "omp_gateway:openai-codex/gpt-6-luna",
               "judge_3": "openai_api:gpt-6-sol"}
     problems = validate_drivers(openai)
     assert len(problems) == 1 and "two judges of different known vendors" in problems[0]
-    # two openai judges and an anthropic one: two distinct vendors, so valid; but the default Anthropic writer leaves
+    # two openai judges and an anthropic one: two distinct vendors, so valid; but the Anthropic writer leaves
     # only one judge to check its claims
     two = {**openai, "judge_3": "claude_cli:claude-haiku-5-5"}
     assert validate_drivers(two) == []
@@ -296,6 +309,8 @@ def test_omp_gateway_needs_no_flag(tmp_home):
 
 
 def test_cli_models_json_with_a_failing_listing_and_unknown_vendor(tmp_home, monkeypatch):
+    save_settings(legacy())
+
     def missing(argv, timeout):
         raise FileNotFoundError("omp")
 
@@ -321,6 +336,7 @@ def test_cli_models_json_with_a_failing_listing_and_unknown_vendor(tmp_home, mon
 
 
 def test_cli_models_and_driver_set(tmp_home, monkeypatch):
+    save_settings(legacy())
     monkeypatch.setattr(catalog, "default_omp_runner", omp_ok)
     monkeypatch.setattr(catalog, "default_ollama_runner", no_ollama)
     runner = CliRunner()
@@ -355,10 +371,10 @@ def test_rk_providers_reports_problems_and_warnings(tmp_home, replay_http, monke
     k = Kernel(tmp_home, http=replay_http)
     reg = builtin.build_registry(k)
     try:
-        save_settings(Settings(drivers={"judge_2": "codex_cli:gpt-6-sol"}))
+        save_settings(legacy(judge_2="codex_cli:gpt-6-sol"))
         out = reg.call("rk_providers", {}, CallContext(role="cli", actor="u"))
         assert out["problems"] == [] and any("writer (claude_cli) are anthropic" in w for w in out["warnings"])
-        save_settings(Settings(drivers={"judge": "omp_gateway:foo/unknown-model"}))
+        save_settings(legacy(judge="omp_gateway:foo/unknown-model"))
         out = reg.call("rk_providers", {}, CallContext(role="cli", actor="u"))
         assert any("unknown vendor" in p for p in out["problems"]) and out["warnings"] == []
     finally:

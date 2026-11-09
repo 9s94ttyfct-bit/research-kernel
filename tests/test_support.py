@@ -31,9 +31,9 @@ from .conftest import DOCS
 from .discovery_fakes import FakeJudge
 
 QUOTE = "about copper catalysts for CO2 reduction"
-LUNA = DriverSpec("codex_cli", "gpt-6-luna")
+LUNA = DriverSpec("omp_gateway", "openai-codex/gpt-6-luna")
 DEEPSEEK = DriverSpec("ollama", "deepseek-v4.1-flash:cloud")
-HAIKU = DriverSpec("claude_cli", "claude-haiku-5-5")
+HAIKU = DriverSpec("omp_gateway", "anthropic/claude-haiku-5-5")
 CLAIM = "Copper catalysts are studied for CO2 reduction."
 
 
