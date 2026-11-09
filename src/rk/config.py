@@ -41,6 +41,8 @@ class Settings(BaseModel):
     cli_paths: dict[str, str] = Field(default_factory=dict)
     # ---- V-SUPPORT (spec §9.1): cloud judges only ----
     support_min_judges: int = 2  # spec §8.1: one cross-vendor vote is not enough to pass
+    # ---- draft (spec §7.2): the Writer's retries of a section that fails verification, within one attempt ----
+    draft_section_retries: int = Field(2, ge=0)
     # ---- V-STATS (spec §9.1): {"version": rk.stats.STATS_VERSION, "report": path}, written by a passing
     # ``rk eval stats --write-config``; meta-analysis is off unless its version is the current one ----
     stats_validated: dict | None = None

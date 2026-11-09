@@ -32,14 +32,15 @@ BACK_EDGES: frozenset[tuple[str, str]] = frozenset({
     ("gaps", "landscape"), ("topics", "gaps"), ("question", "topics"),
     ("protocol", "question"), ("search_screen", "protocol"), ("read_extract", "search_screen"),
     ("synthesize", "read_extract"), ("argue", "synthesize"), ("argue", "question"), ("design", "argue"),
-    ("design", "question"),
+    ("design", "question"), ("draft", "argue"), ("draft", "design"),  # draft->design: research proposals only
 })
 EDGE_LIMIT = 2  # uses of each edge per project before P2 asks and P1 degrades (§7.2)
 
 # Stages whose role tasks count against the per-session budget (§7.2), and that budget per stage. The other stages
 # have none; those that work through an enumerated set (search_screen: every record, read_extract: every included
-# study) grow with the set, and synthesize and design are bounded by the studies and the design's size. The hourly
-# call caps of the drivers still apply.
+# study) grow with the set, and synthesize and design are bounded by the studies and the design's size; draft by its
+# sections, each with at most 1 + ``draft_section_retries`` Writer tasks per attempt. The hourly call caps of the
+# drivers still apply.
 OPEN_STAGES: frozenset[str] = frozenset({"landscape", "gaps", "topics", "protocol", "argue"})
 STAGE_TASK_BUDGET = 40  # role tasks per open stage per run session
 

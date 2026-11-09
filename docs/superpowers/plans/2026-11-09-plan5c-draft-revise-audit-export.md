@@ -191,6 +191,15 @@ No new Python dependency. The CSL style is pandoc's built-in default (Chicago au
     - the Writer reports `missing_support` with claim needs → `draft → argue` (proposal: `missing_design` → `draft → design`);
     - otherwise a failing gate → rerun (`draft → draft`).
   - P1/P2: no checkpoint (only `stage_blocked` at the limit, as today).
+  - As implemented (Task 2):
+    - `default_workers` lives in `rk.orchestrator.engine`; `draft` is registered there.
+    - `SECTIONS["critical_review"]` lists the fixed sections; `required_sections(paper_type, themes)` inserts one `theme-<n>` section per distinct synthesis theme (`theme_or_outcome` of the narrative's groups) after `introduction`.
+    - `SectionDraft{markdown, missing_support: list[str], missing_design: str}`; `missing_design` outside a proposal counts as a failed try (`refused` note).
+    - PRISMA counts: the kernel event `draft.prisma` (once per attempt, `prisma_event`) carries the ten count fields of search_screen's passed attempt, which `cover.EVENT_NUMBERS` pools, plus `search_attempt` and `protocol_id` (never pooled) so the audit can recompute the counts and refuse a stale event.
+    - Retries: at most 1 + `draft_section_retries` Writer tasks per section per attempt; the retry input carries `previous_draft` and `failures` (`sentence N “text”: problems`). The gate names each failing sentence the same way.
+    - The disclosure stub: one sentence per stage passed so far, citing its latest `stage.passed` event.
+    - V-BALANCE is not wired into the gate yet: Task 3 adds `check_balance` and wires it into `DraftWorker.gate`.
+    - P1 `degrade` deletes the failing sentences of each section and stores the rest as a new version (`stage.degraded`); the engine gates again.
 
 - [ ] **Step 1: Failing tests:**
   - `test_draft_writes_every_required_section_per_paper_type` (four paper types, scripted Writer);

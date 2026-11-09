@@ -72,6 +72,10 @@ EVENT_NUMBERS: dict[str, tuple[str, ...]] = {
     "extraction.added": ("value",),
     # rk.orchestrator.state.record_edge_taken: how often a back-edge was taken
     "edge.taken": ("count",),
+    # rk.production.draft.prisma_event: the PRISMA counts of search_screen's passed attempt (never the attempt or the
+    # protocol id it records, which the audit recomputes the counts from)
+    "draft.prisma": ("identified", "duplicates_removed", "screened", "excluded_ta", "sought", "not_retrieved",
+                     "assessed_ft", "included", "excluded_language", "abstract_only"),
 }
 
 

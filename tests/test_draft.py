@@ -1,0 +1,336 @@
+"""Plan 5c Task 2: the draft stage. The Writer drafts every required section of the paper type; the kernel stores each
+version, verifies every sentence (V-COVER, V-NUM, V-HEDGE, V-QUOTE, G-SUPPORT), drafts a failing section again with
+its failures as guidance, writes the disclosure itself and gates on what it stored."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import replace
+
+import pytest
+
+from rk.config import load_settings, save_settings
+from rk.orchestrator.engine import default_workers
+from rk.orchestrator.graph import BACK_EDGES
+from rk.orchestrator.state import record_attempt, record_passed, record_ran
+from rk.production.argue import main_claim
+from rk.production.artifacts import ArtifactIn, add_artifact
+from rk.production.design import DesignWorker, approved_design
+from rk.production.draft import (
+    PRISMA_EVENT,
+    DraftWorker,
+    SectionDraft,
+    draft_notes,
+    prisma_event,
+)
+from rk.production.draft import _load as draft_inputs
+from rk.production.manuscript import (
+    draft_text,
+    draft_versions,
+    parse_section,
+    source_markers,
+)
+from rk.production.sections import SECTIONS, required_sections
+from rk.production.synthesis import synthesis_claims
+from rk.roles.prompts import build_system_prompt
+from rk.verify.cover import EVENT_NUMBERS, verify_sentence
+from tests.production_fakes import make_frozen_project, production_ctx
+from tests.test_design import _argued, plan
+from tests.test_design import _exec as _design_exec
+from tests.test_synthesis import CapOnce, Exec
+
+PAPER_TYPES = ("systematic_review", "scoping_review", "critical_review", "research_proposal")
+
+
+@pytest.fixture
+def env(tmp_home, replay_http, request):
+    k, ps, lib, _ = make_frozen_project(tmp_home, replay_http,
+                                        **{"paper_type": "critical_review", **getattr(request, "param", {})})
+    yield k, ps, lib
+    k.close()
+
+
+def _ready(env) -> None:
+    """Passed synthesize and argue attempts; a research proposal's design approved by the P1 vote and passed."""
+    k, ps, lib = env
+    _argued(env)
+    if ps.meta("paper_type") == "research_proposal":
+        ctx = production_ctx(k, ps, lib, _design_exec([plan()]), stage="design")
+        out = DesignWorker().run(ctx)
+        assert out.status == "done", out.reason
+        record_attempt(ps, "design", 1, run_id=None, guidance="", requested=None, actor="tester")
+        record_ran(ps, "design", 1, "done", "", actor="tester")
+        record_passed(ps, "design", 1, actor="tester")
+        assert approved_design(ps) is not None
+
+
+def _sentence(c: dict) -> str:
+    return f"{c['text'].rstrip('.')} [[clm:{c['claim_id']}]]."
+
+
+def writes(*, only_main: bool = False, bad: str | None = None, extra: str = ""):
+    """A Writer output: one sentence per supported main claim and finding (only the main claim with ``only_main``),
+    a proposal's design cited in its methods; ``bad`` a sentence put first, ``extra`` one put last."""
+    def out(inputs):
+        cs = [c for c in inputs["claims"] if c["status"] == "supported"
+              and (c["role"] == "main" or (c["role"] == "finding" and not only_main))]
+        parts = [_sentence(c) for c in cs]
+        if inputs.get("design") and inputs["section"]["id"] == "methods":
+            parts.append(f"The design tests the hypotheses [[plan:{inputs['design']['id']}]].")
+        return {"markdown": " ".join([*([bad] if bad else []), *parts, *([extra] if extra else [])]) + "\n"}
+    return out
+
+
+def _writer(outputs) -> Exec:
+    return Exec({("writer", "SectionDraft"): list(outputs)})
+
+
+def _ctx(env, ex, attempt: int = 1, guidance: str = ""):
+    k, ps, lib = env
+    return replace(production_ctx(k, ps, lib, ex, stage="draft", attempt=attempt), guidance=guidance)
+
+
+def _ids(ps) -> list[str]:
+    return [s.id for s in draft_inputs(ps).sections]
+
+
+def _writer_sections(ex: Exec) -> list[str]:
+    return [c["inputs"]["section"]["id"] for c in ex.of("writer", "SectionDraft")]
+
+
+# ---- tests ----
+def test_draft_is_a_default_worker_with_its_edges_and_prompt():
+    assert isinstance(default_workers()["draft"], DraftWorker)
+    assert {("draft", "argue"), ("draft", "design")} <= BACK_EDGES
+    assert load_settings().draft_section_retries == 2
+    prompt = build_system_prompt("writer", SectionDraft)
+    for word in ("`SectionDraft`", "[[clm:clm_…]]", "[[run:evt_…]]", "[[plan:hyp_…]]",
+                 "Never state a number a marker target does not contain", "missing_support", "missing_design",
+                 "only for your own inferences and word them tentatively"):
+        assert word in prompt, word
+
+
+@pytest.mark.parametrize("env", [{"paper_type": t} for t in PAPER_TYPES], indirect=True,
+                         ids=list(PAPER_TYPES))
+def test_draft_writes_every_required_section_per_paper_type(env):
+    _, ps, _ = env
+    _ready(env)
+    paper_type = ps.meta("paper_type")
+    ex = _writer([writes()] * 20)
+    w = DraftWorker()
+    out = w.run(_ctx(env, ex))
+    assert out.status == "done", out.reason
+    ids = _ids(ps)
+    if paper_type == "critical_review":
+        assert ids == ["introduction", "theme-1", "gaps-agenda", "conclusion", "disclosure"]
+        assert required_sections(paper_type, ["design"])[1].title == "design"
+    else:
+        assert ids == [s.id for s in SECTIONS[paper_type]]
+    if paper_type == "scoping_review":
+        assert SECTIONS[paper_type][3].title == "Evidence map and thematic synthesis"
+    # one Writer task per section in order, none for the kernel's disclosure
+    assert _writer_sections(ex) == [i for i in ids if i != "disclosure"]
+    for sid in ids:
+        (v,) = draft_versions(ps, sid)
+        assert v["verdict"]["ok"], (sid, v["verdict"])
+    first = ex.of("writer", "SectionDraft")[0]["inputs"]
+    assert first["section"]["id"] == ids[0] and first["audience"] and "[[clm:" in first["markers"]
+    assert {c["role"] for c in first["claims"]} >= {"main", "finding"}
+    assert all({"claim_id", "text", "status"} <= set(c) for c in first["claims"])
+    assert first["protocol"]["id"].startswith("prt_") and "limitations" in first
+    later = ex.of("writer", "SectionDraft")[1]["inputs"]
+    assert [x["id"] for x in later["earlier_sections"]] == [ids[0]]
+    types = {e["type"] for e in first["events"]}
+    assert (PRISMA_EVENT in types) == (paper_type in ("systematic_review", "scoping_review"))
+    if paper_type == "research_proposal":
+        assert first["design"]["id"] == approved_design(ps)["id"] and first["hypotheses"]
+        methods = draft_text(ps, "methods", 1)
+        assert any(m.kind == "plan" for m in source_markers(methods))
+    res = w.gate(ps, 1)
+    assert res.ok, res.failures
+
+
+def test_ungrounded_number_fails_sentence_and_redrafts(env):
+    _, ps, _ = env
+    _ready(env)
+    main = main_claim(ps, 1)
+    bad = f"Aspirin was studied in 1234 older people [[clm:{main}]]."
+    # introduction: every try writes the ungrounded number; theme-1: fixed on its first retry
+    outs = [writes(bad=bad)] * 3 + [writes(bad=bad), writes()] + [writes()] * 3
+    ex = _writer(outs)
+    w = DraftWorker()
+    out = w.run(_ctx(env, ex))
+    assert out.status == "done", out.reason
+    assert _writer_sections(ex) == ["introduction"] * 3 + ["theme-1"] * 2 + ["gaps-agenda", "conclusion"]
+    calls = ex.of("writer", "SectionDraft")
+    assert "retry" not in calls[0]["inputs"]
+    retry = calls[1]["inputs"]["retry"]
+    assert "1234" in retry["previous_draft"]
+    (failure,) = retry["failures"]
+    assert failure.startswith("sentence 1 “Aspirin was studied in 1234 older people")
+    assert "the number 1234 is not in any marker's target" in failure
+    assert [v["verdict"]["ok"] for v in draft_versions(ps, "introduction")] == [False] * 3
+    assert [v["verdict"]["ok"] for v in draft_versions(ps, "theme-1")] == [False, True]
+    res = w.gate(ps, 1)
+    assert not res.ok
+    (named,) = [f for f in res.failures if f.startswith("section introduction")]
+    assert "v3" in named and "Aspirin was studied in 1234 older people" in named and "1234" in named
+    assert not any("theme-1" in f for f in res.failures)
+
+
+def test_draft_resumes_in_place_without_rewriting_verified_sections(env):
+    from rk.discovery.executor import RateCapped
+
+    _, ps, _ = env
+    _ready(env)
+    main = main_claim(ps, 1)
+    bad = f"Aspirin was studied in 1234 older people [[clm:{main}]]."
+    # introduction passes; theme-1 fails its first try and the cap hits its retry (the third Writer task)
+    ex = CapOnce({("writer", "SectionDraft"): [writes(), writes(bad=bad), writes(), writes(), writes()]},
+                 at=("writer", "SectionDraft"), n=3)
+    w = DraftWorker()
+    with pytest.raises(RateCapped):
+        w.run(_ctx(env, ex))
+    assert len(draft_versions(ps, "introduction")) == 1 and len(draft_versions(ps, "theme-1")) == 1
+    out = w.run(_ctx(env, ex))  # the same attempt, in place
+    assert out.status == "done", out.reason
+    assert _writer_sections(ex) == ["introduction", "theme-1", "theme-1", "gaps-agenda", "conclusion"]
+    resumed = ex.of("writer", "SectionDraft")[2]["inputs"]
+    assert "1234" in resumed["retry"]["previous_draft"]
+    assert len(draft_versions(ps, "introduction")) == 1  # never drafted again
+    assert [v["verdict"]["ok"] for v in draft_versions(ps, "theme-1")] == [False, True]
+    assert len(draft_versions(ps, "disclosure")) == 1
+    assert w.gate(ps, 1).ok
+    # run once more: nothing is drafted again
+    again = _writer([])
+    assert w.run(_ctx(env, again)).status == "done" and not again.calls
+
+
+def test_missing_support_takes_draft_to_argue(env):
+    _, ps, _ = env
+    _ready(env)
+    need = {"markdown": "", "missing_support": ["a claim on the bleeding risk of aspirin in older people"]}
+    ex = _writer([writes(), need])
+    w = DraftWorker()
+    out = w.run(_ctx(env, ex))
+    assert out.status == "back_edge" and out.to == "argue"
+    assert "theme-1" in out.reason and "bleeding risk" in out.reason
+    assert ("draft", "argue") in BACK_EDGES
+    (n,) = draft_notes(ps, 1, kind="back_edge")
+    assert n["section"] == "theme-1" and not draft_versions(ps, "theme-1")
+    again = _writer([])
+    out2 = w.run(_ctx(env, again))  # resumed: the noted back-edge, no Writer task
+    assert (out2.status, out2.to, out2.reason) == ("back_edge", "argue", out.reason) and not again.calls
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "research_proposal"}], indirect=True)
+def test_proposal_missing_design_takes_draft_to_design(env):
+    _ready(env)
+    ex = _writer([writes(), writes(), writes(),
+                  {"markdown": "", "missing_design": "no measurement of bleeding events"}])
+    out = DraftWorker().run(_ctx(env, ex))
+    assert _writer_sections(ex) == ["background", "gap", "questions-hypotheses", "methods"]
+    assert out.status == "back_edge" and out.to == "design"
+    assert "methods" in out.reason and "bleeding events" in out.reason
+    assert ("draft", "design") in BACK_EDGES
+
+
+def test_missing_design_outside_a_proposal_is_a_failed_try(env):
+    _ready(env)
+    ex = _writer([{"markdown": "", "missing_design": "a design"}, writes(), writes(), writes(), writes()])
+    out = DraftWorker().run(_ctx(env, ex))
+    assert out.status == "done", out.reason
+    assert _writer_sections(ex)[:2] == ["introduction", "introduction"]
+    retry = ex.of("writer", "SectionDraft")[1]["inputs"]["retry"]
+    assert "missing_design is only for a research proposal" in retry["failures"]
+
+
+def test_disclosure_section_is_kernel_written(env):
+    _, ps, _ = env
+    _ready(env)
+    ex = _writer([writes()] * 4)
+    w = DraftWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    assert "disclosure" not in _writer_sections(ex)
+    (v,) = draft_versions(ps, "disclosure")
+    assert v["by_task"] is None and v["verdict"]["ok"]
+    md = draft_text(ps, "disclosure", 1)
+    sentences = parse_section(md)
+    assert sentences and all([m.kind for m in s.markers] == ["run"] for s in sentences)
+    assert "The synthesis stage passed its gate" in md and "The argument stage passed its gate" in md
+    passed = {r["evt_id"] for r in ps.db.execute("SELECT evt_id FROM events WHERE type='stage.passed'")}
+    assert {m.target for m in source_markers(md)} <= passed
+    assert "TODO" not in md and "placeholder" not in md.lower()
+
+
+def test_every_main_claim_and_supported_finding_is_cited(env):
+    _, ps, _ = env
+    _ready(env)
+    w = DraftWorker()
+    assert w.run(_ctx(env, _writer([writes(only_main=True)] * 4))).status == "done"
+    res = w.gate(ps, 1)
+    assert not res.ok
+    findings = synthesis_claims(ps, 1)
+    assert findings and all(f"the supported finding {c} is cited in no section" in res.failures for c in findings)
+    assert not any("main claim" in f for f in res.failures)
+    # a statistic of another attempt is no artifact of synthesize's passed attempt
+    sid = add_artifact(ps, ArtifactIn(kind="stt", code_path="rk.test:x", code_version="v", input_hashes=[],
+                                      values={"display": {"estimate": 0.5}}, output_path=None),
+                       stage="synthesize", attempt=2, actor="k")
+    ex = _writer([writes(extra=f"Another pooled analysis was made [[stat:{sid}]].")] * 4)
+    assert w.run(_ctx(env, ex, attempt=2)).status == "done"
+    res2 = w.gate(ps, 2)
+    assert any(f"[[stat:{sid}]] is not an artifact of synthesize's passed attempt" in f for f in res2.failures)
+    assert not any("cited in no section" in f for f in res2.failures)
+    # a section without a draft of the attempt fails the gate
+    assert any("has no draft from this attempt" in f for f in w.gate(ps, 3).failures)
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_prisma_event_pools_its_counts_never_its_attempt(env):
+    _, ps, _ = env
+    _ready(env)
+    fields = EVENT_NUMBERS[PRISMA_EVENT]
+    assert len(fields) == 10 and not {"attempt", "search_attempt", "protocol_id"} & set(fields)
+    pid = ps.db.execute("SELECT id FROM protocols WHERE status='frozen'").fetchone()["id"]
+    evt = prisma_event(ps, 9, 1, pid, actor="tester")
+    assert prisma_event(ps, 9, 1, pid, actor="tester") == evt  # once per attempt
+    (row,) = ps.db.execute("SELECT payload FROM events WHERE evt_id=?", (evt,)).fetchall()
+    p = json.loads(row["payload"])
+    assert (p["attempt"], p["search_attempt"], p["protocol_id"], p["identified"], p["included"]) == (9, 1, pid, 2, 2)
+    (ok,) = parse_section(f"The search identified 2 records and included 2 studies [[run:{evt}]].")
+    assert verify_sentence(ps, ok, paper_type="systematic_review").ok
+    for n in ("9", "1"):  # the draft attempt and the search_screen attempt it records are never pooled
+        (s,) = parse_section(f"The counts come from attempt {n} [[run:{evt}]].")
+        v = verify_sentence(ps, s, paper_type="systematic_review")
+        assert f"the number {n} is not in any marker's target" in v.problems
+
+
+def test_draft_section_retries_setting_bounds_the_writer(env):
+    _, ps, _ = env
+    _ready(env)
+    save_settings(load_settings().model_copy(update={"draft_section_retries": 0}))
+    main = main_claim(ps, 1)
+    bad = f"Aspirin was studied in 1234 older people [[clm:{main}]]."
+    ex = _writer([writes(bad=bad)] + [writes()] * 3)
+    assert DraftWorker().run(_ctx(env, ex)).status == "done"
+    assert _writer_sections(ex) == ["introduction", "theme-1", "gaps-agenda", "conclusion"]
+
+
+def test_p1_degrade_deletes_failing_sentences(env):
+    _, ps, _ = env
+    _ready(env)
+    main = main_claim(ps, 1)
+    bad = f"Aspirin was studied in 1234 older people [[clm:{main}]]."
+    w = DraftWorker()
+    assert w.run(_ctx(env, _writer([writes(bad=bad)] * 3 + [writes()] * 3))).status == "done"
+    failures = w.gate(ps, 1).failures
+    assert failures
+    ex = _writer([])
+    out = w.degrade(_ctx(env, ex), failures)
+    assert out.status == "done" and not ex.calls
+    md = draft_text(ps, "introduction", draft_versions(ps, "introduction")[-1]["version"])
+    assert "1234" not in md and f"[[clm:{main}]]" in md
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    (deg,) = ps.db.execute("SELECT payload FROM events WHERE type='stage.degraded'").fetchall()
+    assert "1234" in deg["payload"]
