@@ -1,10 +1,12 @@
-"""``draft`` (spec §7.1, §7.3: the required sections; §8.1: the Writer; §9.1 V-COVER, V-NUM, V-HEDGE, V-QUOTE; §9.2
-G-SUPPORT; Plan 5c Task 2): the Writer drafts every required section of the paper type (``rk.production.sections``),
-one task per section in order; the kernel stores each version and verifies every sentence.
+"""``draft`` (spec §7.1, §7.3: the required sections; §8.1: the Writer; §9.1 V-COVER, V-NUM, V-HEDGE, V-QUOTE,
+V-BALANCE; §9.2 G-SUPPORT; Plan 5c Tasks 2–3): the Writer drafts every required section of the paper type
+(``rk.production.sections``), one task per section in order; the kernel stores each version and verifies every
+sentence and the section's balance.
 
 1. **Inputs.** argue's passed attempt (``argument_claims``, ``main_claim``, ``argue_limitations``), the synthesize
    attempt that passed (``synthesis_claims``, ``synthesis_limitations``, its artifacts and, for a critical review, its
-   themes, which become the ``theme-<n>`` sections), a research proposal's approved design (``approved_design``,
+   themes, which become the ``theme-<n>`` sections: a critical review whose synthesis gave none fails before any
+   Writer task), a research proposal's approved design (``approved_design``,
    ``design_limitations``), the frozen protocol, and the search events of search_screen's passed attempt. A systematic
    or scoping review's PRISMA counts (``prisma_counts``) are recorded once per attempt as the kernel event
    ``draft.prisma`` (``prisma_event``), which a ``[[run:]]`` marker cites for those numbers (V-NUM reads its count
@@ -18,10 +20,13 @@ one task per section in order; the kernel stores each version and verifies every
    the design and hypotheses (proposal), the limitations, the audience, the marker grammar and the sections already
    verified in the attempt. ``missing_support`` (the claims the section needs and the argument lacks) sends the stage
    back to argue (``draft->argue``); a research proposal's ``missing_design`` back to design (``draft->design``);
-   outside a proposal ``missing_design`` is refused and the try fails however its markdown verifies. The kernel stores
-   the version (``write_draft``) and verifies it (``verify_section``, recorded ``draft.verified``); a version that fails
-   is drafted again with its failing sentences and problems as guidance, up to ``Settings.draft_section_retries`` more
-   times in the attempt. A section still failing then is left to the gate, which names its failing sentences.
+   outside a proposal ``missing_design`` is refused (noted for its Writer task before the version is stored, so a
+   crash between the two cannot lose it) and the try fails however its markdown verifies. The kernel stores the
+   version (``write_draft``) and verifies it (``verify_section`` and V-BALANCE, ``rk.verify.balance.check_balance``,
+   recorded ``draft.verified``); a version that fails is drafted again with its failing sentences and problems (a
+   one-sided section's claim and the counterpart or response it lacks among them) as guidance, up to
+   ``Settings.draft_section_retries`` more times in the attempt. A section still failing then is left to the gate,
+   which names its failing sentences and problems.
 3. **Disclosure** is kernel-written: until the audit writes it from ``disclosure.md``, it is one ``[[run:]]`` sentence
    per stage passed so far, citing the event of its pass.
 
@@ -29,12 +34,13 @@ An interrupted attempt runs again in place: a section whose latest version in th
 again, an unverified version is verified (no Writer task), the retries already spent count, and a back-edge already
 noted is returned again. A new attempt drafts every section afresh.
 
-The gate reads every required section's latest text (a missing or altered file is a failure naming the section and
-version): each was written in the attempt and verified ok; a critical review has at least one theme section; every
-cited ``fig`` and ``stat`` is an artifact of synthesize's passed attempt; the main claim and every supported synthesis
-claim are cited in some section. A failing gate reruns the stage (``draft->draft``) with the failures as guidance. P1
-at an edge limit deletes the failing sentences and those citing another attempt's artifact (spec §5.3
-delete-or-narrow; ``stage.degraded``), or fails naming a section that would be left empty; the engine gates again.
+The gate reads every required section's latest text (a missing, unreadable or altered file is a failure naming the
+section and version): each was written in the attempt and verified ok, and passes V-BALANCE now (an objection answered
+since counts); every cited ``fig`` and ``stat`` is an artifact of synthesize's passed attempt; the main claim and every
+supported synthesis claim are cited in some section. A failing gate reruns the stage (``draft->draft``) with the
+failures as guidance. P1 at an edge limit deletes the failing sentences and those citing another attempt's artifact
+(spec §5.3 delete-or-narrow; ``stage.degraded``); it fails naming a section that would be left empty, or naming the
+failures when there is no such sentence to delete; the engine gates again.
 No checkpoint in either mode."""
 
 from __future__ import annotations
@@ -72,6 +78,7 @@ from rk.production.synthesis import (
 )
 from rk.store.events import NewEvent
 from rk.store.project import ProjectStore
+from rk.verify.balance import check_balance
 from rk.verify.cover import (
     EVENT_NUMBERS,
     SectionVerdict,
@@ -125,7 +132,8 @@ def _note(ps: ProjectStore, attempt: int, kind: str, *, actor: str, **fields) ->
 
 def draft_notes(ps: ProjectStore, attempt: int, *, kind: str | None = None) -> list[dict]:
     """What draft noted in the attempt, in order: ``back_edge`` (``to``, ``reason``, ``section``) and ``refused`` (what
-    made a stored version's Writer output unusable besides its verification: ``section``, ``version``, ``problems``)."""
+    made a Writer task's output unusable besides its verification, noted before its version is stored: ``section``,
+    ``task``, ``problems``)."""
     rows = ps.db.execute("SELECT payload FROM events WHERE type='draft.noted' "
                          "AND json_extract(payload, '$.attempt')=? ORDER BY seq", (attempt,))
     notes = [json.loads(r["payload"]) for r in rows]
@@ -192,6 +200,10 @@ def _load(ps: ProjectStore) -> _Inputs | str:
     synth, argue = _passed(ps, "synthesize"), _passed(ps, "argue")
     if synth is None or argue is None:
         return "argue has not passed"
+    synth_themes = themes(ps, synth)
+    if intake.paper_type == "critical_review" and not synth_themes:
+        return (f"the critical review has no theme section: the narrative synthesis of synthesize's passed attempt "
+                f"{synth} gave no themes")
     design_attempt, design = None, None
     if intake.paper_type == PROPOSAL:
         design_attempt, design = _passed(ps, "design"), approved_design(ps)
@@ -202,7 +214,7 @@ def _load(ps: ProjectStore) -> _Inputs | str:
         paper_type=intake.paper_type, mode=intake.production_mode, audience=intake.audience,
         question=RQBody.model_validate(rq["body"]).three_step.sentence(), rq_id=rq["id"], synth_attempt=synth,
         argue_attempt=argue, design_attempt=design_attempt, search_attempt=_passed(ps, "search_screen"),
-        sections=required_sections(intake.paper_type, themes(ps, synth)), main=main,
+        sections=required_sections(intake.paper_type, synth_themes), main=main,
         argument=[c for c in argument_claims(ps, argue) if c != main], findings=synthesis_claims(ps, synth),
         artifact_ids=frozenset(a["id"] for a in artifacts(ps, "synthesize", synth)), protocol=frozen_protocol(ps),
         design=design)
@@ -287,26 +299,33 @@ class DraftWorker:
             why = f"the section {spec.id} needs what the approved design lacks: {d.missing_design.strip()}"
             _note(ps, ctx.attempt, "back_edge", actor=ctx.actor, to="design", reason=why, section=spec.id)
             return StageOutcome("back_edge", to="design", reason=why)
-        # outside a proposal there is no design to go back to: the output is unusable, and counts as a try
-        refused = ["missing_design is only for a research proposal"] if d.missing_design.strip() else []
+        # outside a proposal there is no design to go back to: the output is unusable, and counts as a try. The refusal
+        # is noted (by the Writer task) before the version is stored, so a crash between the two cannot lose it
+        if d.missing_design.strip():
+            _note(ps, ctx.attempt, "refused", actor=ctx.actor, section=spec.id, task=res.task_id,
+                  problems=["missing_design is only for a research proposal"])
         v = write_draft(ps, spec.id, d.markdown, stage=STAGE, attempt=ctx.attempt, round=0, by_task=res.task_id,
                         actor=ctx.actor)
-        if refused:
-            _note(ps, ctx.attempt, "refused", actor=ctx.actor, section=spec.id, version=v, problems=refused)
         self._verify(ctx, s, spec.id, v)
         return None
 
     @staticmethod
     def _verify(ctx: StageContext, s: _Inputs, section: str, version: int) -> None:
-        """Verify the version and record its verdict; a refusal noted for it (``refused``) makes it fail too, as a
-        section-level problem, so the try counts as failed however its sentences verify."""
-        verdict = verify_section(ctx.ps, section, draft_text(ctx.ps, section, version), paper_type=s.paper_type,
-                                 version=version)
-        refused = [p for n in draft_notes(ctx.ps, ctx.attempt, kind="refused")
-                   if (n["section"], n["version"]) == (section, version) for p in n["problems"]]
-        if refused:
-            verdict = verdict.model_copy(update={"ok": False, "problems": [*verdict.problems, *refused]})
-        record_section_verdict(ctx.ps, section, version, verdict, actor=ctx.actor)
+        """Verify the version and record its verdict: every sentence (``verify_section``) and V-BALANCE
+        (``check_balance``), whose problems are section-level ones; a refusal noted for the Writer task that wrote it
+        (``refused``) makes it fail too, as a section-level problem, so the try counts as failed however its sentences
+        verify."""
+        ps = ctx.ps
+        md = draft_text(ps, section, version)
+        verdict = verify_section(ps, section, md, paper_type=s.paper_type, version=version)
+        by_task = next(v["by_task"] for v in draft_versions(ps, section) if v["version"] == version)
+        problems = [*check_balance(ps, section, parse_section(md)),
+                    *(p for n in draft_notes(ps, ctx.attempt, kind="refused")
+                      if by_task is not None and (n["section"], n.get("task")) == (section, by_task)
+                      for p in n["problems"])]
+        if problems:
+            verdict = verdict.model_copy(update={"ok": False, "problems": [*verdict.problems, *problems]})
+        record_section_verdict(ps, section, version, verdict, actor=ctx.actor)
 
     @staticmethod
     def _disclosure(ps: ProjectStore) -> str:
@@ -412,9 +431,9 @@ class DraftWorker:
                 failures.append(f"{tag} was not verified")
             elif not last["verdict"]["ok"]:
                 failures += [f"{tag}: {f}" for f in _failures(md, last["verdict"])]
-        if s.paper_type == "critical_review" and not any(x.id.startswith("theme-") for x in s.sections):
-            failures.append(f"the critical review has no theme section: the narrative synthesis of synthesize's passed "
-                            f"attempt {s.synth_attempt} gave no themes")
+            # V-BALANCE now: an objection answered or a conflict decided since the version was verified counts too
+            recorded = set(last["verdict"]["problems"]) if last["verdict"] else set()
+            failures += [f"{tag}: {p}" for p in check_balance(ps, spec.id, parse_section(md)) if p not in recorded]
         failures += [f"section {sec}: [[{kind}:{t}]] is not an artifact of synthesize's passed attempt"
                      for sec, kind, t in cited if kind in ("fig", "stat") and t not in s.artifact_ids]
         claims = {t for _, kind, t in cited if kind == "clm"}
@@ -429,8 +448,9 @@ class DraftWorker:
         """P1 at an edge limit (spec §5.3 delete-or-narrow): delete from each section's latest version of the attempt
         every failing sentence and every sentence citing a ``fig``/``stat`` that is no artifact of synthesize's passed
         attempt, and store and verify what is left as a new version; disclosed (``stage.degraded``). When that would
-        leave a section empty, nothing is deleted and the run fails naming it. The engine gates again: an uncited main
-        claim or finding, or a section-level problem, still fails it."""
+        leave a section empty, nothing is deleted and the run fails naming it; when there is no such sentence (only
+        section-level failures, a one-sided section among them, or uncited claims), the run fails naming the failures.
+        The engine gates again: an uncited main claim or finding, or a section-level problem, still fails it."""
         ps = ctx.ps
         s = _load(ps)
         if isinstance(s, str):
@@ -464,6 +484,11 @@ class DraftWorker:
                 f"degrading draft at the edge limit (P1) would leave {', '.join(emptied)} empty: every sentence fails "
                 "or cites an artifact of another attempt, and a required section is never dropped; "
                 + ("; ".join(failures) or "no failures given")))
+        if not plans:
+            return StageOutcome("failed", reason=(
+                "degrading draft at the edge limit (P1) deletes nothing: no sentence fails or cites an artifact of "
+                "another attempt, and what fails the gate is no sentence to delete; "
+                + ("; ".join(failures) or "no failures given")))
         removed: list[str] = []
         for section, md, dropped in plans:
             for x in sorted(dropped, key=lambda x: x.span[0], reverse=True):
@@ -471,9 +496,8 @@ class DraftWorker:
                 removed.append(f"{section}: “{x.text.strip()}”")
             v = write_draft(ps, section, md, stage=STAGE, attempt=ctx.attempt, round=0, by_task=None, actor=ctx.actor)
             self._verify(ctx, s, section, v)
-        if removed:
-            record_degraded(ps, stage=STAGE, attempt=ctx.attempt, removed=removed,
-                            reason="failing sentences and sentences citing another attempt's artifact deleted at the "
-                                   "edge limit (P1): " + "; ".join(failures),
-                            actor=ctx.actor)
+        record_degraded(ps, stage=STAGE, attempt=ctx.attempt, removed=removed,
+                        reason="failing sentences and sentences citing another attempt's artifact deleted at the "
+                               "edge limit (P1): " + "; ".join(failures),
+                        actor=ctx.actor)
         return StageOutcome("done", reason=f"degraded: {len(removed)} sentences deleted")

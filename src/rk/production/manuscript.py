@@ -441,14 +441,18 @@ def drafted_sections(ps: ProjectStore) -> list[dict]:
 
 def draft_text(ps: ProjectStore, section: str, version: int) -> str:
     """The markdown of a stored version. ``KeyError`` when it was never stored; ``ValueError`` when its file is
-    missing or no longer has its recorded sha256."""
+    missing, cannot be read (an ``OSError``: permission denied, removed meanwhile) or no longer has its recorded
+    sha256."""
     r = ps.db.execute("SELECT path, sha256 FROM drafts WHERE section=? AND version=?", (section, version)).fetchone()
     if r is None:
         raise KeyError(f"{section} v{version}")
     path = ps.root / r["path"]
     if not path.is_file():
         raise ValueError(f"the draft file {r['path']} is missing")
-    data = path.read_bytes()
+    try:
+        data = path.read_bytes()
+    except OSError as e:
+        raise ValueError(f"the draft file {r['path']} cannot be read: {e}") from e
     if sha256_hex(data) != r["sha256"]:
         raise ValueError(f"the draft file {r['path']} no longer has its recorded sha256")
     return data.decode("utf-8")

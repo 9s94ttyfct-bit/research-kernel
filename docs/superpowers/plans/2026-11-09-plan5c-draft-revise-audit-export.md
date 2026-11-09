@@ -193,14 +193,13 @@ No new Python dependency. The CSL style is pandoc's built-in default (Chicago au
   - P1/P2: no checkpoint (only `stage_blocked` at the limit, as today).
   - As implemented (Task 2):
     - `default_workers` lives in `rk.orchestrator.engine`; `draft` is registered there.
-    - `SECTIONS["critical_review"]` lists the fixed sections; `required_sections(paper_type, themes)` inserts one `theme-<n>` section per distinct synthesis theme (`theme_or_outcome` of the narrative's groups) after `introduction`; a critical review without a theme fails the gate. Titles and purposes follow spec §7.3 (e.g. Methods with risk of bias; "Background & Significance", "Proposed Methods", "Expected Outcomes & Alternatives", "Gaps & Agenda").
-    - `SectionDraft{markdown, missing_support: list[str], missing_design: str}`; `missing_design` outside a proposal is refused (`refused` note): the version's verdict fails with it as a section problem, so the try is retried however its markdown verifies.
+    - `SECTIONS["critical_review"]` lists the fixed sections; `required_sections(paper_type, themes)` inserts one `theme-<n>` section per distinct synthesis theme (`theme_or_outcome` of the narrative's groups) after `introduction`; a critical review without a theme fails `_load` (so `run` fails before any Writer task, and the gate and degrade fail naming it). Titles and purposes follow spec §7.3 (e.g. Methods with risk of bias; "Background & Significance", "Proposed Methods", "Expected Outcomes & Alternatives", "Gaps & Agenda").
+    - `SectionDraft{markdown, missing_support: list[str], missing_design: str}`; `missing_design` outside a proposal is refused (`refused` note, keyed by section and Writer task, recorded before the version is stored): the version written by that task fails with it as a section problem, so the try is retried however its markdown verifies.
     - Writer inputs: artifacts carry only `cover.reported_values(values)` (the one definition V-NUM pools: display values, k, map-table counts); evidence notes carry `verified` (a verified quote note, the only kind V-QUOTE accepts).
     - PRISMA counts: the kernel event `draft.prisma` (once per attempt, `prisma_event`) carries eleven count fields of search_screen's passed attempt (the ten boxes and `excluded_ft_total`; the per-reason counts come with the flow figure), which `cover.EVENT_NUMBERS` pools, plus `search_attempt` and `protocol_id` (never pooled) so the audit can recompute the counts and refuse a stale event.
-    - Retries: at most 1 + `draft_section_retries` Writer tasks per section per attempt; the retry input carries `previous_draft` and `failures` (`sentence N “text”: problems`). The gate reads every section's latest text (a missing or altered file fails as `section X vN: <error>`) and names each failing sentence the same way.
+    - Retries: at most 1 + `draft_section_retries` Writer tasks per section per attempt; the retry input carries `previous_draft` and `failures` (`sentence N “text”: problems`). The gate reads every section's latest text (a missing, unreadable or altered file fails as `section X vN: <error>`; `draft_text` maps an `OSError` to `ValueError`) and names each failing sentence the same way.
     - The disclosure stub: one sentence per stage passed so far, citing its latest `stage.passed` event.
-    - V-BALANCE is not wired into the gate yet: Task 3 adds `check_balance` and wires it into `DraftWorker.gate`.
-    - P1 `degrade` deletes the failing sentences and the sentences citing a `fig`/`stat` of another attempt and stores the rest as a new version (`stage.degraded`); a section it would empty fails the run, named, with nothing deleted; the engine gates again.
+    - P1 `degrade` deletes the failing sentences and the sentences citing a `fig`/`stat` of another attempt and stores the rest as a new version (`stage.degraded`); a section it would empty fails the run, named, with nothing deleted; when there is nothing to delete (only section-level failures or uncited claims) it fails naming the failures; otherwise the engine gates again.
 
 - [ ] **Step 1: Failing tests:**
   - `test_draft_writes_every_required_section_per_paper_type` (four paper types, scripted Writer);
@@ -228,6 +227,11 @@ No new Python dependency. The CSL style is pandoc's built-in default (Chicago au
   - the section must contain a sentence citing the counterpart claim (for a conflict) or the objection's response claim;
   - that sentence must come in the same section, after the first citation of the contested claim.
 - The problem names the claim and the missing counterpart or response.
+- As implemented (Task 3):
+  - `check_balance` reads argue's passed attempt: the conflicts are `conflict_counterparts` over its objections (`argument_objection_ids`), the objections those of `argument_objection_ids` on the cited claim or its evidence that are `responded` (a conflict objection included). A withdrawn counterpart or response is not asked for (G-SUPPORT fails citing it); an objection without a response claim (conceded, rejected as invalid) leaves nothing to cite, sourced or not. A contested claim with no recorded conflict is one-sided by itself.
+  - "After the first citation" counts the same sentence. For the two claims of one `both_contested` conflict (each contested by the other) either order gives both sides: the counterpart may come first when the claim's own citation follows it.
+  - Problems read `section S is one-sided: C is contested by X, and the section does not cite that counterpart [[clm:X]] after its first citation of C` / `… the objection O to it (to its evidence E) was answered by R, and the section does not cite that response [[clm:R]] …`.
+  - `DraftWorker._verify` adds them to the section verdict as section-level problems (so a one-sided version is retried in the attempt with them in `failures`); the gate reruns `check_balance` on every section's latest version (an objection answered since verification counts) and names new problems as `section X vN: <problem>`.
 
 - [ ] **Step 1: Failing tests:**
   - `test_contested_claim_without_counterpart_is_one_sided`;

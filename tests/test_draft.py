@@ -13,7 +13,7 @@ from rk.config import load_settings, save_settings
 from rk.orchestrator.engine import default_workers
 from rk.orchestrator.graph import BACK_EDGES
 from rk.orchestrator.state import record_attempt, record_passed, record_ran
-from rk.production.argue import main_claim
+from rk.production.argue import argument_claims, main_claim
 from rk.production.artifacts import ArtifactIn, add_artifact
 from rk.production.design import DesignWorker, approved_design
 from rk.production.draft import (
@@ -35,6 +35,7 @@ from rk.production.synthesis import synthesis_claims
 from rk.roles.prompts import build_system_prompt
 from rk.verify.cover import EVENT_NUMBERS, verify_sentence
 from tests.production_fakes import make_frozen_project, production_ctx
+from tests.test_balance import contest, object_to
 from tests.test_design import _argued, plan
 from tests.test_design import _exec as _design_exec
 from tests.test_synthesis import CapOnce, Exec
@@ -456,6 +457,105 @@ def test_section_titles_follow_the_spec_and_a_critical_review_needs_themes(env):
     ps.apply(NewEvent(type="synthesis.noted", entity_id=None, actor_kind="kernel", actor="tester",
                       payload={"attempt": 1, "kind": "narrative", "output": {"groups": [], "findings": []}}))
     w = DraftWorker()
-    assert w.run(_ctx(env, _writer([writes()] * 3))).status == "done"
+    ex = _writer([])
+    out = w.run(_ctx(env, ex))  # fails fast: no Writer task for a review that cannot pass
+    assert out.status == "failed" and "no theme section" in out.reason and not ex.calls
     res = w.gate(ps, 1)
     assert any("no theme section" in f and "themes" in f for f in res.failures), res.failures
+    assert w.degrade(_ctx(env, ex), res.failures).status == "failed"
+
+
+def test_one_sided_section_is_redrafted_and_fails_the_gate(env):
+    _, ps, _ = env
+    _ready(env)
+    main = main_claim(ps, 1)
+    (reason,) = [c for c in argument_claims(ps, 1) if c != main]
+    finding = synthesis_claims(ps, 1)[0]
+    contest(ps, main, finding, reason)  # the main claim and the finding contest each other; the reason answers it
+
+    def balanced(inputs):
+        r = next(c for c in inputs["claims"] if c["claim_id"] == reason)
+        return writes(extra=_sentence(r))(inputs)
+
+    # introduction: one-sided (no response cited) on every try; theme-1: balanced on its retry
+    ex = _writer([writes()] * 3 + [writes(), balanced, balanced, balanced])
+    w = DraftWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    assert _writer_sections(ex) == ["introduction"] * 3 + ["theme-1"] * 2 + ["gaps-agenda", "conclusion"]
+    failures = ex.of("writer", "SectionDraft")[1]["inputs"]["retry"]["failures"]
+    assert any("one-sided" in f and main in f and reason in f for f in failures), failures
+    res = w.gate(ps, 1)
+    (named,) = [f for f in res.failures if f.startswith("section introduction")]
+    assert "v3" in named and "one-sided" in named and main in named and reason in named
+    assert not any("theme-1" in f for f in res.failures), res.failures
+    # a verified section the gate finds one-sided now: an objection to the finding answered by the main claim, which
+    # every section cites before the finding
+    object_to(ps, finding, response=main)
+    res2 = w.gate(ps, 1)
+    assert any(f.startswith("section theme-1 v2: ") and "one-sided" in f and finding in f and main in f
+               for f in res2.failures), res2.failures
+
+
+def test_degrade_that_deletes_nothing_fails_naming_the_failures(env):
+    _, ps, _ = env
+    _ready(env)
+    w = DraftWorker()
+    assert w.run(_ctx(env, _writer([writes(only_main=True)] * 4))).status == "done"
+    failures = w.gate(ps, 1).failures
+    assert failures and all("cited in no section" in f for f in failures)
+    versions = {x: len(draft_versions(ps, x)) for x in _ids(ps)}
+    out = w.degrade(_ctx(env, _writer([])), failures)
+    assert out.status == "failed" and "nothing" in out.reason
+    assert all(f in out.reason for f in failures)
+    assert {x: len(draft_versions(ps, x)) for x in _ids(ps)} == versions
+    assert not ps.db.execute("SELECT 1 FROM events WHERE type='stage.degraded'").fetchall()
+
+
+def test_missing_design_refusal_survives_a_crash_after_its_version(env, monkeypatch):
+    import rk.production.draft as draft_mod
+
+    _, ps, _ = env
+    _ready(env)
+    real = draft_mod.write_draft
+
+    def crash(*a, **kw):
+        real(*a, **kw)
+        raise RuntimeError("crash after the version was stored")
+
+    def verifying_with_missing_design(inputs):
+        return {**writes()(inputs), "missing_design": "a design"}
+
+    ex = _writer([verifying_with_missing_design] + [writes()] * 4)
+    monkeypatch.setattr(draft_mod, "write_draft", crash)
+    with pytest.raises(RuntimeError):
+        DraftWorker().run(_ctx(env, ex))
+    monkeypatch.setattr(draft_mod, "write_draft", real)
+    (v,) = draft_versions(ps, "introduction")
+    assert v["verdict"] is None
+    assert DraftWorker().run(_ctx(env, ex)).status == "done"
+    first, second = draft_versions(ps, "introduction")
+    assert (first["verdict"]["ok"], second["verdict"]["ok"]) == (False, True)
+    assert "missing_design is only for a research proposal" in first["verdict"]["problems"]
+    assert "missing_design is only for a research proposal" in ex.of("writer", "SectionDraft")[1]["inputs"]["retry"][
+        "failures"]
+
+
+def test_gate_and_degrade_name_an_unreadable_draft_file(env, monkeypatch):
+    from pathlib import Path
+
+    _, ps, _ = env
+    _ready(env)
+    w = DraftWorker()
+    assert w.run(_ctx(env, _writer([writes()] * 4))).status == "done"
+    real = Path.read_bytes
+
+    def read_bytes(self):
+        if self.name == "conclusion.v1.md":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    res = w.gate(ps, 1)
+    assert any(f.startswith("section conclusion v1: ") and "cannot be read" in f for f in res.failures), res.failures
+    out = w.degrade(_ctx(env, _writer([])), res.failures)
+    assert out.status == "failed" and "conclusion v1" in out.reason and "cannot be read" in out.reason
