@@ -23,8 +23,9 @@ or non-ASCII letter, a quote or a bracket alike), except after an abbreviation (
 ``vs.``, ``Fig.``, ``Eq.``, …) or an initial: a capital letter standing alone before a capitalised name that is no
 common sentence opener, and not after a lowercase word other than one that leads a name (``by J. Smith``, but not
 ``vitamin D. The``, ``group A. Next`` or ``Figure 2A. Then``). ``et al.`` ends a sentence only before a capitalised
-word (``Smith et al. Melatonin …``; not ``et al. found``, ``et al. (2020)`` or the author-year ``et al. 2020``, which
-is far commoner than a sentence starting with a numeral). Decimals never split.
+word, after any markers it carries (``Smith et al. Melatonin …``, ``Smith et al. [[clm:…]] Melatonin …``; not ``et
+al. found``, ``et al. (2020)`` or the author-year ``et al. 2020``, which is far commoner than a sentence starting with
+a numeral). Decimals never split.
 
 Drafts (``draft.written``, ``draft.verified``; projection ``drafts``): version ``N`` of section ``S`` is the file
 ``artifacts/drafts/S.vN.md`` with its sha256; the file is synced and put in place before the event, and a file that no
@@ -315,7 +316,8 @@ def _abbreviation_before(text: str, end: int) -> bool:
         return False
     w = word.group(1)
     if w.lower() == "al":  # et al.: inside the sentence unless a capitalised sentence start follows (a year is a citation)
-        return re.match(r"\s+[\"“‘«„]?[A-Z]", text[end + 1:]) is None
+        # its markers belong to it (``_END`` took them): the capital is looked for after them
+        return re.match(r"(?:\s*\[\[[^\[\]\n]*\]\])*\s+[\"“‘«„]?[A-Z]", text[end + 1:]) is None
     if w.lower() in _ABBREVIATIONS:
         return True
     if len(w) != 1 or not w.isupper():

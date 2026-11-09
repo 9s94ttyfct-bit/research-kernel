@@ -106,6 +106,16 @@ def test_et_al_ends_a_sentence_before_a_capitalised_start():
         assert len(parse_section(text)) == 1, text
 
 
+def test_et_al_with_its_marker_ends_a_sentence_before_a_capitalised_start():
+    """Draft round 1 (review B): markers after ``et al.`` belong to that sentence, and a capital after them still
+    starts a new one."""
+    out = parse_section("This was shown by Smith et al. [[clm:clm_A]] Melatonin cures delirium [[clm:clm_B]].")
+    assert [s.text for s in out] == ["This was shown by Smith et al. [[clm:clm_A]]",
+                                     "Melatonin cures delirium [[clm:clm_B]]."]
+    assert [[m.target for m in s.markers] for s in out] == [["clm_A"], ["clm_B"]]
+    assert len(parse_section("Smith et al. [[clm:clm_A]] found it too [[clm:clm_B]].")) == 1
+
+
 # ---- fix round 1: tables and captions, markers in the source ----
 def test_tables_and_table_captions_are_section_problems_not_sentences():
     md = "Delirium fell [[clm:clm_A]].\n\nTable: Results 42.\n\n: Other caption 7.\n"

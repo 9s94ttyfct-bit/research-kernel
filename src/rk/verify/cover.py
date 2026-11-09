@@ -73,9 +73,10 @@ EVENT_NUMBERS: dict[str, tuple[str, ...]] = {
     # rk.orchestrator.state.record_edge_taken: how often a back-edge was taken
     "edge.taken": ("count",),
     # rk.production.draft.prisma_event: the PRISMA counts of search_screen's passed attempt (never the attempt or the
-    # protocol id it records, which the audit recomputes the counts from)
+    # protocol id it records, which the audit recomputes the counts from); the full-text exclusions per reason come
+    # with the flow figure, the event has their total
     "draft.prisma": ("identified", "duplicates_removed", "screened", "excluded_ta", "sought", "not_retrieved",
-                     "assessed_ft", "included", "excluded_language", "abstract_only"),
+                     "assessed_ft", "excluded_ft_total", "included", "excluded_language", "abstract_only"),
 }
 
 
@@ -186,22 +187,40 @@ def _number(v) -> list[float]:
     return [float(v)] if isinstance(v, int | float) and not isinstance(v, bool) else []
 
 
-def _reported_values(values: dict) -> list[float]:
-    """An artifact's reported values: a pooled statistic's ``display`` values and its ``k``; a map table's study count
-    and its category (and cross-tabulation) counts. Nothing else it stores (study rows, the pooled model's log-scale
-    internals, options, row ids, the extraction attempt)."""
-    out: list[float] = []
+def _numbers(d: dict) -> dict:
+    """The numeric entries of ``d`` (booleans excluded)."""
+    return {k: v for k, v in d.items() if _number(v)}
+
+
+def reported_values(values: dict) -> dict:
+    """An artifact's reported values, the one definition of what a manuscript may state from it (V-NUM pools exactly
+    these, and the Writer is shown exactly these): a pooled statistic's numeric ``display`` values and its ``k`` (and
+    the pooled ``k``); a map table's study count ``n``, its category counts per field and its cross-tabulation counts
+    (with the names of the two fields). Nothing else it stores (study rows, the pooled model's log-scale internals,
+    options, row ids, the extraction attempt)."""
+    out: dict = {}
     display = values.get("display")
-    if isinstance(display, dict):
-        out += [x for v in display.values() for x in _number(v)]
+    if isinstance(display, dict) and (d := _numbers(display)):
+        out["display"] = d
+    if _number(values.get("k")):
+        out["k"] = values["k"]
     pooled = values.get("pooled")
-    out += _number(values.get("k")) + (_number(pooled.get("k")) if isinstance(pooled, dict) else [])
+    if isinstance(pooled, dict) and _number(pooled.get("k")):
+        out["pooled"] = {"k": pooled["k"]}
     table = values.get("table")
     if isinstance(table, dict):
-        out += _number(table.get("n"))
-        out += [x for counts in (table.get("fields") or {}).values() for v in counts.values() for x in _number(v)]
-        cross = table.get("cross") or {}
-        out += [x for counts in (cross.get("counts") or {}).values() for v in counts.values() for x in _number(v)]
+        t: dict = {}
+        if _number(table.get("n")):
+            t["n"] = table["n"]
+        if fields := {f: _numbers(c) for f, c in (table.get("fields") or {}).items() if isinstance(c, dict)}:
+            t["fields"] = fields
+        cross = table.get("cross")
+        if isinstance(cross, dict):
+            counts = {a: _numbers(c) for a, c in (cross.get("counts") or {}).items() if isinstance(c, dict)}
+            t["cross"] = {**{k: cross[k] for k in ("rows", "cols") if isinstance(cross.get(k), str)},
+                          "counts": counts}
+        if t:
+            out["table"] = t
     return out
 
 
@@ -223,7 +242,7 @@ def number_pool(ps: ProjectStore, markers: list[Marker]) -> NumberPool:
             texts = [c["text"]] + [n["text"] for e in c["evidence"] for n in e["notes"] if n]
             pool.nums += [n for t in texts for n in extract_numbers(t)]
         elif m.kind in ("stat", "fig") and (a := artifact(ps, m.target)) is not None:
-            pool.values += _reported_values(a["values"])
+            pool.values += numeric_leaves(reported_values(a["values"]))
         elif m.kind == "run" and m.target.startswith("prt_") and (p := protocol_row(ps, m.target)) is not None:
             pool.values += numeric_leaves(p["body"])
         elif m.kind == "run" and (ev := _event(ps, m.target)) is not None:

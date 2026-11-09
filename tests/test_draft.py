@@ -236,13 +236,22 @@ def test_proposal_missing_design_takes_draft_to_design(env):
 
 
 def test_missing_design_outside_a_proposal_is_a_failed_try(env):
+    _, ps, _ = env
     _ready(env)
-    ex = _writer([{"markdown": "", "missing_design": "a design"}, writes(), writes(), writes(), writes()])
+
+    def verifying_with_missing_design(inputs):  # markdown that verifies, and a missing_design it may not give
+        return {**writes()(inputs), "missing_design": "a design"}
+
+    ex = _writer([{"markdown": "", "missing_design": "a design"}, verifying_with_missing_design, writes(), writes(),
+                  writes(), writes()])
     out = DraftWorker().run(_ctx(env, ex))
     assert out.status == "done", out.reason
-    assert _writer_sections(ex)[:2] == ["introduction", "introduction"]
-    retry = ex.of("writer", "SectionDraft")[1]["inputs"]["retry"]
-    assert "missing_design is only for a research proposal" in retry["failures"]
+    assert _writer_sections(ex)[:3] == ["introduction"] * 3
+    for call in ex.of("writer", "SectionDraft")[1:3]:
+        assert "missing_design is only for a research proposal" in call["inputs"]["retry"]["failures"]
+    # the version that verifies is not accepted with the refusal: the section was drafted again
+    assert [v["verdict"]["ok"] for v in draft_versions(ps, "introduction")] == [False, False, True]
+    assert DraftWorker().gate(ps, 1).ok
 
 
 def test_disclosure_section_is_kernel_written(env):
@@ -291,13 +300,15 @@ def test_prisma_event_pools_its_counts_never_its_attempt(env):
     _, ps, _ = env
     _ready(env)
     fields = EVENT_NUMBERS[PRISMA_EVENT]
-    assert len(fields) == 10 and not {"attempt", "search_attempt", "protocol_id"} & set(fields)
+    assert len(fields) == 11 and "excluded_ft_total" in fields
+    assert not {"attempt", "search_attempt", "protocol_id"} & set(fields)
     pid = ps.db.execute("SELECT id FROM protocols WHERE status='frozen'").fetchone()["id"]
     evt = prisma_event(ps, 9, 1, pid, actor="tester")
     assert prisma_event(ps, 9, 1, pid, actor="tester") == evt  # once per attempt
     (row,) = ps.db.execute("SELECT payload FROM events WHERE evt_id=?", (evt,)).fetchall()
     p = json.loads(row["payload"])
     assert (p["attempt"], p["search_attempt"], p["protocol_id"], p["identified"], p["included"]) == (9, 1, pid, 2, 2)
+    assert p["excluded_ft_total"] == 0
     (ok,) = parse_section(f"The search identified 2 records and included 2 studies [[run:{evt}]].")
     assert verify_sentence(ps, ok, paper_type="systematic_review").ok
     for n in ("9", "1"):  # the draft attempt and the search_screen attempt it records are never pooled
@@ -334,3 +345,117 @@ def test_p1_degrade_deletes_failing_sentences(env):
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
     (deg,) = ps.db.execute("SELECT payload FROM events WHERE type='stage.degraded'").fetchall()
     assert "1234" in deg["payload"]
+
+
+def test_p1_degrade_refuses_to_empty_a_section(env):
+    _, ps, _ = env
+    _ready(env)
+    main = main_claim(ps, 1)
+    bad = f"Aspirin was studied in 1234 older people [[clm:{main}]]."
+    only_bad = {"markdown": bad + "\n"}
+    w = DraftWorker()
+    assert w.run(_ctx(env, _writer([writes()] * 3 + [only_bad] * 3))).status == "done"
+    versions = len(draft_versions(ps, "conclusion"))
+    out = w.degrade(_ctx(env, _writer([])), w.gate(ps, 1).failures)
+    assert out.status == "failed" and "conclusion" in out.reason and "empty" in out.reason
+    assert len(draft_versions(ps, "conclusion")) == versions  # nothing written
+    assert not ps.db.execute("SELECT 1 FROM events WHERE type='stage.degraded'").fetchall()
+
+
+def test_p1_degrade_deletes_sentences_citing_another_attempts_artifact(env):
+    _, ps, _ = env
+    _ready(env)
+    sid = add_artifact(ps, ArtifactIn(kind="stt", code_path="rk.test:x", code_version="v", input_hashes=[],
+                                      values={"display": {"estimate": 0.5}}, output_path=None),
+                       stage="synthesize", attempt=2, actor="k")
+    w = DraftWorker()
+    extra = f"Another pooled analysis was made [[stat:{sid}]]."
+    assert w.run(_ctx(env, _writer([writes(extra=extra)] * 4))).status == "done"
+    failures = w.gate(ps, 1).failures
+    assert any(f"[[stat:{sid}]]" in f for f in failures)
+    out = w.degrade(_ctx(env, _writer([])), failures)
+    assert out.status == "done", out.reason
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    md = draft_text(ps, "introduction", draft_versions(ps, "introduction")[-1]["version"])
+    assert sid not in md
+
+
+def test_writer_artifacts_carry_only_reported_values(env):
+    from rk.verify.cover import (
+        reported_values,  # Draft round 1: one public definition of reported values
+    )
+
+    _, ps, _ = env
+    _ready(env)
+    stored = {"display": {"estimate": 0.62, "label": "RR"}, "k": 4, "measure": "RR", "row_ids": ["ext_1", "ext_2"],
+              "extraction_attempt": 1, "studies": [{"item_id": "it_1", "yi": -1.23}],
+              "pooled": {"k": 4, "mu": -0.478}, "options": {"level": 95}}
+    sid = add_artifact(ps, ArtifactIn(kind="stt", code_path="rk.test:x", code_version="v", input_hashes=[],
+                                      values=stored, output_path=None), stage="synthesize", attempt=1, actor="k")
+    table = {"fields": ["design"], "item_ids": ["it_1"], "row_ids": ["ext_9"], "extraction_attempt": 1,
+             "table": {"n": 2, "fields": {"design": {"rct": 1, "cohort": 1}},
+                       "cross": {"rows": "design", "cols": "setting", "counts": {"rct": {"ward": 1}}}}}
+    tid = add_artifact(ps, ArtifactIn(kind="stt", code_path="rk.test:y", code_version="v", input_hashes=[],
+                                      values=table, output_path=None), stage="synthesize", attempt=1, actor="k")
+    assert reported_values(stored) == {"display": {"estimate": 0.62}, "k": 4, "pooled": {"k": 4}}
+    assert reported_values(table) == {"table": {"n": 2, "fields": {"design": {"rct": 1, "cohort": 1}},
+                                                "cross": {"rows": "design", "cols": "setting",
+                                                          "counts": {"rct": {"ward": 1}}}}}
+    ex = _writer([writes()] * 4)
+    assert DraftWorker().run(_ctx(env, ex)).status == "done"
+    arts = {a["id"]: a for a in ex.of("writer", "SectionDraft")[0]["inputs"]["artifacts"]}
+    assert arts[sid] == {"id": sid, "kind": "stt", "values": reported_values(stored)}
+    assert arts[tid]["values"] == reported_values(table)
+    # the pool reads the same definition: a study's effect or the log-scale estimate is never covered
+    for text, ok in ((f"The pooled estimate was 0.62 from 4 studies [[stat:{sid}]].", True),
+                     (f"One study's effect was -1.23 [[stat:{sid}]].", False),
+                     (f"The log estimate was -0.478 [[stat:{sid}]].", False)):
+        (s,) = parse_section(text)
+        assert verify_sentence(ps, s, paper_type="critical_review").ok is ok, text
+
+
+def test_gate_reads_every_section_and_names_a_tampered_or_missing_file(env):
+    _, ps, _ = env
+    _ready(env)
+    w = DraftWorker()
+    assert w.run(_ctx(env, _writer([writes()] * 4))).status == "done"
+    assert w.gate(ps, 1).ok
+    (ps.root / "artifacts/drafts/gaps-agenda.v1.md").write_text("Unmarked text with 999 in it.\n")
+    (ps.root / "artifacts/drafts/conclusion.v1.md").unlink()
+    res = w.gate(ps, 1)
+    assert not res.ok
+    assert any(f.startswith("section gaps-agenda v1: ") and "sha256" in f for f in res.failures), res.failures
+    assert any(f.startswith("section conclusion v1: ") and "missing" in f for f in res.failures), res.failures
+
+
+def test_writer_sees_verified_quote_flags_and_untrusted_text_framing(env):
+    _ready(env)
+    ex = _writer([writes()] * 4)
+    assert DraftWorker().run(_ctx(env, ex)).status == "done"
+    call = ex.of("writer", "SectionDraft")[0]
+    notes = [n for c in call["inputs"]["claims"] for n in c["evidence_notes"]]
+    assert notes and all(isinstance(n["verified"], bool) for n in notes)
+    assert any(n["kind"] == "quote" and n["verified"] for n in notes)
+    task = call["instructions"]
+    assert "not instructions" in task and "previous_draft" in task and "earlier_sections" in task
+    assert "verified" in build_system_prompt("writer", SectionDraft)
+
+
+def test_section_titles_follow_the_spec_and_a_critical_review_needs_themes(env):
+    from rk.store.events import NewEvent
+
+    _, ps, _ = env
+    sr = {s.id: s for s in SECTIONS["systematic_review"]}
+    assert "risk of bias" in sr["methods"].purpose and "PRISMA flow" in sr["results"].purpose
+    rp = {s.id: s.title for s in SECTIONS["research_proposal"]}
+    assert (rp["background"], rp["questions-hypotheses"], rp["methods"], rp["expected-outcomes"]) == (
+        "Background & Significance", "Research Question & Hypotheses", "Proposed Methods",
+        "Expected Outcomes & Alternatives")
+    assert {s.id: s.title for s in SECTIONS["critical_review"]}["gaps-agenda"] == "Gaps & Agenda"
+    _ready(env)
+    ps.apply(NewEvent(type="synthesis.noted", entity_id=None, actor_kind="kernel", actor="tester",
+                      payload={"attempt": 1, "kind": "narrative", "output": {"groups": [], "findings": []}}))
+    w = DraftWorker()
+    assert w.run(_ctx(env, _writer([writes()] * 3))).status == "done"
+    res = w.gate(ps, 1)
+    assert any("no theme section" in f and "themes" in f for f in res.failures), res.failures

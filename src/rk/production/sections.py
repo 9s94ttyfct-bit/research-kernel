@@ -2,8 +2,9 @@
 
 ``SECTIONS`` lists each paper type's sections in order. A critical review has one ``theme-<n>`` section per theme of
 its synthesis besides the listed ones: ``required_sections`` puts them after ``introduction``, numbered from 1 in the
-synthesis's order (a theme named twice, case and whitespace aside, is one section). ``disclosure`` is written by the
-kernel (``kernel_written``), never by the Writer."""
+synthesis's order (a theme named twice, case and whitespace aside, is one section); one without any theme fails the
+draft gate. Titles and purposes follow spec §7.3. ``disclosure`` is written by the kernel (``kernel_written``), never
+by the Writer."""
 
 from __future__ import annotations
 
@@ -30,8 +31,9 @@ def _review(results_title: str, results_purpose: str) -> list[SectionSpec]:
         SectionSpec(id="introduction", title="Introduction",
                     purpose="Why the question matters to the audience and what the review sets out to answer."),
         SectionSpec(id="methods", title="Methods",
-                    purpose="The frozen protocol: eligibility, sources and search, screening, extraction and synthesis, "
-                            "with the search and screening counts."),
+                    purpose="The frozen protocol: sources and search, eligibility, screening, extraction, risk of bias "
+                            "(how each study's evidence was assessed) and the synthesis method, with the search and "
+                            "screening counts."),
         SectionSpec(id="results", title=results_title, purpose=results_purpose),
         SectionSpec(id="discussion", title="Discussion",
                     purpose="What the findings and the argument mean for the question, with the contested points and "
@@ -47,32 +49,35 @@ def _review(results_title: str, results_purpose: str) -> list[SectionSpec]:
 
 SECTIONS: dict[str, list[SectionSpec]] = {
     "systematic_review": _review(
-        "Results", "The studies included (the PRISMA flow), their characteristics and the synthesis findings, with the "
-                   "pooled statistics and figures where there are any."),
+        "Results", "The PRISMA flow of the studies (the flow figure and its counts), the characteristics of the "
+                   "included studies and the synthesis results, with the pooled statistics and figures where there are "
+                   "any."),
     "scoping_review": _review(
         "Evidence map and thematic synthesis",
-        "The studies included (the PRISMA flow), the evidence map and the themes of the synthesis."),
+        "The PRISMA flow of the studies (the flow figure and its counts), the evidence map and the themes of the "
+        "synthesis."),
     "critical_review": [
         SectionSpec(id="introduction", title="Introduction",
-                    purpose="Why the question matters to the audience, how the literature was selected and the "
-                            "argument the review makes."),
-        SectionSpec(id="gaps-agenda", title="Gaps and research agenda",
-                    purpose="What the reviewed literature leaves open and what research would close it."),
+                    purpose="Context, then the problem, then the review's response: why the question matters to the "
+                            "audience, how the literature was selected and the argument the review makes."),
+        SectionSpec(id="gaps-agenda", title="Gaps & Agenda",
+                    purpose="What the reviewed literature leaves open and the research agenda that would close it."),
         SectionSpec(id="conclusion", title="Conclusion",
                     purpose="The main claim, stated no more strongly than its support, and its limitations."),
         _DISCLOSURE,
     ],
     "research_proposal": [
-        SectionSpec(id="background", title="Background",
-                    purpose="What is known, from the synthesis findings and the argument."),
+        SectionSpec(id="background", title="Background & Significance",
+                    purpose="What is known, from the synthesis findings and the argument, and why the question "
+                            "matters to the audience."),
         SectionSpec(id="gap", title="Gap", purpose="What the literature leaves open and why it matters."),
-        SectionSpec(id="questions-hypotheses", title="Research questions and hypotheses",
-                    purpose="The research question and the hypotheses the design tests, each with what would count "
-                            "against it."),
-        SectionSpec(id="methods", title="Methods",
-                    purpose="The frozen design: its items, samples, controls, measurements and analyses, and its "
-                            "feasibility."),
-        SectionSpec(id="expected-outcomes", title="Expected outcomes",
+        SectionSpec(id="questions-hypotheses", title="Research Question & Hypotheses",
+                    purpose="The research question and the hypotheses the design tests, each with its falsification "
+                            "condition: the result that would count against it."),
+        SectionSpec(id="methods", title="Proposed Methods",
+                    purpose="The planned work, from the frozen design (cited with [[plan:]] markers): its items, "
+                            "samples, controls, measurements and analyses, and its feasibility. No results exist."),
+        SectionSpec(id="expected-outcomes", title="Expected Outcomes & Alternatives",
                     purpose="The results the design expects and the alternative explanations of them."),
         SectionSpec(id="risks", title="Risks",
                     purpose="What could keep the design from answering the question: the limitations input, dropped "

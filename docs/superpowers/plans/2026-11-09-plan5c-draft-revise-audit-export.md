@@ -193,13 +193,14 @@ No new Python dependency. The CSL style is pandoc's built-in default (Chicago au
   - P1/P2: no checkpoint (only `stage_blocked` at the limit, as today).
   - As implemented (Task 2):
     - `default_workers` lives in `rk.orchestrator.engine`; `draft` is registered there.
-    - `SECTIONS["critical_review"]` lists the fixed sections; `required_sections(paper_type, themes)` inserts one `theme-<n>` section per distinct synthesis theme (`theme_or_outcome` of the narrative's groups) after `introduction`.
-    - `SectionDraft{markdown, missing_support: list[str], missing_design: str}`; `missing_design` outside a proposal counts as a failed try (`refused` note).
-    - PRISMA counts: the kernel event `draft.prisma` (once per attempt, `prisma_event`) carries the ten count fields of search_screen's passed attempt, which `cover.EVENT_NUMBERS` pools, plus `search_attempt` and `protocol_id` (never pooled) so the audit can recompute the counts and refuse a stale event.
-    - Retries: at most 1 + `draft_section_retries` Writer tasks per section per attempt; the retry input carries `previous_draft` and `failures` (`sentence N “text”: problems`). The gate names each failing sentence the same way.
+    - `SECTIONS["critical_review"]` lists the fixed sections; `required_sections(paper_type, themes)` inserts one `theme-<n>` section per distinct synthesis theme (`theme_or_outcome` of the narrative's groups) after `introduction`; a critical review without a theme fails the gate. Titles and purposes follow spec §7.3 (e.g. Methods with risk of bias; "Background & Significance", "Proposed Methods", "Expected Outcomes & Alternatives", "Gaps & Agenda").
+    - `SectionDraft{markdown, missing_support: list[str], missing_design: str}`; `missing_design` outside a proposal is refused (`refused` note): the version's verdict fails with it as a section problem, so the try is retried however its markdown verifies.
+    - Writer inputs: artifacts carry only `cover.reported_values(values)` (the one definition V-NUM pools: display values, k, map-table counts); evidence notes carry `verified` (a verified quote note, the only kind V-QUOTE accepts).
+    - PRISMA counts: the kernel event `draft.prisma` (once per attempt, `prisma_event`) carries eleven count fields of search_screen's passed attempt (the ten boxes and `excluded_ft_total`; the per-reason counts come with the flow figure), which `cover.EVENT_NUMBERS` pools, plus `search_attempt` and `protocol_id` (never pooled) so the audit can recompute the counts and refuse a stale event.
+    - Retries: at most 1 + `draft_section_retries` Writer tasks per section per attempt; the retry input carries `previous_draft` and `failures` (`sentence N “text”: problems`). The gate reads every section's latest text (a missing or altered file fails as `section X vN: <error>`) and names each failing sentence the same way.
     - The disclosure stub: one sentence per stage passed so far, citing its latest `stage.passed` event.
     - V-BALANCE is not wired into the gate yet: Task 3 adds `check_balance` and wires it into `DraftWorker.gate`.
-    - P1 `degrade` deletes the failing sentences of each section and stores the rest as a new version (`stage.degraded`); the engine gates again.
+    - P1 `degrade` deletes the failing sentences and the sentences citing a `fig`/`stat` of another attempt and stores the rest as a new version (`stage.degraded`); a section it would empty fails the run, named, with nothing deleted; the engine gates again.
 
 - [ ] **Step 1: Failing tests:**
   - `test_draft_writes_every_required_section_per_paper_type` (four paper types, scripted Writer);
