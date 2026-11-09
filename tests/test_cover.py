@@ -93,6 +93,9 @@ def test_a_bare_id_in_brackets_is_named_with_the_marker_form(env):
     assert any("[[source 3]] is not a source marker" in p and "[[<kind>:<id>]]" in p
                for p in _one(ps, "Copper catalysts were studied [[source 3]].").problems)
     assert _one(ps, f"Copper catalysts may reduce CO2 [[clm:{cid}]].").ok  # a valid marker alone passes
+    # bracket text the reader is meant to see literally (escaped, or in a code span) is no malformed marker
+    assert _one(ps, f"Copper catalysts, written \\[[clm_X]] here, may reduce CO2 [[clm:{cid}]].").ok
+    assert _one(ps, f"Copper catalysts, written `[[clm_X]]` here, may reduce CO2 [[clm:{cid}]].").ok
 
 
 def test_unknown_or_hash_mismatched_target_fails(env):

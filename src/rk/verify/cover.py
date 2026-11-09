@@ -48,13 +48,7 @@ from pydantic import BaseModel
 from rk.argument import ArgumentService
 from rk.canon import canonical_json, sha256_hex
 from rk.production.artifacts import artifact
-from rk.production.manuscript import (
-    MARKER,
-    Marker,
-    Sentence,
-    parse_section,
-    section_problems,
-)
+from rk.production.manuscript import Marker, Sentence, parse_section, section_problems
 from rk.production.sections import KERNEL_WRITTEN, describes_operations
 from rk.production.store import design, protocol_hash, protocol_row
 from rk.store.project import ProjectStore
@@ -370,7 +364,7 @@ def verify_sentence(ps: ProjectStore, s: Sentence, *, paper_type: str, kernel_wr
     problems: list[str] = []
     if not s.markers:
         problems.append("the sentence has no source marker")
-    problems += [malformed_marker_problem(raw) for raw in _MARKER_TEXT.findall(s.prose) if not MARKER.fullmatch(raw)]
+    problems += [malformed_marker_problem(raw) for raw in s.malformed]
     for m in s.markers:
         if (why := _target_problem(ps, m, paper_type, kernel_written)) is not None:
             problems.append(why)

@@ -290,6 +290,16 @@ def test_missing_design_outside_a_proposal_is_a_failed_try(env):
     assert DraftWorker().gate(ps, 1).ok
 
 
+def test_a_bare_id_marker_is_named_in_the_writers_retry(env):
+    """Task 9: a Writer that writes [[clm_…]] is told, in its retry failures, the marker form to write."""
+    _ready(env)
+    ex = _writer([writes(bad="Copper catalysts may matter [[clm_01ABC]]."), *[writes()] * 4])
+    assert DraftWorker().run(_ctx(env, ex)).status == "done"
+    failures = ex.of("writer", "SectionDraft")[1]["inputs"]["retry"]["failures"]
+    assert any("[[clm_01ABC]] is not a source marker" in f and "write [[clm:clm_01ABC]]" in f for f in failures), \
+        failures
+
+
 def test_disclosure_section_is_kernel_written(env):
     _, ps, _ = env
     _ready(env)

@@ -50,6 +50,7 @@ from rk.store.query import query_rows
 
 MarkerKind = Literal["clm", "run", "fig", "stat", "plan", "inf", "ck"]
 MARKER = re.compile(r"\[\[(clm|run|fig|stat|plan|inf|ck)(?::([A-Za-z0-9_]+))?\]\]")
+_BRACKETED = re.compile(r"\[\[[^\[\]\n]*\]\]")  # anything written like a marker; a MARKER or not
 SECTION_ID = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 DRAFTS_DIR = "artifacts/drafts"
 _ABBREVIATIONS = frozenset({"e.g", "i.e", "al", "vs", "fig", "figs", "eq", "eqs", "cf", "approx", "ref", "refs",
@@ -80,6 +81,7 @@ class Sentence(BaseModel):
     text: str  # rendered prose: emphasis and link markup gone, code spans kept with their backticks
     prose: str  # ``text`` with its code spans blanked: what every prose check reads
     markers: list[Marker]
+    malformed: list[str] = []  # visible ``[[…]]`` text that is no marker (``_malformed``): it cites nothing
     span: tuple[int, int]  # offsets into the section markdown
     quoted: bool = False  # a block quote's paragraph: quoted text as a whole
 
@@ -295,6 +297,22 @@ def _markers(markdown: str, doc: _Doc) -> tuple[list[Marker], list[Marker]]:
     return seen, hidden
 
 
+def _malformed(markdown: str, doc: _Doc) -> list[tuple[int, str]]:
+    """``(offset, text)`` of each visible ``[[…]]`` that is no marker (e.g. a bare id, ``[[clm_…]]``): outside code and
+    not escaped, by the same rules as ``_markers``; the reader sees it, and it cites nothing."""
+    code, visible = doc.code(), doc.visible()
+    out = []
+    for m in _BRACKETED.finditer(markdown):
+        if MARKER.fullmatch(m[0]) or any(m.start() < e and m.end() > s for s, e in code):
+            continue
+        before = markdown[:m.start()]
+        if (len(before) - len(before.rstrip("\\"))) % 2:  # an escaped first bracket: literal text
+            continue
+        if all(o in visible for o in range(m.start(), m.end())):
+            out.append((m.start(), m[0]))
+    return out
+
+
 def source_markers(markdown: str) -> list[Marker]:
     """Every marker of the section markdown, in order, with its source span (see the module docstring)."""
     return _markers(markdown, _parse(markdown))[0]
@@ -377,6 +395,7 @@ def parse_section(markdown: str) -> list[Sentence]:
     """The section's sentences, in order, with their markers (see the module docstring)."""
     doc = _parse(markdown)
     markers = _markers(markdown, doc)[0]
+    malformed = _malformed(markdown, doc)
     sentences: list[Sentence] = []
     for b in doc.blocks:
         if b.kind != "prose" or _is_caption(b):
@@ -395,6 +414,7 @@ def parse_section(markdown: str) -> list[Sentence]:
             span = (b.ranges[a][0], b.ranges[z - 1][1])
             sentences.append(Sentence(index=len(sentences), text=b.text[a:z], prose=prose[a:z], span=span,
                                       markers=[m for m in markers if span[0] <= m.span[0] < span[1]],
+                                      malformed=[t for o, t in malformed if span[0] <= o < span[1]],
                                       quoted=b.quoted))
     return sentences
 
