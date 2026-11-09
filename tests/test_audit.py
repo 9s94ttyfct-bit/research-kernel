@@ -15,7 +15,7 @@ from rk.argument import ArgumentService, ClaimIn, ObjectionIn
 from rk.canon import sha256_hex
 from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
 from rk.config import load_settings
-from rk.discovery.boundary import transient_source_error
+from rk.discovery.boundary import error_text, transient_source_error
 from rk.discovery.executor import RateCapped
 from rk.library.models import ItemIn
 from rk.llm.drivers import DriverSpec
@@ -55,6 +55,7 @@ from rk.production.manuscript import (
 from rk.production.revise import ReviseWorker
 from rk.production.store import add_protocol, freeze_protocol, frozen_protocol
 from rk.production.synthesis import synthesis_claims
+from rk.sources.s2 import NotConfigured
 from rk.store.events import NewEvent
 from rk.verify.retract import RetractionInfo
 from tests.discovery_fakes import FakeSources
@@ -441,22 +442,28 @@ URL = "https://api.crossref.org/works/10.1000/x"
 
 
 class _Flaky(FakeSources):
-    """``FakeSources`` whose first ``verify`` raises ``error``."""
+    """``FakeSources`` whose ``verify`` call number ``at`` (0-based) raises ``error``, once."""
 
-    def __init__(self, *a, error: Exception, **kw):
+    def __init__(self, *a, error: Exception, at: int = 0, **kw):
         super().__init__(*a, **kw)
         self.error: Exception | None = error
+        self.at, self.seen = at, 0
 
     def verify(self, item_id: str) -> str:
-        if self.error is not None:
+        n, self.seen = self.seen, self.seen + 1
+        if self.error is not None and n == self.at:
             e, self.error = self.error, None
             raise e
         return super().verify(item_id)
 
 
-def test_a_transient_lookup_error_resumes_the_audit_in_place_and_a_persistent_one_reruns_it(env):
+@pytest.mark.parametrize("persistent", [HttpError(403, URL), NotConfigured("crossref_mailto")],
+                         ids=["http_403", "not_configured"])
+def test_a_transient_lookup_error_resumes_the_audit_in_place_and_a_persistent_one_fails_it(env, persistent):
     """I1: an HTTP 429/5xx or transport error at V-REF is raised before the ``refs`` note, so the engine waits
-    (``waiting_source``) and runs the attempt again in place, spending no edge; a persistent error reruns as before."""
+    (``waiting_source``) and runs the attempt again in place, spending no edge. Round 2 (e): a persistent error (an
+    unconfigured source, a 4xx) would fail the same way on every rerun, so the audit fails at once naming the item and
+    the error, owned by the source configuration; no edge, no vote."""
     _, ps, lib = env
     revised(env)
     w = AuditWorker()
@@ -469,9 +476,84 @@ def test_a_transient_lookup_error_resumes_the_audit_in_place_and_a_persistent_on
     assert out.status == "done", out.reason
     (refs,) = audit_notes(ps, 1, kind="refs")
     assert refs["errors"] == []
-    ctx = replace(_ctx(env, Exec({}), attempt=2), sources=_Flaky({}, lib=lib, error=HttpError(404, URL)))
-    out = w.run(ctx)
-    assert out.status == "rerun" and "HTTP 404" in out.reason, (out.status, out.reason)
+    ex = _judges("approve")
+    src = _Flaky({}, lib=lib, error=persistent)
+    out = w.run(replace(_ctx(env, ex, attempt=2), sources=src))
+    assert out.status == "failed", (out.status, out.reason)
+    failed = refs["items"][0]["item_id"]  # the first item looked up, as in attempt 1
+    assert failed in out.reason and error_text(persistent) in out.reason, out.reason
+    assert "owned by the source configuration" in out.reason
+    assert not audit_notes(ps, 2, kind="back_edge") and not ex.calls
+    (noted,) = audit_notes(ps, 2, kind="refs")
+    assert noted["errors"] and failed in noted["errors"][0]
+    # resumed (e.g. the run was interrupted after the note): the same failure, nothing looked up again
+    calls = len(src.calls)
+    assert w.run(replace(_ctx(env, ex, attempt=2), sources=src)).reason == out.reason and len(src.calls) == calls
+
+
+def test_a_lookup_interrupted_mid_loop_resumes_without_looking_up_the_items_verified_in_the_attempt(env):
+    """Round 2 (a): an item whose V-REF was recorded after the attempt started is not looked up again when the
+    attempt runs again in place, so a transient error after some lookups does not repeat them all; an item verified
+    before the attempt started (an earlier attempt) is looked up again."""
+    _, ps, lib = env
+    revised(env)
+    record_attempt(ps, "audit", 1, run_id=None, guidance="", requested=None, actor="tester")
+    w = AuditWorker()
+    src = _Flaky({}, lib=lib, error=HttpError(503, URL), at=1)
+    ctx = replace(_ctx(env, _judges("approve")), sources=src)
+    with pytest.raises(HttpError):
+        w.run(ctx)
+    (first,) = [c[1] for c in src.calls if c[0] == "verify"]
+    out = w.run(ctx)  # the same attempt, in place
+    assert out.status == "done", out.reason
+    looked_up = [c[1] for c in src.calls if c[0] == "verify"]
+    assert looked_up.count(first) == 1 and len(looked_up) >= 2, looked_up
+    (refs,) = audit_notes(ps, 1, kind="refs")
+    assert {r["item_id"] for r in refs["items"]} == set(looked_up)
+    assert next(r for r in refs["items"] if r["item_id"] == first)["ref"] == "pass"
+    # a new attempt looks every item up again
+    record_attempt(ps, "audit", 2, run_id=None, guidance="", requested=None, actor="tester")
+    src2 = FakeSources({}, lib=lib)
+    w.run(replace(_ctx(env, _judges("approve"), attempt=2), sources=src2))
+    assert sorted(c[1] for c in src2.calls if c[0] == "verify") == sorted(looked_up)
+
+
+def test_a_malformed_stored_quote_note_fails_g_quote_rather_than_the_audit(env):
+    """Round 2 (b): a stored quote note that does not validate (a malformed locator) is a G-QUOTE failure, named, not
+    an exception."""
+    _, ps, lib = env
+    revised(env)
+    (item,) = [i for i in lib.list() if i.title == "A trial"]
+    nid = add_note(ps, lib, NoteIn(source_id=item.id, kind="quote", text="Methods section.", role_in_source="main"),
+                   actor="tester").note_id
+    note = next(n for n in list_notes(ps) if n["id"] == nid)
+    bad = {**note, "locator": {"page": "one", "start": 0}}
+    assert "malformed" in (quote_note_problem(ps, bad) or ""), quote_note_problem(ps, bad)
+    ps.apply(NewEvent(type="note.added", entity_id=item.id, actor_kind="agent", actor="tester",
+                      payload={"note": bad}))
+    out = AuditWorker().run(_ctx(env, _judges("approve")))
+    assert out.status == "failed", (out.status, out.reason)
+    (failure,) = _report(ps)["gates"]["G-QUOTE"]
+    assert nid in failure and "malformed" in failure
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review", "production_mode": "collab"}], indirect=True)
+def test_p2_a_failure_no_stage_can_mend_fails_the_audit_at_once_without_a_final_review(env, monkeypatch):
+    """Round 2 (c): in P2 too, a failure no stage the audit can go back to mends fails the stage at once through the
+    engine: no edge, no ``final_review``, no ``stage_blocked``."""
+    import rk.production.audit as audit_mod
+
+    k, ps, lib = env
+    revised(env)
+    monkeypatch.setattr(audit_mod, "protocol_prereg_ok", lambda ps: False)
+    ex = Exec({})
+    o, run_id = stage_run(k, ps, lib, "audit", ex)
+    assert o.step("demo", run_id, actor="tester") == "failed"
+    run = run_row(ps, run_id)
+    assert run["status"] == "failed" and "G-PREREG" in run["reason"] and "owned by the protocol" in run["reason"], run
+    assert [e for e, r in edge_rows(ps).items() if e.startswith("audit->") and r["count"]] == []
+    assert not [c for c in list_checkpoints(ps) if c["kind"] in ("final_review", "stage_blocked")]
+    assert not ex.calls and not audit_notes(ps, 1, kind="back_edge")
 
 
 @pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)

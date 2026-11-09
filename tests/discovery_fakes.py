@@ -230,8 +230,12 @@ class FakeSources:
         title = self._title(item_id)
         status = self.statuses.get(title, self.default_status)
         self.lib.update(item_id, ref_status=status, actor="fake-sources")
-        if (ret := self.retractions.get(title)) is not None:
+        ret = self.retractions.get(title)
+        if ret is not None:
             self.lib.update(item_id, retraction=ret.status, actor="fake-sources")
+        # as ``verify_item``: the item first, then the V-REF record (and V-RETRACT's, for a preset retraction)
+        record_verification(self.lib.ps, "item", item_id, "V-REF", status, {}, actor="fake-sources")
+        if ret is not None:
             record_verification(self.lib.ps, "item", item_id, "V-RETRACT", ret.status, ret.model_dump(),
                                 actor="fake-sources")
         return status

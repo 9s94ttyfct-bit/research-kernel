@@ -8,7 +8,9 @@ but P1's vote.
    ``stat_result``'s artifacts or into an artifact cited directly) are looked up again with ``sources.verify``, which
    records both and writes them to the item, so a retraction found at audit counts. A source error that may go away
    (HTTP 429, 5xx, a transport error) is raised before the note: the engine waits and runs the attempt again in place,
-   using no edge. Any other failed lookup reruns the stage (``audit->audit``).
+   using no edge, and an item whose V-REF was recorded after the attempt started is not looked up again. Any other
+   failed lookup (an unconfigured source, a 4xx) would fail the same way on every rerun: the stage fails at once,
+   naming the item and the error, owned by the source configuration.
 2. **Disclosure.** ``rk.production.disclosure.write_disclosure`` renders ``disclosure.md`` and makes it the
    ``disclosure`` section's latest version (verified like any section); a render equal to the latest version writes
    nothing.
@@ -55,8 +57,9 @@ but P1's vote.
    rendered again, lists it ("Final review: approved by the P1 vote, not reviewed by a human"; P2: the researcher's
    answer); the audit then runs again over it, and its report is the one the gate reads.
 
-An interrupted attempt runs again in place: the lookups, the vote and a noted back-edge are not made again, and the
-same stored state renders the same disclosure and the same report (nothing written twice).
+An interrupted attempt runs again in place: the noted lookups (and, before the note, every item whose V-REF was
+recorded after the attempt started), the vote and a noted back-edge are not made again, and the same stored state
+renders the same disclosure and the same report (nothing written twice).
 
 The gate: the attempt's final review approved the manuscript; the latest report is the attempt's, passed and made
 after the approval; and the audit, run again now, passes. P1 at an edge limit fails the run with the reasons: the
@@ -69,7 +72,7 @@ import json
 import os
 from dataclasses import dataclass
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from rk.argument import ArgumentService
 from rk.canon import sha256_hex
@@ -149,6 +152,8 @@ REF_OWNER = ("owned by the library item's metadata: correct its identifier or bi
              "(rk verify), then run the audit again")
 QUOTE_OWNER = ("an integrity defect: notes are append-only and no stage can retire this one; restore the text it was "
                "verified against, then run the audit again")
+SOURCE_OWNER = ("owned by the source configuration, which the audit cannot go back to: set the source up (rk setup) or "
+                "restore its access, then run the audit again")
 VOTE_QUESTION = (
     "This manuscript passed every hard gate of the kernel's audit (audit_report): every sentence cites a verified "
     "source, every cited claim is supported. Should it be exported as it stands? Answer approve only when it answers "
@@ -314,10 +319,29 @@ def _cited(texts: dict[str, str], kinds: tuple[str, ...]) -> list[str]:
                               if m.kind in kinds and m.target))
 
 
+def _brief(e: ValidationError) -> str:
+    return "; ".join(f"{'.'.join(map(str, x['loc'])) or 'note'}: {x['msg']}" for x in e.errors())
+
+
+def _verified_in_attempt(ps: ProjectStore, attempt: int) -> set[str]:
+    """The items whose V-REF was recorded after the attempt of the audit started (``stage.attempt``; none without
+    it): ``sources.verify`` writes the item before it records V-REF, so the item holds that lookup's result."""
+    start = ps.db.execute("SELECT seq FROM events WHERE type='stage.attempt' AND json_extract(payload, '$.stage')=? "
+                          "AND json_extract(payload, '$.attempt')=? ORDER BY seq LIMIT 1", (STAGE, attempt)).fetchone()
+    if start is None:
+        return set()
+    rows = ps.db.execute("SELECT entity_id FROM events WHERE type='verification.recorded' AND seq>? "
+                         "AND json_extract(payload, '$.verifier')='V-REF' AND json_extract(payload, "
+                         "'$.target_type')='item'", (start["seq"],))
+    return {r["entity_id"] for r in rows}
+
+
+
 def quote_note_problem(ps: ProjectStore, note: dict) -> str | None:
     """Why a quote note fails V-QUOTE now, read_extract's check again (``rk.notes.locate_in_layer``: its locator counts
-    only where it holds the quote): it was never verified, or its text is no longer at its locator in the text it was
-    verified against (its snapshot's text layer, or the item's abstract)."""
+    only where it holds the quote): it was never verified, it is malformed (it does not validate as a note), or its
+    text is no longer at its locator in the text it was verified against (its snapshot's text layer, or the item's
+    abstract)."""
     q = (note.get("verified") or {}).get("quote") or {}
     if not q.get("ok"):
         return "it was never verified as a quote (V-QUOTE)"
@@ -332,8 +356,12 @@ def quote_note_problem(ps: ProjectStore, note: dict) -> str | None:
         except (OSError, ValueError) as e:
             return f"the text it was verified against (snapshot {note['snapshot_sha']}) cannot be read: {e}"
     loc = note.get("locator")
-    probe = NoteIn(source_id=note["item_id"], kind="quote", text=note["text"],
-                   locator=Locator(**loc) if loc else None, role_in_source=note.get("role_in_source"), against=against)
+    try:
+        probe = NoteIn(source_id=note["item_id"], kind="quote", text=note["text"],
+                       locator=Locator(**loc) if loc else None, role_in_source=note.get("role_in_source"),
+                       against=against)
+    except ValidationError as e:
+        return f"the stored note is malformed, so it cannot be checked (V-QUOTE): {_brief(e)}"
     try:
         found, _ = locate_in_layer(probe, layer)
     except NoteRejected:
@@ -480,7 +508,8 @@ def _load(ps: ProjectStore) -> _Inputs | str:
 
 class AuditWorker:
     # An interrupted attempt runs again in place (rk.orchestrator.engine): ``run`` goes on from the attempt's notes and
-    # the stored state (see the module docstring); nothing is looked up, voted on or written twice.
+    # the stored state (see the module docstring); nothing noted is looked up, voted on or written twice, and an item
+    # whose V-REF was recorded after the attempt started is not looked up again.
     resumes_in_place = True
 
     def run(self, ctx: StageContext) -> StageOutcome:
@@ -491,8 +520,9 @@ class AuditWorker:
         if sent := audit_notes(ps, ctx.attempt, kind="back_edge"):  # resumed after the back-edge was noted
             return self._outcome(sent[-1])
         if errors := self._refs(ctx, s):
-            return self._send(ctx, STAGE, "V-REF and V-RETRACT could not be looked up again at audit: "
-                                          + "; ".join(errors))
+            return StageOutcome("failed", reason=(
+                "V-REF and V-RETRACT could not be looked up again at audit, and the lookup would fail the same way on "
+                f"every rerun ({SOURCE_OWNER}): " + "; ".join(errors)))
         rep = self._audit(ctx, s)
         if not rep["ok"]:
             return self._back(ctx, rep)
@@ -509,20 +539,26 @@ class AuditWorker:
     def _refs(ctx: StageContext, s: _Inputs) -> list[str]:
         """V-REF and V-RETRACT of every cited item, looked up again (once per attempt: ``sources.verify`` records both
         and writes them to the item); the failed lookups. A source error that may go away (HTTP 429, 5xx, a transport
-        error) is raised before anything is noted: the engine waits and runs the attempt again in place."""
+        error) is raised before anything is noted: the engine waits and runs the attempt again in place, and then an
+        item whose V-REF was recorded after the attempt started is taken as it stands (not looked up again)."""
         ps = ctx.ps
         if noted := audit_notes(ps, ctx.attempt, kind="refs"):
             return noted[-1]["errors"]
         texts, _, _ = _texts(ps, s.draft)
+        done = _verified_in_attempt(ps, ctx.attempt)
         results, errors = [], []
         for iid in cited_items(ps, _live_claims(ps, _cited(texts, ("clm",))), _cited(texts, ("stat", "fig"))):
+            if iid in done:
+                item = ctx.lib.get(iid)
+                results.append({"item_id": iid, "ref": item.ref_status, "retraction": item.retraction})
+                continue
             try:
                 ref = ctx.sources.verify(iid)
             except SOURCE_ERRORS as e:
                 if transient_source_error(e):
                     raise
                 ref = None
-                errors.append(f"V-REF and V-RETRACT of {iid} failed ({error_text(e)})")
+                errors.append(f"V-REF and V-RETRACT of {iid} “{ctx.lib.get(iid).title}” failed ({error_text(e)})")
             results.append({"item_id": iid, "ref": ref,
                             "retraction": ctx.lib.get(iid).retraction if ref is not None else None})
         _note(ps, ctx.attempt, "refs", actor=ctx.actor, items=results, errors=errors)
@@ -553,8 +589,7 @@ class AuditWorker:
 
     @staticmethod
     def _outcome(n: dict) -> StageOutcome:
-        if n["to"] == STAGE:
-            return StageOutcome("rerun", reason=n["reason"])
+        # every noted back-edge goes to another stage (a failed lookup fails the stage, it is never rerun)
         return StageOutcome("back_edge", to=n["to"], reason=n["reason"])
 
     def _send(self, ctx: StageContext, to: str, reason: str) -> StageOutcome:
