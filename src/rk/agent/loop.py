@@ -90,6 +90,8 @@ def run_tool_loop(backend: ChatBackend, spec: TaskSpec, registry, *, actor: str,
                 calls += 1
                 result = execute_tool(registry, c.name, c.arguments, allowed=spec.tools, role=spec.role, actor=actor,
                                       task_id=spec.task_id, project=spec.project)
+                if (spent := registry.budget_exhausted(spec.task_id)) is not None:
+                    raise spent  # spec §11.3: the task is suspended (run_task), the model never sees the error
                 messages.append(Msg(role="tool", content=render_tool_result(result), tool_call_id=c.id, name=c.name))
             continue
         try:

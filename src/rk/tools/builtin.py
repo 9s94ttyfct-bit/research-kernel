@@ -39,6 +39,7 @@ from rk.llm.catalog import driver_warnings, validate_drivers
 from rk.llm.drivers import DriverSpec, available_all
 from rk.llm.runner import FreeText, run_task
 from rk.llm.vendors import vendor_of
+from rk.net.http import BudgetExhausted
 from rk.notes import NoteIn, NoteRejected, add_note, list_notes, text_find, text_read
 from rk.orchestrator.runs import no_run_active
 from rk.orchestrator.state import latest_attempt, orchestrator_drives
@@ -53,7 +54,7 @@ from rk.sources import openalex
 from rk.sources.identifiers import Identifier, parse_identifier
 from rk.sources.resolver import resolve, search
 from rk.support_check import support_check
-from rk.tools.registry import CallContext, Tool, ToolError, ToolRegistry
+from rk.tools.registry import CallContext, Tool, ToolError, ToolRegistry, suspended
 from rk.verify.records import verify_item
 from rk.verify.retract import FLAGGED, retraction_status
 from rk.verify.support import verify_support
@@ -627,9 +628,12 @@ def build_registry(k: Kernel, browser: Callable[[], BrowserService | None] | Non
             driver = DriverSpec.parse(a.driver) if a.driver else None
         except ValueError as e:
             raise ToolError("invalid", str(e)) from e
-        r = run_task(k, reg, project=a.project, role=a.role, instructions=a.instructions, inputs=a.inputs,
-                     output_schema=schema, driver=driver, max_turns=a.max_turns, timeout_s=a.timeout_s,
-                     actor=ctx.actor)
+        try:
+            r = run_task(k, reg, project=a.project, role=a.role, instructions=a.instructions, inputs=a.inputs,
+                         output_schema=schema, driver=driver, max_turns=a.max_turns, timeout_s=a.timeout_s,
+                         actor=ctx.actor)
+        except BudgetExhausted as e:  # the task is suspended (recorded failed, naming the budget)
+            raise suspended(e) from e
         return Out(task_id=r.task_id, ok=r.ok, error=r.error, provider=r.provider, model=r.model,
                    output=r.output.model_dump(mode="json") if r.output else None, tool_calls=r.tool_calls,
                    duration_s=r.duration_s)
@@ -664,6 +668,8 @@ def build_registry(k: Kernel, browser: Callable[[], BrowserService | None] | Non
             judges = [DriverSpec.parse(j) for j in a.judges] if a.judges else None
             report = support_check(k, reg, project=a.project, text=a.text, source_ids=a.source_ids, driver=driver,
                                    gold=a.gold, judge_drivers=judges, min_judges=a.min_judges, actor=ctx.actor)
+        except BudgetExhausted as e:  # a reader task is suspended (recorded failed, naming the budget)
+            raise suspended(e) from e
         except KeyError as e:
             raise ToolError("not_found", f"unknown source {e.args[0]}", status=404) from e
         except (ValueError, RuntimeError) as e:

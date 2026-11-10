@@ -6,20 +6,28 @@ import uuid
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
 from rk.config import Settings, load_settings, save_settings
 from rk.fulltext import attach_pdf
 from rk.library.models import Creator, ItemIn
+from rk.llm.chat.base import ToolCall, Turn
+from rk.llm.chat_provider import ChatApiProvider
 from rk.llm.drivers import DriverSpec
 from rk.llm.runner import interrupt_orphaned_tasks, run_task, task_row
 from rk.llm.types import Availability, TaskResult
+from rk.net.http import BudgetExhausted
 from rk.notes import list_notes
+from rk.server.app import create_app
 from rk.store.projections import rebuild
+from rk.tools import builtin
 from rk.tools.builtin import build_registry
+from rk.tools.registry import Tool
 from rk.workspace import Kernel
 
 from .conftest import DOCS
+from .test_agent_loop import ScriptedBackend
 
 
 class Found(BaseModel):
@@ -184,6 +192,77 @@ def test_a_task_cut_off_by_a_restart_is_marked_interrupted(env, tmp_home, replay
         assert task_row(ps2, orphan) == row
     finally:
         k2.close()
+
+
+class Spend(BaseModel):
+    project: str
+
+
+def _spend_budget(reg, monkeypatch, how: str) -> str:
+    """A tool whose source budget runs out: ``rk_search_works`` (it wraps the error in a ToolError) or a tool that lets
+    ``BudgetExhausted`` escape raw. Returns the tool's name."""
+    if how == "wrapped":
+        def search(*a, **kw):
+            raise BudgetExhausted("openalex", 1_900_000_000.0)
+        monkeypatch.setattr(builtin, "search", search)
+        return "rk_search_works"
+
+    def spend(ctx, a):
+        raise BudgetExhausted("openalex", 1_900_000_000.0)
+    reg.register(Tool("rk_test_spend", "spends the budget", Spend, BaseModel, frozenset({"scout"}), False, spend))
+    return "rk_test_spend"
+
+
+@pytest.mark.parametrize("how", ["wrapped", "raw"])
+def test_a_tool_call_that_spends_a_source_budget_suspends_the_task(env, monkeypatch, how):
+    """Spec §11.3: a source budget running out inside a role task's tool call suspends the task, never skips it: the
+    model does not get the error as data, the attempt and the task fail naming the budget, nothing is retried and
+    ``BudgetExhausted`` reaches the caller (the engine pauses the run on it)."""
+    _, reg, ps = env
+    name = _spend_budget(reg, monkeypatch, how)
+    args = {"query": "aspirin"} if name == "rk_search_works" else {}
+    turns = [Turn(tool_calls=[ToolCall(id=f"c{i}", name=name, arguments=args)]) if i % 2 == 0
+             else Turn(text='{"found": true}') for i in range(6)]
+    backend = ScriptedBackend(turns)
+    with pytest.raises(BudgetExhausted) as e:
+        _run(env, ChatApiProvider(backend, "scripted"), role="scout", tools=[name])
+    assert e.value.budget_key == "openalex"
+    assert len(backend.seen) == 1  # the model was never shown the tool result, and no attempt was retried
+    (task_id,) = [r["id"] for r in ps.db.execute("SELECT id FROM tasks")]
+    row = task_row(ps, task_id)
+    assert (row["status"], row["attempts"], row["error"]) == ("failed", 1, "budget_exhausted: openalex")
+    (attempt,) = [ev.payload for ev in ps.log.iter() if ev.type == "task.attempt"]
+    assert attempt["ok"] is False and attempt["error"] == "budget_exhausted: openalex"
+
+
+def test_an_agentic_cli_task_whose_tool_call_spent_a_source_budget_is_suspended(env, monkeypatch):
+    """An agentic CLI calls tools through ``rk serve`` with its task token and only sees an error; ``run_task`` still
+    learns of the spent budget when the CLI returns: the task fails naming it, is not retried, and raises. Once the
+    budget is spent the task's later tool calls are refused, so the suspended task stores nothing more."""
+    k, reg, ps = env
+    _spend_budget(reg, monkeypatch, "wrapped")
+    client = TestClient(create_app(reg, "serve-tok", tokens=k.tokens))
+    replies = []
+
+    class Cli(FakeProvider):
+        def run(self, spec, ctx):
+            self.calls.append((spec, ctx))
+            auth = {"Authorization": f"Bearer {ctx.task_token}"}
+            for i, (tool, args) in enumerate([("rk_search_works", {"query": "aspirin"}), ("rk_library_list", {})]):
+                replies.append(client.post(f"/api/tools/{tool}", headers=auth,
+                                           json={"args": {**args, "project": "rt"}, "idempotency_key": f"k{i}"}))
+            return TaskResult(spec.task_id, True, Found(found=True), "carried on", "fake", "fake-1", 0.1, None)
+
+    p = Cli([], kind="agentic_cli")
+    with pytest.raises(BudgetExhausted) as e:
+        _run(env, p, role="scout")
+    assert e.value.budget_key == "openalex" and len(p.calls) == 1
+    search, later = (r.json() for r in replies)
+    assert search["error"]["type"] == "BudgetExhausted"  # what the CLI saw: an error, no hits
+    assert later["error"]["type"] == "budget_exhausted" and "suspended" in later["error"]["message"]
+    row = task_row(ps, p.calls[0][0].task_id)
+    assert (row["status"], row["attempts"], row["error"]) == ("failed", 1, "budget_exhausted: openalex")
+    assert k.tokens.lookup(p.calls[0][1].task_token) is None
 
 
 # ---------------- live demo: the same reader task on three drivers ----------------

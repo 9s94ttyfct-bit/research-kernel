@@ -1,6 +1,8 @@
 import pytest
 
 from rk.config import Settings, save_settings
+from rk.net.http import BudgetExhausted
+from rk.tools import builtin
 from rk.tools.builtin import build_registry
 from rk.tools.registry import CallContext, PermissionDenied, ToolError
 from rk.workspace import Kernel
@@ -35,6 +37,54 @@ def test_registry_permission_and_idempotency(reg):
     assert [p["slug"] for p in reg.call("rk_project_list", {}, cli())["projects"]] == ["p1"]
     with pytest.raises(ToolError):
         reg.call("rk_project_create", {"slug": "p1", "title": "T"}, cli("k2"))  # exists
+
+
+def test_a_spent_source_budget_is_recorded_for_a_watched_task_only(reg, monkeypatch):
+    """``run_task`` watches its task: a source budget spent in one of the task's tool calls (here wrapped in a
+    ToolError by ``rk_search_works``) is recorded for it and the task's later calls are refused. A call outside a
+    watched task (the UI, a chat) keeps the ToolError and is never refused."""
+    def search(*a, **kw):
+        raise BudgetExhausted("openalex", 1_900_000_000.0)
+    monkeypatch.setattr(builtin, "search", search)
+    reg.call("rk_project_create", {"slug": "bb", "title": "B"}, cli("c"))
+    args = {"project": "bb", "query": "aspirin"}
+
+    def scout(task_id, key=None):
+        return CallContext(role="scout", actor="t", task_id=task_id, project="bb", idempotency_key=key)
+
+    for ctx in (cli("u1"), scout("tsk_free", "f1")):
+        with pytest.raises(ToolError) as ei:
+            reg.call("rk_search_works", args, ctx)
+        assert ei.value.type == "BudgetExhausted"
+    reg.call("rk_library_list", {"project": "bb"}, scout("tsk_free"))  # not refused
+    assert reg.budget_exhausted("tsk_free") is None
+
+    reg.watch_budget("tsk_w")
+    with pytest.raises(ToolError):
+        reg.call("rk_search_works", args, scout("tsk_w", "w1"))
+    spent = reg.budget_exhausted("tsk_w")
+    assert isinstance(spent, BudgetExhausted) and spent.budget_key == "openalex"
+    with pytest.raises(ToolError) as ei:
+        reg.call("rk_library_list", {"project": "bb"}, scout("tsk_w"))
+    assert ei.value.type == "budget_exhausted" and "suspended" in ei.value.message
+    assert reg.unwatch_budget("tsk_w") is spent and reg.budget_exhausted("tsk_w") is None
+
+
+@pytest.mark.parametrize("name,runner,args", [
+    ("rk_task_run", "run_task", {"role": "scout", "instructions": "go"}),
+    ("rk_support_check", "support_check", {"text": "Aspirin works.", "source_ids": ["src_x"]}),
+])
+def test_a_task_the_human_runs_that_is_suspended_on_a_spent_budget_is_a_typed_error(reg, monkeypatch, name, runner,
+                                                                                      args):
+    """A tool that runs role tasks for the human (no task of its own) answers a task suspended on a spent source
+    budget with a ``budget_exhausted`` error (HTTP 429) naming the budget, not an unhandled exception."""
+    def spent(*a, **kw):
+        raise BudgetExhausted("openalex", 1_900_000_000.0)
+    monkeypatch.setattr(builtin, runner, spent)
+    reg.call("rk_project_create", {"slug": "tr", "title": "T"}, cli("c"))
+    with pytest.raises(ToolError) as ei:
+        reg.call(name, {"project": "tr", **args}, cli("t1"))
+    assert (ei.value.type, ei.value.status, ei.value.details["budget"]) == ("budget_exhausted", 429, "openalex")
 
 
 def test_slug_traversal_unknown_collection_and_attach_role(reg, tmp_path):

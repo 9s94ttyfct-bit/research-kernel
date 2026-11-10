@@ -11,9 +11,12 @@ from pydantic import ValidationError
 
 from rk.argument import ArgumentService, ObjectionIn
 from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
-from rk.discovery.executor import BudgetExceeded, RateCapped
+from rk.discovery.executor import BudgetExceeded, KernelExecutor, RateCapped
 from rk.ids import new_id
+from rk.llm.chat.base import ToolCall, Turn
+from rk.llm.chat_provider import ChatApiProvider
 from rk.llm.types import TaskResult
+from rk.net.http import BudgetExhausted
 from rk.orchestrator.engine import default_workers
 from rk.orchestrator.graph import BACK_EDGES, EDGE_LIMIT
 from rk.orchestrator.state import (
@@ -26,6 +29,7 @@ from rk.orchestrator.state import (
     record_ran,
     record_run_session,
     record_run_task,
+    run_row,
     stage_row,
     start_run,
     tasks_used,
@@ -51,12 +55,15 @@ from rk.production.models import SynthesisPlan
 from rk.production.synthesis import SynthesizeWorker, synthesis_claims
 from rk.roles.policy import JUDGE_ROLES, tool_roles
 from rk.roles.prompts import build_system_prompt
+from rk.tools import builtin
+from rk.tools.builtin import build_registry
 from tests.production_fakes import (
     make_frozen_project,
     production_ctx,
     stage_run,
     votes_on,
 )
+from tests.test_agent_loop import ScriptedBackend
 from tests.test_synthesis import DESIGN, CapOnce, Exec, _setup, assess
 
 F1 = "Aspirin was studied in a randomised trial of older people."
@@ -1267,6 +1274,37 @@ def test_interrupted_attempt_resumes_in_place(env):
     assert len(ex.of("arguer", "ArgumentDraft")) == 1 and len(ex.of("skeptic", "Critique")) == 1
     every = [c["id"] for c in ArgumentService(ps).list_claims(origin="argument")]
     assert sorted(every) == sorted(argument_claims(ps, 1))  # nothing orphaned
+
+
+def test_a_source_budget_spent_in_a_skeptic_search_pauses_the_run(env, monkeypatch):
+    """Spec §11.3: the Skeptic's critique task (a real ``run_task`` over a scripted chat model) searches a source whose
+    API budget is spent: the task is suspended, not skipped. The step pauses the run (``paused_budget``, the budget
+    named), the Skeptic never sees the error, and the attempt is not recorded as a crash."""
+    k, ps, lib = env
+    _synthesize(env)
+
+    def search(*a, **kw):
+        raise BudgetExhausted("openalex", 1_900_000_000.0)
+    monkeypatch.setattr(builtin, "search", search)
+    backend = ScriptedBackend([Turn(tool_calls=[ToolCall(id="c1", name="rk_search_works",
+                                                         arguments={"query": "aspirin older people"})]),
+                               Turn(text='{"objections": [], "warrant_tests": [], "conflicts": []}')])
+    real = KernelExecutor(k, build_registry(k), "demo", run_id=None, session=None)
+
+    class SkepticSearches(Exec):
+        def run(self, role, instructions, inputs, output_schema, **kw):
+            if role == "skeptic":
+                return real.run(role, instructions, inputs, output_schema,
+                                **{**kw, "provider": ChatApiProvider(backend, "scripted")})
+            return super().run(role, instructions, inputs, output_schema, **kw)
+
+    o, run_id = stage_run(k, ps, lib, "argue", SkepticSearches(_exec([draft()]).script))
+    assert o.step("demo", run_id, actor="tester") == "paused_budget"
+    assert "API budget exhausted for openalex" in run_row(ps, run_id)["reason"]
+    assert len(backend.seen) == 1  # the Skeptic was never shown the error
+    (task,) = ps.db.execute("SELECT status, attempts, error FROM tasks WHERE role='skeptic'").fetchall()
+    assert tuple(task) == ("failed", 1, "budget_exhausted: openalex")
+    assert not any(e.type == "stage.crashed" for e in ps.log.iter())
 
 
 def test_p1_conflict_vote_interrupted_resumes_without_asking_the_skeptic_again(env):

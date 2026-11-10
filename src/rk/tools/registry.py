@@ -11,6 +11,8 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from rk.net.http import BudgetExhausted
+
 
 class PermissionDenied(Exception):
     pass
@@ -61,6 +63,9 @@ class ToolRegistry:
         self._db_lock = threading.Lock()  # guards the shared idempotency connection (short statements only)
         self._key_locks: dict[tuple[str, str], tuple[threading.Lock, int]] = {}
         self._key_locks_mutex = threading.Lock()
+        # spec §11.3: the role tasks ``run_task`` is running (task id -> the source budget one of their tool calls
+        # spent, or None); see ``watch_budget``
+        self._budgets: dict[str, BudgetExhausted | None] = {}
 
     def register(self, tool: Tool) -> None:
         if tool.name in self._tools:
@@ -75,7 +80,33 @@ class ToolRegistry:
     def list(self, role: str, allowed: frozenset[str] | None = None) -> list[Tool]:
         return [t for t in self._tools.values() if role in t.roles and (allowed is None or t.name in allowed)]
 
+    # ---- spent source budgets of role tasks (spec §11.3: suspended, never skipped silently) ----
+    def watch_budget(self, task_id: str) -> None:
+        """Watch a role task's tool calls (``run_task``, for the task's life): the first ``BudgetExhausted`` one of
+        them raises, raw or as the cause of a ``ToolError`` (``rk_search_works``), is recorded for the task, and its
+        later calls are refused. The call still fails as before (a model or a CLI sees an error); the task's runner
+        reads the record (``budget_exhausted``) and suspends the task. In-process tool loops and agentic CLIs calling
+        through ``rk serve`` with the task token both land here; calls of no watched task (the UI, chats) do not."""
+        self._budgets[task_id] = None
+
+    def budget_exhausted(self, task_id: str) -> BudgetExhausted | None:
+        return self._budgets.get(task_id)
+
+    def unwatch_budget(self, task_id: str) -> BudgetExhausted | None:
+        return self._budgets.pop(task_id, None)
+
     def call(self, name: str, args: dict, ctx: CallContext) -> dict:
+        watched = ctx.task_id is not None and ctx.task_id in self._budgets
+        if watched and (spent := self._budgets.get(ctx.task_id)) is not None:
+            raise suspended(spent)
+        try:
+            return self._call(name, args, ctx)
+        except Exception as e:
+            if watched and (spent := _spent_budget(e)) is not None and self._budgets.get(ctx.task_id) is None:
+                self._budgets[ctx.task_id] = spent
+            raise
+
+    def _call(self, name: str, args: dict, ctx: CallContext) -> dict:
         tool = self.get(name)
         if ctx.role not in tool.roles:
             raise PermissionDenied(f"role {ctx.role!r} may not call {name}")
@@ -126,3 +157,18 @@ class ToolRegistry:
                 del self._key_locks[slot]
             else:
                 self._key_locks[slot] = (lock, users - 1)
+
+
+def _spent_budget(e: BaseException | None) -> BudgetExhausted | None:
+    """The ``BudgetExhausted`` that ``e`` is, or that it was raised from (``raise ToolError(...) from e``)."""
+    while e is not None:
+        if isinstance(e, BudgetExhausted):
+            return e
+        e = e.__cause__
+    return None
+
+
+def suspended(spent: BudgetExhausted) -> ToolError:
+    """The error of a call refused, or a role task stopped, because a source budget is spent (spec §11.3)."""
+    return ToolError("budget_exhausted", f"{spent}; the task is suspended until the budget resets",
+                     {"budget": spent.budget_key, "reset_at": spent.reset_at}, status=429)

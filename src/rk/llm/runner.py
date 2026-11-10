@@ -2,7 +2,10 @@
 retries (spec §7.2: at most 3 attempts) and writes every attempt to the project's event log (spec §8.2). A driver's
 usage-limit reply (``SESSION_LIMITED``, ``rk.llm.limits``) is not retried: it blocks the driver in the call caps until
 the limit resets. A chat API's HTTP 429 is one too: at once when its ``Retry-After`` or body says how long, else
-once every attempt was a plain 429 (``DEFAULT_WAIT_S``)."""
+once every attempt was a plain 429 (``DEFAULT_WAIT_S``). A source API budget spent in one of the task's tool calls
+(``BudgetExhausted``, recorded by the registry: ``ToolRegistry.watch_budget``) suspends the task (spec §11.3): the
+attempt and the task fail naming the budget (``budget_exhausted: <budget>``), nothing is retried, and
+``BudgetExhausted`` is raised, so a run pauses (``paused_budget``) and resuming it runs the work again."""
 
 from __future__ import annotations
 
@@ -18,6 +21,7 @@ from rk.ids import new_id
 from rk.llm.drivers import DriverSpec, build_provider
 from rk.llm.limits import DEFAULT_WAIT_S, SESSION_LIMITED, http_limit
 from rk.llm.types import Provider, RunContext, TaskResult, TaskSpec
+from rk.net.http import BudgetExhausted
 from rk.roles.policy import role_tools
 from rk.store.events import Event, NewEvent
 from rk.store.projections import projection
@@ -67,7 +71,9 @@ def run_task(kernel, registry, *, project: str, role: str, instructions: str, in
     ctx = RunContext(kernel=kernel, registry=registry, task_token=token, actor=f"{role}@{spec_driver}")
     cap = settings.calls_per_hour.get(spec_driver.provider)
     result: TaskResult | None = None
+    spent: BudgetExhausted | None = None
     plain_429s = 0  # attempts in a row that ended in a plain HTTP 429
+    registry.watch_budget(task_id)
     try:
         for n in range(1, MAX_ATTEMPTS + 1):
             if not kernel.caps.acquire(spec_driver.provider, cap):
@@ -79,6 +85,9 @@ def run_task(kernel, registry, *, project: str, role: str, instructions: str, in
                 except Exception as e:  # noqa: BLE001 - a driver bug becomes a failed attempt, recorded below
                     result = TaskResult(task_id, False, None, "", spec_driver.provider, spec_driver.model, 0.0,
                                         f"{type(e).__name__}: {e}")
+            if (spent := registry.budget_exhausted(task_id)) is not None:
+                # an in-process tool loop stopped at the call; an agentic CLI only saw an error and may have finished
+                result = replace(result, ok=False, output=None, error=f"budget_exhausted: {spent.budget_key}")
             limit = http_limit(result.error, time.time()) if not result.ok and result.error else None
             plain_429s = plain_429s + 1 if limit is not None and not limit[0] else 0
             if limit is not None and (limit[0] or plain_429s == MAX_ATTEMPTS):
@@ -90,9 +99,10 @@ def run_task(kernel, registry, *, project: str, role: str, instructions: str, in
                 "wait_s": result.wait_s}))
             if result.error == SESSION_LIMITED:
                 kernel.caps.block_for(spec_driver.provider, result.wait_s or DEFAULT_WAIT_S)
-            if result.ok or result.error in NO_RETRY:
+            if result.ok or result.error in NO_RETRY or spent is not None:
                 break
     finally:
+        registry.unwatch_budget(task_id)
         if token:
             kernel.tokens.revoke(task_id)
         if provider is None and hasattr(prov, "close"):
@@ -101,6 +111,8 @@ def run_task(kernel, registry, *, project: str, role: str, instructions: str, in
     ps.apply(NewEvent(type="task.finished", entity_id=task_id, actor_kind="kernel", actor=actor, payload={
         "status": status, "output": result.output.model_dump(mode="json") if result.output else None,
         "error": result.error}))
+    if spent is not None:
+        raise spent
     return result
 
 
