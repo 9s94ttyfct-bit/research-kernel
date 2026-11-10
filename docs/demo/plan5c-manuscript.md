@@ -342,19 +342,20 @@ report, and how far their designs support using a model in place of a second hum
     `protocol_approval` (2 revises, then the approval).
 - **search_screen** passed at 17:58:05 with single screening, as a critical review allows: 32 Screener-A tasks.
 - **read_extract** started at 17:58:05:
-  - The run paused on the OpenAlex budget at 17:59. The retraction check calls Crossref and OpenAlex for every
+  - The run paused on the OpenAlex budget at 17:58:24. The retraction check calls Crossref and OpenAlex for every
     included item.
   - It resumed at 00:02:25 on 2026-11-10 on 612a780.
-  - Attempts 2 and 3 each read all 63 included studies; 6 were read on the abstract alone. Each attempt was reopened
+  - Attempts 2 and 3 each covered all 63 included studies (attempt 2 carried 2 over from an interrupted attempt); 6 were
+    read on the abstract alone. Each attempt was reopened
     on its extraction problems:
     - attempt 2 (ended 00:16:27): 702 values with a verified quote, 254 not reported, 115 with a problem;
     - attempt 3 (ended 00:31:40): 656 verified, 305 not reported, 110 with a problem.
 
     Most problems are `quote not verbatim` (104 and 98). About half are on `publication_status` (50 and 48), a field
-    whose answer, a journal or a preprint, is rarely a sentence in the paper. Attempt 3 fixed no more than attempt 2
-    did.
+    whose answer, a journal or a preprint, is rarely a sentence in the paper. Of attempt 2's 115 problems, attempt 3
+    cleared 59 and kept 56, and it made 54 new ones.
   - By 00:42 the Reader had finished 171 tasks. Every task attempt in the run ran on `anthropic/claude-haiku-5-5`.
-- The run paused on the OpenAlex budget at 00:41:46 on 2026-11-10, in read_extract attempt 4 (next section). It goes on
+- The run paused on the OpenAlex budget at 00:41:46 on 2026-11-10, in read_extract attempt 4. It goes on
   once OpenAlex answers again.
 
 ## P1 project: failed at protocol (the vote never approved it)
@@ -362,7 +363,7 @@ report, and how far their designs support using a model in place of a second hum
 Home `rk-plan5c-p1`, intake `probiotics for preventing antibiotic-associated diarrhoea in children`, systematic
 review, D2 (discovery from landscape), P1.
 
-- **The first project** (`probiotics-aad`) failed at protocol at 17:42:49 on 2026-11-09. Two code faults caused it:
+- **The first project** (`probiotics-aad`) failed at protocol at 17:39:48 on 2026-11-09. Two code faults caused it:
   - OpenAlex answered HTTP 400 to wildcard queries;
   - PubMed probes were not counted.
 
@@ -406,10 +407,12 @@ Not reviewed by a human in this run, since every other decision was the agent's 
 
 The one human checkpoint, `topic_review`, was answered by the stand-in.
 
-P1 protocols have now failed the same way 3 times: two judges voting revise until the edge limit.
+P1 protocols on this page failed the same way: two judges voting revise until the edge limit.
 - `probiotics-aad` (with the code faults above);
 - `probiotics-aad-2`;
-- `ai-pulmonary-hypertension` in the third reproduction home (below).
+- `ai-pulmonary-hypertension` in the third reproduction home (below);
+- in the second reproduction home, ozone, tfa and fructose (three revise votes each) and cade (judge_2 voted
+  approve twice, judge revise).
 
 In none of the P1 runs on this page did both judges approve a protocol within 3 attempts with Haiku as the Lead.
 P1 then fails as designed rather than freezing the protocol.
@@ -421,9 +424,9 @@ in the Task 9 report and the reproduction report, when it is written.
 
 The third home (`rk-plan5c-srrepro3`) ran on 612a780 (`rk serve` named service).
 - Setup: a stats check of 180/180 and six projects seeded at 19:11 UTC on 2026-11-09.
-- `rk eval sr-repro` started the six runs at 00:25 on 2026-11-10.
-- By 00:30 the anonymous OpenAlex budget was spent. Three things had used it since the reset: the P1 landscape
-  above, the critical review's read_extract and these protocol probes. Every home calls OpenAlex without a key, so
+- `rk eval sr-repro` started the six runs at 00:26:44 on 2026-11-10.
+- By 00:30 the anonymous OpenAlex budget was spent. Three things had used it since the reset: the P1 discovery stages
+  above (landscape, gaps, topics and question), the critical review's read_extract and these protocol probes. Every home calls OpenAlex without a key, so
   they all share the budget per IP (`rk setup`: "$0.10/day").
 
 | Entry | Run | State | Protocol votes (judge/judge_2) |

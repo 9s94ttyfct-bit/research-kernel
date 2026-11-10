@@ -349,7 +349,8 @@ uv run rk export [--open]                       # export the approved manuscript
 | `stage_blocked` | a back-edge reached its limit | `{"decision": "allow_one_more"}` (an optional `comment` is guidance for the reopened stage) or `stop` |
 
 Recorded runs are in `docs/demo/plan5c-manuscript.md`. Two projects exported there on 2026-11-09, with Claude Haiku 5.5
-and GPT-6 Luna as the only generators and a stand-in answering every checkpoint:
+and GPT-6 Luna as the main generators (other models also answered; see the deviations there) and a stand-in
+answering every checkpoint:
 - the melatonin systematic review: 16-page PDF, 15 draft and 7 revise attempts;
 - a research proposal for a trial on the same question: 19 pages.
 
