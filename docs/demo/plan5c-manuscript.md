@@ -345,11 +345,17 @@ report, and how far their designs support using a model in place of a second hum
   - The run paused on the OpenAlex budget at 17:59. The retraction check calls Crossref and OpenAlex for every
     included item.
   - It resumed at 00:02:25 on 2026-11-10 on 612a780.
-  - Attempt 2 ended at 00:16:27 and was reopened as attempt 3. Some extractions had problems, for example
-    `quote not verbatim`.
-  - By 00:31 the Reader had finished 125 tasks. All 182 task attempts in the run ran on `anthropic/claude-haiku-5-5`.
-- The OpenAlex budget ran out again at about 00:30 on 2026-11-10 (next section). The run goes on to synthesize, argue,
-  draft, revise, audit and export once OpenAlex answers again.
+  - Attempts 2 and 3 each read all 63 included studies; 6 were read on the abstract alone. Each attempt was reopened
+    on its extraction problems:
+    - attempt 2 (ended 00:16:27): 702 values with a verified quote, 254 not reported, 115 with a problem;
+    - attempt 3 (ended 00:31:40): 656 verified, 305 not reported, 110 with a problem.
+
+    Most problems are `quote not verbatim` (104 and 98). About half are on `publication_status` (50 and 48), a field
+    whose answer, a journal or a preprint, is rarely a sentence in the paper. Attempt 3 fixed no more than attempt 2
+    did.
+  - By 00:42 the Reader had finished 171 tasks. Every task attempt in the run ran on `anthropic/claude-haiku-5-5`.
+- The run paused on the OpenAlex budget at 00:41:46 on 2026-11-10, in read_extract attempt 4 (next section). It goes on
+  once OpenAlex answers again.
 
 ## P1 project: failed at protocol (the vote never approved it)
 
