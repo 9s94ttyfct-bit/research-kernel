@@ -292,6 +292,69 @@ In the Workbench these checkpoints have their own cards, and the Argument page s
 and conflicts. A recorded run: `docs/demo/plan5b-synthesis-argument.md` (it reached synthesize, not argue; design was
 shown only by the tests).
 
+## Draft, revise, audit, export
+
+After argue (and design, for a research proposal), four stages turn the argument into a manuscript you can submit:
+`draft → revise → audit → export`.
+
+- **Draft.** The Writer drafts each required section of the paper type, and the kernel writes the `disclosure`:
+  - systematic and scoping reviews: abstract, introduction, methods, results, discussion, limitations, conclusion;
+  - critical review: an introduction, one section per synthesis theme, gaps and agenda, a conclusion;
+  - research proposal: background, gap, questions and hypotheses, methods, expected outcomes, risks.
+
+  Every sentence ends with source markers:
+  - `[[clm:clm_…]]`: a supported claim;
+  - `[[run:evt_…]]` or `[[run:prt_…]]`: what the kernel ran (a search, the PRISMA counts, the frozen protocol);
+  - `[[fig:…]]`, `[[stat:…]]`: a figure or statistic;
+  - `[[plan:…]]`: the frozen design or a hypothesis (proposals only);
+  - `[[inf]]`: an inference, worded tentatively;
+  - `[[ck]]`: common knowledge, at most 1 sentence in 20.
+
+  The kernel verifies every sentence. V-COVER checks the markers; V-NUM checks that every number is in a cited
+  target, the protocol's own numbers included; V-HEDGE checks that a sentence is no stronger than the claims it cites.
+  A `[[…]]` that is not a marker fails its sentence and names the form to write. A failing section is retried, and a
+  draft rerun keeps the sections that passed. When a section needs a claim the argument lacks, draft goes back to
+  argue once; after that, a later request is refused and the gap is disclosed as a limitation.
+- **Revise.** The SimReader (another vendor) reads the manuscript as your audience and asks questions with a
+  priority. The Writer revises a sentence, answers with a note, or declines; a revision is kept only if the section
+  still verifies. Revise passes when every priority-1 question is revised or answered.
+- **Audit.** These hard gates run on the whole manuscript:
+  - G-REF (references and retractions), G-QUOTE (every quote note), G-COVER (every sentence);
+  - V-BALANCE (contested claims and answered objections are shown), G-SUPPORT (every cited claim is supported) and
+    G-HEDGE;
+  - G-DISCLOSE: the disclosure lists the models, every human decision and vote, what no human reviewed, the
+    limitations and the protocol deviations;
+  - G-PREREG (systematic and scoping reviews), V-PRISMA where the paper type reports it, and V-STATS.
+
+  A failure goes back to the stage that owns it (draft, argue or read_extract). A failure no stage can mend fails the
+  run and names its owner. When every gate passes, you read the manuscript in `final_review` (P1: a vote).
+- **Export.** Only an audited manuscript that you approved exports. pandoc, citeproc and tectonic write
+  `paper.pdf`, `paper.docx`, `paper.md` and `paper.tex` with a bibliography; claim markers become citations of their
+  evidence. The reproducible package (`package-<hash>.zip`) holds:
+  - a `MANIFEST.json` with the SHA-256 of every file and the event-log head;
+  - the audit report and the disclosure;
+  - `extraction.csv` and `protocol.json`.
+
+```bash
+uv run rk run melatonin --until export          # draft, revise and audit run in rk serve; you answer final_review
+uv run rk draft show [--section S --version N]  # every sentence with its verdict and problems
+uv run rk revise show                           # the reader's questions and how each was handled
+uv run rk audit show [--version N]              # the hard gates, the final review, whether it can export
+uv run rk export [--open]                       # export the approved manuscript (the export stage runs in rk serve)
+```
+
+| Checkpoint | When | Answers |
+|---|---|---|
+| `final_review` | the audit passed every hard gate (P2) | `{"decision": "approve"}`, `revise` with a `comment`, or `back` to draft, argue or read_extract (optional `comment`) |
+| `stage_blocked` | a back-edge reached its limit | `{"decision": "allow_one_more"}` (an optional `comment` is guidance for the reopened stage) or `stop` |
+
+Recorded runs are in `docs/demo/plan5c-manuscript.md`. Two projects exported there on 2026-11-09, with Claude Haiku 5.5
+and GPT-6 Luna as the only generators and a stand-in answering every checkpoint:
+- the melatonin systematic review: 16-page PDF, 15 draft and 7 revise attempts;
+- a research proposal for a trial on the same question: 19 pages.
+
+In both runs the stand-in caught facts the gates cannot see, such as a misread denominator and a misstated power.
+
 ## Drivers and roles
 
 Role tasks run on a configurable driver per role (`drivers` in `config.toml`; see `rk providers`):

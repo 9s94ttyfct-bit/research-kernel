@@ -1,12 +1,14 @@
 # Plan 5c demo: draft, revise, audit and export, cloud models only (2026-11-09)
 
 The Plan 5c stages turn a review's argument into an exported manuscript: `draft → revise → audit → export`. This page
-records the live runs of Task 9 (in progress: the melatonin review and the research proposal have exported; the
-others are waiting, see each project's status below):
+records the live runs of Task 9:
 - a systematic review (melatonin for delirium), a critical review (large language models as screeners) and a research
-  proposal (the melatonin question as a trial), each in P2 with the checkpoints answered;
-- one P1 project from intake to export, with every checkpoint the mode lets a vote answer voted;
-- the systematic-review reproduction set (its report, `docs/eval/sr-repro-<date>.md`, is written when the set has run).
+  proposal (the melatonin question as a trial), each in P2 with the checkpoints answered. The melatonin review and the
+  proposal exported. The critical review is at read_extract, held by the OpenAlex budget.
+- one P1 project from intake to export, with every checkpoint the mode lets a vote answer voted. It failed at protocol:
+  the vote never approved the protocol.
+- the systematic-review reproduction set. Its third home ran out of OpenAlex budget at protocol, so no report
+  (`docs/eval/sr-repro-<date>.md`) is written yet.
 
 Every number comes from the runs' event logs, databases and CLI output; ids are the runs' own. **The checkpoints were
 answered by the agent that ran the demo, standing in for the researcher**; every answer is logged with its time and
@@ -321,11 +323,117 @@ protocol_approval, 1 final_review. Each answer is logged with its time and reaso
 - The design leaves dose, agent-specific analysis and power inputs open. The SimReader flagged this and the final
   review accepted it; a real researcher would likely have asked for a design revision there.
 
-## Critical review and P1 project: waiting for OpenAlex
+## Critical review (P2): at read_extract, held by the OpenAlex budget
 
-Both runs are `paused_budget` on the anonymous OpenAlex daily budget, which resets at 00:00 UTC on 2026-11-10:
-- the critical review (`llm-screening`) at read_extract;
-- the P1 project (`probiotics-aad-2`) at landscape.
+Project `llm-screening`, run `run_01M70BF35ZGCC0SFJBTTEAEK9W`, home `rk-plan5c-critical`. It is a critical review
+with a thematic plan. Its question asks how large language models have been evaluated as title and abstract
+screeners in systematic reviews. It also asks what recall, workload savings and failure modes those evaluations
+report, and how far their designs support using a model in place of a second human screener.
 
-The reproduction set was reseeded in a fresh home (`rk-plan5c-srrepro3`, stats check 180/180), and its six runs start
-after the reset. The second home's six runs, which failed at protocol, stay as history.
+- **Protocol, 11 attempts (14:30–17:36 UTC 2026-11-09).**
+  - Drafts v1–v6 all planned a risk-difference meta-analysis on single-arm accuracy proportions. That is the defect
+    the controller fixed in e8d620f: a meta-analysis plan is refused outside a systematic review, and the refusal
+    names the fix.
+  - The stand-in then narrowed the search twice at `protocol_approval`. The first probe counted 376,699 records
+    against a record budget of 800.
+  - v14 was approved with `record_cap` 800: 4 phrase queries on PubMed and Europe PMC, 2024 to now. Europe PMC's
+    probe counted 746 and PubMed's queries 16, 3, 1 and 2, so at most 768 records.
+  - The 11 stand-in answers are in the home's `demo-notes/answers.log`: 8 on `stage_blocked`, and 3 on
+    `protocol_approval` (2 revises, then the approval).
+- **search_screen** passed at 17:58:05 with single screening, as a critical review allows: 32 Screener-A tasks.
+- **read_extract** started at 17:58:05:
+  - The run paused on the OpenAlex budget at 17:59. The retraction check calls Crossref and OpenAlex for every
+    included item.
+  - It resumed at 00:02:25 on 2026-11-10 on 612a780.
+  - Attempt 2 ended at 00:16:27 and was reopened as attempt 3. Some extractions had problems, for example
+    `quote not verbatim`.
+  - By 00:31 the Reader had finished 125 tasks. All 182 task attempts in the run ran on `anthropic/claude-haiku-5-5`.
+- The OpenAlex budget ran out again at about 00:30 on 2026-11-10 (next section). The run goes on to synthesize, argue,
+  draft, revise, audit and export once OpenAlex answers again.
+
+## P1 project: failed at protocol (the vote never approved it)
+
+Home `rk-plan5c-p1`, intake `probiotics for preventing antibiotic-associated diarrhoea in children`, systematic
+review, D2 (discovery from landscape), P1.
+
+- **The first project** (`probiotics-aad`) failed at protocol at 17:42:49 on 2026-11-09. Two code faults caused it:
+  - OpenAlex answered HTTP 400 to wildcard queries;
+  - PubMed probes were not counted.
+
+  Both were fixed (0a41959, c225d5c). The project stays as failed history. Its three protocol votes (17:38–17:39)
+  were all revise, from judge and judge_2.
+- **The second project** (`probiotics-aad-2`), run `run_01M70PZA7T2RV14143FR0Q82E6`, was created with the same intake.
+  - **Landscape:** 5 attempts. Attempt 2 paused on the OpenAlex budget at 18:11 on 2026-11-09, and the run resumed at
+    00:02 on 2026-11-10. Attempt 4 was reopened on a cluster with too few sources ("Probiotic yogurt and
+    fermented-food interventions: 4 verified sources (need 5)"). Attempt 5 passed at 00:10:52. The landscape logged
+    34 searches (17 OpenAlex, 17 Europe PMC). The whole project logged 84, half on OpenAlex. OpenAlex answered HTTP
+    429 once, at 00:05.
+  - **Gaps:** passed at 00:19:27.
+  - **Topics:** attempt 2 (00:21:28) offered three topics: a systematic review of antibiotic spectrum as a moderator,
+    a scoping evidence map, and a critical review of contradictory yogurt trials.
+    `topic_review` is a human checkpoint in every mode. The stand-in approved the systematic review at 00:22:10, the
+    paper type the intake asked for.
+  - **Question:** the RQ is probiotics versus placebo in children on antibiotics, stratified by the antibiotic class's
+    spectrum. Attempts 1 and 2 were refused for the word "novel". Attempt 3 was adopted by the agent at 00:23:02,
+    as P1 allows: prior work answering it was not found within the searched scope.
+  - **Protocol:** 3 attempts (00:23–00:25), each voted. The run failed at 00:24:59: "the protocol was not approved at
+    the edge limit, and P1 does not freeze a protocol the vote did not approve".
+
+Every vote in `probiotics-aad-2`. All are on the protocol, and each was decided `revise` with `human_reviewed` false.
+judge_3 (Haiku) was skipped as the same vendor as the protocol's author.
+
+| Attempt | Time (UTC) | judge (gpt-6-luna) | judge_2 (deepseek-v4.1-flash) |
+|---|---|---|---|
+| 1 | 00:23:54 | revise: no search date, no reproducible strategy per source, no deduplication or supplementary search plan; PRISMA-P incomplete | revise: the language limits contradict each other; PRISMA-P gaps |
+| 2 | 00:24:33 | revise: the language and date limits disagree; an unnamed "2026 trial"; the spectrum rules are unspecified; randomised and analysed counts are mixed up | revise: the same language conflict; registries are searched, but full reports are required; event-count wording |
+| 3 | 00:24:59 | revise: the spectrum classification is not operational (the agent list is "to be written"); clustering handling is unspecified | revise: the stratification rests on an unwritten agent list; the extraction has only randomised counts |
+
+The judges' objections narrowed from attempt to attempt. The Lead, on Haiku 5.5, fixed some of each round's points.
+It never wrote the antibiotic-spectrum list its own eligibility depended on, and after the third attempt the
+protocol→protocol edge was at its limit.
+
+Not reviewed by a human in this run, since every other decision was the agent's or the vote's:
+- the landscape's clusters and the gaps;
+- the RQ, adopted by the agent;
+- every protocol draft, and the three revise votes on them;
+- the failure itself.
+
+The one human checkpoint, `topic_review`, was answered by the stand-in.
+
+P1 protocols have now failed the same way 3 times: two judges voting revise until the edge limit.
+- `probiotics-aad` (with the code faults above);
+- `probiotics-aad-2`;
+- `ai-pulmonary-hypertension` in the third reproduction home (below).
+
+In none of the P1 runs on this page did both judges approve a protocol within 3 attempts with Haiku as the Lead.
+P1 then fails as designed rather than freezing the protocol.
+
+## Reproduction set: third home, held by the OpenAlex budget
+
+The first two homes (`rk-plan5c-srrepro`, `rk-plan5c-srrepro2`) failed at protocol and stay as history. Details are
+in the Task 9 report and the reproduction report, when it is written.
+
+The third home (`rk-plan5c-srrepro3`) ran on 612a780 (`rk serve` named service).
+- Setup: a stats check of 180/180 and six projects seeded at 19:11 UTC on 2026-11-09.
+- `rk eval sr-repro` started the six runs at 00:25 on 2026-11-10.
+- By 00:30 the anonymous OpenAlex budget was spent. Three things had used it since the reset: the P1 landscape
+  above, the critical review's read_extract and these protocol probes. Every home calls OpenAlex without a key, so
+  they all share the budget per IP (`rk setup`: "$0.10/day").
+
+| Entry | Run | State | Protocol votes (judge/judge_2) |
+|---|---|---|---|
+| ai-pulmonary-hypertension | `run_01M71DK7R03B4WFC4XN9VE2NJY` | failed at protocol attempt 3 (00:29:34) | 1–3: revise/revise |
+| ai-prostate-mri | `run_01M71DK7SCWDV84K44QXW5GP0P` | paused_budget, protocol attempt 3 | 2: revise/revise |
+| cade-colonoscopy | `run_01M71DK7MAW7JJ8BR2X84HWMHE` | paused_budget, protocol attempt 3 | 1, 2: revise/revise |
+| ozone-bleaching | `run_01M71DK7N4YKWCKG5GWZGVYP2P` | paused_budget, protocol attempt 3 | 2: revise/revise |
+| fructose-rats-sbp | `run_01M71DK7P1FWYZ3R2S5RH04D5V` | paused_budget, protocol attempt 2 | none yet |
+| tfa-heated-oils | `run_01M71DK7PYD1JMCEKADFCNYSA0` | paused_budget, protocol attempt 2 | 1: revise/approve (decided revise) |
+
+The final judge's reason for pulmonary hypertension:
+- the search sources are inconsistent: PubMed and Europe PMC in the strategy, OpenAlex in the PRISMA-P scope;
+- the 3,000-record cap keeps only the first records returned;
+- the extraction lacks false positives and false negatives for both arms;
+- the synthesis mixes risk ratios with a bivariate sensitivity/specificity model.
+
+`rk eval sr-repro` resumes paused runs and starts a fresh run in place of a failed one. Every call is therefore a
+run, not a read. Its report is written once the set has run after the budget returns.
