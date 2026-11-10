@@ -73,7 +73,9 @@ def run_task(kernel, registry, *, project: str, role: str, instructions: str, in
     result: TaskResult | None = None
     spent: BudgetExhausted | None = None
     plain_429s = 0  # attempts in a row that ended in a plain HTTP 429
-    registry.watch_budget(task_id)
+    watched = registry is not None  # a task given no tools (the judges) may run without a registry: no tool calls
+    if watched:
+        registry.watch_budget(task_id)
     try:
         for n in range(1, MAX_ATTEMPTS + 1):
             if not kernel.caps.acquire(spec_driver.provider, cap):
@@ -85,7 +87,7 @@ def run_task(kernel, registry, *, project: str, role: str, instructions: str, in
                 except Exception as e:  # noqa: BLE001 - a driver bug becomes a failed attempt, recorded below
                     result = TaskResult(task_id, False, None, "", spec_driver.provider, spec_driver.model, 0.0,
                                         f"{type(e).__name__}: {e}")
-            if (spent := registry.budget_exhausted(task_id)) is not None:
+            if watched and (spent := registry.budget_exhausted(task_id)) is not None:
                 # an in-process tool loop stopped at the call; an agentic CLI only saw an error and may have finished
                 result = replace(result, ok=False, output=None, error=f"budget_exhausted: {spent.budget_key}")
             limit = http_limit(result.error, time.time()) if not result.ok and result.error else None
@@ -102,7 +104,8 @@ def run_task(kernel, registry, *, project: str, role: str, instructions: str, in
             if result.ok or result.error in NO_RETRY or spent is not None:
                 break
     finally:
-        registry.unwatch_budget(task_id)
+        if watched:
+            registry.unwatch_budget(task_id)
         if token:
             kernel.tokens.revoke(task_id)
         if provider is None and hasattr(prov, "close"):

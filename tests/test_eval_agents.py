@@ -12,6 +12,7 @@ from rk.fulltext import attach_pdf
 from rk.library.models import Creator, ItemIn
 from rk.llm.drivers import DriverSpec
 from rk.llm.types import Availability, TaskResult
+from rk.net.http import BudgetExhausted
 from rk.notes import NoteIn, add_note
 from rk.verify.judge import JudgeVerdict
 
@@ -170,3 +171,16 @@ def test_eval_cli_prints_the_rate_cap_message(tmp_home, monkeypatch, command, ta
     r = CliRunner().invoke(app, ["eval", command, "--judges", "ollama:deepseek-v4.1-flash:cloud"]
                            if command != "litqa2" else ["eval", command])
     assert r.exit_code == 1 and "rate-capped: driver 'ollama' is disabled (calls_per_hour = 0)." in r.output
+
+
+@pytest.mark.parametrize(("command", "target"), [("litqa2", "rk.eval.litqa2.run_litqa2"),
+                                                 ("deepfact", "rk.eval.deepfact.run_deepfact")])
+def test_eval_cli_stops_on_a_spent_source_budget(tmp_home, monkeypatch, command, target):
+    """A Lead/Scout task suspended on a spent source budget (spec §11.3) stops the eval with a message, not a
+    traceback, and no report."""
+    def spent(**kw):
+        raise BudgetExhausted("openalex", 1900000000)
+
+    monkeypatch.setattr(target, spent)
+    r = CliRunner().invoke(app, ["eval", command])
+    assert r.exit_code == 1 and "API budget exhausted for openalex" in r.output and "rerun after the reset" in r.output

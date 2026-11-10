@@ -64,8 +64,10 @@ class ToolRegistry:
         self._key_locks: dict[tuple[str, str], tuple[threading.Lock, int]] = {}
         self._key_locks_mutex = threading.Lock()
         # spec §11.3: the role tasks ``run_task`` is running (task id -> the source budget one of their tool calls
-        # spent, or None); see ``watch_budget``
+        # spent, or None); see ``watch_budget``. A call can end on a server thread after its task stopped watching (an
+        # agentic CLI killed on timeout): ``_budgets_lock`` records only while the task is still watched.
         self._budgets: dict[str, BudgetExhausted | None] = {}
+        self._budgets_lock = threading.Lock()
 
     def register(self, tool: Tool) -> None:
         if tool.name in self._tools:
@@ -87,13 +89,15 @@ class ToolRegistry:
         later calls are refused. The call still fails as before (a model or a CLI sees an error); the task's runner
         reads the record (``budget_exhausted``) and suspends the task. In-process tool loops and agentic CLIs calling
         through ``rk serve`` with the task token both land here; calls of no watched task (the UI, chats) do not."""
-        self._budgets[task_id] = None
+        with self._budgets_lock:
+            self._budgets[task_id] = None
 
     def budget_exhausted(self, task_id: str) -> BudgetExhausted | None:
         return self._budgets.get(task_id)
 
     def unwatch_budget(self, task_id: str) -> BudgetExhausted | None:
-        return self._budgets.pop(task_id, None)
+        with self._budgets_lock:
+            return self._budgets.pop(task_id, None)
 
     def call(self, name: str, args: dict, ctx: CallContext) -> dict:
         watched = ctx.task_id is not None and ctx.task_id in self._budgets
@@ -102,8 +106,10 @@ class ToolRegistry:
         try:
             return self._call(name, args, ctx)
         except Exception as e:
-            if watched and (spent := _spent_budget(e)) is not None and self._budgets.get(ctx.task_id) is None:
-                self._budgets[ctx.task_id] = spent
+            if watched and (spent := _spent_budget(e)) is not None:
+                with self._budgets_lock:
+                    if ctx.task_id in self._budgets and self._budgets[ctx.task_id] is None:
+                        self._budgets[ctx.task_id] = spent
             raise
 
     def _call(self, name: str, args: dict, ctx: CallContext) -> dict:

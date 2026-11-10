@@ -754,15 +754,20 @@ def _judges(text: str | None) -> list:
 
 
 def _eval_report(run) -> None:
-    """Run an evaluation (``run()`` returns its result) and print its report. A driver at its hourly call cap stops
-    the evaluation; say so and when to rerun, and exit 1."""
+    """Run an evaluation (``run()`` returns its result) and print its report. A driver at its hourly call cap or a
+    source's spent API budget (a role task suspended, spec §11.3) stops the evaluation; say so and when to rerun, and
+    exit 1."""
     from rk.discovery.executor import RateCapped
     from rk.eval.scratch import rate_capped_message
+    from rk.net.http import BudgetExhausted
 
     try:
         r = run()
     except RateCapped as e:
         typer.secho(rate_capped_message(e), fg="red")
+        raise typer.Exit(1) from None
+    except BudgetExhausted as e:
+        typer.secho(f"stopped: {e}; rerun after the reset.", fg="red")
         raise typer.Exit(1) from None
     typer.echo(Path(r["report"]).read_text())
 
