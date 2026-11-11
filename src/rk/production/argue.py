@@ -52,9 +52,10 @@ P2 asks you on the final ``uncertain_support`` checkpoint (``_review``): every c
 finding that fails the claim gate (``supported`` or ``withdraw``; only ``withdraw`` past a problem other than its
 V-SUPPORT status: ``review_choices``), and every other claim but the main one whose withdrawal takes an unanswered
 objection, a failed warrant or an unanswered contest out of the argument (``withdraw`` only). A listed finding comes
-with the warning that withdrawing it withdraws it for the project (draft, revise and later argue attempts lose it), and
-that a rerun asks the Arguer to answer the objection instead. It is not asked when no
-answer can mend the gate (the main claim's own problems, an unreviewed argument): the stage argues again.
+with the warning that withdrawing it withdraws it for the project (draft, revise and later argue attempts lose it; only
+a new synthesize attempt can write it again), and that, when it is listed for an objection the Arguer left unanswered,
+a rerun asks the Arguer to answer it instead. It is not asked when no answer can mend the gate (the main claim's own
+problems, an unreviewed argument): the stage argues again.
 
 The Arguer's synthesis requests are decided there too, never by the Arguer alone. P2: your final review lists them
 and also takes ``{"decision": "back", "to": "synthesize", "comment"?, "revise"?}`` and nothing else (with ``claims``
