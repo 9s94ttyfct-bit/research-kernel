@@ -4,11 +4,11 @@ The Plan 5c stages turn a review's argument into an exported manuscript: `draft 
 records the live runs of Task 9:
 - a systematic review (melatonin for delirium), a critical review (large language models as screeners) and a research
   proposal (the melatonin question as a trial), each in P2 with the checkpoints answered. The melatonin review and the
-  proposal exported. The critical review is at read_extract, held by the OpenAlex budget.
+  proposal exported. The critical review stopped at read_extract on a `stage_blocked` checkpoint, left open.
 - one P1 project from intake to export, with every checkpoint the mode lets a vote answer voted. It failed at protocol:
   the vote never approved the protocol.
-- the systematic-review reproduction set. Its third home ran out of OpenAlex budget at protocol, so no report
-  (`docs/eval/sr-repro-<date>.md`) is written yet.
+- the systematic-review reproduction set. All six runs of its third home failed at protocol; the report is
+  `docs/eval/sr-repro-2026-11-11.md`.
 
 Every number comes from the runs' event logs, databases and CLI output; ids are the runs' own. **The checkpoints were
 answered by the agent that ran the demo, standing in for the researcher**; every answer is logged with its time and
@@ -323,7 +323,7 @@ protocol_approval, 1 final_review. Each answer is logged with its time and reaso
 - The design leaves dose, agent-specific analysis and power inputs open. The SimReader flagged this and the final
   review accepted it; a real researcher would likely have asked for a design revision there.
 
-## Critical review (P2): at read_extract, held by the OpenAlex budget
+## Critical review (P2): stopped at read_extract (checkpoint left open)
 
 Project `llm-screening`, run `run_01M70BF35ZGCC0SFJBTTEAEK9W`, home `rk-plan5c-critical`. It is a critical review
 with a thematic plan. Its question asks how large language models have been evaluated as title and abstract
@@ -355,8 +355,28 @@ report, and how far their designs support using a model in place of a second hum
     whose answer, a journal or a preprint, is rarely a sentence in the paper. Of attempt 2's 115 problems, attempt 3
     cleared 59 and kept 56, and it made 54 new ones.
   - By 00:42 the Reader had finished 171 tasks. Every task attempt in the run ran on `anthropic/claude-haiku-5-5`.
-- The run paused on the OpenAlex budget at 00:41:46 on 2026-11-10, in read_extract attempt 4. It goes on
-  once OpenAlex answers again.
+- The run paused on the OpenAlex budget at 00:41:46 on 2026-11-10, in read_extract attempt 4. Attempt 4 had extracted
+  45 studies by then (765 values, 85 with a problem).
+- **Resumed at 04:25:17 on 2026-11-11** on fa83ed6 (`rk serve` named service). The anonymous OpenAlex budget had
+  reset, and no other home was running.
+  - Attempt 5 carried over attempt 4's 45 studies and read the other 18. It ended at 04:29:30 with 658 values with
+    a verified quote, 303 not reported, and 110 with a problem: 108 `quote not verbatim`, 52 of them on
+    `publication_status`.
+  - The read_extract→read_extract edge was at its limit (2), so a `stage_blocked` checkpoint opened. The stand-in
+    answered `allow_one_more` at 04:30:03. Its comment spelled out the quoting rule: copy quotes character for
+    character; quote the venue line as printed for `publication_status`, or give `not_reported` with the header
+    searched. The comment reached the reopened stage's guidance.
+  - Attempt 6 ended at 04:43:38 with 662 verified, 307 not reported, and 102 with a problem in 51 of the 63 studies.
+    100 were `quote not verbatim`; 40 were on `publication_status` and the rest spread over 15 fields, none with more
+    than 7. A second `stage_blocked` opened (`chk_01M74EPB9P6CZCA7YXT47W7VCW`).
+- **Why it stops here.** The Reader takes `publication_status` from the item's metadata, and that text is not in the
+  paper, so no quote of it can verify. Local commit b836d14 lets an extraction field be sourced from the item's
+  record, but this run's protocol was frozen before that change and its serve ran fa83ed6. More attempts cannot clear
+  these failures, so on the controller's instruction the stand-in did not answer the second checkpoint. The run
+  stays `paused_waiting_human` at read_extract attempt 6 with that checkpoint open. It did not reach synthesize,
+  argue, draft, revise, audit or export.
+- In total the run's Reader finished 252 tasks. All 309 task attempts in the run ran on `anthropic/claude-haiku-5-5`.
+  The 12 stand-in answers are in `demo-notes/answers.log`.
 
 ## P1 project: failed at protocol (the vote never approved it)
 
@@ -410,39 +430,50 @@ The one human checkpoint, `topic_review`, was answered by the stand-in.
 P1 protocols on this page failed the same way: two judges voting revise until the edge limit.
 - `probiotics-aad` (with the code faults above);
 - `probiotics-aad-2`;
-- `ai-pulmonary-hypertension` in the third reproduction home (below);
+- all six projects of the third reproduction home (below);
 - in the second reproduction home, ozone, tfa and fructose (three revise votes each) and cade (judge_2 voted
   approve twice, judge revise).
 
 In none of the P1 runs on this page did both judges approve a protocol within 3 attempts with Haiku as the Lead.
 P1 then fails as designed rather than freezing the protocol.
 
-## Reproduction set: third home, held by the OpenAlex budget
+## Reproduction set: third home, failed at protocol
 
 The first two homes (`rk-plan5c-srrepro`, `rk-plan5c-srrepro2`) failed at protocol and stay as history. Details are
-in the Task 9 report and the reproduction report, when it is written.
+in the Task 9 report and in the reproduction report, `docs/eval/sr-repro-2026-11-11.md`.
 
-The third home (`rk-plan5c-srrepro3`) ran on 612a780 (`rk serve` named service).
+The third home (`rk-plan5c-srrepro3`) ran as an `rk serve` named service.
 - Setup: a stats check of 180/180 and six projects seeded at 19:11 UTC on 2026-11-09.
-- `rk eval sr-repro` started the six runs at 00:26:44 on 2026-11-10.
-- By 00:30 the anonymous OpenAlex budget was spent. Three things had used it since the reset: the P1 discovery stages
-  above (landscape, gaps, topics and question), the critical review's read_extract and these protocol probes. Every home calls OpenAlex without a key, so
-  they all share the budget per IP (`rk setup`: "$0.10/day").
+- `rk eval sr-repro` started the six runs at 00:26:44 on 2026-11-10 on 612a780. By 00:30 the anonymous OpenAlex budget
+  was spent. Three things had used it since the reset: the P1 discovery stages above (landscape, gaps, topics and
+  question), the critical review's read_extract and these protocol probes. Every home calls OpenAlex without a key,
+  so they all share the budget per IP (`rk setup`: "$0.10/day").
+- Pulmonary hypertension failed at 00:29:34. The other five paused on the budget between 00:28:27 and 00:29:22.
+- On 2026-11-11, after the critical review had stopped, a second `rk eval sr-repro` on fa83ed6 resumed the five
+  at 04:44 UTC and started a fresh pulmonary-hypertension run. No run paused on the budget again. By 04:47:53 all six
+  had failed at protocol.
 
-| Entry | Run | State | Protocol votes (judge/judge_2) |
-|---|---|---|---|
-| ai-pulmonary-hypertension | `run_01M71DK7R03B4WFC4XN9VE2NJY` | failed at protocol attempt 3 (00:29:34) | 1–3: revise/revise |
-| ai-prostate-mri | `run_01M71DK7SCWDV84K44QXW5GP0P` | paused_budget, protocol attempt 3 | 2: revise/revise |
-| cade-colonoscopy | `run_01M71DK7MAW7JJ8BR2X84HWMHE` | paused_budget, protocol attempt 3 | 1, 2: revise/revise |
-| ozone-bleaching | `run_01M71DK7N4YKWCKG5GWZGVYP2P` | paused_budget, protocol attempt 3 | 2: revise/revise |
-| fructose-rats-sbp | `run_01M71DK7P1FWYZ3R2S5RH04D5V` | paused_budget, protocol attempt 2 | none yet |
-| tfa-heated-oils | `run_01M71DK7PYD1JMCEKADFCNYSA0` | paused_budget, protocol attempt 2 | 1: revise/approve (decided revise) |
+| Entry | Run | Protocol attempts | Votes (judge/judge_2, each decided revise) | Failed (UTC) |
+|---|---|---|---|---|
+| cade-colonoscopy | `run_01M71DK7MAW7JJ8BR2X84HWMHE` | 3 | 1–3: revise/revise | 11-11 04:44:25 |
+| ozone-bleaching | `run_01M71DK7N4YKWCKG5GWZGVYP2P` | 3 (1 refused for "novel") | 2–3: revise/revise | 11-11 04:45:27 |
+| fructose-rats-sbp | `run_01M71DK7P1FWYZ3R2S5RH04D5V` | 3 (1 refused for "novel") | 2–3: revise/revise | 11-11 04:47:53 |
+| tfa-heated-oils | `run_01M71DK7PYD1JMCEKADFCNYSA0` | 3 | 1: revise/approve; 2–3: revise/revise | 11-11 04:47:16 |
+| ai-pulmonary-hypertension | `run_01M71DK7R03B4WFC4XN9VE2NJY`, then `run_01M74EQJH521WSWGAZH6V6C56K` | 3, then 1 | 1–3, then 4: revise/revise | 11-10 00:29:34; 11-11 04:44:49 |
+| ai-prostate-mri | `run_01M71DK7SCWDV84K44QXW5GP0P` | 3 (1 refused for "novel") | 2–3: revise/revise | 11-11 04:46:57 |
 
-The final judge's reason for pulmonary hypertension:
-- the search sources are inconsistent: PubMed and Europe PMC in the strategy, OpenAlex in the PRISMA-P scope;
-- the 3,000-record cap keeps only the first records returned;
-- the extraction lacks false positives and false negatives for both arms;
-- the synthesis mixes risk ratios with a bivariate sensitivity/specificity model.
-
-`rk eval sr-repro` resumes paused runs and starts a fresh run in place of a failed one. Every call is therefore a
-run, not a read. Its report is written once the set has run after the budget returns.
+- No run reached search_screen, so every recall is 0.00 and no direction was judged: no entry meets the §10
+  targets. The report lists each entry's selection ceiling, the share of included studies the selection's own
+  search found (0.88 to 1.00).
+- **The fresh pulmonary-hypertension run had one protocol attempt.** Back-edge counts belong to the project, not
+  the run. The new run started with protocol→protocol already used twice by the failed run (edge.taken 1 and 2 at
+  00:29:01 and 00:29:34 on 2026-11-10), so it failed after its first vote. A replaced run cannot get the full
+  number of tries.
+- The judges' reasons were concrete protocol faults. For pulmonary hypertension:
+  - the search sources are inconsistent: PubMed and Europe PMC in the strategy, OpenAlex in the PRISMA-P scope;
+  - the 3,000-record cap keeps only the first records returned;
+  - the extraction lacks false positives and false negatives for both arms;
+  - the synthesis mixes risk ratios with a bivariate sensitivity/specificity model.
+- `rk eval sr-repro` resumes paused runs and starts a fresh run in place of a failed one, and `--write-report` does
+  the same. The report was therefore written by scoring each project (`rk_sr_repro_score`) and
+  `rk.eval.sr_repro.write_report`, without starting runs.
