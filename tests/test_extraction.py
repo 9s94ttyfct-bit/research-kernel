@@ -579,3 +579,35 @@ def test_a_record_value_must_be_what_its_quote_of_the_record_says(env):
         (f'study {c} ("Aspirin C"), field "venue": it is "not_reported", but its quote of the record gives one '
          '("Venue: Age Ageing")')]
     assert _record_value_problem(venue, "not_reported", "Venue: not given") is None  # the record has none
+
+
+def test_a_rerun_reads_again_only_the_failing_fields_of_a_study(env):
+    """Calibration (critical review rerun on ad3cbc2): a study read again in full after a failed gate turned values
+    verified before into ``not_reported`` (a recall of 0.93 was lost). A study the gate found only field problems in
+    keeps the fields it accepted; the reader is asked for the failing fields alone, and a value it gives for another
+    field is ignored."""
+    _, ps, _ = env
+    ids = _included(env, {"Aspirin A": "full"})
+    slip = {"values": [{"field": "n", "value": 100, "quote": METHODS},
+                       {"field": "design", "value": "cohort", "quote": "A cohort of 100 elderly people"}]}
+    w = ReadExtractWorker()
+    w.run(_ctx(env, Reader({"Aspirin A": [slip]})))
+    record_ran(ps, "read_extract", 1, "done", "", actor="tester")
+    a = ids["Aspirin A"]
+    assert w.gate(ps, 1).failures == [f'study {a} ("Aspirin A"), field "design": {QUOTE_FAILED}']
+    n_note = next(r["note_id"] for r in store.extractions(ps, 1) if r["field"] == "n")
+
+    record_reopened(ps, "read_extract", by_edge="read_extract->read_extract", guidance="", actor="tester")
+    record_attempt(ps, "read_extract", 2, run_id=None, guidance="", requested=None, actor="tester")
+    rerun = Reader({"Aspirin A": [{"values": [{"field": "n", "value": "not_reported", "quote": "2. Methods"},
+                                              {"field": "design", "value": "cohort",
+                                               "quote": "A cohort of 100 people over 80"}]}]})
+    w.run(_ctx(env, rerun, attempt=2))
+    (call,) = rerun.calls
+    assert [f["name"] for f in call["inputs"]["fields"]] == ["design"]
+    rows = {r["field"]: r for r in store.extractions(ps, 2)}
+    assert (rows["n"]["value"], rows["n"]["note_id"], rows["n"]["carried_from"]) == (100, n_note, 1)
+    assert rows["design"]["problem"] is None and rows["design"]["carried_from"] is None
+    (study,) = store.extraction_notes(ps, 2, kind="study")
+    assert any('"n"' in p and "not asked for" in p for p in study["problems"])
+    assert w.gate(ps, 2).ok, w.gate(ps, 2).failures

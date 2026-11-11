@@ -46,9 +46,11 @@ When ``synthesize->read_extract`` reopened the stage naming studies (``reread_re
 or the studies you named on a synthesize checkpoint), the attempt reads only those studies again; every other study
 keeps its values and notes from the passed attempt (``kept_extraction``, ``carried_from``), unless its text changed
 or the P1 degrade touched it (then it is read again too). When a failed gate reopened it
-(``read_extract->read_extract``, ``rerun_kept``), the attempt reads again only the studies the gate found something
-against; every other study keeps its values and notes from the attempt that failed, on the same conditions. Reading
-all of them again would make new slips in studies that had passed, and the attempts would not converge.
+(``read_extract->read_extract``, ``rerun_kept``), the attempt reads again only what the gate found something against:
+a study with only field problems keeps the fields the gate accepted and is read for its failing fields alone (a
+value given for another field is ignored); a study with another problem is read in full; every other study keeps its
+values and notes from the attempt that failed, on the same conditions. Reading what passed again would make new
+slips in it, and turn values found before into ``not_reported``, so the attempts would not converge.
 
 The gate (``gate``, from ``findings``): every non-flagged included study was read and its retraction checked; every
 extraction field of each has a value whose quote note is a verified quote of its source: for a text field the text the
@@ -507,10 +509,14 @@ def _inputs(ctx: StageContext, protocol: Protocol, rec: dict, kind: str) -> dict
     return out
 
 
-def _read(ctx: StageContext, protocol: Protocol, rec: dict, kind: str) -> tuple[list[str], list[str]]:
-    """The reader's extraction of one study, stored value by value. Returns the notes it linked and the problems."""
+def _read(ctx: StageContext, protocol: Protocol, rec: dict, kind: str,
+          only: frozenset[str] | None = None) -> tuple[list[str], list[str]]:
+    """The reader's extraction of one study (of the fields in ``only``, when given), stored value by value. Returns
+    the notes it linked and the problems."""
     iid = rec["item_id"]
     inputs = _inputs(ctx, protocol, rec, kind)
+    if only is not None:
+        inputs["fields"] = [f for f in inputs["fields"] if f["name"] in only]
     out, error = None, "no output"
     for _ in range(READS):
         r = ctx.executor.run(ROLE, EXTRACT_TASK, inputs, ExtractOut, stage=ctx.stage, attempt=ctx.attempt,
@@ -528,6 +534,9 @@ def _read(ctx: StageContext, protocol: Protocol, rec: dict, kind: str) -> tuple[
         f = fields.get(v.field)
         if f is None:
             problems.append(f'a value for "{v.field}", not a field of the extraction schema, was ignored')
+            continue
+        if only is not None and f.name not in only:
+            problems.append(f'a value for "{v.field}", a field not asked for again (it kept its value), was ignored')
             continue
         note_id, problem = None, _value_problem(f, v.value)
         if problem is None:
@@ -594,23 +603,47 @@ def _kept(ps: ProjectStore, protocol_hash: str) -> dict[str, CarriedStudy]:
     return _undegraded(ps, passed, kept_extraction(ps, passed))
 
 
-def rerun_kept(ps: ProjectStore, attempt: int, protocol_hash: str) -> dict[str, CarriedStudy]:
-    """After a failed gate reopened the stage (``read_extract->read_extract``): the studies of the attempt it failed
-    on (the last one that ran to completion, under the same frozen protocol) that the gate found nothing against,
-    which the rerun keeps (``kept_extraction``, ``_undegraded``); it reads the others again. Reading every study
-    again would make new slips in the studies that had passed, so the attempts would not converge. Nothing is kept
-    after any other reopen, or when the gate found something against the attempt as a whole."""
+@dataclass
+class Rerun:
+    """What a rerun after a failed gate keeps (``rerun_kept``): whole studies (``kept``), and of the studies the gate
+    found only field problems in, the rows of the fields it accepted with the fields to read again (``partial``)."""
+    kept: dict[str, CarriedStudy]
+    partial: dict[str, tuple[CarriedStudy, frozenset[str]]]
+
+
+def rerun_kept(ps: ProjectStore, attempt: int, protocol_hash: str) -> Rerun:
+    """After a failed gate reopened the stage (``read_extract->read_extract``), from the attempt it failed on (the last
+    one that ran to completion, under the same frozen protocol; ``kept_extraction``, ``_undegraded``): the studies
+    the gate found nothing against, kept whole; a study it found only field problems in keeps the rows of the fields
+    it accepted and is read for the failing fields alone; any other study is read again. Reading what passed again
+    makes new slips in it (and turns values found before into ``not_reported``), so the attempts would not converge.
+    Nothing is kept after any other reopen, or when the gate found something against the attempt as a whole."""
+    nothing = Rerun({}, {})
     reopen = _reopen(ps, attempt)
     if reopen is None or json.loads(reopen["payload"])["by_edge"] != RERUN:
-        return {}
+        return nothing
     failed = next((a for a in range(attempt - 1, 0, -1) if attempt_ran(ps, STAGE, a)), None)
     if failed is None or protocol_of(ps, STAGE, failed) not in (None, protocol_hash):
-        return {}
+        return nothing
     found = findings(ps, failed)
     if any(f.item_id is None for f in found):
-        return {}
-    failing = {f.item_id for f in found}
-    return _undegraded(ps, failed, {iid: c for iid, c in kept_extraction(ps, failed).items() if iid not in failing})
+        return nothing
+    by_study: dict[str, list[Finding]] = {}
+    for f in found:
+        by_study.setdefault(f.item_id, []).append(f)
+    earlier = _undegraded(ps, failed, kept_extraction(ps, failed))
+    partial = {}
+    for iid, fs in by_study.items():
+        if iid in earlier and all(f.kind == "field" for f in fs):
+            failing = frozenset(f.field for f in fs)
+            c = earlier[iid]
+            partial[iid] = (CarriedStudy(c.note, [e for e in c.values if e["field"] not in failing]), failing)
+    return Rerun({iid: c for iid, c in earlier.items() if iid not in by_study}, partial)
+
+
+def _same_text(note: dict, kind: str | None, sha: str | None) -> bool:
+    """Whether a study's ``study`` note was read on the text it would be read on now (the same kind and snapshot)."""
+    return kind is not None and note["text"] == kind and note.get("snapshot") == sha
 
 
 class ReadExtractWorker:
@@ -626,17 +659,20 @@ class ReadExtractWorker:
         protocol = Protocol.model_validate(row["body"])
         carried = carried_extraction(ps, ctx.stage, ctx.attempt, row["frozen_hash"])
         reread = reread_request(ps, ctx.attempt)
-        kept = _kept(ps, row["frozen_hash"]) if reread is not None else rerun_kept(ps, ctx.attempt, row["frozen_hash"])
-        read = 0
+        rerun = Rerun(_kept(ps, row["frozen_hash"]), {}) if reread is not None else rerun_kept(
+            ps, ctx.attempt, row["frozen_hash"])
+        read = only = 0
         for rec in studies:
             iid = rec["item_id"]
             kind, sha, _ = _text(ctx, rec)
             c = carried.get(iid)
             if c is None and (reread is None or iid not in reread):
-                c = kept.get(iid)
-            if c is not None and (c.note["flagged"] or (kind is not None and c.note["text"] == kind
-                                                        and c.note.get("snapshot") == sha)):
+                c = rerun.kept.get(iid)
+            if c is not None and (c.note["flagged"] or _same_text(c.note, kind, sha)):
                 self._carry(ctx, c)
+            elif c is None and (p := rerun.partial.get(iid)) is not None and _same_text(p[0].note, kind, sha):
+                self._study(ctx, protocol, rec, keep=p[0], fields=p[1])
+                read, only = read + 1, only + 1
             else:
                 self._study(ctx, protocol, rec)
                 read += 1
@@ -645,9 +681,10 @@ class ReadExtractWorker:
         if reread is not None:
             reason += (f"; synthesize sent read_extract back to read {len(reread)} "
                        f"{'study' if len(reread) == 1 else 'studies'} again, every other study kept its extraction")
-        elif kept:
-            reason += (f"; after the failed gate {read} {'study was' if read == 1 else 'studies were'} read again, "
-                       "every study the gate found nothing against kept its extraction")
+        elif rerun.kept or rerun.partial:
+            reason += (f"; after the failed gate {read} {'study was' if read == 1 else 'studies were'} read again "
+                       f"({only} only for their failing fields), every study and field the gate found nothing "
+                       "against kept its extraction")
         if all(noted[r["item_id"]]["flagged"] for r in studies):
             which = "; ".join(f"{_study_label(ps, r['item_id'])}: {noted[r['item_id']]['retraction']['status']}"
                               for r in studies)
@@ -665,8 +702,11 @@ class ReadExtractWorker:
         fields = {k: v for k, v in c.note.items() if k not in ("attempt", "kind")}
         add_extraction_note(ctx.ps, ctx.attempt, "study", actor=ctx.actor, **fields)
 
-    def _study(self, ctx: StageContext, protocol: Protocol, rec: dict) -> None:
-        """Check one study's retraction and, unless it is retracted or withdrawn, read it; its ``study`` note last."""
+    def _study(self, ctx: StageContext, protocol: Protocol, rec: dict, *, keep: CarriedStudy | None = None,
+               fields: frozenset[str] | None = None) -> None:
+        """Check one study's retraction and, unless it is retracted or withdrawn, read it; its ``study`` note last.
+        ``keep`` and ``fields`` (``rerun_kept``): the rows of the fields the gate accepted are copied (with their
+        ``carried_from``) and the reader reads the study for ``fields`` alone."""
         iid = rec["item_id"]
         problems: list[str] = []
         retraction = _retraction(ctx, iid)
@@ -681,12 +721,18 @@ class ReadExtractWorker:
             if why:
                 problems.append(why)
             else:
-                got, err = per_item(f"reading of {iid}", lambda: _read(ctx, protocol, rec, kind))
+                for e in keep.values if keep else []:
+                    add_extraction(ctx.ps, ctx.attempt, iid, e["field"], e["value"], e["note_id"],
+                                   bool(e["sufficient"]), actor=ctx.actor, actor_kind="kernel", problem=e["problem"],
+                                   carried_from=e["carried_from"])
+                got, err = per_item(f"reading of {iid}", lambda: _read(ctx, protocol, rec, kind, fields))
                 if err:
                     problems.append(err)
                 else:
                     linked, more = got
                     problems += more
+                if keep:
+                    linked = list(dict.fromkeys([*keep.note["notes"], *linked]))
         add_extraction_note(ctx.ps, ctx.attempt, "study", actor=ctx.actor, item_id=iid, record_id=rec["id"],
                             retraction=retraction, flagged=flagged, text=kind, snapshot=sha,
                             sufficient=None if kind is None else ("full" if kind == FULL else "low"),
