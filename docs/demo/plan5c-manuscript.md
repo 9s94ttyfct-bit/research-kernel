@@ -559,6 +559,34 @@ second judge 14 on `deepseek-v4.1-flash`; 40 in all, all argue's. No task failed
 - Open: argue has used 120 tasks over three run sessions; at 16–20 tasks per attempt, a 40-task session holds about
   two attempts.
 
+### Calibration rerun, fourth resume (2026-11-11): argue's budget runs out a third time
+
+The same run, resumed at 09:53:43 UTC (run session 4) by a serve started on 59e1afb (logged HEAD), with argue at
+attempt 12. Tasks: the Arguer 5 on `anthropic/claude-haiku-5-5`, the Skeptic 5 and the first judge 15 on
+`openai-codex/gpt-6-luna`, the second judge 15 on `deepseek-v4.1-flash`; 40 in all, all argue's. Two first-judge
+tries gave invalid output and succeeded on their second try; no task failed.
+
+- **argue, attempts 12–15** (09:53–10:01), 23, 13, 4 and 0 tasks. Each final review was answered `rerun`, and
+  argue→argue was allowed three more times (uses 8–10):
+  - attempt 12: four priority-2 objections on the main claim were left open; rounds 2 and 3 restated reasons with
+    added caveats instead of answering them;
+  - attempt 13: the four objections on the main claim were cleared, but the main claim failed V-HEDGE on "none" and
+    "never", wording the stand-in had supplied, and two response claims stayed uncertain;
+  - attempt 14: the stand-in's revised wording dropped a counterexample, which the Skeptic raised again. Two objections
+    carried from attempt 13 (`obj_01M74ZCD0DRSH3V83QTCD8AWTW`, `…AWTY`) were still listed for the Arguer to answer,
+    since their attempt-13 answers had ended uncertain. The budget ended the rounds after the first critique (`end`
+    reason `budget`), so no round answered them;
+  - attempt 15 started at 10:01:42 with no tasks left; the run paused (`paused_budget`).
+- **The restate reuse (46b3423) never applied:** every round of this session noted an empty `restated`. The Arguer
+  restated findings with added caveats, so no text matched. Attempt 14 reused the supported findings by id, so they
+  were not judged again.
+- Not exercised: the round-1 ask-again, `argue_request`, draft, revise, audit and export.
+- Other findings, not kernel defects: the Haiku Arguer answered objections by restating reasons, did not copy
+  findings word for word when asked, and left out two response claims it was told to keep; the gpt-6-luna Skeptic
+  had become mostly concessive but raised the same counterexample whenever the main claim omitted it.
+- Open: argue has used 160 tasks over four run sessions. The two judges take 30 of each 40: every new or reworded
+  claim is judged by both.
+
 ## P1 project: failed at protocol (the vote never approved it)
 
 Home `rk-plan5c-p1`, intake `probiotics for preventing antibiotic-associated diarrhoea in children`, systematic
