@@ -391,20 +391,21 @@ def test_enumerated_stage_has_no_task_cap(project):
             task(capped, "search_screen")
 
 
-def test_a_judges_task_neither_counts_against_nor_is_refused_by_the_stage_budget(project):
-    """Your decision (2026-11-11): the open-stage budget caps the exploring roles, not the judges who check them. With
-    the protocol stage's 40 tasks spent, a judge's task still runs; 40 judge tasks leave the budget untouched."""
+@pytest.mark.parametrize("check", ["judge", "triage"])
+def test_a_checks_task_neither_counts_against_nor_is_refused_by_the_stage_budget(project, check):
+    """Your decisions (2026-11-11): the open-stage budget caps the exploring roles, not the checks of their work (the
+    judges, triage). With the stage's 40 tasks spent, a check's task still runs; 40 of them leave the budget untouched."""
     k, ps = project
     save_settings(load_settings().model_copy(update={"calls_per_hour": {}}))
     reg = build_registry(k)
     driver = DriverSpec.parse("claude_cli")
     ex = KernelExecutor(k, reg, "demo", run_id="run_1", session=1, provider_for=lambda role: OkProvider())
     for _ in range(40):
-        assert ex.run("judge", "do", {}, Found, stage="protocol", attempt=1, driver=driver).ok
-    assert tasks_used(ps, "run_1", 1, "protocol") == 0
+        assert ex.run(check, "do", {}, Found, stage="gaps", attempt=1, driver=driver).ok
+    assert tasks_used(ps, "run_1", 1, "gaps") == 0
     for _ in range(40):
-        assert ex.run("gapminer", "do", {}, Found, stage="protocol", attempt=1, driver=driver).ok
-    assert tasks_used(ps, "run_1", 1, "protocol") == 40
-    assert ex.run("judge_2", "do", {}, Found, stage="protocol", attempt=1, driver=driver).ok
+        assert ex.run("gapminer", "do", {}, Found, stage="gaps", attempt=1, driver=driver).ok
+    assert tasks_used(ps, "run_1", 1, "gaps") == 40
+    assert ex.run(check, "do", {}, Found, stage="gaps", attempt=1, driver=driver).ok
     with pytest.raises(BudgetExceeded):
-        ex.run("gapminer", "do", {}, Found, stage="protocol", attempt=1, driver=driver)
+        ex.run("gapminer", "do", {}, Found, stage="gaps", attempt=1, driver=driver)

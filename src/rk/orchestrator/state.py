@@ -11,7 +11,7 @@ from typing import Any
 from rk.discovery.store import intake_of
 from rk.ids import new_id
 from rk.orchestrator.graph import DISCOVERY, PRODUCTION, stages_of
-from rk.roles.policy import JUDGE_ROLES
+from rk.roles.policy import UNBUDGETED_ROLES
 from rk.store.events import Event, NewEvent
 from rk.store.project import ProjectStore
 from rk.store.projections import projection
@@ -41,15 +41,15 @@ def tasks_used(ps: ProjectStore, run_id: str, session: int | None, stage: str) -
     """Role tasks counted against the stage budget of one run session, those still running or ``interrupted`` by a
     restart included (their call may have used quota). A task that came back ``rate_capped`` made no model call, and
     one that came back ``session_limited`` did no work (its driver's usage limit was reached): neither is counted. Nor
-    is a judge's task (``JUDGE_ROLES``: V-SUPPORT, V-NOVELTY, already-done and the P1 votes): the budget caps the
-    stage's exploration, not the checks of what it produced (your decision, 2026-11-11, after argue spent three run
-    sessions' budgets mostly on judges)."""
-    marks = ", ".join("?" * len(JUDGE_ROLES))
+    is a check's task (``UNBUDGETED_ROLES``: the judges of V-SUPPORT, V-NOVELTY, already-done and the P1 votes, and
+    triage): the budget caps the stage's exploration, not the checks of what it produced (your decisions, 2026-11-11,
+    after argue spent three run sessions' budgets mostly on judges)."""
+    marks = ", ".join("?" * len(UNBUDGETED_ROLES))
     return ps.db.execute(
         "SELECT COUNT(*) FROM run_tasks r LEFT JOIN tasks t ON t.id = r.task_id WHERE r.run_id=? AND r.session IS ? "
         f"AND r.stage=? AND COALESCE(t.error, '') NOT IN ('rate_capped', 'session_limited') "
         f"AND COALESCE(t.role, '') NOT IN ({marks})",
-        (run_id, session, stage, *JUDGE_ROLES)).fetchone()[0]
+        (run_id, session, stage, *sorted(UNBUDGETED_ROLES))).fetchone()[0]
 
 
 # ---- stage events ----
@@ -90,7 +90,7 @@ def stalled_resumes(ps: ProjectStore, stage: str, attempt: int) -> str | None:
     in one run or across new runs); else ``None``. A resume that ended waiting (a rate cap, a source outage, a budget
     pause) is no crash, so an attempt is never given up for waiting. A killed process writes no ``stage.crashed``, so
     a kill/restart loop is bounded only by the stage budget (``tasks_used``) where the stage has one, and not at all
-    by it while only judges run (a judge's task is not counted); each restart needs a human."""
+    by it while only checks run (a judge's or triage task is not counted); each restart needs a human."""
     rows = ps.db.execute("SELECT seq, type FROM events WHERE type IN ('stage.resumed', 'stage.crashed') AND "
                          "json_extract(payload, '$.stage')=? AND json_extract(payload, '$.attempt')=? ORDER BY seq",
                          (stage, attempt)).fetchall()

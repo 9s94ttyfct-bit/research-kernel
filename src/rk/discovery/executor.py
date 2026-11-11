@@ -15,7 +15,7 @@ from rk.llm.runner import run_task
 from rk.llm.types import Provider, TaskResult
 from rk.orchestrator.graph import OPEN_STAGES, STAGE_TASK_BUDGET
 from rk.orchestrator.state import record_run_task, tasks_used
-from rk.roles.policy import JUDGE_ROLES
+from rk.roles.policy import UNBUDGETED_ROLES
 
 
 class BudgetExceeded(Exception):
@@ -56,7 +56,8 @@ class KernelExecutor:
     created, so a task cut off by a restart (``interrupted``, spec §11.6) still counts against the stage budget. With
     a ``run_id`` (D2) a task in an open stage (``OPEN_STAGES``) first checks the stage budget of the run session; the
     other stages, including those that work through every record or included study, have none, and neither has D1
-    (no ``run_id``). A judge's task (``JUDGE_ROLES``) neither counts nor is refused (``tasks_used``). The hourly call
+    (no ``run_id``). A check's task (``UNBUDGETED_ROLES``: the judges, triage) neither counts nor is refused
+    (``tasks_used``). The hourly call
     caps apply to every task. ``provider_for`` (role -> provider) replaces the configured drivers, e.g. in tests; a
     ``provider`` given to ``run`` takes precedence."""
 
@@ -72,7 +73,7 @@ class KernelExecutor:
             provider: Provider | None = None, max_turns: int | None = None,
             timeout_s: int | None = None) -> TaskResult:
         ps, _ = self.kernel.project(self.project)
-        if self.run_id is not None and stage in OPEN_STAGES and role not in JUDGE_ROLES:
+        if self.run_id is not None and stage in OPEN_STAGES and role not in UNBUDGETED_ROLES:
             used = tasks_used(ps, self.run_id, self.session, stage)
             if used >= self.max_tasks_per_stage:
                 raise BudgetExceeded(stage, used, self.max_tasks_per_stage)

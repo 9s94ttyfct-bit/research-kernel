@@ -12,6 +12,9 @@ ROLES: tuple[str, ...] = ("lead", "scout", "screener_a", "screener_b", "reader",
 
 # Roles that take inline inputs only and never call tools.
 NO_TOOL_ROLES = frozenset({*JUDGE_ROLES, "triage"})
+# The check roles whose tasks the open-stage budget neither counts nor refuses (your decisions, 2026-11-11): the
+# judges, and triage (the gaps checks of later work and of map cells). The budget caps a stage's exploring roles.
+UNBUDGETED_ROLES = frozenset({*JUDGE_ROLES, "triage"})
 # Spec §8.1 "读取" (read everything in the project): roles that reason over the whole project. Screeners see
 # metadata and abstracts only; the Scout sees metadata plus discovery tools; the Reader sees full text and notes.
 _FULL_READERS = frozenset({"lead", "gapminer", "ideator", "arguer", "skeptic", "simreader", "writer"})

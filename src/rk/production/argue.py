@@ -155,7 +155,7 @@ from rk.production.synthesis import (
     synthesis_claims,
 )
 from rk.production.vote import vote
-from rk.roles.policy import JUDGE_ROLES
+from rk.roles.policy import UNBUDGETED_ROLES
 from rk.store.events import NewEvent
 from rk.store.project import ProjectStore
 from rk.verify.support import (
@@ -714,13 +714,13 @@ def conflict_checkpoint(ps: ProjectStore, attempt: int, conflict: dict) -> str |
     return r["id"] if r else None
 
 
-# ---- the executor, counted against the open-stage budget (a judge's task is not: ``tasks_used``) ----
+# ---- the executor, counted against the open-stage budget (a check's task is not: ``tasks_used``) ----
 class _Counted:
     def __init__(self, inner):
         self.inner, self.n = inner, 0
 
     def run(self, *args, **kw):
-        if kw.get("role", args[0] if args else None) not in JUDGE_ROLES:
+        if kw.get("role", args[0] if args else None) not in UNBUDGETED_ROLES:
             self.n += 1
         return self.inner.run(*args, **kw)
 
@@ -1647,9 +1647,10 @@ class ArgueWorker:
             lines += review_lines(ps, listing)
             if findings := [c for c in listing if c in s.synthesis]:
                 lines += ["", (f"Withdrawing a finding of the synthesis ({', '.join(findings)}) withdraws it for the "
-                               "project: draft, revise and later argue attempts no longer have it, and only "
-                               "argue->synthesize can find it again. When a finding is listed for an objection the "
-                               "Arguer left unanswered, rerun with your comment asks the Arguer to answer it instead.")]
+                               "project: draft, revise and later argue attempts no longer have it, and only a new "
+                               "synthesize attempt (argue->synthesize, or a back-edge that reopens synthesize) can "
+                               "write it again. When a finding is listed for an objection the Arguer left unanswered, "
+                               "rerun with your comment asks the Arguer to answer it instead.")]
         lines += ["", ('Answer {"answers_rq": "yes" or "no", "claims": {"<claim id>": "supported" or "withdraw", ...} '
                        'for every listed claim (one of its answers), optionally with a "comment"}, or '
                        '{"decision": "rerun", "comment": ...} to argue again with your comment.')]
