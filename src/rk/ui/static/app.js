@@ -755,7 +755,7 @@ function backToSynthesizeForm(answer, spent, revisable) {
     kept.field,
     el("label", { class: "field" }, "Why go back to synthesize (optional; needed when you tick findings: how to write them again)", why),
     el("button", { type: "submit", class: "secondary" }, "Back to synthesize"));
-  why.addEventListener("input", () => why.setCustomValidity(""));
+  form.addEventListener("input", () => why.setCustomValidity(""));  // typing, or ticking and unticking a finding
   form.addEventListener("submit", (e) => {
     e.preventDefault();
     const comment = why.value.trim();

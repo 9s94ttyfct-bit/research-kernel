@@ -662,8 +662,15 @@ def test_final_review_card_back_to_synthesize_reaches_the_worker(page, served):
     assert shown.count() == 1 and need in shown.inner_text() and "round 1" in shown.inner_text()
     assert shown.locator("b").count() == 0
     form = card.locator("form.back-synthesize")
-    form.get_by_label(f"Write again: {F2}").check()
-    form.get_by_label("Why go back to synthesize (optional").fill("Use the subgroup table.")
+    comment = form.get_by_label("Why go back to synthesize (optional")
+    tick = form.get_by_label(f"Write again: {F2}")
+    tick.check()
+    form.get_by_role("button", name="Back to synthesize").click()  # ticked, no comment: asked for one, nothing sent
+    assert comment.evaluate("e => e.validationMessage") == "Say how to write the ticked findings again."
+    tick.uncheck()  # unticked, the form is valid again
+    assert comment.evaluate("e => e.validity.valid")
+    tick.check()
+    comment.fill("Use the subgroup table.")
     form.get_by_role("button", name="Back to synthesize").click()
     assert _answer_of(ps, cp["id"]) == {"decision": "back", "to": "synthesize", "comment": "Use the subgroup table.",
                                         "revise": [ids[1]]}
