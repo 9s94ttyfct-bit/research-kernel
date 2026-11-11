@@ -218,6 +218,45 @@ def test_a_rerun_after_drafts_own_gate_keeps_the_sections_that_passed(env):
     assert _writer_sections(ex) == ["introduction", "theme-1", "gaps-agenda", "conclusion"]
 
 
+def repairs(*fixes: tuple[int, str]):
+    """A retry's Writer output: repairs only (sentence number, replacement text; "" deletes), no markdown."""
+    return lambda inputs: {"repairs": [{"sentence": n, "text": t} for n, t in fixes]}
+
+
+def test_a_retry_repairs_only_its_failing_sentences(env):
+    """Calibration (critical3, draft attempts 6-10): rewriting the whole section on every retry, the Writer brought in
+    new failing sentences each time (one section's failures went 4, 3, 2, 1, 4). A retry's repairs replace or delete
+    the failing sentences only and every other sentence stays word for word; a repair of a passing sentence is
+    ignored and noted."""
+    _, ps, _ = env
+    _ready(env)
+    bad = f"Aspirin was studied in 1234 older people [[clm:{main_claim(ps, 1)}]]."
+    ex = _writer([writes(bad=bad), repairs((1, ""), (2, "Rewritten [[inf]]."))] + [writes()] * 3)
+    w = DraftWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    first, second = draft_versions(ps, "introduction")
+    before = draft_text(ps, "introduction", first["version"])
+    after = draft_text(ps, "introduction", second["version"])
+    assert after == before.replace(bad + " ", "", 1) and second["verdict"]["ok"]
+    (note,) = draft_notes(ps, 1, kind="repaired")
+    assert note["sentences"] == [1, 2] and note["ignored"] == ["sentence 2: not a failing sentence of the previous draft"]
+
+
+def test_a_section_failing_at_draft_reruns_is_repaired_from_its_last_version(env):
+    """A draft->draft rerun gives a section that failed its tries the previous attempt's last version to repair, not a
+    blank page, so the failures it had fixed stay fixed."""
+    _, ps, _ = env
+    w = _failed_introduction(env)
+    ex = _writer([repairs((1, ""))])
+    assert w.run(_ctx(env, ex, attempt=2)).status == "done"
+    (call,) = ex.of("writer", "SectionDraft")
+    assert "1234" in call["inputs"]["retry"]["previous_draft"]
+    last = draft_versions(ps, "introduction")[-1]
+    assert (last["attempt"], last["verdict"]["ok"]) == (2, True)
+    assert "1234" not in draft_text(ps, "introduction", last["version"])
+    assert w.gate(ps, 2).ok
+
+
 def _failed_introduction(env) -> DraftWorker:
     """Attempt 1: introduction fails its three tries, the other sections pass; then reopened by draft->draft."""
     _, ps, _ = env
@@ -494,21 +533,22 @@ def test_a_bare_id_marker_is_named_in_the_writers_retry(env):
 
 def test_the_writer_is_not_offered_a_withdrawn_claim(env):
     """Task 9: the Writer (haiku) cited withdrawn claims it was given in its claims input; a withdrawn claim cannot be
-    cited, so only the limitations list it."""
+    cited, so only the limitations list it, by text and reason. Calibration (critical3, draft attempts 2 and 10):
+    given its id there, the Writer cited it anyway, so the id is left out."""
     _, ps, _ = env
     _ready(env)
     first = _writer([writes()])
     with pytest.raises(AssertionError):  # only the first task's inputs are needed
         DraftWorker().run(_ctx(env, first))
     claims = first.of("writer", "SectionDraft")[0]["inputs"]["claims"]
-    gone = next(c["claim_id"] for c in claims if c["role"] == "finding")
-    ArgumentService(ps).withdraw_claim(gone, reason="the objection holds", actor="tester")
+    gone = next(c for c in claims if c["role"] == "finding")
+    ArgumentService(ps).withdraw_claim(gone["claim_id"], reason="the objection holds", actor="tester")
     ex = _writer([writes()])
     with pytest.raises(AssertionError):
         DraftWorker().run(_ctx(env, ex, attempt=2))
     inputs = ex.of("writer", "SectionDraft")[0]["inputs"]
-    assert gone not in [c["claim_id"] for c in inputs["claims"]] and inputs["claims"]
-    assert gone in json.dumps(inputs["limitations"])
+    assert gone["claim_id"] not in json.dumps(inputs) and inputs["claims"]
+    assert gone["text"] in json.dumps(inputs["limitations"]) and "the objection holds" in json.dumps(inputs["limitations"])
 
 
 def test_disclosure_section_is_kernel_written(env):
