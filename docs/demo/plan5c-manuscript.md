@@ -559,7 +559,7 @@ second judge 14 on `deepseek-v4.1-flash`; 40 in all, all argue's. No task failed
 - Open: argue has used 120 tasks over three run sessions; at 16–20 tasks per attempt, a 40-task session holds about
   two attempts.
 
-### Calibration rerun, fourth resume (2026-11-11): argue's budget runs out a third time
+### Calibration rerun, fourth resume (2026-11-11): argue's budget runs out a fourth time
 
 The same run, resumed at 09:53:43 UTC (run session 4) by a serve started on 59e1afb (logged HEAD), with argue at
 attempt 12. Tasks: the Arguer 5 on `anthropic/claude-haiku-5-5`, the Skeptic 5 and the first judge 15 on

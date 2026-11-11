@@ -112,8 +112,9 @@ degrades.
   another while one runs. Stage calls are for D1 projects only, and no D2 run can start while one runs.
 - **D2 (autonomous).** `uv run rk run` runs the stages in `rk serve` without the Lead and stops only at checkpoints. A
   run session has a 12 h wall clock and 40 role tasks per open stage (landscape, gaps, topics, protocol, argue,
-  revise; search_screen and read_extract have no task budget, their work grows with the records). A judge's task does
-  not count: the budget caps a stage's exploring roles, not the checks of their work. Hourly CLI caps pause the run
+  revise; search_screen and read_extract have no task budget, their work grows with the records). A judge's task
+  (V-SUPPORT, V-NOVELTY, already-done, the P1 votes) runs but does not count; every other role's does, the triage
+  checks included. Hourly CLI caps pause the run
   until the next slot. Time spent waiting for your answer does not count: an answer that comes after the session's
   12 h starts a new session. A source that fails for a while (HTTP 429/5xx) makes the run back off and try again;
   one work whose lookup fails is reported and skipped. `uv run rk run resume` on a failed or cancelled run starts a
