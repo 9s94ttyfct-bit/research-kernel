@@ -637,8 +637,8 @@ UTC during protocol, which then resumed at 16:44; from 16:47 the host was kept a
 | synthesize | 17:52–17:57 | 1 | Arguer 8, judges 13 + 13 | 62 of 62 studies assessed; 6 findings supported, 7 withdrawn by the stand-in |
 | argue | 17:57–18:16 | 6 | Arguer 24, Skeptic 16, judges 40 + 40 | paused (`paused_budget`) at 18:16:23 in attempt 6 |
 
-- **search_screen:** one Screener-A batch failed three times during a network outage (16:58–17:05: gateway 502, DNS
-  lookup failures). The kernel ran it again as a new task, which succeeded; no screening decision was lost.
+- **search_screen:** Screener-A tasks failed during a network outage (16:58–17:06: gateway 502s, then DNS lookup
+  failures). The failed batch was screened again by a new task at 17:08, so its 25 records all got decisions.
 - **read_extract:** the stand-in allowed one more read_extract→read_extract with a whole-word quote for each
   remaining failure; attempt 4 passed. One kind of failure recurred: run-together table text such as
   "…0.8650.840GPT…" is a verbatim substring but ends mid-word, so the whole-word rule refuses it. The Reader got past
@@ -661,13 +661,14 @@ UTC during protocol, which then resumed at 16:44; from 16:47 the host was kept a
   with that answer's text, status and why as `earlier_answer`, but not its id. The Haiku Arguer's "left out
   responses" in critical2 (above) may have been the same refusal; that was not re-checked.
 - Other findings, not kernel defects:
-  - claims with identical text were created two or three times within an attempt (attempts 2, 5 and 6), each
-    judged again;
+  - claims with identical text were created two or three times within an attempt (attempts 2, 5 and 6), each judged
+    again; in attempt 3 the same unsupported response texts were written again in every round (7 and 6 times),
+    each replacing the last and judged again;
   - answers to objections on a main claim the Arguer had since rewritten were refused as not open, so a comment
     asking for them has no effect;
   - the Haiku Arguer rewrote the main claim despite word-for-word guidance (attempts 3 and 5), its round-1 self-check
-    said every time that the argument does not answer the question, and it kept asking synthesize to group the
-    studies by design and form of use;
+    said in every attempt but attempt 2 that the argument does not answer the question, and it kept asking
+    synthesize to group the studies by design and form of use;
   - the gpt-6-luna Skeptic again brought in a study outside the included set (SESR-Eval).
 - Open: the run is parked in argue attempt 6 (argue→argue used 5 times, argue→synthesize not used; the six
   supported findings intact). `rk run resume` starts run session 2.
