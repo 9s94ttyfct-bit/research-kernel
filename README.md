@@ -292,8 +292,8 @@ uv run rk eval stats --write-config             # validate rk.stats against publ
 | Checkpoint | When | Answers |
 |---|---|---|
 | `pooling_approval` | comparable pooling groups (P2) | `{"decisions": {"<group>": "pool"\|"no_pool"}}`, one per group |
-| `uncertain_support` | the judges disagree on synthesis findings (P2) | `{"claims": {claim_id: "supported"\|"withdraw"}}`, or `{"decision": "rerun", "comment"}` (reruns synthesize only) |
-| `uncertain_support` | the end of argue (P2) | `{"answers_rq": "yes"\|"no", "claims": {…}}`, or `{"decision": "rerun", "comment"}` |
+| `uncertain_support` | the judges disagree on synthesis findings (P2) | `{"claims": {claim_id: "supported"\|"withdraw"}}`, or `{"decision": "rerun", "comment", "revise"?: [finding id]}` (reruns synthesize only; `revise`: kept findings to write again) |
+| `uncertain_support` | the end of argue (P2) | `{"answers_rq": "yes"\|"no", "claims": {…}}`, `{"decision": "rerun", "comment"}`, or, when the Arguer asked synthesize for findings, `{"decision": "back", "to": "synthesize", "comment"?, "revise"?: [finding id]}` (a comment is required with `revise`) |
 | `evidence_conflict` | two supported claims contradict each other (P2) | `{"decision": "a_holds"\|"b_holds"\|"both_contested"}` |
 | `design_approval` | a design passed its checks (P2) | `{"decision": "approve", "claims": {…}}`, `revise` with a `comment`, or `back` |
 | `design_approval` | the Ideator says the RQ is untestable (P2) | `{"decision": "question"}` (optional `comment`), `revise` with a `comment`, or `approve` when its draft passes its checks |

@@ -1370,6 +1370,8 @@ def test_a_new_attempt_keeps_the_findings_that_passed_word_for_word(env):
     out = w.on_answer(_ctx(env, ex2, 2), _answer(ps, cp["id"], {"decision": "rerun", "comment": "Older adults.",
                                                               "revise": [again["id"]]}))
     assert out.status == "rerun"
+    assert w.on_answer(_ctx(env, ex2, 2), get_checkpoint(ps, cp["id"])).status == "rerun"  # applied again (a crash)
+    assert [n["revise"] for n in synthesis_notes(ps, 2, kind="revise")] == [[again["id"]]]  # noted once
     replaced = "Aspirin was studied in older adults."
     ex3 = _exec(narratives=[narrative(text=replaced)])
     assert w.run(replace(_ctx(env, ex3, 3), guidance=out.reason)).status == "done"

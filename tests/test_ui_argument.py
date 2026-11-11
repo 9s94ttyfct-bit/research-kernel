@@ -597,7 +597,6 @@ def test_uncertain_support_card_rerun_names_the_findings_to_write_again(page, se
     assert page.errors == []
 
 
-
 @pytest.mark.browser
 @pytest.mark.parametrize("served", [{"paper_type": "critical_review"}], indirect=True)
 def test_final_review_card_answers_reach_the_worker(page, served):

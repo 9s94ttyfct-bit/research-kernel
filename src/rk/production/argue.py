@@ -1817,6 +1817,8 @@ class ArgueWorker:
             elif "claims" in answer or "answers_rq" in answer:
                 why = ("back takes no claims or answers_rq: nothing else of the review is applied when argue goes "
                        "back; answer back alone, or the review without back")
+            elif answer.get("revise") and not comment:
+                why = 'back with "revise" needs a comment saying how to write those findings again'
             elif not (why := revise_problem(answer, cp["options"].get("revisable") or {})):
                 return self._on_back(ctx, cp, comment, answer.get("revise") or [])
         else:

@@ -780,9 +780,15 @@ def test_p2_back_is_applied_once_and_other_answers_still_work(env):
     assert "could not be applied" in cp["prompt"] and NEED in cp["prompt"]
     assert cp["options"]["synthesis_requests"] == [{"round": 1, "text": NEED}]
     # "revise" names only a supported finding of the synthesis argued on
-    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decision": "back", "to": "synthesize",
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decision": "back", "to": "synthesize", "comment": "Why.",
                                                           "revise": ["clm_nope"]}))
     assert out.status == "waiting_human" and "not a supported finding" in out.reason
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    # findings to write again need your comment on how
+    revisable = list(cp["options"]["revisable"])
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decision": "back", "to": "synthesize",
+                                                          "revise": revisable[:1]}))
+    assert out.status == "waiting_human" and "needs a comment" in out.reason
     cp = get_checkpoint(ps, out.checkpoint_id)
     # your usual answer: the request is not acted on; it is an unmet request in the limitations
     out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"claims": {}, "answers_rq": "yes"}))

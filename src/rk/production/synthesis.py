@@ -1449,7 +1449,8 @@ class SynthesizeWorker:
             if not comment:
                 why = "rerun needs a comment saying what to change"
             elif not (why := revise_problem(answer, opts.get("revisable") or {})):
-                if answer.get("revise"):  # released from the findings the next attempt keeps (_kept_findings)
+                noted = any(n.get("checkpoint_id") == cp["id"] for n in synthesis_notes(ps, ctx.attempt, kind="revise"))
+                if answer.get("revise") and not noted:  # released from what the next attempt keeps (_kept_findings)
                     _note(ps, ctx.attempt, "revise", actor=by, checkpoint_id=cp["id"], revise=answer["revise"])
                 missing = opts.get("narrative_missing")  # a narrative that was not accepted: its problems go along
                 return StageOutcome("rerun", reason=f"{missing}\n\n{comment}" if missing else comment)
