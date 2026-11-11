@@ -230,3 +230,18 @@ def test_never_negates_a_categorical_word_and_stays_a_universal_elsewhere():
     assert hedge_level("Aspirin never caused bleeding.") == 3
     assert universal_terms("Aspirin never caused bleeding.") == ["never"]
     assert hedge_level("It never failed, which proves it.") == 3
+
+
+def test_too_few_to_establish_is_a_negation():
+    """Calibration (melatonin draft): "too few events to establish an effect" says the effect is not established;
+    "too … to", "insufficient to" and "not … enough to" negate the categorical word they lead to."""
+    for text in ("There were too few events to establish an effect.", "The trials were too small to prove a benefit.",
+                 "The data are insufficient to establish efficacy.", "It was not large enough to establish it.",
+                 "Two trials are not enough to firmly establish an effect.", "Too few trials to always agree."):
+        assert hedge_level(text) == 2, text
+    assert universal_terms("Too few trials to always agree.") == []
+    for text in ("The effect was too large to ignore, which proves it.", "Enough trials were done to establish it.",
+                 "It was established in too few trials to matter.",
+                 "There were not only enough trials to establish it but to replicate it.",
+                 "It is not just large enough to prove it."):
+        assert hedge_level(text) == 3, text
