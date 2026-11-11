@@ -1,4 +1,5 @@
 import pytest
+from pydantic import ValidationError
 
 from rk.config import Settings, save_settings
 from rk.net.http import BudgetExhausted
@@ -141,3 +142,15 @@ def test_missing_identifier_and_project(reg):
     with pytest.raises(ToolError) as ei:
         reg.call("rk_library_list", {"project": "nope"}, cli())
     assert ei.value.status == 404
+
+
+def test_note_add_offers_no_record_quotes(reg):
+    # Only read_extract's record fields quote a bibliographic record (rk.production.extraction); a model calling
+    # rk_note_add is not offered that choice, and a call that makes it anyway is refused before it runs.
+    against = reg.get("rk_note_add").input_model.model_json_schema()["$defs"]
+    against = next(d["properties"]["against"] for d in against.values() if "against" in d.get("properties", {}))
+    assert against["enum"] == ["text", "abstract"]
+    reg.call("rk_project_create", {"slug": "rec", "title": "T"}, cli("c"))
+    with pytest.raises(ValidationError):
+        reg.call("rk_note_add", {"project": "rec", "note": {"source_id": "itm_x", "kind": "quote", "text": "x",
+                                                            "against": "record"}}, cli("n"))

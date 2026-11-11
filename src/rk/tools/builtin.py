@@ -453,15 +453,17 @@ def build_registry(k: Kernel, browser: Callable[[], BrowserService | None] | Non
         except LookupError as e:
             raise ToolError("invalid", str(e)) from e
 
+    class ToolNoteIn(NoteIn):
+        # only read_extract's record fields quote the bibliographic record (rk.production.extraction)
+        against: Literal["text", "abstract"] = "text"
+
     class NoteArgs(BaseModel):
         project: str
-        note: NoteIn
+        note: ToolNoteIn
 
     @tool("rk_note_add", "Add a note; quotes and paraphrases are verified against the source text.", NoteArgs, True)
     def _note(ctx: CallContext, a: NoteArgs) -> Out:
         ps, lib = _project(k, a.project)
-        if a.note.against == "record":  # only read_extract's record fields quote the bibliographic record
-            raise ToolError("invalid", "notes quote the source's text or abstract, not its bibliographic record")
         try:
             r = add_note(ps, lib, a.note, actor=ctx.actor, actor_kind=_added_by(ctx))
         except NoteRejected as e:
