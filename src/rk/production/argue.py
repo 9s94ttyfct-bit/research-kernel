@@ -51,7 +51,9 @@ Finally P1 asks the judges whether the main claim answers the frozen RQ (conserv
 P2 asks you on the final ``uncertain_support`` checkpoint (``_review``): every claim of the argument and every in-scope
 finding that fails the claim gate (``supported`` or ``withdraw``; only ``withdraw`` past a problem other than its
 V-SUPPORT status: ``review_choices``), and every other claim but the main one whose withdrawal takes an unanswered
-objection, a failed warrant or an unanswered contest out of the argument (``withdraw`` only). It is not asked when no
+objection, a failed warrant or an unanswered contest out of the argument (``withdraw`` only). A listed finding comes
+with the warning that withdrawing it withdraws it for the project (draft, revise and later argue attempts lose it), and
+that a rerun asks the Arguer to answer the objection instead. It is not asked when no
 answer can mend the gate (the main claim's own problems, an unreviewed argument): the stage argues again.
 
 The Arguer's synthesis requests are decided there too, never by the Arguer alone. P2: your final review lists them
@@ -1643,6 +1645,11 @@ class ArgueWorker:
                            "out of the argument. Withdraw each, or support one whose only problem is its V-SUPPORT "
                            "status. Withdrawing the main claim leaves the argument without one.")]
             lines += review_lines(ps, listing)
+            if findings := [c for c in listing if c in s.synthesis]:
+                lines += ["", (f"Withdrawing a finding of the synthesis ({', '.join(findings)}) withdraws it for the "
+                               "project: draft, revise and later argue attempts no longer have it, and only "
+                               "argue->synthesize can find it again. When a finding is listed for an objection the "
+                               "Arguer left unanswered, rerun with your comment asks the Arguer to answer it instead.")]
         lines += ["", ('Answer {"answers_rq": "yes" or "no", "claims": {"<claim id>": "supported" or "withdraw", ...} '
                        'for every listed claim (one of its answers), optionally with a "comment"}, or '
                        '{"decision": "rerun", "comment": ...} to argue again with your comment.')]

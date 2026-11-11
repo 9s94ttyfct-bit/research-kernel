@@ -1557,6 +1557,7 @@ def test_unanswered_objection_on_a_finding_reaches_your_review(env, priority):
     assert cp["options"]["claim_ids"] == [a]
     assert cp["options"]["claim_choices"] == {a: ["withdraw"]}
     assert any("under 65" in p for p in cp["options"]["problems"][a])
+    assert f"Withdrawing a finding of the synthesis ({a}) withdraws it for the project" in cp["prompt"]
     out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"claims": {a: "supported"}, "answers_rq": "yes"}))
     assert out.status == "waiting_human"  # supported is not one of its answers
     cp = get_checkpoint(ps, out.checkpoint_id)
