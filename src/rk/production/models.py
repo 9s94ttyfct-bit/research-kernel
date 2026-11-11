@@ -18,12 +18,17 @@ DecidedBy = Literal["agreement", "single", "human", "vote", "rule"]  # rule: a k
 RECORD_CAP = 3000  # records a search_screen attempt screens at most, unless the protocol sets another cap
 
 
+# the languages a new protocol's records are screened in: search_screen excludes a record in any other language by
+# rule, before screening (``rk.production.screening``), so the Ideator writes the eligibility criteria to match
+SCREENED_LANGUAGES = ("en",)
+
+
 class SearchStrategy(BaseModel):
     sources: list[str]
     queries: list[str]
     date_from: int | None = None  # publication years, inclusive
     date_to: int | None = None
-    languages: list[str] = ["en"]
+    languages: list[str] = list(SCREENED_LANGUAGES)
 
 
 class Criterion(BaseModel):

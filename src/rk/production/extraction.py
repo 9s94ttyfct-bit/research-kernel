@@ -48,9 +48,10 @@ keeps its values and notes from the passed attempt (``kept_extraction``, ``carri
 or the P1 degrade touched it (then it is read again too).
 
 The gate (``gate``, from ``findings``): every non-flagged included study was read and its retraction checked; every
-extraction field of each has a value whose quote note is a verified quote of the text the study was read on (the same
-kind, the same snapshot, which is still the item's latest), or ``not_reported`` with such a quote, or (after a P1
-degrade) is marked missing; every note the reader linked is of that text and every linked paraphrase passes V-PARA; at
+extraction field of each has a value whose quote note is a verified quote of its source: for a text field the text the
+study was read on (the same kind, the same snapshot, which is still the item's latest), for a record field the study's
+bibliographic record; or ``not_reported`` with such a quote, or (after a P1 degrade) is marked missing; every note the
+reader linked is of the text it was read on and every linked paraphrase passes V-PARA; at
 least one study is left. Each failure names the study, the field and the reason. A failed gate reruns the stage
 (``read_extract->read_extract``); at the edge limit P2 is asked (``stage_blocked``) and P1 degrades (``degrade``): the
 failing fields are marked missing (their earlier rows marked ``degraded: …``, so none of them passes as evidence), a
@@ -136,7 +137,8 @@ EXTRACT_TASK = (
     "source is record is about the study's bibliographic record, not its text: quote its value from the study's "
     "record (copied character for character from it, no locator), e.g. the venue or the publication type line. When "
     f'the study does not report a field, give the value "{NOT_REPORTED}" with a quote of the section you searched for '
-    "it (e.g. the first sentence of its methods or results; for a record field, a line of its record). The kernel "
+    "it (e.g. the first sentence of its methods or results; for a record field, the record's line that says not "
+    "given). The kernel "
     "verifies every quote and rejects a value whose quote is not verbatim. Do not save the value quotes yourself; in "
     "notes give the ids of the other notes you saved for this study with rk_note_add (a paraphrase needs its original "
     "passage as source_span). Follow the guidance when there is any.")

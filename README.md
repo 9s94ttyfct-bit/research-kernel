@@ -171,11 +171,13 @@ frozen), `search_screen` (search, deduplication, title/abstract and full-text sc
   yet available" and a run cannot end at or pass them (`stage_unavailable`). The back-edges protocol→question,
   search_screen→protocol and read_extract→search_screen follow the same limit of two uses per project.
 - **Protocol.** The Ideator drafts the eligibility criteria, the extraction schema (text, number or category fields),
-  the synthesis plan and, for a systematic review, the PRISMA-P items; the Scout drafts the search strategy (at least
-  3 queries on at least 2 sources, years, languages). Every query runs on every source of the strategy as written, so
-  a field tag one source understands (PubMed `[tiab]`, Europe PMC `TITLE_ABS:`) breaks the query on the other; Europe
-  PMC and OpenAlex also match full texts, so their hit counts are much higher than PubMed's. The kernel checks the
-  draft (its free texts may not claim novelty, the same rule as for topics and RQs) and sizes it: the record-cap probe
+  the synthesis plan and, for a systematic review, the PRISMA-P items, written to agree with the protocol's languages
+  (English: records in another language are excluded by rule, so no criterion admits one); the Scout drafts the
+  search strategy (at least 3 queries on at least 2 sources, years). Every query runs on every source of the strategy
+  as written, so a field tag one source understands (PubMed `[tiab]`, Europe PMC `TITLE_ABS:`) breaks the query on the
+  other; Europe PMC and OpenAlex also match full texts, so their hit counts are much higher than PubMed's. The kernel
+  checks the draft (its free texts may not claim novelty, the same rule as for topics and RQs) and sizes it: the
+  record-cap probe
   counts each query on each source that reports counts (OpenAlex, Europe PMC, PubMed) within the strategy's publication years. The probe
   is advisory and an upper bound (duplicates count again). A draft that fails the checks is drafted again within the
   attempt (up to `protocol_tries`, default 3, versions; only the role whose part failed is asked), and a probe above

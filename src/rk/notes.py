@@ -157,13 +157,14 @@ ITEM_TYPE_WORDS = {"journalArticle": "journal article", "preprint": "preprint", 
 
 def record_text(item) -> str:
     """An item's bibliographic record as the reader is shown it and its record quotes are verified against: one line
-    each for its title, authors, venue, year, publication type and DOI (a line only when the record has it). These
-    fields of an item never change once it is added (``rk.library.models.UPDATABLE_FIELDS``)."""
+    each for its title, authors, venue, year, publication type and DOI, ``not given`` where the record has none (so a
+    record field the record does not report is ``not_reported`` with a quote of that very line). These fields of an
+    item never change once it is added (``rk.library.models.UPDATABLE_FIELDS``)."""
     authors = "; ".join(", ".join(x for x in (c.family, c.given) if x) for c in item.creators)
     lines = [("Title", item.title), ("Authors", authors), ("Venue", item.venue),
              ("Year", str(item.year) if item.year is not None else None),
              ("Publication type", ITEM_TYPE_WORDS.get(item.item_type, item.item_type)), ("DOI", item.ids.doi)]
-    return "\n".join(f"{k}: {v}" for k, v in lines if v)
+    return "\n".join(f"{k}: {v or 'not given'}" for k, v in lines)
 
 
 def record_layer(item) -> TextLayer:

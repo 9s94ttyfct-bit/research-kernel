@@ -86,6 +86,7 @@ from rk.llm.vendors import vendor_of
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.production.models import (
     RECORD_CAP,
+    SCREENED_LANGUAGES,
     Eligibility,
     ExtractionField,
     Protocol,
@@ -135,7 +136,9 @@ DRAFT_TASK = (
     "needs, at least 2; a scoping review's plan is an evidence_map; a critical review's or a proposal's is thematic "
     "or narrative_swim, or none) "
     "and, for a systematic review, the PRISMA-P items (rationale, objectives, "
-    "selection process, data collection process, risk of bias). Never claim that the question or the review is novel. "
+    "selection process, data collection process, risk of bias). Records in a language outside `languages` are "
+    "excluded by a kernel rule before screening: write the eligibility criteria and the PRISMA-P items to agree with "
+    "it (no criterion admits another language). Never claim that the question or the review is novel. "
     "When a previous draft is given, revise it: change only what the guidance asks for and keep the rest. When a frozen "
     "protocol is given, change only what the guidance asks for. Follow the guidance when there is any.")
 STRATEGY_TASK = (
@@ -668,6 +671,7 @@ class ProtocolWorker:
             "hypotheses": [{"statement": h["statement"], "falsification": h["falsification"]}
                            for h in hypotheses(ps, rq["id"])],
             "available_sources": ctx.sources.sources(),
+            "languages": list(SCREENED_LANGUAGES),  # the record languages the kernel screens (SearchStrategy)
         }
         if (topic := _topic(ps, rq["topic_id"])) is not None:
             context["topic"] = topic
