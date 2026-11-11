@@ -54,9 +54,10 @@ objection, a failed warrant or an unanswered contest out of the argument (``with
 answer can mend the gate (the main claim's own problems, an unreviewed argument): the stage argues again.
 
 The Arguer's synthesis requests are decided there too, never by the Arguer alone. P2: your final review lists them
-and also takes ``{"decision": "back", "to": "synthesize", "comment"?}`` and nothing else (with ``claims`` or
-``answers_rq`` it is refused): ``argue->synthesize`` (under its limit; when it has no use left, the review says that
-``back`` asks you to allow one more) with the requests and your comment as guidance (``synthesis_decision`` ``back``).
+and also takes ``{"decision": "back", "to": "synthesize", "comment"?, "revise"?}`` and nothing else (with ``claims``
+or ``answers_rq`` it is refused): ``argue->synthesize`` (under its limit; when it has no use left, the review says that
+``back`` asks you to allow one more) with the requests and your comment as guidance (``synthesis_decision`` ``back``);
+the findings you name in ``revise`` (of ``revisable``) are written again, every other supported one is kept.
 Your claims answer notes ``proceed``; a ``rerun`` notes nothing (the new attempt argues afresh). When the review is not
 asked (no answer can mend the gate), the requests go with the reason and the gate's failures into the rerun's
 guidance. P1: before the RQ vote, the judges vote ``back_to_synthesize`` or ``proceed`` (conservative: ``proceed``,
@@ -143,6 +144,9 @@ from rk.production.store import frozen_protocol
 from rk.production.synthesis import (
     evidence_criteria,
     reconcile_withdrawn_pools,
+    revisable,
+    revise_lines,
+    revise_problem,
     study_label,
     synthesis_claims,
 )
@@ -1602,9 +1606,10 @@ class ArgueWorker:
                        '{"decision": "rerun", "comment": ...} to argue again with your comment.')]
         spent = None
         if requests:
-            lines.append('Or answer {"decision": "back", "to": "synthesize", "comment"?: ...} (nothing else) to send '
-                         'argue back to synthesize for what the Arguer asked (the back-edge argue->synthesize, within '
-                         'its limit), with the requests and your comment as guidance.')
+            lines.append('Or answer {"decision": "back", "to": "synthesize", "comment"?: ..., "revise"?: [...]} '
+                         '(nothing else) to send argue back to synthesize for what the Arguer asked (the back-edge '
+                         'argue->synthesize, within its limit), with the requests and your comment as guidance.')
+            lines += revise_lines(revisable(ps, s.synth_attempt))
             if (used := _back_edge_spent(ps)) is not None:
                 spent = f"{used['edge']} used {used['count']} of {used['limit']}: back asks to allow one more use"
                 lines.append(spent + ".")
@@ -1615,6 +1620,7 @@ class ArgueWorker:
                                  "choices": [SUPPORTED, WITHDRAW], "answers_rq": [YES, NO],
                                  "decisions": ["rerun", BACK] if requests else ["rerun"],
                                  "back_to": "synthesize" if requests else None, "back_spent": spent,
+                                 "revisable": revisable(ps, s.synth_attempt) if requests else {},
                                  "synthesis_requests": requests, "main_problems": own,
                                  "arguer_self_check": check or None, "replaces": replaces},
                                 stage=ctx.stage, actor=ctx.actor)
@@ -1811,8 +1817,8 @@ class ArgueWorker:
             elif "claims" in answer or "answers_rq" in answer:
                 why = ("back takes no claims or answers_rq: nothing else of the review is applied when argue goes "
                        "back; answer back alone, or the review without back")
-            else:
-                return self._on_back(ctx, cp, comment)
+            elif not (why := revise_problem(answer, cp["options"].get("revisable") or {})):
+                return self._on_back(ctx, cp, comment, answer.get("revise") or [])
         else:
             why = review_answer_problem(answer, allowed)
             if not why and answer.get("answers_rq") not in (YES, NO):
@@ -1850,10 +1856,11 @@ class ArgueWorker:
         return any(n.get("checkpoint_id") == checkpoint_id
                    for n in argue_notes(ps, attempt, kind="synthesis_decision"))
 
-    def _on_back(self, ctx: StageContext, cp: dict, comment: str) -> StageOutcome:
+    def _on_back(self, ctx: StageContext, cp: dict, comment: str, revise: list[str]) -> StageOutcome:
         """Your ``back``: ``argue->synthesize`` with the requests your review listed and your comment as guidance;
-        nothing else of the review is applied. Noted once per checkpoint (``synthesis_decision``, ``back_edge``), so
-        the answer applied again goes back once."""
+        nothing else of the review is applied. The findings you name in ``revise`` are written again (the next
+        synthesize attempt keeps every other one word for word). Noted once per checkpoint (``synthesis_decision``,
+        ``back_edge``), so the answer applied again goes back once."""
         ps, attempt = ctx.ps, ctx.attempt
         if sent := [n for n in argue_notes(ps, attempt, kind="back_edge") if n.get("checkpoint_id") == cp["id"]]:
             return StageOutcome("back_edge", to="synthesize", reason=sent[-1]["reason"])
@@ -1864,7 +1871,7 @@ class ArgueWorker:
         if not self._decided_by(ps, attempt, cp["id"]):
             _note(ps, attempt, "synthesis_decision", actor=by, decision=BACK, by="human", checkpoint_id=cp["id"],
                   reason=comment)
-        return self._back_to_synthesize(replace(ctx, actor=by), reason, checkpoint_id=cp["id"])
+        return self._back_to_synthesize(replace(ctx, actor=by), reason, checkpoint_id=cp["id"], revise=revise)
 
     # ---- gate ----
     def gate(self, ps: ProjectStore, attempt: int) -> GateResult:

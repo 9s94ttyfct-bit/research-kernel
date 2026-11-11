@@ -52,7 +52,7 @@ from rk.production.argue import (
 from rk.production.argue import _load as argue_inputs
 from rk.production.extraction import usable_evidence
 from rk.production.models import SynthesisPlan
-from rk.production.synthesis import SynthesizeWorker, synthesis_claims
+from rk.production.synthesis import SynthesizeWorker, _revised, synthesis_claims
 from rk.roles.policy import JUDGE_ROLES, tool_roles
 from rk.roles.prompts import build_system_prompt
 from rk.tools import builtin
@@ -742,7 +742,7 @@ def test_p1_synthesis_vote_interrupted_asks_the_judges_nothing_twice(env, monkey
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
 def test_p2_final_review_lists_the_requests_and_back_takes_the_edge(env):
     k, ps, lib = env
-    _synthesize(env)
+    ids = _synthesize(env)
     ex = _exec([draft(needs_synthesis=NEED)], [critique()])
     o, run_id = stage_run(k, ps, lib, "argue", ex)
     assert o.step("demo", run_id, actor="tester") == "paused_waiting_human"
@@ -751,14 +751,17 @@ def test_p2_final_review_lists_the_requests_and_back_takes_the_edge(env):
     assert cp["options"]["synthesis_requests"] == [{"round": 1, "text": NEED}]
     assert cp["options"]["decisions"] == ["rerun", "back"] and cp["options"]["back_to"] == "synthesize"
     assert NEED in cp["prompt"] and '"decision": "back", "to": "synthesize"' in cp["prompt"]
-    answer_checkpoint(ps, cp["id"], {"decision": "back", "to": "synthesize", "comment": "Use the subgroup table."},
-                      answered_by="human", actor="researcher")
+    assert cp["options"]["revisable"] == {ids[0]: F1, ids[1]: F2} and f"- {ids[1]}: {F2}" in cp["prompt"]
+    answer_checkpoint(ps, cp["id"], {"decision": "back", "to": "synthesize", "comment": "Use the subgroup table.",
+                                     "revise": [ids[1]]}, answered_by="human", actor="researcher")
     assert o.step("demo", run_id, actor="tester") == "running"
     assert current_stage(ps) == "synthesize" and edge_rows(ps)["argue->synthesize"]["count"] == 1
     guidance = stage_row(ps, "synthesize")["guidance"]
     assert NEED in guidance and "Use the subgroup table." in guidance
     (d,) = argue_notes(ps, 1, kind="synthesis_decision")
     assert (d["decision"], d["by"], d["checkpoint_id"]) == ("back", "human", cp["id"])
+    (b,) = argue_notes(ps, 1, kind="back_edge")
+    assert b["revise"] == [ids[1]] and _revised(ps) == {ids[1]}  # the next synthesize attempt writes F2 again
     assert not [c for c in ex.calls if c["schema"] == "VoteOut"]  # P2 never votes
     assert not argue_notes(ps, 1, kind="rq_check")  # nothing else of the answer is applied
 
@@ -776,6 +779,11 @@ def test_p2_back_is_applied_once_and_other_answers_still_work(env):
     cp = get_checkpoint(ps, out.checkpoint_id)
     assert "could not be applied" in cp["prompt"] and NEED in cp["prompt"]
     assert cp["options"]["synthesis_requests"] == [{"round": 1, "text": NEED}]
+    # "revise" names only a supported finding of the synthesis argued on
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decision": "back", "to": "synthesize",
+                                                          "revise": ["clm_nope"]}))
+    assert out.status == "waiting_human" and "not a supported finding" in out.reason
+    cp = get_checkpoint(ps, out.checkpoint_id)
     # your usual answer: the request is not acted on; it is an unmet request in the limitations
     out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"claims": {}, "answers_rq": "yes"}))
     assert out.status == "done", out.reason

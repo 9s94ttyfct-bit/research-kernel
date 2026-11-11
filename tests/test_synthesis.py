@@ -1330,8 +1330,8 @@ def test_a_new_attempt_keeps_the_findings_that_passed_word_for_word(env):
     """Calibration (critical review rerun): every synthesize attempt wrote its narrative afresh, so a finding that had
     passed V-SUPPORT and the argument came back reworded (over-quantified) and was withdrawn, although your comment
     said to keep it exactly. A new attempt now keeps, word for word with its evidence, each finding of the attempt
-    before that still passes the claim gate; the Arguer writes only the others, and releases a kept one only when
-    guidance asks for a change."""
+    before that still passes the claim gate; the Arguer writes only the others. Only your answer releases a kept
+    finding: a rerun comment alone keeps it, the findings you name in "revise" are written again."""
     _, ps, _ = env
     _setup(env, {"A": {"design": "rct"}, "B": {"design": "cohort"}}, schema=[DESIGN],
            plan=SynthesisPlan(method="thematic"))
@@ -1340,33 +1340,45 @@ def test_a_new_attempt_keeps_the_findings_that_passed_word_for_word(env):
     cp = get_checkpoint(ps, w.run(_ctx(env, ex)).checkpoint_id)
     kept, bad = _claims(ps)
     assert (kept["text"], kept["status"], bad["text"]) == (FINDING, "supported", OTHER)
+    assert cp["options"]["revisable"] == {kept["id"]: FINDING} and f"- {kept['id']}: {FINDING}" in cp["prompt"]
     out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decision": "rerun", "comment": "Drop the children."}))
     assert out.status == "rerun"
 
-    def rewrites(inputs):  # the Arguer restates the kept finding, asks to revise it unasked, and adds one
-        n = narrative(text=NEWER)(inputs)
+    def rewrites(inputs):  # the Arguer restates the kept finding, adds one and the unsupported one again
+        n = _two_findings(OTHER)(inputs)
+        n["findings"][0]["text"] = NEWER
         n["findings"].append({**n["findings"][0], "text": "  aspirin was studied in OLDER people."})
-        return {**n, "revise_kept": [0]}
+        return n
     ex2 = _exec(narratives=[rewrites], judges=_judges_on("children", "unsupported"))
-    out = w.run(_ctx(env, ex2, 2))
-    assert out.status == "done", get_checkpoint(ps, out.checkpoint_id)["options"]["problems"]
+    out = w.run(replace(_ctx(env, ex2, 2), guidance=out.reason))  # the engine's guidance: your comment
+    assert out.status == "waiting_human"
     (call,) = ex2.of("arguer", "NarrativeSynthesis")
-    assert call["inputs"]["kept_findings"] == [{"index": 0, "text": FINDING, "kind": "fact", "scope_limits": []}]
-    again, new = _claims(ps, 2)  # without guidance nothing is released
-    assert (again["text"], again["status"], new["text"]) == (FINDING, "supported", NEWER)
+    assert call["inputs"]["kept_findings"] == [{"text": FINDING, "kind": "fact", "scope_limits": []}]
+    again, new, bad2 = _claims(ps, 2)  # your comment alone releases nothing
+    assert (again["text"], again["status"], new["text"], bad2["text"]) == (FINDING, "supported", NEWER, OTHER)
     assert [e["note_ids"] for e in again["evidence"]] == [e["note_ids"] for e in kept["evidence"]]
     assert again["generator_vendor"] == kept["generator_vendor"]
     (note,) = synthesis_notes(ps, 2, kind="narrative")
     assert (note["kept"], note["released"]) == ([kept["id"]], [])
-    assert w.gate(ps, 2).ok, w.gate(ps, 2).failures
 
-    # your comment asks to change the kept finding: the Arguer releases it and writes its replacement
+    # "revise" names the kept finding to write again; a finding that is not a supported one is refused
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    out = w.on_answer(_ctx(env, ex2, 2), _answer(ps, cp["id"], {"decision": "rerun", "comment": "Older adults.",
+                                                              "revise": [bad2["id"]]}))
+    assert out.status == "waiting_human" and "not a supported finding" in out.reason
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    out = w.on_answer(_ctx(env, ex2, 2), _answer(ps, cp["id"], {"decision": "rerun", "comment": "Older adults.",
+                                                              "revise": [again["id"]]}))
+    assert out.status == "rerun"
     replaced = "Aspirin was studied in older adults."
-    ex3 = _exec(narratives=[lambda inputs: {**narrative(text=replaced)(inputs), "revise_kept": [0]}])
-    assert w.run(replace(_ctx(env, ex3, 3), guidance="Say older adults, not older people.")).status == "done"
+    ex3 = _exec(narratives=[narrative(text=replaced)])
+    assert w.run(replace(_ctx(env, ex3, 3), guidance=out.reason)).status == "done"
+    (call,) = ex3.of("arguer", "NarrativeSynthesis")
+    assert call["inputs"]["released_findings"] == [{"claim_id": again["id"], "text": FINDING}]
     assert [c["text"] for c in _claims(ps, 3)] == [NEWER, replaced]
     (note,) = synthesis_notes(ps, 3, kind="narrative")
     assert (note["kept"], note["released"]) == ([new["id"]], [again["id"]])
+    assert w.gate(ps, 3).ok, w.gate(ps, 3).failures
 
 
 def test_review_choices_follow_the_claim_problems():

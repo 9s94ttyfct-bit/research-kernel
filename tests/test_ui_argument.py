@@ -78,6 +78,7 @@ from tests.test_synthesis import (
     FINDING,
     META,
     META2,
+    OTHER,
     Exec,
     NoNarrative,
     _enable_stats,
@@ -571,6 +572,34 @@ def test_uncertain_support_card_answers_reach_the_worker(page, served):
 
 @pytest.mark.browser
 @pytest.mark.parametrize("served", [{"paper_type": "critical_review"}], indirect=True)
+def test_uncertain_support_card_rerun_names_the_findings_to_write_again(page, served):
+    """Calibration (critical review rerun): a new synthesize attempt keeps the supported findings word for word; the
+    rerun form lists them, and a ticked one goes in "revise" and is written again."""
+    from rk.production.models import SynthesisPlan
+
+    ps = served.ps
+    _setup(served.env, {"A": {"design": "rct"}, "B": {"design": "cohort"}}, schema=[DESIGN],
+           plan=SynthesisPlan(method="thematic"))
+    ex = Exec({("arguer", "AssessmentOut"): [assess(), assess()],
+               ("arguer", "NarrativeSynthesis"): [_two_findings(OTHER), narrative(text="Aspirin was studied late.")],
+               **_judges(uncertain=(OTHER,))})
+    _start(served, "synthesize", ex)
+    cp, card = _show(page, ps, "uncertain_support")
+    kept = next(c for c, text in cp["options"]["revisable"].items() if text == FINDING)
+    form = card.locator("form.revise").first
+    form.get_by_label(f"Write again: {FINDING}").check()
+    form.get_by_label("What should change").fill("Say older adults.")
+    form.get_by_role("button", name="Ask for a revision").click()
+    assert _answer_of(ps, cp["id"]) == {"decision": "rerun", "comment": "Say older adults.", "revise": [kept]}
+    until(lambda: len(ex.of("arguer", "NarrativeSynthesis")) == 2)
+    assert ex.of("arguer", "NarrativeSynthesis")[1]["inputs"]["released_findings"] == [
+        {"claim_id": kept, "text": FINDING}]
+    assert page.errors == []
+
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("served", [{"paper_type": "critical_review"}], indirect=True)
 def test_final_review_card_answers_reach_the_worker(page, served):
     ps = served.ps
     _synthesize(served.env)
@@ -620,9 +649,10 @@ def test_final_review_card_shows_the_arguers_failed_self_check(page, served):
 def test_final_review_card_back_to_synthesize_reaches_the_worker(page, served):
     """Fix wave 4: the Arguer's synthesis requests are shown on your final review (as text) with a "Back to
     synthesize" form; its answer takes argue->synthesize, and synthesize's next attempt gets the requests and your
-    comment as guidance."""
+    comment as guidance. Calibration (critical review rerun): the form lists the supported findings the next attempt
+    keeps word for word; a ticked one goes in "revise" and is written again."""
     ps = served.ps
-    _synthesize(served.env)
+    ids = _synthesize(served.env)
     need = "A finding on <b>bleeding</b> in people over 80."
     ex = argue_exec([draft(needs_synthesis=need)], [critique()])
     ex.script[("arguer", "AssessmentOut")] = [assess()]
@@ -633,13 +663,17 @@ def test_final_review_card_back_to_synthesize_reaches_the_worker(page, served):
     assert shown.count() == 1 and need in shown.inner_text() and "round 1" in shown.inner_text()
     assert shown.locator("b").count() == 0
     form = card.locator("form.back-synthesize")
-    form.get_by_label("Why go back to synthesize (optional)").fill("Use the subgroup table.")
+    form.get_by_label(f"Write again: {F2}").check()
+    form.get_by_label("Why go back to synthesize (optional").fill("Use the subgroup table.")
     form.get_by_role("button", name="Back to synthesize").click()
-    assert _answer_of(ps, cp["id"]) == {"decision": "back", "to": "synthesize", "comment": "Use the subgroup table."}
+    assert _answer_of(ps, cp["id"]) == {"decision": "back", "to": "synthesize", "comment": "Use the subgroup table.",
+                                        "revise": [ids[1]]}
     until(lambda: edge_rows(ps).get("argue->synthesize", {}).get("count") == 1)
     until(lambda: len(ex.of("arguer", "NarrativeSynthesis")) == 1)
-    guidance = ex.of("arguer", "NarrativeSynthesis")[0]["inputs"]["guidance"]
-    assert need in guidance and "Use the subgroup table." in guidance
+    inputs = ex.of("arguer", "NarrativeSynthesis")[0]["inputs"]
+    assert need in inputs["guidance"] and "Use the subgroup table." in inputs["guidance"]
+    assert [f["text"] for f in inputs["kept_findings"]] == [F1]
+    assert inputs["released_findings"] == [{"claim_id": ids[1], "text": F2}]
     assert stage_row(ps, "synthesize")["attempt"] == 2
     assert page.errors == []
 

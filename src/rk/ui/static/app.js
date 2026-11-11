@@ -733,17 +733,32 @@ function synthesisRequests(o) {
     el("p", { class: "hint" }, "It argued on the findings it has; nothing goes back to synthesize unless you say so. A request you do not send back is listed in the limitations."),
     el("ul", { class: "synthesis-requests" }, o.synthesis_requests.map((q) => el("li", {}, el("span", { class: "hint" }, `round ${q.round}: `), q.text)))];
 }
+// The supported synthesis findings a new synthesize attempt keeps word for word (`revisable`, id -> text): the
+// ticked ones go in "revise" and are written again, as your comment says.
+function keptPicker(revisable) {
+  const picked = new Set();
+  const ids = Object.keys(revisable || {});
+  const field = ids.length ? el("fieldset", { class: "back-studies kept-findings" },
+    el("legend", {}, "Findings to write again (the others are kept word for word)"),
+    ids.map((id) => el("label", { class: "choice" },
+      el("input", { type: "checkbox", value: id, "aria-label": `Write again: ${revisable[id]}`,
+        onchange: (e) => (e.target.checked ? picked.add(id) : picked.delete(id)) }), revisable[id]))) : null;
+  return { field, value: () => (picked.size ? { revise: [...picked] } : {}) };
+}
+
 // `spent`: set when argue->synthesize has no use left ("used n of limit: back asks to allow one more use").
-function backToSynthesizeForm(answer, spent) {
+function backToSynthesizeForm(answer, spent, revisable) {
   const why = el("textarea", { name: "back_comment" });
+  const kept = keptPicker(revisable);
   const form = el("form", { class: "revise back-synthesize" },
     spent ? el("p", { class: "hint warn back-spent" }, spent) : null,
-    el("label", { class: "field" }, "Why go back to synthesize (optional)", why),
+    kept.field,
+    el("label", { class: "field" }, "Why go back to synthesize (optional; how to write the ticked findings)", why),
     el("button", { type: "submit", class: "secondary" }, "Back to synthesize"));
   form.addEventListener("submit", (e) => {
     e.preventDefault();
     const comment = why.value.trim();
-    answer({ decision: "back", to: "synthesize", ...(comment ? { comment } : {}) });
+    answer({ decision: "back", to: "synthesize", ...(comment ? { comment } : {}), ...kept.value() });
   });
   return el("div", { class: "other-answers" }, el("h4", {}, "Or go back to synthesize for what the Arguer asked"), form);
 }
@@ -832,6 +847,7 @@ async function uncertainCard(c, answer) {
         (v) => { chosen.set(cid, v); update(); }));
   };
   const main = rqAsked ? byId.get(o.main_claim_id) : null;
+  const kept = keptPicker(o.revisable);  // synthesize's rerun: the findings to write again
   return [
     rqAsked ? [el("h4", {}, "Research question"), el("p", { class: "rq-sentence" }, d.question || ""),
       el("h4", {}, "Main claim"), main ? claimBlock(main) : el("p", { class: "error" }, "The main claim was not found."),
@@ -850,9 +866,11 @@ async function uncertainCard(c, answer) {
     o.narrative_missing ? null : comment.field,
     o.narrative_missing ? null : el("div", { class: "toolbar" }, submit, status),
     el("div", { class: "other-answers" }, el("h4", {}, `Or ${rqAsked ? "argue" : "synthesize"} again`),
-      reviseForm(`What should change (${rqAsked ? "argue" : "synthesize"} runs again with your comment)`, (text) => answer({ decision: "rerun", comment: text }))),
+      reviseForm(`What should change (${rqAsked ? "argue" : "synthesize"} runs again with your comment)`,
+        (text) => answer({ decision: "rerun", comment: text, ...(rqAsked ? {} : kept.value()) }),
+        rqAsked ? null : kept.field)),
     !rqAsked && offersBack(o) ? backToReadForm(o, answer) : null,
-    rqAsked && offersBack(o) && o.back_to === "synthesize" ? backToSynthesizeForm(answer, o.back_spent) : null,
+    rqAsked && offersBack(o) && o.back_to === "synthesize" ? backToSynthesizeForm(answer, o.back_spent, o.revisable) : null,
   ];
 }
 
