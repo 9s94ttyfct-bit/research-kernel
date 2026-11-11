@@ -179,7 +179,8 @@ def _synth_narrative(texts):
                              for i, t in enumerate(texts)],
                 "representativeness": (f"The {inputs['included_k']} included studies were selected by the protocol's "
                                        f"eligibility criteria."),
-                "heterogeneity_note": "Designs differed.", "swim": None}
+                "heterogeneity_note": "Designs differed.",
+                "swim": {i: f"The {i.replace('_', ' ')} is described." for i in inputs["swim_items"]} or None}
     return out
 
 
