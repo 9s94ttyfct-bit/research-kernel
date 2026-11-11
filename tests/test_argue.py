@@ -1124,6 +1124,30 @@ def test_contests_and_objections_are_scoped_to_the_attempt(env):
     assert any(any(oid in f for oid in small3) for f in g.failures), g.failures
 
 
+def test_an_unsupported_answer_comes_back_as_earlier_answer_without_its_id(env):
+    """Calibration (critical3): the Arguer was shown an open objection's unsupported response claim id, gave it again
+    and was refused. The objection comes back ``open`` with the earlier answer's text, status and why, not its id."""
+    _, ps, _ = env
+    _synthesize(env)
+    weak = "Some trials were large."
+    seen = {}
+
+    def again(inputs):
+        seen["open"] = inputs["open_objections"]
+        return responses("conceded")(inputs)
+
+    ex = _exec([draft(), responses(weak), again],
+               [critique(objections=[lambda i: {"target_id": role(i, "main")[0], "category": "problem",
+                                                "priority": 2, "text": "The trials were small."}]), critique()],
+               uncertain=(weak,))
+    ArgueWorker().run(_ctx(env, ex))
+    (o,) = seen["open"]
+    assert o["status"] == "open" and "response_claim_id" not in o
+    assert o["earlier_answer"]["text"] == weak and o["earlier_answer"]["why"] == "its claim is not supported"
+    assert not any(c["id"] in str(o) for c in ArgumentService(ps).list_claims() if c["text"] == weak)
+
+
+
 def test_imported_conflicts_take_the_latest_both_contested_counterpart(env):
     _, ps, _ = env
     a, b, c = _synthesize(env, texts=(F1, F2, "Aspirin was studied in very old people."))
