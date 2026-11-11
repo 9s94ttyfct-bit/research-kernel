@@ -673,6 +673,34 @@ UTC during protocol, which then resumed at 16:44; from 16:47 the host was kept a
 - Open: the run is parked in argue attempt 6 (argue→argue used 5 times, argue→synthesize not used; the six
   supported findings intact). `rk run resume` starts run session 2.
 
+### critical3, run session 2 (2026-11-11): argue attempt 6 diverged
+
+Resumed at 18:31:18 UTC (run session 2) by a serve started on 8c75a7c (logged HEAD); the host was kept awake. Argue
+attempt 6 ran rounds 2–20 until 19:04:40 and ended on its budget: the Arguer 19 and the Skeptic 20 tasks counted (39
+of 40), the judges 47 + 47 did not. Two provider 502s were retried and succeeded; no task failed. The gate failed
+with 159 failures (unsupported claims, failed warrants without an answer, about 100 open objections). Since no answer
+to a final review could mend that, argue asked to argue again; the stand-in left that `stage_blocked` checkpoint
+(`chk_01M75ZZ4N1772Q18Y9AWP1Q2KY`, argue→argue used 5 times) open, because the attempt was diverging.
+
+- **A reason link was stored again every round.** The Arguer gave its reasons again in each round, by the ids of
+  five supported synthesis findings, and the kernel stored each as a new `reason_of` link with a new warrant (for a
+  valid reason it checked only for a cycle). The main claim had 95 links for 6 distinct reason–target pairs. The
+  Skeptic tested every new warrant; 52 of the 89 repeated links drew soundness objections for failed tests (56 in
+  all), so every round found new issues and the rounds never reached a fixed point. Attempt 3 had shown the same, on
+  a smaller scale.
+- **The Arguer never saw what the kernel refused.** Over the attempt the kernel refused 70 answers to objections
+  that were not open, 8 answers by ids of claims that were not supported, and 19 main claims given after round 1,
+  and the same answers came back round after round. 8c75a7c's `earlier_answer` reached the Arguer, without the
+  earlier claim's id, but the Arguer copied those ids from the argument it is given, which lists every claim.
+- **Fixed after the run:** a reason link the argument already has is refused, not stored again (a dropped link may
+  be given again); and what the kernel refused of the Arguer's last answer reaches its next task, the closing task
+  included (`refused_last_round`). The Arguer's task says to answer only the open objections, by id, and to give no
+  main claim or existing reason again.
+- Not a kernel defect: the stand-in's attempt-5 guidance gave three response texts word for word, and that guidance
+  goes to every round; the Arguer gave them again, and 16, 9 and 8 of them were stored and judged again.
+- Open: the run is parked in argue attempt 6 with the `stage_blocked` checkpoint open; the six supported findings
+  are intact.
+
 ## P1 project: failed at protocol (the vote never approved it)
 
 Home `rk-plan5c-p1`, intake `probiotics for preventing antibiotic-associated diarrhoea in children`, systematic
