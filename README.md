@@ -324,7 +324,8 @@ After argue (and design, for a research proposal), four stages turn the argument
   target, the protocol's own numbers included; V-HEDGE checks that a sentence is no stronger than the claims it cites.
   A `[[…]]` that is not a marker fails its sentence and names the form to write. A failing section is retried, and a
   draft rerun keeps the sections that passed. When a section needs a claim the argument lacks, draft goes back to
-  argue once; after that, a later request is refused and the gap is disclosed as a limitation.
+  argue once; after that, a later request is refused and the gap is disclosed as a limitation. In P2 you decide first
+  (`argue_request`): back to argue, or write the section with the gap as a limitation.
 - **Revise.** The SimReader (another vendor) reads the manuscript as your audience and asks questions with a
   priority. The Writer revises a sentence, answers with a note, or declines; a revision is kept only if the section
   still verifies. Revise passes when every priority-1 question is revised or answered.
@@ -355,6 +356,7 @@ uv run rk export [--open]                       # export the approved manuscript
 
 | Checkpoint | When | Answers |
 |---|---|---|
+| `argue_request` | a section needs claims the argument lacks (P2, once per section) | `{"decision": "back"}` to argue or `{"decision": "write"}` (the gap stated as a limitation); optional `comment` |
 | `final_review` | the audit passed every hard gate (P2) | `{"decision": "approve"}`, `revise` with a `comment`, or `back` to draft, argue or read_extract (optional `comment`) |
 | `stage_blocked` | a back-edge reached its limit | `{"decision": "allow_one_more"}` (an optional `comment` is guidance for the reopened stage) or `stop` |
 

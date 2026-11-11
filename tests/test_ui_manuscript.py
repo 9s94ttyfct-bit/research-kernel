@@ -550,3 +550,33 @@ def test_drafts_page_shows_sentence_verdicts_and_the_revise_panel_as_text(page, 
     page.goto_route("drafts?section=introduction")
     page.locator(".verdicts").get_by_text("Verified", exact=False).first.wait_for()
     assert page.errors == []
+
+
+@pytest.mark.browser
+def test_argue_request_card_write_reaches_the_worker(page, served):
+    """P2: a section that needs claims the argument lacks asks you first (argue_request); "write" has it written from
+    the claims given, your comment going to its Writer, and drafting goes on in the same run."""
+    ps = served.ps
+    _ready(served.env)
+    _pass_before(ps, "draft")
+    need = ["a claim on the bleeding risk of aspirin in older people"]
+
+    def writer(inputs):
+        if inputs["section"]["id"] == "introduction" and "argue_declined" not in inputs:
+            return {"markdown": "", "missing_support": need}
+        return writes()(inputs)
+
+    ex = Exec({("writer", "SectionDraft"): [writer] * 30})
+    served.use(ex)
+    run_id = served.runs.start("demo", "draft", actor="tester")
+    cp, card = _show(page, ps, "argue_request")
+    for text in ("A section needs claims the argument lacks", need[0], "Argue is asked once per section"):
+        assert page.get_by_text(text, exact=False).count() >= 1, text
+    assert card.get_by_role("button", name="Back to argue").count() == 1
+    card.get_by_label("What the Writer should keep in mind (optional)").fill("State it as a limitation.")
+    card.get_by_role("button", name="Write it, the gap as a limitation").click()
+    assert _answer_of(ps, cp["id"]) == {"decision": "write", "comment": "State it as a limitation."}
+    until(lambda: run_row(ps, run_id)["status"] == "done", timeout=30)
+    told = [c["inputs"]["argue_declined"] for c in ex.of("writer", "SectionDraft") if "argue_declined" in c["inputs"]]
+    assert told[0] == [{"needs": need, "comment": "State it as a limitation."}]
+    assert page.errors == []

@@ -304,6 +304,10 @@ def _unmet(ps: ProjectStore) -> list[tuple[str, str]]:
         if "asked" in u:
             text = (f"Drafting the {_code(u['section'])} section asked the argument for support it lacked, and the "
                     f"argument stage ran again: {_code(u['asked'])}")
+        elif "declined" in u:
+            text = (f"The {_code(u['section'])} section lacked support for {_code('; '.join(u['declined']))}; the "
+                    "researcher decided it is written without asking the argument stage again, the gap stated as a "
+                    "limitation")
         else:
             text = (f"After that, the {_code(u['section'])} section still lacked support for "
                     f"{_code('; '.join(u['needs']))} and was written without it")

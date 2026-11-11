@@ -983,6 +983,28 @@ async function designCard(c, answer) {
   ];
 }
 
+// argue_request (draft, P2): the Writer says a section needs claims the argument lacks. Send the stage back to argue
+// for them (once per section; the comment goes with the request) or have the section written from the claims given,
+// the gap stated as a limitation (the comment goes to the Writer). Both comments are optional.
+function argueRequestCard(c, answer) {
+  const o = c.options || {};
+  const form = (decision, label, button) => {
+    const why = el("textarea", { name: `${decision}_comment` });
+    const f = el("form", { class: "revise" }, el("label", { class: "field" }, label, why),
+      el("button", decision === "back" ? { type: "submit", class: "secondary" } : { type: "submit" }, button));
+    f.addEventListener("submit", (e) => { e.preventDefault(); const comment = why.value.trim(); answer(comment ? { decision, comment } : { decision }); });
+    return f;
+  };
+  return [
+    el("p", {}, `The Writer says the section ${o.title || o.section} needs claims the argument does not have:`),
+    el("ul", {}, (o.needs || []).map((n) => el("li", {}, n))),
+    el("p", { class: "hint" }, "Argue is asked once per section; after that the section is written from the claims it has."),
+    el("div", { class: "other-answers" },
+      form("write", "What the Writer should keep in mind (optional)", "Write it, the gap as a limitation"),
+      form("back", "What argue should look for (optional)", "Back to argue")),
+  ];
+}
+
 // The audit report: whether it passed, the sections it audited, every hard gate with its failures (as text) and the
 // warnings. Used by the final_review card and the Audit page.
 function gatesList(rep) {
@@ -1046,14 +1068,16 @@ async function finalReviewCard(c, answer) {
 
 const CARDS = { topic_review: topicReviewCard, rq_approval: rqCard, significance_novelty: rqCard, stage_blocked: blockedCard,
   protocol_approval: protocolCard, screening_disagreements: disagreementCard, pooling_approval: poolingCard,
-  uncertain_support: uncertainCard, evidence_conflict: conflictCard, design_approval: designCard, final_review: finalReviewCard };
+  uncertain_support: uncertainCard, evidence_conflict: conflictCard, design_approval: designCard, final_review: finalReviewCard,
+  argue_request: argueRequestCard };
 // The card of a checkpoint, else null (the plain card): an uncertain_support without listed claims predates them.
 const cardFor = (c) => (c.kind === "uncertain_support" && !Array.isArray(c.options?.claim_ids) ? null : CARDS[c.kind] || null);
 const KINDS = { topic_review: "Topic review", rq_approval: "Research question approval",
   significance_novelty: "Already answered? The judges split", stage_blocked: "Stage blocked at its back-edge limit",
   protocol_approval: "Protocol approval", screening_disagreements: "Screening disagreements",
   pooling_approval: "Pooling approval", uncertain_support: "Supported? Your review",
-  evidence_conflict: "Contradicting claims", design_approval: "Design approval", final_review: "Final review" };
+  evidence_conflict: "Contradicting claims", design_approval: "Design approval", final_review: "Final review",
+  argue_request: "A section needs claims the argument lacks" };
 
 const DECIDED_BY = { agreement: "both screeners", single: "one screener", human: "you", vote: "the P1 vote (not reviewed by a human)", rule: "the language rule" };
 const PHASE_NAMES = { title_abstract: "Title and abstract", full_text: "Full text" };

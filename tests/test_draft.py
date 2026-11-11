@@ -10,6 +10,7 @@ from dataclasses import replace
 import pytest
 
 from rk.argument import ArgumentService
+from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
 from rk.config import load_settings, save_settings
 from rk.orchestrator.engine import default_workers
 from rk.orchestrator.graph import BACK_EDGES
@@ -348,6 +349,63 @@ def test_missing_support_takes_draft_to_argue(env):
     again = _writer([])
     out2 = w.run(_ctx(env, again))  # resumed: the noted back-edge, no Writer task
     assert (out2.status, out2.to, out2.reason) == ("back_edge", "argue", out.reason) and not again.calls
+
+
+def _answer(ps, cid: str, answer: dict) -> dict:
+    answer_checkpoint(ps, cid, answer, answered_by="human", actor="researcher")
+    return get_checkpoint(ps, cid)
+
+
+NEED = {"markdown": "", "missing_support": ["a claim on the bleeding risk of aspirin in older people"]}
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "critical_review", "production_mode": "collab"}], indirect=True)
+def test_p2_missing_support_asks_you_before_going_back_to_argue(env):
+    """Calibration (critical review rerun): in P2 the Writer's missing_support took draft back to argue with no one
+    asked, for a claim the argument had ruled out as a limitation. You decide now (argue_request): back takes the edge
+    with your comment; write has the section written from the claims given, the gap a limitation."""
+    _, ps, _ = env
+    _ready(env)
+    w = DraftWorker()
+    ex = _writer([writes(), NEED])
+    out = w.run(_ctx(env, ex))
+    assert out.status == "waiting_human" and not draft_notes(ps, 1, kind="back_edge")
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    assert (cp["kind"], cp["options"]["section"], cp["options"]["needs"]) == (
+        "argue_request", "theme-1", NEED["missing_support"])
+    assert w.run(_ctx(env, _writer([]))).checkpoint_id == cp["id"]  # resumed before the wait was linked: no new task
+    # an answer that cannot be applied asks again
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decision": "proceed"}))
+    assert out.status == "waiting_human" and "not one of back, write" in out.reason
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    assert cp["prompt"].startswith("Your answer could not be applied")
+    # back: the edge with your comment
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decision": "back", "comment": "Look at the cohorts."}))
+    assert (out.status, out.to) == ("back_edge", "argue") and "Look at the cohorts." in out.reason
+    assert w.on_answer(_ctx(env, ex), get_checkpoint(ps, cp["id"])).reason == out.reason  # applied again (a crash)
+    assert len(draft_notes(ps, 1, kind="back_edge")) == 1
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "critical_review", "production_mode": "collab"}], indirect=True)
+def test_p2_write_without_argue_states_the_gap_and_asks_once_per_section(env):
+    _, ps, _ = env
+    _ready(env)
+    w = DraftWorker()
+    ex = _writer([writes(), NEED, NEED, writes(), writes(), writes()])
+    cp = get_checkpoint(ps, w.run(_ctx(env, ex)).checkpoint_id)
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decision": "write", "comment": "A limitation."}))
+    assert out.status == "done", out.reason  # drafting went on in place
+    assert _writer_sections(ex) == ["introduction", "theme-1", "theme-1", "theme-1", "gaps-agenda", "conclusion"]
+    told, retried = ex.of("writer", "SectionDraft")[2:4]
+    # told your decision, it asks again: refused (a failed try), not asked of you a second time
+    assert told["inputs"]["argue_declined"] == [{"needs": NEED["missing_support"], "comment": "A limitation."}]
+    assert any("decided this section is written without asking argue" in f
+               for f in retried["inputs"]["retry"]["failures"])
+    assert [c["id"] for c in list_checkpoints(ps, "open")] == [] and not draft_notes(ps, 1, kind="back_edge")
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    declined, *_ = unmet_support(ps)
+    assert declined["declined"] == NEED["missing_support"]
+    assert "researcher decided it is written without asking the argument stage again" in render_disclosure(ps)
 
 
 def test_a_section_that_already_went_back_to_argue_writes_without_what_it_lacks(env):
