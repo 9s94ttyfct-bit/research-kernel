@@ -377,12 +377,17 @@ def test_p2_missing_support_asks_you_before_going_back_to_argue(env):
     with pytest.raises(ValueError, match="only be answered by a human"):  # your decision: a P1 vote may never give it
         answer_checkpoint(ps, cp["id"], {"decision": "write"}, answered_by="vote", actor="kernel")
     # an answer that cannot be applied asks again
-    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decision": "proceed"}))
+    first = cp["id"]
+    out = w.on_answer(_ctx(env, ex), _answer(ps, first, {"decision": "proceed"}))
     assert out.status == "waiting_human" and "not one of back, write" in out.reason
     cp = get_checkpoint(ps, out.checkpoint_id)
     assert cp["prompt"].startswith("Your answer could not be applied")
-    # back: the edge with your comment
-    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decision": "back", "comment": "Look at the cohorts."}))
+    # back: the edge with your comment. You answered the replacement before the engine linked it (a crash): the first
+    # checkpoint handled again finds its replacement, and a resumed run waits on it; neither opens a third one
+    _answer(ps, cp["id"], {"decision": "back", "comment": "Look at the cohorts."})
+    assert w.on_answer(_ctx(env, ex), get_checkpoint(ps, first)).checkpoint_id == cp["id"]
+    assert w.run(_ctx(env, _writer([]))).checkpoint_id == cp["id"]
+    out = w.on_answer(_ctx(env, ex), get_checkpoint(ps, cp["id"]))
     assert (out.status, out.to) == ("back_edge", "argue") and "Look at the cohorts." in out.reason
     assert w.on_answer(_ctx(env, ex), get_checkpoint(ps, cp["id"])).reason == out.reason  # applied again (a crash)
     assert len(draft_notes(ps, 1, kind="back_edge")) == 1
@@ -395,7 +400,10 @@ def test_p2_write_without_argue_states_the_gap_and_asks_once_per_section(env):
     w = DraftWorker()
     ex = _writer([writes(), NEED, NEED, writes(), writes(), writes()])
     cp = get_checkpoint(ps, w.run(_ctx(env, ex)).checkpoint_id)
-    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decision": "write", "comment": "A limitation."}))
+    # you answer before the engine linked the wait (a crash): the resumed run waits on the answered checkpoint
+    _answer(ps, cp["id"], {"decision": "write", "comment": "A limitation."})
+    assert w.run(_ctx(env, _writer([]))).checkpoint_id == cp["id"]
+    out = w.on_answer(_ctx(env, ex), get_checkpoint(ps, cp["id"]))
     assert out.status == "done", out.reason  # drafting went on in place
     assert _writer_sections(ex) == ["introduction", "theme-1", "theme-1", "theme-1", "gaps-agenda", "conclusion"]
     told, retried = ex.of("writer", "SectionDraft")[2:4]

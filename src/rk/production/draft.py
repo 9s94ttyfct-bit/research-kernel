@@ -66,7 +66,7 @@ from dataclasses import dataclass
 from pydantic import Field
 
 from rk.argument import ArgumentService
-from rk.checkpoints import create_checkpoint
+from rk.checkpoints import create_checkpoint, opened_in_place_of
 from rk.config import load_settings
 from rk.discovery.models import RQBody
 from rk.discovery.store import frozen_rq, hypotheses, intake_of
@@ -446,8 +446,8 @@ class DraftWorker:
             return StageOutcome("failed", reason=s)
         if sent := draft_notes(ps, ctx.attempt, kind="back_edge"):  # resumed after the back-edge was noted
             return StageOutcome("back_edge", to=sent[-1]["to"], reason=sent[-1]["reason"])
-        if waiting := self._open_request(ps, ctx.attempt):  # resumed before the engine linked the wait
-            return StageOutcome("waiting_human", checkpoint_id=waiting, reason="argue_request is open")
+        if waiting := self._pending_request(ps, ctx.attempt):  # resumed before the engine linked the wait
+            return StageOutcome("waiting_human", checkpoint_id=waiting, reason="argue_request awaits your answer")
         retries = load_settings().draft_section_retries
         prisma = (prisma_event(ps, ctx.attempt, s.search_attempt, s.protocol["id"] if s.protocol else None,
                                actor=ctx.actor)
@@ -603,15 +603,22 @@ class DraftWorker:
         return inputs
 
     @staticmethod
-    def _open_request(ps: ProjectStore, attempt: int) -> str | None:
-        """The attempt's open ``argue_request``, else ``None``."""
-        rows = ps.db.execute("SELECT id, options FROM checkpoints WHERE stage=? AND kind=? AND status='open' "
+    def _pending_request(ps: ProjectStore, attempt: int) -> str | None:
+        """The attempt's ``argue_request`` still to be applied, open or already answered: not superseded, not answered
+        through a replacement (``options.replaces``) and with no draft note of its decision; else ``None``. An attempt
+        resumed in place waits on it again, so an answer you gave before the engine linked the wait is applied, not
+        lost (the engine hands an answered checkpoint to ``on_answer``)."""
+        applied = {n.get("checkpoint") for n in draft_notes(ps, attempt)}
+        rows = ps.db.execute("SELECT id, options FROM checkpoints WHERE stage=? AND kind=? AND status!='superseded' "
                              "ORDER BY created, id", (STAGE, ARGUE_REQUEST)).fetchall()
-        return next((r["id"] for r in rows if json.loads(r["options"] or "{}").get("attempt") == attempt), None)
+        return next((r["id"] for r in rows if json.loads(r["options"] or "{}").get("attempt") == attempt
+                     and r["id"] not in applied and opened_in_place_of(ps, ARGUE_REQUEST, r["id"]) is None), None)
 
     @staticmethod
-    def _ask(ctx: StageContext, spec: SectionSpec, needs: list[str], *, why: str = "") -> str:
-        """Open the ``argue_request`` for the section (P2): back to argue, or write it with the gap as a limitation."""
+    def _ask(ctx: StageContext, spec: SectionSpec, needs: list[str], *, why: str = "",
+             replaces: str | None = None) -> str:
+        """Open the ``argue_request`` for the section (P2): back to argue, or write it with the gap as a limitation;
+        ``replaces`` the checkpoint whose answer could not be applied."""
         listed = "\n".join(f"- {n}" for n in needs)
         prompt = ((f"{why}\n\n" if why else "")
                   + f"The Writer says the section {spec.id} ({spec.title}) needs claims the argument does not have:\n"
@@ -621,7 +628,8 @@ class DraftWorker:
                   'Answer {"decision": "back" | "write", "comment"?: "..."}.')
         return create_checkpoint(ctx.ps, ARGUE_REQUEST, prompt,
                                  {"attempt": ctx.attempt, "section": spec.id, "title": spec.title, "needs": needs,
-                                  "choices": list(ARGUE_REQUEST_DECISIONS)},
+                                  "choices": list(ARGUE_REQUEST_DECISIONS),
+                                  **({"replaces": replaces} if replaces else {})},
                                  stage=STAGE, actor=ctx.actor)
 
     def on_answer(self, ctx: StageContext, checkpoint: dict) -> StageOutcome:
@@ -646,9 +654,10 @@ class DraftWorker:
         if not why and comment is not None and not isinstance(comment, str):
             why = "comment must be text"
         if why:
-            if waiting := self._open_request(ps, ctx.attempt):  # the replacement, already opened (a crash)
+            if (waiting := opened_in_place_of(ps, ARGUE_REQUEST, checkpoint["id"])) is not None:  # applied before
                 return StageOutcome("waiting_human", checkpoint_id=waiting, reason=why)
-            cid = self._ask(ctx, spec, opts["needs"], why=f"Your answer could not be applied: {why}.")
+            cid = self._ask(ctx, spec, opts["needs"], why=f"Your answer could not be applied: {why}.",
+                            replaces=checkpoint["id"])
             return StageOutcome("waiting_human", checkpoint_id=cid, reason=why)
         comment = (comment or "").strip()
         noted = [n for n in draft_notes(ps, ctx.attempt) if n.get("checkpoint") == checkpoint["id"]]
