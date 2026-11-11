@@ -492,6 +492,45 @@ auth-gateway), the second judge 39 on `deepseek-v4.1-flash`.
   every synthesize attempt assesses all studies again; the omp_gateway driver clips an error body to 500 characters,
   which can drop a `retry-after-ms`.
 
+### Calibration rerun, second resume (2026-11-11): argue passed, draft went back to argue unasked
+
+The same run, resumed at 08:50:19 UTC (run session 2), with argue at attempt 6. The main checkout was at 710849b from
+08:22 to 09:06 UTC (git reflog); which code the serve process had loaded is not recorded. Tasks in the session: the
+Arguer 15 and the Writer 7 on `anthropic/claude-haiku-5-5`, the Skeptic 5 and the first judge 19 on
+`openai-codex/gpt-6-luna`, the second judge 18 on `deepseek-v4.1-flash`. All 64 tasks finished; none failed.
+
+- **The retry-after fix worked live.** Two judge calls got Codex's capacity 502 with `retry-after-ms=24000`
+  (08:52:02) and `retry-after-ms=5000` (08:53:21). Each waited and succeeded on its second try.
+- **argue → synthesize, attempt 9** (08:54:28): the stand-in sent argue back for a recall finding (round 3). The
+  attempt kept 3 findings of attempt 8 word for word (96135e6 worked). But the 2 kept findings the stand-in had
+  marked supported on attempt 8's checkpoint were judged again, came back uncertain, and were asked again
+  (`chk_01M74X60HX9JPFKJH52MC30SN1`). Synthesize passed at 08:57:43.
+- **argue, attempts 7–9.** Attempt 7's main claim made cross-study patterns the findings do not show; the stand-in
+  sent it back (argue→argue). Attempt 8's Arguer output had no `answers_rq` self-check. That cost a whole attempt
+  and one more use of argue→argue (08:59:49). Attempt 9 passed at 09:02:30. The stand-in answered that the main
+  claim answers the question, and recorded the conditions for replacement as a limitation.
+- **draft, attempt 1** (09:03:06): the `gaps-agenda` section's Writer asked for "a claim comparing the included
+  evaluations by design features … so that the conditions under which a model could replace a second human
+  screener can be stated". That is the gap the stand-in had just recorded as a limitation. draft→argue was taken
+  with no one asked; draft opened no checkpoint in either mode.
+- **Paused** at 09:03:31 (`paused_budget`): argue attempt 10 had started, and argue had used its 40 role tasks in run
+  session 2.
+- **Fixed after the run:**
+  - 706345c: the omp_gateway driver's 500-character clip of an error body keeps a `retry-after-ms` whole.
+  - 88712fe: a `revise` that would be ignored (on a claims answer, on synthesize's back to read_extract) is refused,
+    and the missing-narrative checkpoint offers the findings the next attempt would keep.
+  - b9fe63f: a kept finding carries the V-NUM and V-SUPPORT verdicts it passed with (`carried_from`) and its
+    `supported` status, attributed as before (to you when you decided it). V-HEDGE is checked again; it is not
+    judged again.
+  - b3afd2e: in P2, a section's `missing_support` opens `argue_request` (once per section, human only). `back` takes
+    draft→argue with your comment. `write` has the section written from the claims given, the gap stated as a
+    limitation (given to the Writer, disclosed). P1 still goes back to argue once per section.
+  - 35b4fa9: a round-1 Arguer output without its self-check or main claim is asked for once more within the attempt;
+    only a second slip reruns argue.
+- Other findings, not kernel defects: the Haiku Arguer overgeneralised again, and once left out a required field;
+  the judges rated the review's own scope statements "partial"; the gpt-6-luna Skeptic's objections were sound.
+- Open: argue's 40-task budget per run session is spent by ordinary P2 review loops (twice now).
+
 ## P1 project: failed at protocol (the vote never approved it)
 
 Home `rk-plan5c-p1`, intake `probiotics for preventing antibiotic-associated diarrhoea in children`, systematic
