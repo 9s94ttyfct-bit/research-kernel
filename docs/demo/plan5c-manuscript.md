@@ -479,9 +479,10 @@ auth-gateway), the second judge 39 on `deepseek-v4.1-flash`.
 - **Fixed after the run:**
   - c7aa747, 4c8ae13: a reply with a `retry-after-ms` up to 120 s is waited out in the task and tried again; a longer
     one, or one the last attempt still gives, is a usage limit (the run waits instead of the task failing).
-  - 96135e6, 3a65296: a new synthesize attempt keeps, word for word with their evidence, the findings of the attempt
-    before that still pass the claim gate, are not contested and cite only usable studies. The Arguer writes only the
-    others and releases a kept one only when the guidance asks for a change.
+  - 96135e6, 3a65296, 390e834: a new synthesize attempt keeps, word for word with their evidence, the findings of the
+    attempt before that still pass the claim gate, are not contested and cite only usable studies. The Arguer writes
+    only the others. Only your answer releases a kept finding: those you name in `revise` on synthesize's rerun or
+    argue's back are written again; P1 keeps them all.
   - 4b6b23f, 14bc97a: a read_extract rerun reads a study again only for its failing fields; the other fields keep their
     verified rows (the values lost on re-read above).
 - Other findings, not kernel defects: the Haiku Arguer over-quantifies findings; synthesis claims cited record lines
