@@ -260,7 +260,9 @@ two uses per project.
   problem. Both synthesize cards also offer "Back to read_extract", naming the studies to read again. A new synthesize
   attempt (a rerun or argue→synthesize) keeps, word for word with its evidence, every finding of the attempt before
   that still passes the claim gate and cites only usable studies; the Arguer writes only the others, and the kept
-  findings are verified again as new claims. To change a kept finding, withdraw it.
+  findings are verified again as new claims. To change or drop a kept finding, say so in the guidance (your rerun or
+  back comment): the Arguer then releases it (`revise_kept`) and writes its replacement; without guidance every kept
+  finding stays.
 - **Argue.** The Arguer states the main claim, its reasons and the warrant of each reason; the Skeptic (another
   vendor) raises objections, tests every warrant and names conflicts between supported claims, round after round,
   until no new objection of priority 1 or 2 arrives. The Arguer answers each objection (a new claim, a concession or

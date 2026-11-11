@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import replace
 
 import pytest
 
@@ -1329,7 +1330,8 @@ def test_a_new_attempt_keeps_the_findings_that_passed_word_for_word(env):
     """Calibration (critical review rerun): every synthesize attempt wrote its narrative afresh, so a finding that had
     passed V-SUPPORT and the argument came back reworded (over-quantified) and was withdrawn, although your comment
     said to keep it exactly. A new attempt now keeps, word for word with its evidence, each finding of the attempt
-    before that still passes the claim gate; the Arguer writes only the others."""
+    before that still passes the claim gate; the Arguer writes only the others, and releases a kept one only when
+    guidance asks for a change."""
     _, ps, _ = env
     _setup(env, {"A": {"design": "rct"}, "B": {"design": "cohort"}}, schema=[DESIGN],
            plan=SynthesisPlan(method="thematic"))
@@ -1341,22 +1343,30 @@ def test_a_new_attempt_keeps_the_findings_that_passed_word_for_word(env):
     out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decision": "rerun", "comment": "Drop the children."}))
     assert out.status == "rerun"
 
-    def rewrites(inputs):  # the Arguer restates the kept finding and adds one; the kept one stands as it was
+    def rewrites(inputs):  # the Arguer restates the kept finding, asks to revise it unasked, and adds one
         n = narrative(text=NEWER)(inputs)
-        n["findings"].append({**n["findings"][0], "text": FINDING})
-        return n
+        n["findings"].append({**n["findings"][0], "text": "  aspirin was studied in OLDER people."})
+        return {**n, "revise_kept": [0]}
     ex2 = _exec(narratives=[rewrites], judges=_judges_on("children", "unsupported"))
     out = w.run(_ctx(env, ex2, 2))
     assert out.status == "done", get_checkpoint(ps, out.checkpoint_id)["options"]["problems"]
     (call,) = ex2.of("arguer", "NarrativeSynthesis")
-    assert call["inputs"]["kept_findings"] == [{"text": FINDING, "kind": "fact", "scope_limits": []}]
-    again, new = _claims(ps, 2)
-    assert (again["text"], again["status"], new["text"]) == \
-        (FINDING, "supported", NEWER)
+    assert call["inputs"]["kept_findings"] == [{"index": 0, "text": FINDING, "kind": "fact", "scope_limits": []}]
+    again, new = _claims(ps, 2)  # without guidance nothing is released
+    assert (again["text"], again["status"], new["text"]) == (FINDING, "supported", NEWER)
     assert [e["note_ids"] for e in again["evidence"]] == [e["note_ids"] for e in kept["evidence"]]
-    assert synthesis_notes(ps, 2, kind="narrative")[0]["kept"] == [kept["id"]]
+    assert again["generator_vendor"] == kept["generator_vendor"]
+    (note,) = synthesis_notes(ps, 2, kind="narrative")
+    assert (note["kept"], note["released"]) == ([kept["id"]], [])
     assert w.gate(ps, 2).ok, w.gate(ps, 2).failures
 
+    # your comment asks to change the kept finding: the Arguer releases it and writes its replacement
+    replaced = "Aspirin was studied in older adults."
+    ex3 = _exec(narratives=[lambda inputs: {**narrative(text=replaced)(inputs), "revise_kept": [0]}])
+    assert w.run(replace(_ctx(env, ex3, 3), guidance="Say older adults, not older people.")).status == "done"
+    assert [c["text"] for c in _claims(ps, 3)] == [NEWER, replaced]
+    (note,) = synthesis_notes(ps, 3, kind="narrative")
+    assert (note["kept"], note["released"]) == ([new["id"]], [again["id"]])
 
 
 def test_review_choices_follow_the_claim_problems():
