@@ -1020,13 +1020,12 @@ class ArgueWorker:
     def _open_objection(ps: ProjectStore, o: dict, answers: _Answers) -> dict:
         """An objection the Arguer answers. A response that did not answer it is shown as ``earlier_answer``: the
         claim's text and status and why it did not answer, without its id (given again by id, it would be refused);
-        the objection is ``open`` again."""
+        the objection is ``open`` again. Only an unsupported answer reaches here (``_concedable``)."""
         out = {k: o.get(k) for k in ("id", "target_id", "category", "text", "priority", "source_id", "status")}
         if o.get("status") == "responded" and (rc := o.get("response_claim_id")):
             c = _claim(ps, rc)
             why = ("it is the objection's own target or the counterpart of its conflict" if rc in answers.own(o)
-                   else "its claim is not supported" if not _supported(ps, rc)
-                   else "its claim is not in this attempt's argument")
+                   else "its claim is not supported")
             out.update(status="open", earlier_answer={"text": c["text"], "status": c["status"], "why": why})
         return out
 
