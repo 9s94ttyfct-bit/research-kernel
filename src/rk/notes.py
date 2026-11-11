@@ -203,14 +203,29 @@ def _layer(ps: ProjectStore, source_id: str):
     return snap
 
 
+def _whole_words(text: str, s: int, e: int, reach: int = 64) -> tuple[int, int]:
+    """``s``–``e`` widened to whole words where an edge cuts one (a letter or digit on both sides of it), by at most
+    ``reach`` characters each side: a quote copied from it then starts and ends on words, as V-QUOTE requires."""
+    lo, hi = max(0, s - reach), min(len(text), e + reach)
+    while lo < s < len(text) and text[s - 1].isalnum() and text[s].isalnum():
+        s -= 1
+    while 0 < e < hi and text[e - 1].isalnum() and text[e].isalnum():
+        e += 1
+    return s, e
+
+
 def text_read(ps: ProjectStore, source_id: str, page: int | None = None, start: int | None = None,
               end: int | None = None) -> TextSlice:
+    """A page of the item's text layer, or its ``start``–``end`` characters widened to whole words (``start`` and
+    ``end`` of the result are the range read)."""
     sha, layer = _layer(ps, source_id)
     pg = next((p for p in layer.pages if p.n == (page or 1)), None)
     if pg is None:
         raise ValueError(f"page {page} out of range (1..{len(layer.pages)})")
     s = max(0, start or 0)
     e = min(len(pg.text), end if end is not None else len(pg.text))
+    if s < e:
+        s, e = _whole_words(pg.text, s, e)
     return TextSlice(page=pg.n, start=s, end=e, text=pg.text[s:e], snapshot_sha=sha)
 
 
@@ -241,7 +256,8 @@ def text_find(ps: ProjectStore, source_id: str, query: str, limit: int = 10) -> 
                 s, e = mp[i], mp[i + len(q) - 1] + 1
                 if (s, e) not in seen:
                     seen.add((s, e))
-                    out.append(TextMatch(page=pg.n, start=s, end=e, snippet=pg.text[max(0, s - 80) : e + 80]))
+                    a, b = _whole_words(pg.text, max(0, s - 80), min(len(pg.text), e + 80))
+                    out.append(TextMatch(page=pg.n, start=s, end=e, snippet=pg.text[a:b]))
                 i = hay.find(q, i + 1)
         if len(out) >= limit:
             break

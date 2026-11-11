@@ -209,3 +209,22 @@ def test_a_given_locator_accepts_a_line_end_hyphen_like_v_quote(tmp_path):
     assert found.locator == Locator(page=1, start=4, end=len(text))
     kept = _quote(ps, lib, iid, "treatment works well.", Locator(page=1, start=4, end=len(text)))
     assert kept.locator == found.locator and kept.verified["quote"]["located"] == "given"
+
+
+def test_reading_and_finding_give_whole_words(tmp_path):
+    """Calibration (critical review rerun): the Reader copied a slice cut mid-word ("inment in SR1…") as a quote, and
+    V-QUOTE takes whole words only. ``text_read`` widens a range to whole words and reports the range it read; a
+    ``text_find`` snippet starts and ends on whole words."""
+    ps = ProjectStore(tmp_path / "p", "prj_T")
+    lib = Library(ps)
+    iid = lib.add_item(ItemIn(title="Words", year=2020), added_by="human", actor="u").item_id
+    text = " ".join(f"w{i:04d}x" for i in range(60)) + "."  # word i at 7 * i
+    _record_snapshot(ps, iid, text.encode(), TextLayer(source_kind="html", pages=[Page(n=1, text=text)], sha256=""),
+                     "html", None, "u")
+    sl = text_read(ps, iid, page=1, start=10, end=17)  # from inside w0001x to inside w0002x
+    assert (sl.start, sl.end, sl.text) == (7, 20, "w0001x w0002x")
+    assert text_read(ps, iid, page=1, start=7, end=13).text == "w0001x"  # whole words stay as asked
+    assert text_read(ps, iid, page=1, start=419, end=None).text == "."  # a word's edge is no cut
+    (hit,) = text_find(ps, iid, "w0030x")
+    words = hit.snippet.split()
+    assert words[0] == "w0018x" and words[-1] == "w0042x" and all(len(w) == 6 for w in words)
