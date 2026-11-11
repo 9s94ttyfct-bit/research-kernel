@@ -531,6 +531,34 @@ Arguer 15 and the Writer 7 on `anthropic/claude-haiku-5-5`, the Skeptic 5 and th
   the judges rated the review's own scope statements "partial"; the gpt-6-luna Skeptic's objections were sound.
 - Open: argue's 40-task budget per run session is spent by ordinary P2 review loops (twice now).
 
+### Calibration rerun, third resume (2026-11-11): argue paused on its budget again
+
+The same run, resumed with `rk run resume` at 09:31:13 UTC (run session 3) by a serve started on 09c5f38 (logged
+HEAD), with argue at attempt 10. That attempt had been opened by the old automatic draft→argue (above). Tasks: the
+Arguer 6 on `anthropic/claude-haiku-5-5`, the Skeptic 5 and the first judge 15 on `openai-codex/gpt-6-luna`, the
+second judge 14 on `deepseek-v4.1-flash`; 40 in all, all argue's. No task failed and none waited on a retry-after.
+
+- **argue, attempts 10–12** (09:31–09:38). Attempt 10 (20 tasks) carried the draft's request as guidance, and each
+  of its four Arguer rounds asked synthesize again for the design comparison the stand-in had recorded as a
+  limitation. At its final review (`chk_01M74Z9THXWZNS6X87YWF2MQTG`) the stand-in withdrew two response claims that
+  their own cited sentence contradicts. That left the warrant `edg_01M74XHQ2B1ZCJP79ZY9ZRSPCR` unanswered, and
+  argue→argue ran (6th use, allowed). Attempt 11 (16 tasks) got a rerun answer (`chk_01M74ZF51GM89X9NRKX13R7KD1`):
+  its main claim mixed assistive use with replacement. Attempt 12 started at 09:37:40 (7th use of argue→argue);
+  the run paused at 09:38:05 (`paused_budget`, 40 of 40 argue role tasks in session 3).
+- **Argue copied supported findings as new claims.** In attempt 11 the Arguer gave three synthesis findings as new
+  reasons, word for word and on the same notes. Stored as new claims and judged again, two came back uncertain
+  (`clm_01M74ZD0GDG069J746FVFR79VR` copies `clm_01M74X4RCA9B6TJBRE7ABGK4KY`; `clm_01M74ZD0H8SCMR901NYDX23JTH`
+  copies `clm_01M74X4RC1JTSZM3HFDZT6Y23E`), and the copies drew new priority-1 objections.
+  - Fixed in 46b3423: a new reason or response claim with a supported claim's text (folded) that cites only that
+    claim's notes reuses it by id; one citing other notes stays a new claim.
+- Not exercised: the round-1 ask-again, the kept-finding carry and `argue_request`. Neither synthesize nor draft ran
+  in this session.
+- Other findings, not kernel defects: the Haiku Arguer made recall a reason for workload although the figures come
+  from different evaluations, and kept asking for the design comparison after it was a limitation; the gpt-6-luna
+  Skeptic's objections were substantive but asked for evidence the included studies cannot hold.
+- Open: argue has used 120 tasks over three run sessions; at 16–20 tasks per attempt, a 40-task session holds about
+  two attempts.
+
 ## P1 project: failed at protocol (the vote never approved it)
 
 Home `rk-plan5c-p1`, intake `probiotics for preventing antibiotic-associated diarrhoea in children`, systematic
