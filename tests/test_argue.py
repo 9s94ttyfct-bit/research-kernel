@@ -1420,12 +1420,13 @@ def test_limitations_of_an_older_attempt_use_the_synthesis_it_argued_on(env):
     assert SynthesizeWorker().run(production_ctx(k, ps, lib, ex, stage="synthesize", attempt=2)).status == "done"
     record_ran(ps, "synthesize", 2, "done", "", actor="tester")
     record_passed(ps, "synthesize", 2, actor="tester")
-    (later,) = synthesis_claims(ps, 2)
+    later = synthesis_claims(ps, 2)  # F1 and the findings of attempt 1 it keeps, each a new claim
     svc = ArgumentService(ps)
-    svc.withdraw_claim(later, reason="a later synthesis", actor="tester")
+    for c in later:
+        svc.withdraw_claim(c, reason="a later synthesis", actor="tester")
     svc.withdraw_claim(first[1], reason="the argued synthesis", actor="tester")
     withdrawn = {c["claim_id"] for c in argue_limitations(ps, 1)["claims"]["withdrawn"]}
-    assert first[1] in withdrawn and later not in withdrawn
+    assert first[1] in withdrawn and not withdrawn & set(later)
 
 
 def test_all_findings_withdrawn_in_p1_goes_back_to_synthesize(env):

@@ -257,7 +257,10 @@ two uses per project.
   set, per protocol version), and read_extract reads only that study again. A scoping review gets an evidence map.
   Each finding is a claim with its evidence, checked by V-SUPPORT, V-NUM and V-HEDGE; every claim that fails the
   claim gate goes to you in `uncertain_support` (P2): withdraw it, or call it supported when the judges were its only
-  problem. Both synthesize cards also offer "Back to read_extract", naming the studies to read again.
+  problem. Both synthesize cards also offer "Back to read_extract", naming the studies to read again. A new synthesize
+  attempt (a rerun or argue→synthesize) keeps, word for word with its evidence, every finding of the attempt before
+  that still passes the claim gate and cites only usable studies; the Arguer writes only the others, and the kept
+  findings are verified again as new claims. To change a kept finding, withdraw it.
 - **Argue.** The Arguer states the main claim, its reasons and the warrant of each reason; the Skeptic (another
   vendor) raises objections, tests every warrant and names conflicts between supported claims, round after round,
   until no new objection of priority 1 or 2 arrives. The Arguer answers each objection (a new claim, a concession or

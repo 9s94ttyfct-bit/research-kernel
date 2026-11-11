@@ -1321,6 +1321,44 @@ def test_p2_overstated_finding_can_only_be_withdrawn(env):
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
 
 
+NEWER = "Aspirin was studied in the oldest people."
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "critical_review", "production_mode": "collab"}], indirect=True)
+def test_a_new_attempt_keeps_the_findings_that_passed_word_for_word(env):
+    """Calibration (critical review rerun): every synthesize attempt wrote its narrative afresh, so a finding that had
+    passed V-SUPPORT and the argument came back reworded (over-quantified) and was withdrawn, although your comment
+    said to keep it exactly. A new attempt now keeps, word for word with its evidence, each finding of the attempt
+    before that still passes the claim gate; the Arguer writes only the others."""
+    _, ps, _ = env
+    _setup(env, {"A": {"design": "rct"}, "B": {"design": "cohort"}}, schema=[DESIGN],
+           plan=SynthesisPlan(method="thematic"))
+    ex = _exec(narratives=[_two_findings(OTHER)], judges=_judges_on("children", "unsupported"))
+    w = SynthesizeWorker()
+    cp = get_checkpoint(ps, w.run(_ctx(env, ex)).checkpoint_id)
+    kept, bad = _claims(ps)
+    assert (kept["text"], kept["status"], bad["text"]) == (FINDING, "supported", OTHER)
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decision": "rerun", "comment": "Drop the children."}))
+    assert out.status == "rerun"
+
+    def rewrites(inputs):  # the Arguer restates the kept finding and adds one; the kept one stands as it was
+        n = narrative(text=NEWER)(inputs)
+        n["findings"].append({**n["findings"][0], "text": FINDING})
+        return n
+    ex2 = _exec(narratives=[rewrites], judges=_judges_on("children", "unsupported"))
+    out = w.run(_ctx(env, ex2, 2))
+    assert out.status == "done", get_checkpoint(ps, out.checkpoint_id)["options"]["problems"]
+    (call,) = ex2.of("arguer", "NarrativeSynthesis")
+    assert call["inputs"]["kept_findings"] == [{"text": FINDING, "kind": "fact", "scope_limits": []}]
+    again, new = _claims(ps, 2)
+    assert (again["text"], again["status"], new["text"]) == \
+        (FINDING, "supported", NEWER)
+    assert [e["note_ids"] for e in again["evidence"]] == [e["note_ids"] for e in kept["evidence"]]
+    assert synthesis_notes(ps, 2, kind="narrative")[0]["kept"] == [kept["id"]]
+    assert w.gate(ps, 2).ok, w.gate(ps, 2).failures
+
+
+
 def test_review_choices_follow_the_claim_problems():
     from rk.production.claims import review_choices
     from rk.verify.support import ClaimProblem
