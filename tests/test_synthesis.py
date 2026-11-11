@@ -538,20 +538,25 @@ def test_uncertain_support_answers_withdraw_rerun_and_invalid(env):
 # ---- the representativeness statement ----
 @pytest.mark.parametrize("env", [{"paper_type": "critical_review"}], indirect=True)
 def test_representativeness_statement_required(env):
+    """The representativeness statement names the k included studies. Calibration (critical review rerun): checked
+    only by the gate, a missing one failed the stage after you had answered on the synthesis claims; it is checked
+    when the narrative comes in, asked for once more naming the problem, and still wrong, the attempt stops before
+    any claim."""
     _, ps, _ = env
     _setup(env, {"A": {"design": "rct"}, "B": {"design": "cohort"}, "C": {"design": "rct"}}, schema=[DESIGN],
            plan=SynthesisPlan(method="thematic"))
     w = SynthesizeWorker()
-    for attempt, statement in ((1, ""), (2, "The included studies were selected by the eligibility criteria.")):
-        ex = _exec(narratives=[narrative(representativeness=statement)])
-        assert w.run(_ctx(env, ex, attempt)).status == "done"
-        inputs = ex.of("arguer", "NarrativeSynthesis")[0]["inputs"]
-        assert inputs["included_k"] == 3 and "selection_basis" in inputs
-        g = w.gate(ps, attempt)
-        assert not g.ok and any("representativeness" in f and "3" in f for f in g.failures), g.failures
-    ex = _exec(narratives=[narrative()])
-    assert w.run(_ctx(env, ex, 3)).status == "done"
-    assert w.gate(ps, 3).ok, w.gate(ps, 3).failures
+    ex = _exec(narratives=[narrative(representativeness=""), narrative()])
+    assert w.run(_ctx(env, ex, 1)).status == "done"
+    first, again = (c["inputs"] for c in ex.of("arguer", "NarrativeSynthesis"))
+    assert first["included_k"] == 3 and "selection_basis" in first and "guidance" not in first
+    assert "no representativeness statement: it must name the 3 included studies" in again["guidance"]
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+    vague = narrative(representativeness="The included studies were selected by the eligibility criteria.")
+    out = w.run(_ctx(env, _exec(narratives=[vague, vague]), 2))
+    assert out.status != "done" and "does not name the 3 included studies" in out.reason
+    assert _claims(ps, 2) == []
 
 
 @pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
@@ -559,8 +564,8 @@ def test_systematic_narrative_needs_every_swim_item(env):
     _, ps, _ = env
     _setup(env, dict(list(BCG.items())[:2]), schema=BINARY, plan=SynthesisPlan(method="narrative_swim"))
     w = SynthesizeWorker()
-    assert w.run(_ctx(env, _exec(narratives=[narrative(swim=False)]))).status == "done"
-    assert any("SWiM" in f for f in w.gate(ps, 1).failures)
+    out = w.run(_ctx(env, _exec(narratives=[narrative(swim=False), narrative(swim=False)])))
+    assert out.status != "done" and "SWiM items missing" in out.reason and _claims(ps) == []
 
 
 # ---- the back-edge ----

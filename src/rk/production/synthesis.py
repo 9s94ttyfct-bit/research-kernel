@@ -503,6 +503,18 @@ def representativeness_problem(statement: str, k: int) -> str | None:
     return None
 
 
+def narrative_problems(output: dict, k: int, paper_type: str) -> list[str]:
+    """What fails a narrative synthesis (``NarrativeSynthesis`` as JSON) at the gate whatever its claims: a
+    representativeness statement that does not name the ``k`` included studies; for a systematic review, a SWiM item
+    left empty."""
+    out = [why] if (why := representativeness_problem(output.get("representativeness") or "", k)) else []
+    if paper_type == "systematic_review":
+        swim = output.get("swim") or {}
+        if missing := [i for i in SWIM_ITEMS if not (swim.get(i) or "").strip()]:
+            out.append(f"SWiM items missing: {', '.join(missing)}")
+    return out
+
+
 # ---- evidence criteria ----
 def evidence_criteria(ps: ProjectStore, attempt: int, note_ids: list[str]) -> dict:
     """The criteria of an evidence item from the assessments of the studies its notes come from: each criterion's
@@ -1128,6 +1140,9 @@ class SynthesizeWorker:
                       new_claim_id=None, reason=why)
 
     def _narrative(self, ctx: StageContext, s: _Inputs) -> str | None:
+        """The attempt's narrative synthesis, checked as it comes in (``narrative_problems``) and asked for once more
+        naming its problems: a narrative the gate would fail is never stored, so its findings never reach a claim
+        checkpoint you would answer in vain."""
         ps = ctx.ps
         svc = ArgumentService(ps)
         k = len(s.usable)
@@ -1146,15 +1161,23 @@ class SynthesizeWorker:
                         "swim_items": list(SWIM_ITEMS) if s.paper_type == "systematic_review" else []}
         if (m := _last(ps, ctx.attempt, "map")) is not None:
             inputs["evidence_map"] = artifact(ps, m["stt"])["values"]["table"]
-        if ctx.guidance:
-            inputs["guidance"] = ctx.guidance
-        r = ctx.executor.run(ROLE, NARRATIVE_TASK, inputs, NarrativeSynthesis, stage=ctx.stage, attempt=ctx.attempt,
-                             tools=[])
-        if not r.ok or r.output is None:
-            return f"the arguer gave no synthesis ({r.error})"
-        _note(ps, ctx.attempt, "narrative", actor=ctx.actor, output=r.output.model_dump(mode="json"),
-              vendor=vendor_of(r.provider, r.model), included_k=k, selection_basis=basis)
-        return None
+        problems: list[str] = []
+        for asked in range(2):
+            guidance = [ctx.guidance] if ctx.guidance else []
+            if asked:
+                guidance.append(f"Your synthesis was not accepted: {'; '.join(problems)}. Give it again with "
+                                "these fixed.")
+            ask = {**inputs, "guidance": "\n\n".join(guidance)} if guidance else inputs
+            r = ctx.executor.run(ROLE, NARRATIVE_TASK, ask, NarrativeSynthesis, stage=ctx.stage,
+                                 attempt=ctx.attempt, tools=[])
+            if not r.ok or r.output is None:
+                return f"the arguer gave no synthesis ({r.error})"
+            output = r.output.model_dump(mode="json")
+            if not (problems := narrative_problems(output, k, s.paper_type)):
+                _note(ps, ctx.attempt, "narrative", actor=ctx.actor, output=output,
+                      vendor=vendor_of(r.provider, r.model), included_k=k, selection_basis=basis)
+                return None
+        return f"the arguer's synthesis was not accepted, asked twice: {'; '.join(problems)}"
 
     @staticmethod
     def _store_findings(ctx: StageContext, s: _Inputs, narrative: dict) -> None:
@@ -1361,13 +1384,7 @@ class SynthesizeWorker:
         if narrative is None:
             failures.append("no narrative synthesis")
         else:
-            out = narrative["output"]
-            if why := representativeness_problem(out.get("representativeness") or "", len(s.usable)):
-                failures.append(why)
-            if s.paper_type == "systematic_review":
-                swim = out.get("swim") or {}
-                if missing := [i for i in SWIM_ITEMS if not (swim.get(i) or "").strip()]:
-                    failures.append(f"SWiM items missing: {', '.join(missing)}")
+            failures += narrative_problems(narrative["output"], len(s.usable), s.paper_type)
         claims = synthesis_claims(ps, attempt)
         failures += gate_claims(ps, claims)
         svc = ArgumentService(ps)
