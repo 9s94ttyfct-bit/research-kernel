@@ -282,6 +282,35 @@ def test_argument_round_stores_claims_edges_and_verifies(env):
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
 
 
+def test_a_reason_restating_a_supported_finding_reuses_it(env):
+    """Calibration (critical review rerun, argue attempt 11): the Arguer copied supported synthesis findings word for
+    word as new reasons; stored as new claims and judged again, the researcher's verdicts were lost. A new claim with
+    a reusable claim's text (whitespace and case folded) citing only its notes reuses that claim by id: not stored,
+    not judged again. One citing other notes stays a new claim, its evidence kept."""
+    _, ps, _ = env
+    synth = _synthesize(env)
+    copy = "  " + F2.upper().replace(" ", "  ")
+
+    def first(inputs):
+        out = draft()(inputs)
+        out["reasons"] += [{"claim": claim(inputs, copy, "cohort"), "supports": "r1", "warrant": WARRANT},
+                           {"claim": claim(inputs, F1, "cohort"), "supports": "r1", "warrant": WARRANT}]
+        return out
+
+    ex = _exec([first], [critique()])
+    out = ArgueWorker().run(_ctx(env, ex))
+    assert out.status == "done", out.reason
+    assert [c["text"] for c in _claims(ps)] == [MAIN, REASON, F1]  # no copy of F2; F1 on the cohort note is new
+    other = next(c for c in _claims(ps) if c["text"] == F1)
+    assert [e["note_ids"] for e in other["evidence"]] != [e["note_ids"] for e in
+                                                          ArgumentService(ps).get_claim(synth[0])["evidence"]]
+    reason = next(c["id"] for c in _claims(ps) if c["text"] == REASON)
+    assert (synth[1], reason) in {(e["from_id"], e["to_id"]) for e in ArgumentService(ps).list_edges(type="reason_of")}
+    assert not [c for c in ex.calls if c["role"].startswith("judge") and "cohort" in c["inputs"].get("claim", "")]
+    (note,) = argue_notes(ps, 1, kind="draft")
+    assert note["restated"] == [{"text": copy, "claim_id": synth[1]}] and synth[1] in note["reused"]
+
+
 def test_an_answer_to_an_objection_the_turn_already_conceded_is_refused_not_a_crash(env):
     """Task 9 (melatonin): the Arguer answers objection A again with a new claim, which withdraws A's earlier response
     claim P and concedes the objection B on P; the same turn also answers B. That answer is refused (noted), and the

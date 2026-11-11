@@ -1093,9 +1093,10 @@ class ArgueWorker:
         ps, attempt = ctx.ps, ctx.attempt
         svc = ArgumentService(ps)
         f: dict = {"main_claim_id": None, "claim_ids": [], "reason_claim_ids": [], "response_claim_ids": [],
-                   "warrant_claim_ids": [], "reused": [], "edge_ids": [], "responses": [], "refused": []}
+                   "warrant_claim_ids": [], "reused": [], "edge_ids": [], "responses": [], "refused": [], "restated": []}
         before = argument_claims(ps, attempt)
         reusable = {c for c in (*s.synthesis, *before) if _supported(ps, c)}
+        d = self._restated(ps, d, reusable, f)
 
         def new_claim(a: ArgClaim) -> str:
             cid = svc.add_claim(ClaimIn(text=a.text, kind=a.kind, scope_limits=a.scope_limits),
@@ -1131,6 +1132,29 @@ class ArgueWorker:
             self._store_reasons(ctx, d, main, reusable, new_claim, f, vendor)
         self._store_responses(ctx, s, d, reusable, new_claim, f, before)
         return f
+
+    @staticmethod
+    def _restated(ps: ProjectStore, d: ArgumentDraft, reusable: set[str], f: dict) -> ArgumentDraft:
+        """The draft with every reason or responded answer whose new claim restates a reusable claim (the same text,
+        whitespace and case folded, citing only notes that claim already cites) reusing that claim by id instead, noted
+        in ``restated``: a supported claim is not judged again. A restatement citing other notes stays a new claim, so
+        its evidence is kept. Calibration (critical review rerun, argue attempt 11): the Arguer copied three supported
+        synthesis findings word for word, with their notes, as new reasons; judged again, two came back uncertain and
+        your verdicts were lost."""
+        svc = ArgumentService(ps)
+        same = {fold(svc.get_claim(c)["text"]): c for c in sorted(reusable)}
+
+        def reuse(x: ReasonDraft | ResponseDraft) -> ReasonDraft | ResponseDraft:
+            if x.claim is None or (cid := same.get(fold(x.claim.text))) is None:
+                return x
+            cited = {n for e in svc.list_evidence(cid) for n in e["note_ids"]}
+            if not {n for e in x.claim.evidence for n in e.note_ids} <= cited:
+                return x
+            f["restated"].append({"text": x.claim.text, "claim_id": cid})
+            return x.model_copy(update={"claim": None, "claim_id": cid})
+
+        return d.model_copy(update={"reasons": [reuse(x) for x in d.reasons],
+                                    "responses": [reuse(x) for x in d.responses]})
 
     @staticmethod
     def _store_reasons(ctx: StageContext, d: ArgumentDraft, main: str | None, reusable: set[str], new_claim,
