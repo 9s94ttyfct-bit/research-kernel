@@ -535,8 +535,7 @@ def _read(ctx: StageContext, protocol: Protocol, rec: dict, kind: str,
         if f is None:
             problems.append(f'a value for "{v.field}", not a field of the extraction schema, was ignored')
             continue
-        if only is not None and f.name not in only:
-            problems.append(f'a value for "{v.field}", a field not asked for again (it kept its value), was ignored')
+        if only is not None and f.name not in only:  # it kept its value; no limitation of the evidence
             continue
         note_id, problem = None, _value_problem(f, v.value)
         if problem is None:

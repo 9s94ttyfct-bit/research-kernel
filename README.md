@@ -212,9 +212,9 @@ frozen), `search_screen` (search, deduplication, title/abstract and full-text sc
   from the text, and an effect's numbers never from the record; a record value must be what its quoted line says. A
   value whose quote is not verbatim is kept as a problem, never as evidence; a field the study does not report is
   `not_reported` with a quote of the section searched. The gate names each study and field without a verified
-  value, and the rerun reads only those fields again (everything else keeps its extraction); at the edge limit P2
-  asks (`stage_blocked`) and P1 marks those values missing as a limitation. An attempt interrupted by an hourly cap goes
-  on from the studies already read.
+  value, and the rerun reads only those fields again (a study with another problem in full; everything else keeps its
+  extraction); at the edge limit P2 asks (`stage_blocked`) and P1 marks those values missing as a limitation. An
+  attempt interrupted by an hourly cap goes on from the studies already read.
 
 ```bash
 uv run rk run perovskite --until read_extract   # or --until protocol / search_screen

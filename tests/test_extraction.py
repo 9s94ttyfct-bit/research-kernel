@@ -609,5 +609,5 @@ def test_a_rerun_reads_again_only_the_failing_fields_of_a_study(env):
     assert (rows["n"]["value"], rows["n"]["note_id"], rows["n"]["carried_from"]) == (100, n_note, 1)
     assert rows["design"]["problem"] is None and rows["design"]["carried_from"] is None
     (study,) = store.extraction_notes(ps, 2, kind="study")
-    assert any('"n"' in p and "not asked for" in p for p in study["problems"])
+    assert not any('"n"' in p for p in study["problems"])  # a repeated kept field is no limitation of the evidence
     assert w.gate(ps, 2).ok, w.gate(ps, 2).failures
