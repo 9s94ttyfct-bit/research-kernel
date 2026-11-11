@@ -12,9 +12,11 @@ from pydantic import BaseModel
 from rk.config import Settings, load_settings, save_settings
 from rk.fulltext import attach_pdf
 from rk.library.models import Creator, ItemIn
+from rk.llm import runner
 from rk.llm.chat.base import ToolCall, Turn
 from rk.llm.chat_provider import ChatApiProvider
 from rk.llm.drivers import DriverSpec
+from rk.llm.limits import MIN_WAIT_S, SESSION_LIMITED
 from rk.llm.runner import interrupt_orphaned_tasks, run_task, task_row
 from rk.llm.types import Availability, TaskResult
 from rk.net.http import BudgetExhausted
@@ -102,6 +104,31 @@ def test_waiting_human_not_retried(env):
     r = _run(env, p)
     assert len(p.calls) == 1 and task_row(ps, r.task_id)["status"] == "waiting_human"
 
+
+CAPACITY = ("provider_error: omp auth-gateway status 502: {'error': {'message': 'Codex error event: Codex is at "
+            "capacity, please try again later (code=turn_rate_limit_exceeded) retry-after-ms=21000', "
+            "'type': 'upstream_error'}}")
+
+
+def test_a_gateways_retry_after_is_waited_out_before_the_next_attempt(env, monkeypatch):
+    """Calibration (critical review rerun): the omp gateway passes Codex's transient rate limit on as a 502 with a
+    retry-after-ms; each judge task tried three times within 0.75 s and failed, so claims fell to uncertain."""
+    k, _, _ = env
+    slept = []
+    monkeypatch.setattr(runner, "_sleep", slept.append)
+    p = FakeProvider([(False, CAPACITY), (True, None)])
+    assert _run(env, p).ok and len(p.calls) == 2 and slept == [21.0]
+    assert k.caps.blocks() == {}  # a transient limit blocks no driver
+    # still at capacity on the last attempt: a usage limit, so the run waits instead of the task failing
+    p = FakeProvider([(False, CAPACITY)] * 3)
+    r = _run(env, p)
+    assert (r.error, r.wait_s, len(p.calls), slept) == (SESSION_LIMITED, MIN_WAIT_S, 3, [21.0] * 3)
+    assert set(k.caps.blocks()) == {"claude_cli"}
+    k.caps.clear("claude_cli")
+    # asked to wait longer than a task waits out: a usage limit at once
+    p = FakeProvider([(False, "provider_error: omp auth-gateway status 502: retry-after-ms=300000")])
+    r = _run(env, p)
+    assert (r.error, r.wait_s, len(p.calls), slept) == (SESSION_LIMITED, 300, 1, [21.0] * 3)
 
 def test_task_ends_the_gateway_it_started(env, tmp_path, monkeypatch):
     """A task's own omp_gateway driver ends its `omp auth-gateway` child when the task ends (rk serve runs thousands

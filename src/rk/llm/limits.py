@@ -56,6 +56,9 @@ _AT = re.compile(
     r"(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<ampm>[ap]\.?m\.?)?"
     r"(?:\s*\((?P<zone>[A-Za-z_]+(?:/[A-Za-z0-9_+\-]+)*)\))?", re.IGNORECASE)
 _HTTP_429 = re.compile(r"\bHTTP 429\b(?: \(retry-after (\d+(?:\.\d+)?)\))?")
+# a rate limit a gateway passes on in another status (the omp auth-gateway gives Codex's "at capacity" as a 502)
+_RETRY_AFTER_MS = re.compile(r"\bretry-after-ms=(\d+)\b", re.IGNORECASE)
+RETRY_WAIT_MAX_S = 120.0  # a retry-after up to this long is waited out in the task; a longer one is a usage limit
 
 
 def usage_limit_wait(text: str, now: float) -> float | None:
@@ -79,6 +82,13 @@ def http_limit(error: str, now: float) -> tuple[bool, float] | None:
     if (wait := usage_limit_wait(error, now)) is not None:
         return True, wait
     return False, DEFAULT_WAIT_S
+
+
+def retry_after(error: str) -> float | None:
+    """Seconds a failed reply asks to wait before trying again in a ``retry-after-ms`` (a transient rate limit a
+    gateway passes on in another status than 429); ``None`` when it gives none."""
+    m = _RETRY_AFTER_MS.search(error)
+    return None if m is None else int(m.group(1)) / 1000
 
 
 def _wait(text: str, now: float) -> float | None:

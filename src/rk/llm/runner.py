@@ -2,10 +2,12 @@
 retries (spec §7.2: at most 3 attempts) and writes every attempt to the project's event log (spec §8.2). A driver's
 usage-limit reply (``SESSION_LIMITED``, ``rk.llm.limits``) is not retried: it blocks the driver in the call caps until
 the limit resets. A chat API's HTTP 429 is one too: at once when its ``Retry-After`` or body says how long, else
-once every attempt was a plain 429 (``DEFAULT_WAIT_S``). A source API budget spent in one of the task's tool calls
-(``BudgetExhausted``, recorded by the registry: ``ToolRegistry.watch_budget``) suspends the task (spec §11.3): the
-attempt and the task fail naming the budget (``budget_exhausted: <budget>``), nothing is retried, and
-``BudgetExhausted`` is raised, so a run pauses (``paused_budget``) and resuming it runs the work again."""
+once every attempt was a plain 429 (``DEFAULT_WAIT_S``). A reply giving a ``retry-after-ms`` (a transient rate limit
+a gateway passes on as a 502) is waited out in the task and tried again; when the wait is longer than
+``RETRY_WAIT_MAX_S``, or the last attempt still gives one, it is a usage limit. A source API budget spent in one of
+the task's tool calls (``BudgetExhausted``, recorded by the registry: ``ToolRegistry.watch_budget``) suspends the
+task (spec §11.3): the attempt and the task fail naming the budget (``budget_exhausted: <budget>``), nothing is
+retried, and ``BudgetExhausted`` is raised, so a run pauses (``paused_budget``) and resuming it runs the work again."""
 
 from __future__ import annotations
 
@@ -19,7 +21,15 @@ from pydantic import BaseModel
 
 from rk.ids import new_id
 from rk.llm.drivers import DriverSpec, build_provider
-from rk.llm.limits import DEFAULT_WAIT_S, SESSION_LIMITED, http_limit
+from rk.llm.limits import (
+    DEFAULT_WAIT_S,
+    MAX_WAIT_S,
+    MIN_WAIT_S,
+    RETRY_WAIT_MAX_S,
+    SESSION_LIMITED,
+    http_limit,
+    retry_after,
+)
 from rk.llm.types import Provider, RunContext, TaskResult, TaskSpec
 from rk.net.http import BudgetExhausted
 from rk.roles.policy import role_tools
@@ -30,6 +40,7 @@ MAX_ATTEMPTS = 3
 RAW_LIMIT = 64 * 1024
 INTERRUPTED = "interrupted: rk serve stopped before the task returned"
 NO_RETRY = frozenset({"waiting_human", "rate_capped", SESSION_LIMITED})
+_sleep = time.sleep  # the wait a transient rate limit asks for (a test replaces it)
 
 
 class FreeText(BaseModel):
@@ -92,9 +103,15 @@ def run_task(kernel, registry, *, project: str, role: str, instructions: str, in
                 result = replace(result, ok=False, output=None, error=f"budget_exhausted: {spent.budget_key}")
             limit = http_limit(result.error, time.time()) if not result.ok and result.error else None
             plain_429s = plain_429s + 1 if limit is not None and not limit[0] else 0
+            after = retry_after(result.error) if not result.ok and result.error and limit is None else None
             if limit is not None and (limit[0] or plain_429s == MAX_ATTEMPTS):
                 # a chat API's 429: a usage limit at once when it says how long; a plain one when every attempt was one
                 result = replace(result, error=SESSION_LIMITED, wait_s=limit[1], raw=result.raw or result.error)
+            elif after is not None and (after > RETRY_WAIT_MAX_S or n == MAX_ATTEMPTS):
+                result = replace(result, error=SESSION_LIMITED, wait_s=min(max(after, MIN_WAIT_S), MAX_WAIT_S),
+                                 raw=result.raw or result.error)
+            elif after is not None:
+                result = replace(result, wait_s=after)
             ps.apply(NewEvent(type="task.attempt", entity_id=task_id, actor_kind="agent", actor=ctx.actor, payload={
                 "n": n, "ok": result.ok, "error": result.error, "raw": _clip(result.raw), "model": result.model,
                 "duration_s": result.duration_s, "tool_calls": result.tool_calls, "session_id": result.session_id,
@@ -103,6 +120,8 @@ def run_task(kernel, registry, *, project: str, role: str, instructions: str, in
                 kernel.caps.block_for(spec_driver.provider, result.wait_s or DEFAULT_WAIT_S)
             if result.ok or result.error in NO_RETRY or spent is not None:
                 break
+            if after is not None:
+                _sleep(after)  # a transient rate limit: the next attempt after the wait it asks for
     finally:
         if watched:
             registry.unwatch_budget(task_id)
