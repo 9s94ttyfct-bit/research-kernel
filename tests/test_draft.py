@@ -374,6 +374,8 @@ def test_p2_missing_support_asks_you_before_going_back_to_argue(env):
     assert (cp["kind"], cp["options"]["section"], cp["options"]["needs"]) == (
         "argue_request", "theme-1", NEED["missing_support"])
     assert w.run(_ctx(env, _writer([]))).checkpoint_id == cp["id"]  # resumed before the wait was linked: no new task
+    with pytest.raises(ValueError, match="only be answered by a human"):  # your decision: a P1 vote may never give it
+        answer_checkpoint(ps, cp["id"], {"decision": "write"}, answered_by="vote", actor="kernel")
     # an answer that cannot be applied asks again
     out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decision": "proceed"}))
     assert out.status == "waiting_human" and "not one of back, write" in out.reason

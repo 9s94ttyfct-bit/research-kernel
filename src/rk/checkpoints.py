@@ -17,12 +17,13 @@ from rk.store.projections import projection
 
 # Spec §5.3: the AI-weak-spot checkpoints plus login/captcha waits, and stage_blocked (only the researcher may allow
 # one more use of an edge); Plan 5b adds pooling_approval (pool studies in a meta-analysis) and design_approval (approve
-# a research proposal's method design, §7.1). In P2 every one of them needs a human; the vote path (P1) may never answer
-# these.
+# a research proposal's method design, §7.1); calibration adds argue_request (draft, P2 only: whether a section's
+# missing support sends the stage back to argue). In P2 every one of them needs a human; the vote path (P1) may never
+# answer these.
 HARD_HUMAN_KINDS = frozenset({
     "topic_review", "rq_approval", "captcha_wait", "login_wait", "uncertain_support", "protocol_approval",
     "screening_disagreements", "evidence_conflict", "significance_novelty", "final_review", "stage_blocked",
-    "pooling_approval", "design_approval",
+    "pooling_approval", "design_approval", "argue_request",
 })
 # ``final_review`` (the audit's, spec §5.3; hard-human, so P2 only: P1's judges vote instead): the answer is
 # ``{"decision": "approve" | "revise" | "back", "comment"?, "to"?}``; ``revise`` needs a ``comment`` (what to change,
