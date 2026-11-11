@@ -12,6 +12,7 @@ from rk.llm.chat.base import Msg, ToolCall, ToolDef
 from rk.llm.chat.ollama import OllamaBackend
 from rk.llm.chat.omp_gateway import OmpGatewayBackend
 from rk.llm.chat.openai_chat import OpenAIChatBackend
+from rk.llm.limits import retry_after
 from rk.llm.types import ProviderError
 
 PING = ToolDef(name="rk_ping", description="ping", parameters={"type": "object", "properties": {"x": {"type": "integer"}},
@@ -128,6 +129,12 @@ def test_omp_gateway_stdio_protocol(fake_omp, tmp_path, monkeypatch):
         assert b.complete([Msg(role="user", content="again")], [], None).model == "openai-codex/gpt-6-luna"
         with pytest.raises(ProviderError, match="401"):
             b.complete([Msg(role="user", content="FAIL")], [], None)
+        # a rate limit with a long message: the error is clipped, but its retry-after-ms is kept whole for run_task's
+        # wait, also when the cut would fall inside it (a cut "=21" would read as 21 ms)
+        for content in ("CAPACITY", "CAPACITY_EDGE"):
+            with pytest.raises(ProviderError, match="status 502") as e:
+                b.complete([Msg(role="user", content=content)], [], None)
+            assert retry_after(str(e.value)) == 21.0 and len(str(e.value)) < 600, content
         # the requested model failed: omp's model fallback is off in the gateway, so the call fails, not Sonnet answers
         with pytest.raises(ProviderError, match="401"):
             b.complete([Msg(role="user", content="FALLBACK")], [], None)

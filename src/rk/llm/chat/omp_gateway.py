@@ -20,6 +20,7 @@ from importlib.resources import files
 
 from rk.llm.chat.base import Msg, ToolDef, Turn
 from rk.llm.chat.openai_chat import openai_body, openai_turn
+from rk.llm.limits import RETRY_AFTER_MS
 from rk.llm.types import Availability, ProviderError
 
 READY_TIMEOUT_S = 30.0
@@ -107,7 +108,12 @@ class OmpGatewayBackend:
                 elif "id" in msg:
                     self._pending[msg["id"]] = msg  # a reply for another request id: keep it, never consume it
         if reply.get("status") != 200:
-            raise ProviderError(f"omp auth-gateway status {reply.get('status')}: {str(reply.get('body'))[:500]}")
+            body = str(reply.get("body"))
+            # clipped at 500, but a rate limit's retry-after-ms the cut would drop or cut short (a cut "=21" would read
+            # as 21 ms) is moved whole past the cut: run_task waits it out (rk.llm.limits)
+            m = next((m for m in RETRY_AFTER_MS.finditer(body) if m.end() > 500), None) if len(body) > 500 else None
+            text = body[:500] if m is None else f"{body[:min(500, m.start())]} … {m.group(0)}"
+            raise ProviderError(f"omp auth-gateway status {reply.get('status')}: {text}")
         turn = openai_turn(reply["body"])
         # Model fallback is off in the child (gateway_env), but a reply naming another model (e.g. a Codex judge
         # answered by Claude) would silently change the vendor a judge or generator stands for: a failed call, never
