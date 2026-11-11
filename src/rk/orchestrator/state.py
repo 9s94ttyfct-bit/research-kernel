@@ -89,8 +89,8 @@ def stalled_resumes(ps: ProjectStore, stage: str, attempt: int) -> str | None:
     (``stage.crashed``) without storing anything in between (no task, note or other event: the same crash each time,
     in one run or across new runs); else ``None``. A resume that ended waiting (a rate cap, a source outage, a budget
     pause) is no crash, so an attempt is never given up for waiting. A killed process writes no ``stage.crashed``, so
-    a kill/restart loop is bounded only by the stage budget (``tasks_used``) where the stage has one; each restart
-    needs a human."""
+    a kill/restart loop is bounded only by the stage budget (``tasks_used``) where the stage has one, and not at all
+    by it while only judges run (a judge's task is not counted); each restart needs a human."""
     rows = ps.db.execute("SELECT seq, type FROM events WHERE type IN ('stage.resumed', 'stage.crashed') AND "
                          "json_extract(payload, '$.stage')=? AND json_extract(payload, '$.attempt')=? ORDER BY seq",
                          (stage, attempt)).fetchall()

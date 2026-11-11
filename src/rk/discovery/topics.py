@@ -10,8 +10,9 @@ Answers (``options.topic_ids`` lists the topics under review):
 ``topic_ids`` (or ``topic_id``) names the topics a revise or reject is about; without it, every topic under review. An
 answer that cannot be applied opens a new ``topic_review`` that says why.
 
-Budget per attempt: 1 ideator task, then per topic 1 scout + 2 judge tasks (V-NOVELTY); the intake caps ``topics_n`` at
-``MAX_TOPICS_N`` (12: 37 tasks) so an attempt stays within the stage budget (the default 6 topics: 19 tasks).
+Budget per attempt: 1 ideator task, then per topic 1 scout + 2 judge tasks (V-NOVELTY; the judges' tasks do not count
+against the stage budget); the intake caps ``topics_n`` at ``MAX_TOPICS_N`` (12: 37 tasks, 13 counted) so an attempt
+stays within the stage budget (the default 6 topics: 19 tasks, 7 counted).
 
 Gate: exactly one approved topic in the latest attempt; D2 also needs ``topics_n`` topics, each with a verified gap and
 its 5 closest works (fewer only when its searches found fewer, as recorded with the topic); D1 needs one."""

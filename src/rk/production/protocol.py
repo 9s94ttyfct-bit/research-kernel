@@ -58,7 +58,8 @@ G-PREREG input; only the systematic and scoping reviews count the freeze as prer
 (``counts_as_preregistration``), the others freeze for traceability only.
 
 Budget per attempt (protocol is an open stage, 40 role tasks per run session): at most ``protocol_tries`` ideator and
-scout tasks each, plus ``protocol_narrow_tries`` scout tasks, plus 2 judge tasks in P1 (11 with the defaults 3 and 3).
+scout tasks each, plus ``protocol_narrow_tries`` scout tasks (9 with the defaults 3 and 3), and 2 judge tasks in P1,
+which do not count against the budget.
 
 Gate: a frozen protocol in the latest attempt that passes ``check_protocol`` and has a deviation from the frozen
 version before it, if any. A P1 degrade fails: P1 never freezes a protocol the vote did not approve."""

@@ -173,8 +173,9 @@ def title_year(lib: Library, item_id: str) -> str:
 class SupportMiner:
     """A miner that checks a quoted statement against evidence notes with V-SUPPORT (at least ``SUPPORT_JUDGES``
     cross-vendor judges, all agreeing; no ``uncertain_support`` checkpoint). The judge tasks run through the stage's task
-    executor, so they count toward the stage budget and a rate-capped judge pauses the run (``BudgetExceeded`` /
-    ``RateCapped`` propagate). ``judge_drivers`` and ``judge_providers`` replace the configured judges (tests)."""
+    executor: linked to the run but not counted against the stage budget (``tasks_used``), and a rate-capped judge
+    pauses the run (``RateCapped`` propagates). ``judge_drivers`` and ``judge_providers`` replace the configured judges
+    (tests)."""
 
     def __init__(self, judge_drivers: list[DriverSpec] | None = None, judge_providers: dict | None = None):
         self.judge_drivers, self.judge_providers = judge_drivers, judge_providers
