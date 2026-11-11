@@ -13,7 +13,7 @@ from rk.library.models import Ids, ItemIn
 from rk.llm.drivers import DriverSpec
 from rk.llm.types import TaskResult
 from rk.net.http import HttpError
-from rk.notes import NoteIn, NoteRejected, add_note, list_notes
+from rk.notes import NoteIn, NoteRejected, add_note, list_notes, record_text
 from rk.orchestrator.state import degradations, record_passed, record_ran
 from rk.production import store
 from rk.production.audit import quote_note_problem
@@ -210,6 +210,22 @@ def test_a_record_field_is_quoted_from_the_study_record_and_a_text_field_never(e
     iid = ids["Aspirin B"]
     assert w.gate(ps, 1).failures == [f'study {iid} ("Aspirin B"), field "design": {QUOTE_FAILED}',
                                       f'study {iid} ("Aspirin B"), field "venue_kind": {QUOTE_FAILED}']
+
+
+def test_a_record_quote_still_verifies_after_a_merge_fills_in_the_item_ids(env):
+    """Review of the record layer: a later add of the same work fills in its missing DOI (``item.merged``); the record
+    a quote was verified against must not change with it, or the audit's G-QUOTE fails a quote verified when added."""
+    _, ps, lib = env
+    iid = lib.add_item(ItemIn(title="Aspirin C", year=2015, venue="Age Ageing"), added_by="agent",
+                       actor="tester").item_id
+    before = record_text(lib.get(iid))
+    nid = add_note(ps, lib, NoteIn(source_id=iid, kind="quote", text=before.splitlines()[-1], role_in_source="main",
+                                   against="record"), actor="tester").note_id
+    lib.add_item(ItemIn(title="Aspirin C", year=2015, venue="Age Ageing", ids=Ids(doi="10.1000/c")),
+                 added_by="agent", actor="tester")
+    assert lib.get(iid).ids.doi == "10.1000/c"  # merged into the same item
+    assert record_text(lib.get(iid)) == before
+    assert quote_note_problem(ps, _note(ps, nid)) is None
 
 
 def test_retracted_study_is_flagged_not_extracted(env):

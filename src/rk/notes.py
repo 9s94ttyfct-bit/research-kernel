@@ -157,13 +157,14 @@ ITEM_TYPE_WORDS = {"journalArticle": "journal article", "preprint": "preprint", 
 
 def record_text(item) -> str:
     """An item's bibliographic record as the reader is shown it and its record quotes are verified against: one line
-    each for its title, authors, venue, year, publication type and DOI, ``not given`` where the record has none (so a
-    record field the record does not report is ``not_reported`` with a quote of that very line). These fields of an
-    item never change once it is added (``rk.library.models.UPDATABLE_FIELDS``)."""
+    each for its title, authors, venue, year and publication type, ``not given`` where the record has none (so a
+    record field the record does not report is ``not_reported`` with a quote of that very line). An item's added
+    record never changes these (``rk.library.models.UPDATABLE_FIELDS``; a merge fills in only missing ids, which is
+    why the DOI is not part of it), so the audit's G-QUOTE re-verifies a record quote against the same text."""
     authors = "; ".join(", ".join(x for x in (c.family, c.given) if x) for c in item.creators)
     lines = [("Title", item.title), ("Authors", authors), ("Venue", item.venue),
              ("Year", str(item.year) if item.year is not None else None),
-             ("Publication type", ITEM_TYPE_WORDS.get(item.item_type, item.item_type)), ("DOI", item.ids.doi)]
+             ("Publication type", ITEM_TYPE_WORDS.get(item.item_type, item.item_type))]
     return "\n".join(f"{k}: {v or 'not given'}" for k, v in lines)
 
 

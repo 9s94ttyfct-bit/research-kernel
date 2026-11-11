@@ -177,8 +177,7 @@ frozen), `search_screen` (search, deduplication, title/abstract and full-text sc
   as written, so a field tag one source understands (PubMed `[tiab]`, Europe PMC `TITLE_ABS:`) breaks the query on the
   other; Europe PMC and OpenAlex also match full texts, so their hit counts are much higher than PubMed's. The kernel
   checks the draft (its free texts may not claim novelty, the same rule as for topics and RQs) and sizes it: the
-  record-cap probe
-  counts each query on each source that reports counts (OpenAlex, Europe PMC, PubMed) within the strategy's publication years. The probe
+  record-cap probe counts each query on each source that reports counts (OpenAlex, Europe PMC, PubMed) within the strategy's publication years. The probe
   is advisory and an upper bound (duplicates count again). A draft that fails the checks is drafted again within the
   attempt (up to `protocol_tries`, default 3, versions; only the role whose part failed is asked), and a probe above
   the record cap sends the strategy back to the Scout to narrow, with the counts (up to `protocol_narrow_tries`,
@@ -209,7 +208,7 @@ frozen), `search_screen` (search, deduplication, title/abstract and full-text sc
   the reader extracts each protocol field with a quote the kernel verifies (V-QUOTE, against the full text, or the
   abstract for a study with no full text: those values carry `sufficient=low`). A field marked `source: record` in
   the schema (where the study was published, its type) is quoted from the study's bibliographic record instead
-  (title, authors, venue, year, publication type, DOI), which a paper's text rarely states; every other field only
+  (title, authors, venue, year, publication type), which a paper's text rarely states; every other field only
   from the text, and an effect's numbers never from the record. A value whose quote is not verbatim
   is kept as a problem, never as evidence; a field the study does not report is `not_reported` with a quote of the
   section searched. The gate names each study and field without a verified value; at the edge limit P2 asks

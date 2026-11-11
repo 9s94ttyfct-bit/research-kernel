@@ -467,7 +467,7 @@ The third home (`rk-plan5c-srrepro3`) ran as an `rk serve` named service.
   search found (0.88 to 1.00).
 - **The fresh pulmonary-hypertension run had one protocol attempt.** Back-edge counts belong to the project, not
   the run. The new run started with protocol→protocol already used twice by the failed run (edge.taken 1 and 2 at
-  00:29:01 and 00:29:34 on 2026-11-10), so it failed after its first vote. A replaced run cannot get the full
+  00:28:29 and 00:29:01 on 2026-11-10), so it failed after its first vote. A replaced run cannot get the full
   number of tries.
 - The judges' reasons were concrete protocol faults. For pulmonary hypertension:
   - the search sources are inconsistent: PubMed and Europe PMC in the strategy, OpenAlex in the PRISMA-P scope;
