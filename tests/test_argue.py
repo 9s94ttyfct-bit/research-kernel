@@ -294,7 +294,9 @@ def test_a_reason_restating_a_supported_finding_reuses_it(env):
     def first(inputs):
         out = draft()(inputs)
         out["reasons"] += [{"claim": claim(inputs, copy, "cohort"), "supports": "r1", "warrant": WARRANT},
-                           {"claim": claim(inputs, F1, "cohort"), "supports": "r1", "warrant": WARRANT}]
+                           {"claim": claim(inputs, F1, "cohort"), "supports": "r1", "warrant": WARRANT},
+                           # restated, but refused (it supports nothing stored): not noted as restated
+                           {"claim": claim(inputs, F2, "cohort"), "supports": "nowhere", "warrant": WARRANT}]
         return out
 
     ex = _exec([first], [critique()])

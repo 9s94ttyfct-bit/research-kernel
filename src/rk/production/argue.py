@@ -1096,7 +1096,7 @@ class ArgueWorker:
                    "warrant_claim_ids": [], "reused": [], "edge_ids": [], "responses": [], "refused": [], "restated": []}
         before = argument_claims(ps, attempt)
         reusable = {c for c in (*s.synthesis, *before) if _supported(ps, c)}
-        d = self._restated(ps, d, reusable, f)
+        d, rewritten = self._restated(ps, d, reusable)
 
         def new_claim(a: ArgClaim) -> str:
             cid = svc.add_claim(ClaimIn(text=a.text, kind=a.kind, scope_limits=a.scope_limits),
@@ -1129,36 +1129,44 @@ class ArgueWorker:
             if d.main_claim is not None:
                 f["refused"].append("the main claim is set in round 1: a later main claim is ignored")
         if not closing:
-            self._store_reasons(ctx, d, main, reusable, new_claim, f, vendor)
-        self._store_responses(ctx, s, d, reusable, new_claim, f, before)
+            self._store_reasons(ctx, d, main, reusable, new_claim, f, vendor, rewritten)
+        self._store_responses(ctx, s, d, reusable, new_claim, f, before, rewritten)
         return f
 
     @staticmethod
-    def _restated(ps: ProjectStore, d: ArgumentDraft, reusable: set[str], f: dict) -> ArgumentDraft:
+    def _restated(ps: ProjectStore, d: ArgumentDraft,
+                  reusable: set[str]) -> tuple[ArgumentDraft, dict[int, str]]:
         """The draft with every reason or responded answer whose new claim restates a reusable claim (the same text,
-        whitespace and case folded, citing only notes that claim already cites) reusing that claim by id instead, noted
-        in ``restated``: a supported claim is not judged again. A restatement citing other notes stays a new claim, so
+        whitespace and case folded, citing only notes that claim already cites) reusing that claim by id instead, and
+        the restated texts by the ``id()`` of each rewritten reason or answer: where the reuse is applied, it is noted
+        in ``restated``. A supported claim is not judged again; a restatement citing other notes stays a new claim, so
         its evidence is kept. Calibration (critical review rerun, argue attempt 11): the Arguer copied three supported
         synthesis findings word for word, with their notes, as new reasons; judged again, two came back uncertain and
         your verdicts were lost."""
         svc = ArgumentService(ps)
-        same = {fold(svc.get_claim(c)["text"]): c for c in sorted(reusable)}
+        same: dict[str, list[str]] = {}
+        for c in sorted(reusable):
+            same.setdefault(fold(svc.get_claim(c)["text"]), []).append(c)
+        rewritten: dict[int, str] = {}
 
         def reuse(x: ReasonDraft | ResponseDraft) -> ReasonDraft | ResponseDraft:
-            if x.claim is None or (cid := same.get(fold(x.claim.text))) is None:
+            if x.claim is None:
                 return x
-            cited = {n for e in svc.list_evidence(cid) for n in e["note_ids"]}
-            if not {n for e in x.claim.evidence for n in e.note_ids} <= cited:
+            notes = {n for e in x.claim.evidence for n in e.note_ids}
+            cid = next((c for c in same.get(fold(x.claim.text), [])
+                        if notes <= {n for e in svc.list_evidence(c) for n in e["note_ids"]}), None)
+            if cid is None:
                 return x
-            f["restated"].append({"text": x.claim.text, "claim_id": cid})
-            return x.model_copy(update={"claim": None, "claim_id": cid})
+            y = x.model_copy(update={"claim": None, "claim_id": cid})
+            rewritten[id(y)] = x.claim.text
+            return y
 
-        return d.model_copy(update={"reasons": [reuse(x) for x in d.reasons],
-                                    "responses": [reuse(x) for x in d.responses]})
+        reasons, responses = [reuse(x) for x in d.reasons], [reuse(x) for x in d.responses]
+        return d.model_copy(update={"reasons": reasons, "responses": responses}), rewritten
 
     @staticmethod
     def _store_reasons(ctx: StageContext, d: ArgumentDraft, main: str | None, reusable: set[str], new_claim,
-                       f: dict, vendor: str | None) -> None:
+                       f: dict, vendor: str | None, rewritten: dict[int, str]) -> None:
         svc = ArgumentService(ctx.ps)
         local = {rd.ref for rd in d.reasons if rd.ref and rd.ref != "main"}
         valid = []
@@ -1219,9 +1227,11 @@ class ArgueWorker:
                               actor_kind="kernel")
             f["edge_ids"] += [e, we]
             f["warrant_claim_ids"].append(wc)
+            if (text := rewritten.get(id(rd))) is not None:
+                f["restated"].append({"text": text, "claim_id": cid})
 
     def _store_responses(self, ctx: StageContext, s: _Inputs, d: ArgumentDraft, reusable: set[str], new_claim,
-                         f: dict, before: list[str]) -> None:
+                         f: dict, before: list[str], rewritten: dict[int, str]) -> None:
         """Apply the answers. Refused (noted): an objection not open, a priority-1 or reasonless rejection, a response
         claim that is the objection's own target (or, for a conflict objection, its counterpart), and anything but a
         supported response to a conflict objection. Conceding a priority-1 objection on a reason link or its warrant (a
@@ -1267,6 +1277,8 @@ class ArgueWorker:
             svc.respond_objection(o["id"], response_claim_id=cid, status=rsp.status,
                                   note=note or f"{rsp.status} by the Arguer", actor=ctx.actor)
             f["responses"].append({"objection_id": o["id"], "status": rsp.status, "claim_id": cid})
+            if cid is not None and (text := rewritten.get(id(rsp))) is not None:
+                f["restated"].append({"text": text, "claim_id": cid})
             if rsp.status == "conceded" and (link := _link_dropped_by(ps, o, answers.soundness)) is not None:
                 why = ("the Arguer conceded its failed warrant" if o["id"] in answers.soundness
                        else f"the Arguer conceded the priority-1 objection {o['id']} on it")
