@@ -661,35 +661,44 @@ class SynthesizeWorker:
     # ---- step 1 ----
     @staticmethod
     def _assess(ctx: StageContext, s: _Inputs) -> str | None:
-        """Assess every usable study the attempt has not assessed yet, ``BATCH`` per task."""
+        """Assess every usable study the attempt has not assessed yet, ``BATCH`` per task. A study the answer leaves
+        out (or names under another id) is asked for once more; still left out, the attempt stops here (a rerun),
+        before any claim is made and checked, so no checkpoint on the claims is answered in vain."""
         ps = ctx.ps
         by_id = {u["item_id"]: u for u in s.usable}
         assessed = {n["item_id"] for n in synthesis_notes(ps, ctx.attempt, kind="assessment")}
         todo = [u for u in s.usable if u["item_id"] not in assessed]
         for start in range(0, len(todo), BATCH):
             batch = todo[start:start + BATCH]
-            inputs = {"question": s.protocol.question, "criteria": list(CRITERIA),
-                      "studies": [_study_input(ps, u) for u in batch]}
-            if ctx.guidance:
-                inputs["guidance"] = ctx.guidance
-            r = ctx.executor.run(ROLE, ASSESS_TASK, inputs, AssessmentOut, stage=ctx.stage, attempt=ctx.attempt,
-                                 tools=[])
-            if not r.ok or r.output is None:
-                return f"the arguer gave no study assessment ({r.error})"
-            batch_ids = {u["item_id"] for u in batch}
-            done: set[str] = set()
-            for a in r.output.assessments:
-                if a.item_id not in batch_ids or a.item_id in done:
-                    continue
-                done.add(a.item_id)
-                study = by_id[a.item_id]
-                criteria = a.criteria.model_dump()
-                capped = study["sufficient"] == "low"
-                if capped:
-                    criteria["sufficient"] = {"score": 0, "reason": ABSTRACT_ONLY}
-                _note(ps, ctx.attempt, "assessment", actor=ctx.actor, item_id=a.item_id, criteria=criteria,
-                      note_ids=[n for n in dict.fromkeys(a.note_ids) if n in study["notes"]], capped=capped,
-                      vendor=vendor_of(r.provider, r.model))
+            for _ in range(2):
+                inputs = {"question": s.protocol.question, "criteria": list(CRITERIA),
+                          "studies": [_study_input(ps, u) for u in batch]}
+                if ctx.guidance:
+                    inputs["guidance"] = ctx.guidance
+                r = ctx.executor.run(ROLE, ASSESS_TASK, inputs, AssessmentOut, stage=ctx.stage, attempt=ctx.attempt,
+                                     tools=[])
+                if not r.ok or r.output is None:
+                    return f"the arguer gave no study assessment ({r.error})"
+                batch_ids = {u["item_id"] for u in batch}
+                done: set[str] = set()
+                for a in r.output.assessments:
+                    if a.item_id not in batch_ids or a.item_id in done:
+                        continue
+                    done.add(a.item_id)
+                    study = by_id[a.item_id]
+                    criteria = a.criteria.model_dump()
+                    capped = study["sufficient"] == "low"
+                    if capped:
+                        criteria["sufficient"] = {"score": 0, "reason": ABSTRACT_ONLY}
+                    _note(ps, ctx.attempt, "assessment", actor=ctx.actor, item_id=a.item_id, criteria=criteria,
+                          note_ids=[n for n in dict.fromkeys(a.note_ids) if n in study["notes"]], capped=capped,
+                          vendor=vendor_of(r.provider, r.model))
+                batch = [u for u in batch if u["item_id"] not in done]
+                if not batch:
+                    break
+            else:
+                which = "; ".join(f"study {u['item_id']} ({study_label(ps, u['item_id'])})" for u in batch)
+                return f"the arguer did not assess {which} (asked twice, each time with its item_id)"
         return None
 
     # ---- step 2: meta-analysis ----

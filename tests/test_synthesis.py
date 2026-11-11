@@ -1811,3 +1811,39 @@ def test_a_review_of_another_shape_supersedes_the_open_one(env):
     assert w._open_uncertain(_ctx(env, _exec()), s, {}, missing="again") == first  # same shape: reused
     second = w._open_uncertain(_ctx(env, _exec()), s, {})  # a review (no narrative flag): another shape
     assert second != first and get_checkpoint(ps, first)["status"] == "superseded"
+
+
+def _assess_dropping(*titles_left_out: str, mangle: bool = False):
+    """An Arguer that leaves out the studies whose title starts with one of ``titles_left_out`` (``mangle``: answers
+    them under a wrong id instead, a letter dropped)."""
+    def out(inputs):
+        got = assess()(inputs)["assessments"]
+        for a, s in zip(got, inputs["studies"], strict=True):
+            if s["title"].startswith(titles_left_out):
+                a["item_id"] = a["item_id"][:-2] + a["item_id"][-1] if mangle else None
+        return {"assessments": [a for a in got if a["item_id"]]}
+    return out
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "critical_review"}], indirect=True)
+def test_a_study_left_out_of_an_assessment_is_asked_again_before_any_claim(env):
+    """Calibration (critical review rerun): the Arguer answered one study under an id with a letter dropped and, in
+    the next attempt, left one out; the attempt went on to its claims and their uncertain_support checkpoint, and only
+    the gate said "was not assessed", so the researcher's answers on the claims were thrown away. A study left out
+    is asked for once more; still left out, the attempt stops before any claim."""
+    _, ps, _ = env
+    ids = _setup(env, {t: {"design": "cohort"} for t in ("Ames", "Brook", "Cole")}, schema=[DESIGN],
+                 plan=SynthesisPlan(method="thematic"))
+    ex = _exec()
+    ex.script[("arguer", "AssessmentOut")] = [_assess_dropping("Cole", mangle=True), assess()]
+    w = SynthesizeWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    assert [[s["item_id"] for s in c["inputs"]["studies"]] for c in ex.of("arguer", "AssessmentOut")] == [
+        [ids["Ames"], ids["Brook"], ids["Cole"]], [ids["Cole"]]]
+    assert {a["item_id"] for a in synthesis_notes(ps, 1, kind="assessment")} == set(ids.values())
+
+    ex = _exec()
+    ex.script[("arguer", "AssessmentOut")] = [_assess_dropping("Brook"), _assess_dropping("Brook")]
+    out = w.run(_ctx(env, ex, attempt=2))
+    assert out.status == "rerun" and f'study {ids["Brook"]}' in out.reason and "asked twice" in out.reason
+    assert ex.of("arguer", "NarrativeSynthesis") == []  # no claim, so no checkpoint on them
