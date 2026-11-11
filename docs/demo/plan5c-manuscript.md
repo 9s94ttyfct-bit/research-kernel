@@ -713,16 +713,16 @@ named no response texts.
 | argue 7 | 19:17 | Arguer 2 | round 1 gave no main claim, twice; rerun |
 | argue 8 | 19:18–19:20 | Arguer 6, Skeptic 6, judges 2 + 2 | fixed point; the main claim's support uncertain |
 | argue 9 | 19:22–19:27 | Arguer 7, Skeptic 6, judges 7 + 7 | passed at 19:27:36 |
-| draft 1–10 | 19:27–19:40 | Writer 101 | gate failures 16, 41, 21, 4, 9, 4, 3, 2, 1, 4 |
+| draft 1–10 | 19:27–19:40 | Writer 102 | gate failures 16, 41, 21, 4, 9, 4, 3, 2, 1, 4 |
 
 - **argue:** one `reason_of` link per reason and target (6 in attempt 8, 10 in attempt 9); reasons given again were
   refused. `refused_last_round` reached the Arguer, which still gave its main claim and some refused reasons again.
   Attempts 8 and 9 conceded every new objection, so they stand as limitations. argue used 27 of its 40 tasks.
 - **draft:** from attempt 6 every section passed but gaps-agenda, whose failures went 4, 3, 2, 1, 4 over attempts
-  6–10. Each retry rewrote the whole section, and each new attempt drafted it afresh, bringing new sentences without a
-  marker or untentative `[[inf]]` sentences. In attempts 2, 5, 6 and 10 the Writer cited a withdrawn finding, whose
-  id the limitations input listed. The stand-in left the `stage_blocked` checkpoint `chk_01M761Z8Z88JR09GCXYWWPVS84`
-  (draft→draft used 9 times) open.
+  6–10. Each new attempt drafted it afresh; within an attempt a retry kept some sentences but often brought new
+  failing ones (sentences without a marker, or untentative `[[inf]]` sentences), or left a failing one unchanged.
+  In attempts 2, 5, 6 and 10 the Writer cited a withdrawn finding, whose id the limitations input listed. The
+  stand-in left the `stage_blocked` checkpoint `chk_01M761Z8Z88JR09GCXYWWPVS84` (draft→draft used 9 times) open.
 - **Fixed after the run** (the researcher's choice): a retry gives repairs of its failing sentences, which the kernel
   puts into the previous version, every other sentence kept word for word; a whole new section is refused when only
   such sentences fail. A draft→draft rerun repairs a failing section from its last version instead of drafting it
