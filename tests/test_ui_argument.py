@@ -808,7 +808,7 @@ def test_missing_narrative_card_offers_rerun_and_back(page, served):
     _start(served, "synthesize", ex)
     cp, card = _show(page, ps, "uncertain_support")
     assert cp["options"]["narrative_missing"]
-    assert card.get_by_text("gave no narrative synthesis", exact=False).count() >= 1
+    assert card.get_by_text("gave no acceptable narrative synthesis", exact=False).count() >= 1
     assert card.get_by_role("button", name="Submit your review").count() == 0
     assert card.locator("form.back-read").count() == 1
     card.get_by_label("What should change (synthesize runs again with your comment)").fill("Group by design.")

@@ -1579,14 +1579,15 @@ def test_p2_missing_narrative_asks_you_to_rerun_or_go_back(env):
     assert out.status == "waiting_human", out.reason
     cp = get_checkpoint(ps, out.checkpoint_id)
     assert cp["options"]["claim_ids"] == [] and cp["options"]["narrative_missing"]
-    assert set(cp["options"]["decisions"]) == {"rerun", "back"} and "no narrative synthesis" in cp["prompt"]
+    assert set(cp["options"]["decisions"]) == {"rerun", "back"} and "no acceptable narrative synthesis" in cp["prompt"]
     for bad in ({"claims": {}}, {"decision": "rerun"}):
         out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], bad))
         assert out.status == "waiting_human", bad
         cp = get_checkpoint(ps, out.checkpoint_id)
         assert cp["options"]["narrative_missing"] and "could not be applied" in cp["prompt"]
     out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decision": "rerun", "comment": "Group by design."}))
-    assert (out.status, out.reason) == ("rerun", "Group by design.")
+    # the rerun's guidance: what was wrong with the narrative, then your comment
+    assert (out.status, out.reason) == ("rerun", f"{cp['options']['narrative_missing']}\n\nGroup by design.")
 
 
 @pytest.mark.parametrize("env", [{"paper_type": "critical_review"}], indirect=True)

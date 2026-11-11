@@ -1219,8 +1219,8 @@ class SynthesizeWorker:
     def _open_uncertain(ctx: StageContext, s: _Inputs, listing: dict[str, dict], *, replaces: str | None = None,
                         why: str = "", missing: str | None = None) -> str:
         """Your review of every synthesis claim that fails the claim gate (``review_listing``), each with its problems
-        and the answers it allows (``review_choices``); or, when the Arguer gave no narrative synthesis (``missing``,
-        P2), no claim at all: you rerun with your comment or go back."""
+        and the answers it allows (``review_choices``); or, when the Arguer gave no acceptable narrative synthesis
+        (``missing``, P2), no claim at all: you rerun with your comment (its problems go with it) or go back."""
         if replaces is not None and (existing := opened_in_place_of(ctx.ps, UNCERTAIN, replaces)) is not None:
             return existing
         if replaces is None and (existing := opened_for_attempt(ctx.ps, UNCERTAIN, STAGE, ctx.attempt)) is not None:
@@ -1234,7 +1234,7 @@ class SynthesizeWorker:
                 if c not in listing and svc.get_claim(c)["status"] == "supported"]
         lines = [why, ""] if why else []
         if missing:
-            lines += [(f"The Arguer gave no narrative synthesis ({missing}), so there is no finding to review. "
+            lines += [(f"The Arguer gave no acceptable narrative synthesis ({missing}), so there is no finding to review. "
                        "Synthesize again with your comment (what to change), or send synthesize back to "
                        "read_extract."), "", 'Answer {"decision": "rerun", "comment": ...}.', "", BACK_TEXT]
         else:
@@ -1348,8 +1348,9 @@ class SynthesizeWorker:
         allowed = review_options(opts)
         comment = answer_comment(answer)
         if answer.get("decision") == "rerun":
-            if comment:
-                return StageOutcome("rerun", reason=comment)
+            if comment:  # a narrative that was not accepted: its problems go with your comment
+                missing = opts.get("narrative_missing")
+                return StageOutcome("rerun", reason=f"{missing}\n\n{comment}" if missing else comment)
             why = "rerun needs a comment saying what to change"
         elif answer.get("decision") == BACK:
             if not (why := _back_problem(s, answer)):

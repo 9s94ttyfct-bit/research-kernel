@@ -846,7 +846,7 @@ async function uncertainCard(c, answer) {
       el("p", { class: "hint" }, "Withdraw each, or call it supported when its only problem is that the judges did not find it supported. Withdrawing a claim takes it out and lists it in the limitations."),
       o.no_supported_left ? el("p", { class: "hint warn" }, "No other finding is supported: withdrawing every listed claim leaves the synthesis without one, and its gate fails. You may synthesize again, or read studies again, instead.") : null,
       el("ol", { class: "review-claims" }, o.claim_ids.map(row))] : null,
-    o.narrative_missing ? el("p", { class: "hint warn" }, `The Arguer gave no narrative synthesis (${o.narrative_missing}), so there is nothing to review: synthesize again with your comment, or read studies again.`) : null,
+    o.narrative_missing ? el("p", { class: "hint warn" }, `The Arguer gave no acceptable narrative synthesis (${o.narrative_missing}), so there is nothing to review: synthesize again with your comment, or read studies again.`) : null,
     o.narrative_missing ? null : comment.field,
     o.narrative_missing ? null : el("div", { class: "toolbar" }, submit, status),
     el("div", { class: "other-answers" }, el("h4", {}, `Or ${rqAsked ? "argue" : "synthesize"} again`),
