@@ -622,6 +622,56 @@ not counted. No task failed or was retried.
 - Open: the run stays parked at argue attempt 19 with argue→synthesize used 3 of 3 and one supported finding. On the
   researcher's decision, calibration goes on with a fresh project on the same topic.
 
+### Fresh project on the same question (critical3, 2026-11-11): argue paused on its budget in run session 1
+
+Home `rk-plan5c-critical3`, run `run_01M75B6P605PX6WZRDYXQR7ASA`, serve on 1101302 (logged HEAD). The home was set up
+like critical2: the same drivers, stats 180/180, and the same seed (intake, approved topic, RQ a71ec5ef frozen, the
+discovery stages recorded passed). Everything from protocol on ran afresh. The host slept from about 13:03 to 16:04
+UTC during protocol, which then resumed at 16:44; from 16:47 the host was kept awake.
+
+| Stage | Window (UTC) | Attempts | Role tasks | Outcome |
+|---|---|---|---|---|
+| protocol | 13:01–16:47 | 2 | Scout 5, Ideator 2 | v4 probed 7,707 records against the cap of 3,000; v5 (four phrase queries, 2024 on) probed 768 and was approved with `record_cap` 800 |
+| search_screen | 16:47–17:34 | 1 | Screener-A 32 | 629 records, 88 kept at title and abstract, 62 included at full text |
+| read_extract | 17:34–17:51 | 4 | Reader 84 | problems 20, 5, 3, 0, all "quote not verbatim"; 700 values verified, 168 not reported |
+| synthesize | 17:52–17:57 | 1 | Arguer 8, judges 13 + 13 | 62 of 62 studies assessed; 6 findings supported, 7 withdrawn by the stand-in |
+| argue | 17:57–18:16 | 6 | Arguer 24, Skeptic 16, judges 40 + 40 | paused (`paused_budget`) at 18:16:23 in attempt 6 |
+
+- **search_screen:** one Screener-A batch failed three times during a network outage (16:58–17:05: gateway 502, DNS
+  lookup failures). The kernel ran it again as a new task, which succeeded; no screening decision was lost.
+- **read_extract:** the stand-in allowed one more read_extract→read_extract with a whole-word quote for each
+  remaining failure; attempt 4 passed. One kind of failure recurred: run-together table text such as
+  "…0.8650.840GPT…" is a verbatim substring but ends mid-word, so the whole-word rule refuses it. The Reader got past
+  it by quoting the formatted copy of the table row.
+- **argue:** 40 budgeted tasks (the Arguer's and the Skeptic's); the 80 judge tasks were not counted. With the
+  budget low, attempts 4–6 ran one round each. The stand-in answered every final review `rerun` and allowed
+  argue→argue three times (uses 3–5):
+  - attempt 1: three response claims cited unrelated sentences;
+  - attempt 2: two findings were listed only because their carried objections were answered by attempt-1 claims.
+    The new warning was shown, and the stand-in reran instead of withdrawing them;
+  - attempt 3: the Arguer rewrote the main claim with "none" (V-HEDGE), and two new warrants drew priority-1
+    objections;
+  - attempt 4: the Arguer answered three carried objections by the ids of their earlier, uncertain answers, which
+    its input listed as `response_claim_id`. The kernel refused all three ("is not a supported claim") in round 1
+    and in the closing task;
+  - attempt 5: the main claim was rewritten again and failed on one open objection (hybrid LLM–human ensembles);
+  - attempt 6 followed the stand-in's wording in round 1 before the budget ran out.
+- **`restated` reuse** applied in attempts 2, 3 and 4.
+- **Fixed after the run:** an open objection whose earlier answer did not count now reaches the Arguer as `open`,
+  with that answer's text, status and why as `earlier_answer`, but not its id. The Haiku Arguer's "left out
+  responses" in critical2 (above) may have been the same refusal; that was not re-checked.
+- Other findings, not kernel defects:
+  - claims with identical text were created two or three times within an attempt (attempts 2, 5 and 6), each
+    judged again;
+  - answers to objections on a main claim the Arguer had since rewritten were refused as not open, so a comment
+    asking for them has no effect;
+  - the Haiku Arguer rewrote the main claim despite word-for-word guidance (attempts 3 and 5), its round-1 self-check
+    said every time that the argument does not answer the question, and it kept asking synthesize to group the
+    studies by design and form of use;
+  - the gpt-6-luna Skeptic again brought in a study outside the included set (SESR-Eval).
+- Open: the run is parked in argue attempt 6 (argue→argue used 5 times, argue→synthesize not used; the six
+  supported findings intact). `rk run resume` starts run session 2.
+
 ## P1 project: failed at protocol (the vote never approved it)
 
 Home `rk-plan5c-p1`, intake `probiotics for preventing antibiotic-associated diarrhoea in children`, systematic
