@@ -763,5 +763,5 @@ def _summary(ps: ProjectStore, attempt: int, n: int) -> str:
              (f"{kinds['value']} values with a verified quote, {kinds['not_reported']} not reported, "
               f"{kinds['problem']} values with a problem")]
     if carried:
-        parts.append(f"{carried} studies carried over from an interrupted attempt")
+        parts.append(f"{carried} studies carried over from an earlier attempt")
     return "; ".join(parts)
