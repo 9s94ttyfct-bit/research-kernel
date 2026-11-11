@@ -5,6 +5,7 @@ its failures as guidance, writes the disclosure itself and gates on what it stor
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import replace
 
 import pytest
@@ -28,8 +29,10 @@ from rk.production.draft import (
     PRISMA_EVENT,
     DraftWorker,
     SectionDraft,
+    SentenceRepair,
     draft_notes,
     prisma_event,
+    repair_sentences,
     unmet_support,
 )
 from rk.production.draft import load_inputs as draft_inputs
@@ -165,8 +168,8 @@ def test_ungrounded_number_fails_sentence_and_redrafts(env):
     _ready(env)
     main = main_claim(ps, 1)
     bad = f"Aspirin was studied in 1234 older people [[clm:{main}]]."
-    # introduction: every try writes the ungrounded number; theme-1: fixed on its first retry
-    outs = [writes(bad=bad)] * 3 + [writes(bad=bad), writes()] + [writes()] * 3
+    # introduction: every try writes the ungrounded number; theme-1: fixed by its first retry's repair
+    outs = [writes(bad=bad)] * 3 + [writes(bad=bad), repairs((1, ""))] + [writes()] * 3
     ex = _writer(outs)
     w = DraftWorker()
     out = w.run(_ctx(env, ex))
@@ -183,9 +186,31 @@ def test_ungrounded_number_fails_sentence_and_redrafts(env):
     assert [v["verdict"]["ok"] for v in draft_versions(ps, "theme-1")] == [False, True]
     res = w.gate(ps, 1)
     assert not res.ok
-    (named,) = [f for f in res.failures if f.startswith("section introduction")]
-    assert "v3" in named and "Aspirin was studied in 1234 older people" in named and "1234" in named
+    named = [f for f in res.failures if f.startswith("section introduction")]
+    assert any("v3" in f and "Aspirin was studied in 1234 older people" in f and "1234" in f for f in named), named
+    assert any("not a whole new section" in f for f in named), named  # its retries gave no repairs
     assert not any("theme-1" in f for f in res.failures)
+
+
+def test_a_repair_takes_the_emphasis_around_its_sentence_with_it():
+    """A repaired or deleted sentence in bold leaves no stray delimiter behind; one whose markup runs into another
+    sentence is not repaired (ignored, to be repaired in markdown)."""
+    md = "First [[inf]]. **Second is bold.** [[ck]] Third [[inf]].\n"
+    verdict = {"section": "x", "version": 1, "ck_share": 0.0, "ok": False,
+               "sentences": [{"index": 0, "ok": True, "problems": []}, {"index": 1, "ok": False, "problems": ["p"]},
+                             {"index": 2, "ok": True, "problems": []}]}
+    fixed, ignored = repair_sentences(md, verdict, [SentenceRepair(sentence=2, text="New second [[inf]].")])
+    assert (fixed, ignored) == ("First [[inf]]. New second [[inf]]. Third [[inf]].\n", [])
+    gone, _ = repair_sentences(md, verdict, [SentenceRepair(sentence=2)])
+    assert gone == "First [[inf]]. Third [[inf]].\n"
+    inside = "*First [[inf]]. Second [[inf]].* Third [[inf]].\n"  # emphasis around two sentences stays around both
+    verdict["sentences"][0]["ok"], verdict["sentences"][1]["ok"] = False, True
+    fixed, _ = repair_sentences(inside, verdict, [SentenceRepair(sentence=1, text="New [[inf]].")])
+    assert fixed == "*New [[inf]]. Second [[inf]].* Third [[inf]].\n"
+    across = "**First [[inf]]. Second [[inf]].** [[ck]] Third [[inf]].\n"  # the second closes the first's bold
+    verdict["sentences"][0]["ok"], verdict["sentences"][1]["ok"] = True, False
+    same, ignored = repair_sentences(across, verdict, [SentenceRepair(sentence=2, text="New [[inf]].")])
+    assert same == across and ignored and "markup" in ignored[0], (same, ignored)
 
 
 def test_a_rerun_after_drafts_own_gate_keeps_the_sections_that_passed(env):
@@ -199,10 +224,10 @@ def test_a_rerun_after_drafts_own_gate_keeps_the_sections_that_passed(env):
     main = main_claim(ps, 1)
     bad = f"Aspirin was studied in 1234 older people [[clm:{main}]]."
     w = DraftWorker()
-    w.run(_ctx(env, _writer([writes(bad=bad)] * 3 + [writes(bad=bad), writes()] + [writes()] * 2)))
+    w.run(_ctx(env, _writer([writes(bad=bad)] * 3 + [writes(bad=bad), repairs((1, ""))] + [writes()] * 2)))
     assert not w.gate(ps, 1).ok  # introduction failed its three tries; the other sections passed
     record_reopened(ps, "draft", by_edge="draft->draft", guidance="introduction: 1234", actor="t")
-    ex = _writer([writes()])
+    ex = _writer([repairs((1, ""))])
     assert w.run(_ctx(env, ex, attempt=2)).status == "done"
     assert _writer_sections(ex) == ["introduction"]
     for sec in ("theme-1", "gaps-agenda", "conclusion"):
@@ -216,6 +241,12 @@ def test_a_rerun_after_drafts_own_gate_keeps_the_sections_that_passed(env):
     ex = _writer([writes()] * 4)
     assert w.run(_ctx(env, ex, attempt=3)).status == "done"
     assert _writer_sections(ex) == ["introduction", "theme-1", "gaps-agenda", "conclusion"]
+
+
+def delete_failing(inputs):
+    """A retry's Writer output deleting every failing sentence its failures name."""
+    nums = [int(m.group(1)) for f in inputs["retry"]["failures"] if (m := re.match(r"sentence (\d+) ", f))]
+    return {"repairs": [{"sentence": n, "text": ""} for n in nums]}
 
 
 def repairs(*fixes: tuple[int, str]):
@@ -263,7 +294,7 @@ def _failed_introduction(env) -> DraftWorker:
     _ready(env)
     bad = f"Aspirin was studied in 1234 older people [[clm:{main_claim(ps, 1)}]]."
     w = DraftWorker()
-    w.run(_ctx(env, _writer([writes(bad=bad)] * 3 + [writes(bad=bad), writes()] + [writes()] * 2)))
+    w.run(_ctx(env, _writer([writes(bad=bad)] * 3 + [writes(bad=bad), repairs((1, ""))] + [writes()] * 2)))
     record_reopened(ps, "draft", by_edge="draft->draft", guidance="introduction: 1234", actor="t")
     return w
 
@@ -273,7 +304,7 @@ def test_a_passed_section_whose_file_was_altered_is_drafted_again_not_carried(en
     w = _failed_introduction(env)
     (ps.root / f"artifacts/drafts/gaps-agenda.v{draft_versions(ps, 'gaps-agenda')[-1]['version']}.md").write_text(
         "Unmarked text with 999 in it.\n")
-    ex = _writer([writes()] * 2)
+    ex = _writer([repairs((1, "")), writes()])
     assert w.run(_ctx(env, ex, attempt=2)).status == "done"
     assert _writer_sections(ex) == ["introduction", "gaps-agenda"]
     assert w.gate(ps, 2).ok
@@ -291,7 +322,7 @@ def test_a_passed_section_that_no_longer_verifies_is_drafted_again(env):
                 if c["role"] == "finding")
     ArgumentService(ps).withdraw_claim(gone, reason="the objection holds", actor="tester")
     record_reopened(ps, "draft", by_edge="draft->draft", guidance="introduction: 1234", actor="t")
-    ex = _writer([writes()] * 4)
+    ex = _writer([delete_failing] + [writes()] * 3)
     w.run(_ctx(env, ex, attempt=3))
     assert "theme-1" in _writer_sections(ex)  # it cited the withdrawn finding: drafted again, not carried
 
@@ -311,7 +342,7 @@ def test_carrying_resumes_in_place_after_a_crash(env, monkeypatch):
 
     monkeypatch.setattr(draft_mod, "write_draft", crash)
     with pytest.raises(RuntimeError):
-        w.run(_ctx(env, _writer([writes()]), attempt=2))
+        w.run(_ctx(env, _writer([repairs((1, ""))]), attempt=2))
     monkeypatch.setattr(draft_mod, "write_draft", real)
     ex = _writer([])
     assert w.run(_ctx(env, ex, attempt=2)).status == "done"
@@ -353,7 +384,7 @@ def test_draft_resumes_in_place_without_rewriting_verified_sections(env):
     main = main_claim(ps, 1)
     bad = f"Aspirin was studied in 1234 older people [[clm:{main}]]."
     # introduction passes; theme-1 fails its first try and the cap hits its retry (the third Writer task)
-    ex = CapOnce({("writer", "SectionDraft"): [writes(), writes(bad=bad), writes(), writes(), writes()]},
+    ex = CapOnce({("writer", "SectionDraft"): [writes(), writes(bad=bad), repairs((1, "")), writes(), writes()]},
                  at=("writer", "SectionDraft"), n=3)
     w = DraftWorker()
     with pytest.raises(RateCapped):
@@ -524,7 +555,7 @@ def test_missing_design_outside_a_proposal_is_a_failed_try(env):
 def test_a_bare_id_marker_is_named_in_the_writers_retry(env):
     """Task 9: a Writer that writes [[clm_…]] is told, in its retry failures, the marker form to write."""
     _ready(env)
-    ex = _writer([writes(bad="Copper catalysts may matter [[clm_01ABC]]."), *[writes()] * 4])
+    ex = _writer([writes(bad="Copper catalysts may matter [[clm_01ABC]]."), repairs((1, "")), *[writes()] * 3])
     assert DraftWorker().run(_ctx(env, ex)).status == "done"
     failures = ex.of("writer", "SectionDraft")[1]["inputs"]["retry"]["failures"]
     assert any("[[clm_01ABC]] is not a source marker" in f and "write [[clm:clm_01ABC]]" in f for f in failures), \

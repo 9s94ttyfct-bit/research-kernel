@@ -34,11 +34,13 @@ sentence and the section's balance.
    recorded ``draft.verified``); a version that fails is retried with its failing sentences and problems (a
    one-sided section's claim and the counterpart or response it lacks among them) as guidance, up to
    ``Settings.draft_section_retries`` more times in the attempt. The retry's ``repairs`` replace or delete the failing
-   sentences only, every other sentence kept word for word (``repair_sentences``); a whole new ``markdown`` is taken
-   when it gives no repairs. In an attempt draft reopened itself, a section that failed in the previous attempt is
-   retried from that attempt's last version, not drafted afresh. A section still failing then is left to the gate,
-   which names its failing sentences and problems. The Writer gets the limitations without the ids of withdrawn claims,
-   which it cannot cite.
+   sentences only, every other sentence kept word for word (``repair_sentences``; a sentence whose markup runs into
+   another is not repaired). A whole new ``markdown`` is taken only when the version also fails as a whole (a
+   section-level problem) or has a sentence that cannot be repaired on its own; otherwise it is refused, the version is
+   kept and the try fails, naming what to give. In an attempt draft reopened itself, a section that failed in the
+   previous attempt is retried from that attempt's last version (verified again), not drafted afresh. A section still
+   failing then is left to the gate, which names its failing sentences and problems. The Writer gets the limitations
+   without any id of a withdrawn claim, which it cannot cite.
 3. **Disclosure** is kernel-written: until the audit writes it from ``disclosure.md``, it is one ``[[run:]]`` sentence
    per stage passed so far, citing the event of its pass.
 
@@ -411,13 +413,27 @@ def repair_sentences(markdown: str, verdict: SectionVerdict | dict,
             ignored.append(f"sentence {r.sentence}: not a failing sentence of the previous draft")
         elif i in chosen:
             ignored.append(f"sentence {r.sentence}: repaired twice; the first repair is kept")
+        elif (span := _own_span(markdown, sentences[i])) is None:
+            ignored.append(f"sentence {r.sentence}: its markup runs into another sentence; repair it in markdown")
         else:
-            chosen[i] = r.text.strip()
-    for i in sorted(chosen, key=lambda i: sentences[i].span[0], reverse=True):
-        a, z = sentences[i].span
-        markdown = (markdown[:a] + chosen[i] + markdown[z:] if chosen[i]
-                    else markdown[:a] + markdown[z:].lstrip(" "))
+            chosen[i] = (span, r.text.strip())
+    for (a, z), text in sorted(chosen.values(), reverse=True):
+        markdown = markdown[:a] + text + markdown[z:] if text else markdown[:a] + markdown[z:].lstrip(" ")
     return markdown, ignored
+
+
+def _own_span(markdown: str, x: Sentence) -> tuple[int, int] | None:
+    """The source span that holds the sentence and nothing else: its span, or that span with the emphasis delimiters
+    just before it when the span closes them (``**A claim.** [[clm:…]]``), so that replacing it leaves no stray
+    delimiter; ``None`` when neither parses back to the sentence alone."""
+    a, z = x.span
+    k = a
+    while k > 0 and markdown[k - 1] in "*_":
+        k -= 1
+    for start in dict.fromkeys((a, k)):
+        if [y.text for y in parse_section(markdown[start:z])] == [x.text]:
+            return start, z
+    return None
 
 
 def _quotable(note: dict) -> bool:
@@ -477,28 +493,35 @@ def writer_inputs(ps: ProjectStore, s: DraftInputs, spec: SectionSpec, prisma: s
         inputs["design"] = {"id": s.design["id"], "body": s.design["body"]}
         inputs["hypotheses"] = [{k: h.get(k) for k in ("id", "statement", "falsification", "status")}
                                 for h in hypotheses(ps, s.rq_id) if h["status"] != "dropped"]
-    inputs["limitations"] = _citable_only(limitations)
+    inputs["limitations"] = _citable_only(ps, limitations)
     return inputs
 
 
-def _citable_only(limitations: dict) -> dict:
-    """The limitations as the Writer gets them: a withdrawn claim without its id (and a rewrite without the id of the
-    withdrawn claim it narrows), since a withdrawn claim cannot be cited; the Writer states it as a limitation
-    ([[inf]]). Calibration (critical3, draft attempts 2 and 10): given the id, the Writer cited a withdrawn finding and
+def _citable_only(ps: ProjectStore, limitations: dict) -> dict:
+    """The limitations as the Writer gets them: no id of a withdrawn claim anywhere (``claim_id``, ``narrowed_from``,
+    ``target_id``), since a withdrawn claim cannot be cited; the Writer states it as a limitation ([[inf]]) from its
+    text. Calibration (critical3, draft attempts 2, 5, 6 and 10): given the id, the Writer cited a withdrawn finding and
     the sentence failed."""
+    svc = ArgumentService(ps)
+    gone: dict[str, bool] = {}
+
+    def withdrawn(v) -> bool:
+        if not (isinstance(v, str) and v.startswith("clm_")):
+            return False
+        if v not in gone:
+            try:
+                gone[v] = svc.get_claim(v)["status"] == "withdrawn"
+            except KeyError:
+                gone[v] = False
+        return gone[v]
+
     def walk(x):
         if isinstance(x, list):
             return [walk(i) for i in x]
         if not isinstance(x, dict):
             return x
-        out = {k: walk(v) for k, v in x.items()}
-        if isinstance(out.get("withdrawn"), list):
-            out["withdrawn"] = [{k: v for k, v in w.items() if k != "claim_id"} if isinstance(w, dict) else w
-                                for w in out["withdrawn"]]
-        if isinstance(out.get("narrowed"), list):
-            out["narrowed"] = [{k: v for k, v in n.items() if k != "narrowed_from"} if isinstance(n, dict) else n
-                               for n in out["narrowed"]]
-        return out
+        return {k: walk(v) for k, v in x.items()
+                if not (k in ("claim_id", "narrowed_from", "target_id") and withdrawn(v))}
     return walk(limitations)
 
 
@@ -609,34 +632,58 @@ class DraftWorker:
         if d.missing_design.strip():
             _note(ps, ctx.attempt, "refused", actor=ctx.actor, section=spec.id, task=res.task_id,
                   problems=["missing_design is only for a research proposal"])
-        base = self._base(ctx, spec, mine)
+        base = self._base(ctx, s, spec, mine)
         md = d.markdown
         if d.repairs and base is not None:  # a retry's repairs go into the version they repair
             md, ignored = repair_sentences(base[0], base[1], d.repairs)
+            if d.markdown.strip():
+                ignored.append("markdown: not used, since repairs were given")
             _note(ps, ctx.attempt, "repaired", actor=ctx.actor, section=spec.id, task=res.task_id,
                   sentences=[r.sentence for r in d.repairs], ignored=ignored)
+        elif base is not None and self._sentences_only(ps, s, spec.id, base[0]):
+            # only sentences failed: a whole new section could break those that passed, so the version is kept as it
+            # was and the try fails, saying what to give (noted before the version is stored, like the refusals above)
+            md = base[0]
+            _note(ps, ctx.attempt, "refused", actor=ctx.actor, section=spec.id, task=res.task_id,
+                  problems=[("only sentences failed, so a retry gives repairs of those sentences ({sentence: N, "
+                             "text}), not a whole new section: the previous version is kept")])
         v = write_draft(ps, spec.id, md, stage=STAGE, attempt=ctx.attempt, round=0, by_task=res.task_id,
                         actor=ctx.actor)
         self._verify(ctx, s, spec.id, v)
         return None
 
     @staticmethod
-    def _base(ctx: StageContext, spec: SectionSpec, mine: list[dict]) -> tuple[str, dict] | None:
-        """The version a retry repairs, with its verdict: the section's last version in this attempt, or, in an attempt
-        draft reopened itself (``draft->draft``), its last version of the previous attempt when that one failed; else
-        ``None`` (also when its file no longer reads as recorded: the section is drafted afresh)."""
+    def _sentences_only(ps: ProjectStore, s: DraftInputs, section: str, md: str) -> bool:
+        """Whether a whole new section is refused as a retry of ``md``: it fails now on sentences only (no
+        section-level problem) and every failing sentence can be repaired on its own (``_own_span``)."""
+        now = section_verdict(ps, section, md, paper_type=s.paper_type)
+        if now.ok or now.problems:
+            return False
+        sentences = {x.index: x for x in parse_section(md)}
+        return all(x.index in sentences and _own_span(md, sentences[x.index]) is not None
+                   for x in now.sentences if not x.ok)
+
+    @staticmethod
+    def _base(ctx: StageContext, s: DraftInputs, spec: SectionSpec, mine: list[dict]) -> tuple[str, dict] | None:
+        """The version a retry repairs, with the verdict its failures are named from: the section's last version in
+        this attempt with its recorded verdict, or, in an attempt draft reopened itself (``draft->draft``), its last
+        version of the previous attempt verified again now (a claim it cites may have changed since) when it still
+        fails; else ``None`` (also when its file no longer reads as recorded: the section is drafted afresh)."""
         ps = ctx.ps
         if mine:
-            last = mine[-1]
-        elif (_reopened_by_itself(ps, ctx.attempt) and (prev := _mine(ps, spec.id, ctx.attempt - 1))
-              and prev[-1]["verdict"] and not prev[-1]["verdict"]["ok"]):
-            last = prev[-1]
-        else:
+            try:
+                return draft_text(ps, spec.id, mine[-1]["version"]), mine[-1]["verdict"]
+            except (KeyError, ValueError):
+                return None
+        if not (_reopened_by_itself(ps, ctx.attempt) and (prev := _mine(ps, spec.id, ctx.attempt - 1))
+                and prev[-1]["verdict"] and not prev[-1]["verdict"]["ok"]):
             return None
         try:
-            return draft_text(ps, spec.id, last["version"]), last["verdict"]
+            md = draft_text(ps, spec.id, prev[-1]["version"])
         except (KeyError, ValueError):
             return None
+        verdict = section_verdict(ps, spec.id, md, paper_type=s.paper_type)
+        return None if verdict.ok else (md, verdict.model_dump())
 
     @staticmethod
     def _verify(ctx: StageContext, s: DraftInputs, section: str, version: int) -> None:
@@ -686,7 +733,7 @@ class DraftWorker:
             inputs["asked_of_argue"] = asked
         if declined := argue_declined(ps, spec.id):
             inputs["argue_declined"] = declined
-        if (base := self._base(ctx, spec, mine)) is not None:
+        if (base := self._base(ctx, s, spec, mine)) is not None:
             md, verdict = base
             inputs["retry"] = {"previous_draft": md, "failures": version_failures(md, verdict)}
         if ctx.guidance:
