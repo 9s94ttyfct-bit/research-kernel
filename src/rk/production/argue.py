@@ -1806,7 +1806,10 @@ class ArgueWorker:
         listed = cp["options"]["claim_ids"]
         allowed = review_options(cp["options"])
         comment = answer_comment(answer)
-        if answer.get("decision") == "rerun":
+        if "revise" in answer and answer.get("decision") != BACK:
+            why = ('"revise" goes with back only: it names the findings the synthesize attempt you send argue back to '
+                   'writes again')
+        elif answer.get("decision") == "rerun":
             if comment:
                 return StageOutcome("rerun", reason=comment)
             why = "rerun needs a comment saying what to change"

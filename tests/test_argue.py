@@ -790,6 +790,10 @@ def test_p2_back_is_applied_once_and_other_answers_still_work(env):
                                                           "revise": revisable[:1]}))
     assert out.status == "waiting_human" and "needs a comment" in out.reason
     cp = get_checkpoint(ps, out.checkpoint_id)
+    # "revise" goes with back only, never silently dropped from your review
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"claims": {}, "answers_rq": "yes", "revise": revisable[:1]}))
+    assert out.status == "waiting_human" and "goes with back only" in out.reason
+    cp = get_checkpoint(ps, out.checkpoint_id)
     # your usual answer: the request is not acted on; it is an unmet request in the limitations
     out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"claims": {}, "answers_rq": "yes"}))
     assert out.status == "done", out.reason

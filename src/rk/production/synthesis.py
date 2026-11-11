@@ -479,6 +479,15 @@ def _revised(ps: ProjectStore) -> set[str]:
     return {c for (ids,) in rows for c in json.loads(ids)}
 
 
+def _findings_attempt(ps: ProjectStore, attempt: int) -> int | None:
+    """The latest synthesize attempt before ``attempt`` that noted findings: the one a new attempt keeps from."""
+    (before,) = ps.db.execute(
+        "SELECT MAX(json_extract(payload, '$.attempt')) FROM events WHERE type='synthesis.noted' "
+        "AND json_extract(payload, '$.kind')='finding' AND json_extract(payload, '$.attempt')<?",
+        (attempt,)).fetchone()
+    return before
+
+
 def _kept_findings(ps: ProjectStore, attempt: int, s: _Inputs) -> tuple[list[tuple[str, FindingDraft]], list[str]]:
     """The findings a new attempt keeps word for word, with their evidence, as ``(claim id, finding)``: those of the
     latest earlier attempt that made findings which still pass the claim gate (``claim_problems``), are not contested
@@ -486,10 +495,7 @@ def _kept_findings(ps: ProjectStore, attempt: int, s: _Inputs) -> tuple[list[tup
     rerun or back answer: released, written again). Only your answer releases one: the Arguer never does, and P1, with
     no answer of yours, keeps them all. Calibration (critical review rerun): a finding written again came back
     reworded, stronger than its sources, although your comment said to keep it exactly."""
-    (before,) = ps.db.execute(
-        "SELECT MAX(json_extract(payload, '$.attempt')) FROM events WHERE type='synthesis.noted' "
-        "AND json_extract(payload, '$.kind')='finding' AND json_extract(payload, '$.attempt')<?",
-        (attempt,)).fetchone()
+    before = _findings_attempt(ps, attempt)
     if before is None:
         return [], []
     svc = ArgumentService(ps)
@@ -1331,10 +1337,13 @@ class SynthesizeWorker:
         left = [c for c in synthesis_claims(ps, ctx.attempt)
                 if c not in listing and svc.get_claim(c)["status"] == "supported"]
         lines = [why, ""] if why else []
+        # what the next attempt would keep: this attempt's findings, or with no narrative, the latest earlier ones
+        offer = revisable(ps, a) if (a := _findings_attempt(ps, ctx.attempt + 1)) is not None else {}
         if missing:
             lines += [(f"The Arguer gave no acceptable narrative synthesis ({missing}), so there is no finding to review. "
                        "Synthesize again with your comment (what to change), or send synthesize back to "
-                       "read_extract."), "", 'Answer {"decision": "rerun", "comment": ...}.', "", BACK_TEXT]
+                       "read_extract."), "", 'Answer {"decision": "rerun", "comment": ..., "revise"?: [...]}.',
+                      *revise_lines(offer), "", BACK_TEXT]
         else:
             lines.append("These synthesis claims fail the claim gate: V-SUPPORT (the judges did not agree, or agreed "
                          "the evidence does not support it), V-HEDGE (stated more strongly than its sources), V-STATS "
@@ -1349,7 +1358,7 @@ class SynthesizeWorker:
             lines += ["", ('Answer {"claims": {"<claim id>": "supported" or "withdraw", ...}} for every listed claim '
                            '(one of its answers), optionally with a "comment", or {"decision": "rerun", "comment": ..., '
                            '"revise"?: [...]} to synthesize again with your comment.'),
-                      *revise_lines(revisable(ps, ctx.attempt)), "", BACK_TEXT]
+                      *revise_lines(offer), "", BACK_TEXT]
         return create_checkpoint(ps, UNCERTAIN, "\n".join(lines),
                                  {"attempt": ctx.attempt, "claim_ids": list(listing),
                                   "problems": {c: e["problems"] for c, e in listing.items()},
@@ -1357,7 +1366,7 @@ class SynthesizeWorker:
                                   "choices": [SUPPORTED, WITHDRAW], "decisions": ["rerun", BACK],
                                   "studies": _back_studies(ps, s), "fields": _back_fields(s),
                                   "no_supported_left": not left and not missing, "narrative_missing": missing,
-                                  "revisable": {} if missing else revisable(ps, ctx.attempt), "replaces": replaces},
+                                  "revisable": offer, "replaces": replaces},
                                  stage=ctx.stage, actor=ctx.actor)
 
     @staticmethod
@@ -1446,7 +1455,9 @@ class SynthesizeWorker:
         listed = opts["claim_ids"]
         allowed = review_options(opts)
         comment = answer_comment(answer)
-        if answer.get("decision") == "rerun":
+        if "revise" in answer and answer.get("decision") != "rerun":
+            why = '"revise" goes with a rerun only: it names the findings the next synthesize attempt writes again'
+        elif answer.get("decision") == "rerun":
             if not comment:
                 why = "rerun needs a comment saying what to change"
             elif not (why := revise_problem(answer, opts.get("revisable") or {})):

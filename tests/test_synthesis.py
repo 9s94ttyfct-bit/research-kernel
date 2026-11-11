@@ -1384,6 +1384,17 @@ def test_a_new_attempt_keeps_the_findings_that_passed_word_for_word(env):
     assert (note["kept"], note["released"]) == ([new["id"]], [again["id"]])
     assert w.gate(ps, 3).ok, w.gate(ps, 3).failures
 
+    # no acceptable narrative in attempt 4: its review offers what attempt 5 would keep, attempt 3's findings
+    ex4 = NoNarrative(_exec().script)
+    out = w.run(_ctx(env, ex4, 4))
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    newer3, replaced3 = _claims(ps, 3)
+    assert cp["options"]["narrative_missing"]
+    assert cp["options"]["revisable"] == {newer3["id"]: NEWER, replaced3["id"]: replaced}
+    # "revise" goes with a rerun only, never silently dropped from another answer
+    out = w.on_answer(_ctx(env, ex4, 4), _answer(ps, cp["id"], {"decision": "back", "revise": [newer3["id"]]}))
+    assert out.status == "waiting_human" and "goes with a rerun only" in out.reason
+
 
 def test_review_choices_follow_the_claim_problems():
     from rk.production.claims import review_choices
