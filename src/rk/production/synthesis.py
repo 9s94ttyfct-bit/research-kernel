@@ -137,6 +137,7 @@ from rk.store.events import NewEvent
 from rk.store.project import ProjectStore
 from rk.verify.numbers import extract_numbers
 from rk.verify.prisma import check_selection_reasons, flow, prisma_counts
+from rk.verify.records import record_verification
 from rk.verify.stats import (
     PoolOptions,
     check_stats,
@@ -1284,7 +1285,8 @@ class SynthesizeWorker:
     def _store_findings(ctx: StageContext, s: _Inputs, narrative: dict) -> None:
         """Store each finding once (origin ``synthesis``, written by the Arguer's vendor; a kept finding by the vendor
         that wrote it first) with its evidence: the notes of the usable studies only, criteria from the assessments
-        (``_criteria``)."""
+        (``_criteria``). A kept finding (the same text on the same notes) carries the verdict it passed with
+        (``_carry_verdict``) instead of being judged again."""
         ps = ctx.ps
         svc = ArgumentService(ps)
         done = {n["index"] for n in synthesis_notes(ps, ctx.attempt, kind="finding")}
@@ -1305,7 +1307,31 @@ class SynthesizeWorker:
                                                  criteria=evidence_criteria(ps, ctx.attempt, ids),
                                                  interpretation=e.interpretation), actor=ctx.actor,
                                       actor_kind="kernel")
+            if i < len(kept):
+                SynthesizeWorker._carry_verdict(ctx, kept[i], cid)
             _note(ps, ctx.attempt, "finding", actor=ctx.actor, index=i, claim_id=cid, dropped_notes=dropped)
+
+    @staticmethod
+    def _carry_verdict(ctx: StageContext, old: str, new: str) -> None:
+        """A kept finding's V-NUM and V-SUPPORT as recorded on the claim it was kept from (``carried_from``), its
+        ``supported`` status attributed as before (to you when you decided it), and V-HEDGE checked again here.
+        Calibration (critical review rerun): judged again, a finding you had supported came back uncertain and asked
+        you once more."""
+        ps = ctx.ps
+        status = ps.db.execute("SELECT actor, actor_kind FROM events WHERE type='claim.status_set' AND entity_id=? "
+                               "ORDER BY seq DESC LIMIT 1", (old,)).fetchone()
+        vid = None
+        for verifier in ("V-NUM", "V-SUPPORT"):
+            r = ps.db.execute("SELECT verdict, details FROM verifications WHERE target_id=? AND verifier=? "
+                              "ORDER BY rowid DESC LIMIT 1", (old, verifier)).fetchone()
+            if r is not None:
+                vid = record_verification(ps, "claim", new, verifier, r["verdict"],
+                                          {**json.loads(r["details"]), "carried_from": old}, actor=ctx.actor)
+        ArgumentService(ps).set_claim_status(
+            new, "supported", verification_id=vid,
+            actor=status["actor"] if status else ctx.actor,
+            actor_kind="human" if status and status["actor_kind"] == "human" else "kernel")
+        check_claim_hedge(ps, new, actor=ctx.actor)
 
     @staticmethod
     def _verify(ctx: StageContext) -> None:

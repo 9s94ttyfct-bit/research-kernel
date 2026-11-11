@@ -1341,6 +1341,9 @@ def test_a_new_attempt_keeps_the_findings_that_passed_word_for_word(env):
     kept, bad = _claims(ps)
     assert (kept["text"], kept["status"], bad["text"]) == (FINDING, "supported", OTHER)
     assert cp["options"]["revisable"] == {kept["id"]: FINDING} and f"- {kept['id']}: {FINDING}" in cp["prompt"]
+    # you had decided the kept finding yourself (an uncertain_support answer): that decision is carried, not re-judged
+    ArgumentService(ps).set_claim_status(kept["id"], "supported", verification_id=None, actor="researcher",
+                                         actor_kind="human")
     out = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decision": "rerun", "comment": "Drop the children."}))
     assert out.status == "rerun"
 
@@ -1358,6 +1361,13 @@ def test_a_new_attempt_keeps_the_findings_that_passed_word_for_word(env):
     assert (again["text"], again["status"], new["text"], bad2["text"]) == (FINDING, "supported", NEWER, OTHER)
     assert [e["note_ids"] for e in again["evidence"]] == [e["note_ids"] for e in kept["evidence"]]
     assert again["generator_vendor"] == kept["generator_vendor"]
+    assert not [c for c in ex2.calls if c["role"].startswith("judge") and FINDING in c["inputs"]["claim"]]
+    status = ps.db.execute("SELECT actor, actor_kind FROM events WHERE type='claim.status_set' AND entity_id=? "
+                           "ORDER BY seq DESC LIMIT 1", (again["id"],)).fetchone()
+    assert (status["actor"], status["actor_kind"]) == ("researcher", "human")
+    carried = ps.db.execute("SELECT details FROM verifications WHERE target_id=? AND verifier='V-SUPPORT'",
+                            (again["id"],)).fetchone()
+    assert json.loads(carried["details"])["carried_from"] == kept["id"]
     (note,) = synthesis_notes(ps, 2, kind="narrative")
     assert (note["kept"], note["released"]) == ([kept["id"]], [])
 
