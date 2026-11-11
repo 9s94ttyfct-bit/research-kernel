@@ -1147,6 +1147,35 @@ def test_an_unsupported_answer_comes_back_as_earlier_answer_without_its_id(env):
     assert not any(c["id"] in str(o) for c in ArgumentService(ps).list_claims() if c["text"] == weak)
 
 
+def test_a_reason_given_again_is_refused_and_the_refusal_reaches_the_next_round(env):
+    """Calibration (critical3, argue attempt 6): the Arguer gave its reasons again every round; each became a new
+    reason link with a new warrant, which the Skeptic tested and objected to again, so the rounds never reached a fixed
+    point (95 links on the main claim). A link the argument already has is refused, and the next round's input says
+    what was refused."""
+    _, ps, _ = env
+    _synthesize(env)
+    seen = {}
+
+    def again(inputs):
+        (r,) = role(inputs, "reason")
+        return {"reasons": [{"ref": "r1", "claim_id": r, "supports": "main", "warrant": WARRANT}],
+                "responses": [{"objection_id": o["id"], "status": "conceded", "note": "Fair."}
+                              for o in inputs["open_objections"]]}
+
+    def last(inputs):
+        seen["refused"] = inputs.get("refused_last_round")
+        return {"responses": [{"objection_id": o["id"], "status": "conceded", "note": "Fair."}
+                              for o in inputs["open_objections"]]}
+
+    def vague(text):
+        return lambda i: {"target_id": role(i, "main")[0], "category": "problem", "priority": 2, "text": text}
+
+    ex = _exec([draft(), again, last], [critique(objections=[vague("Vague.")]),
+                                         critique(objections=[vague("Still vague.")]), critique()])
+    ArgueWorker().run(_ctx(env, ex))
+    assert len(ArgumentService(ps).list_edges(type="reason_of")) == 1
+    assert seen["refused"] and "already supports" in seen["refused"][0], seen
+
 
 def test_imported_conflicts_take_the_latest_both_contested_counterpart(env):
     _, ps, _ = env
