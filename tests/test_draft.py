@@ -178,7 +178,9 @@ def test_ungrounded_number_fails_sentence_and_redrafts(env):
     calls = ex.of("writer", "SectionDraft")
     assert "retry" not in calls[0]["inputs"]
     retry = calls[1]["inputs"]["retry"]
-    assert "1234" in retry["previous_draft"]
+    assert "1234" in retry["previous_draft"] and retry["whole_section"] is False  # one sentence fails: repairs only
+    # its third try still sees whole_section false, though its second try's refusal failed that version as a whole
+    assert calls[2]["inputs"]["retry"]["whole_section"] is False
     (failure,) = retry["failures"]
     assert failure.startswith("sentence 1 “Aspirin was studied in 1234 older people")
     assert "the number 1234 is not in any marker's target" in failure
