@@ -313,6 +313,25 @@ def test_a_reason_restating_a_supported_finding_reuses_it(env):
     assert note["restated"] == [{"text": copy, "claim_id": synth[1]}] and synth[1] in note["reused"]
 
 
+def test_a_restatement_reuses_the_same_text_claim_whose_notes_cover_it(env):
+    """Review of 46b3423: two supported findings with the same text on different notes. A restatement citing the
+    first one's note reuses that one (every same-text claim is tried, not only the last)."""
+    _, ps, _ = env
+    first_f, second_f = _synthesize(env, texts=(F2, F2))  # the same text: study A's (rct) note, study B's (cohort)
+    svc = ArgumentService(ps)
+    assert [svc.get_claim(c)["status"] for c in (first_f, second_f)] == ["supported"] * 2  # both reusable
+
+    def first(inputs):
+        out = draft()(inputs)
+        out["reasons"].append({"claim": claim(inputs, F2, "rct"), "supports": "r1", "warrant": WARRANT})
+        return out
+
+    out = ArgueWorker().run(_ctx(env, _exec([first], [critique()])))
+    assert out.status == "done", out.reason
+    (note,) = argue_notes(ps, 1, kind="draft")
+    assert note["restated"] == [{"text": F2, "claim_id": first_f}]
+
+
 def test_an_answer_to_an_objection_the_turn_already_conceded_is_refused_not_a_crash(env):
     """Task 9 (melatonin): the Arguer answers objection A again with a new claim, which withdraws A's earlier response
     claim P and concedes the objection B on P; the same turn also answers B. That answer is refused (noted), and the
