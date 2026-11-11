@@ -184,7 +184,10 @@ def test_ungrounded_number_fails_sentence_and_redrafts(env):
     (failure,) = retry["failures"]
     assert failure.startswith("sentence 1 “Aspirin was studied in 1234 older people")
     assert "the number 1234 is not in any marker's target" in failure
-    assert [v["verdict"]["ok"] for v in draft_versions(ps, "introduction")] == [False] * 3
+    intro = draft_versions(ps, "introduction")
+    assert [v["verdict"]["ok"] for v in intro] == [False] * 3
+    # its retries sent whole sections where repairs were due: refused, so the first version is kept word for word
+    assert {draft_text(ps, "introduction", v["version"]) for v in intro} == {draft_text(ps, "introduction", 1)}
     assert [v["verdict"]["ok"] for v in draft_versions(ps, "theme-1")] == [False, True]
     res = w.gate(ps, 1)
     assert not res.ok
