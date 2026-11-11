@@ -144,10 +144,10 @@ def test_run_resumes_after_restart_without_rerunning_passed_stages(tmp_home, rep
 
 
 def test_a_task_cut_off_by_a_restart_is_interrupted_and_counted(tmp_home, replay_http):
-    """Spec §11.6: the first judge of an open stage dies with the process (SystemExit gets past every ``except
-    Exception``, like a kill). After the restart (sweep, new RunManager, ``resume_all``) the run passes; the orphan is
-    ``interrupted``, linked to its stage attempt and counted against the stage budget, since its call may have used
-    quota."""
+    """Spec §11.6: the first role task of an open stage (a Scout's; a judge's would not count) dies with the process
+    (SystemExit gets past every ``except Exception``, like a kill). After the restart (sweep, new RunManager,
+    ``resume_all``) the run passes; the orphan is ``interrupted``, linked to its stage attempt and counted against the
+    stage budget, since its call may have used quota."""
 
     class KilledOnce(FakeJudge):
         orphan: str | None = None
@@ -162,7 +162,7 @@ def test_a_task_cut_off_by_a_restart_is_interrupted_and_counted(tmp_home, replay
 
     def judged(ctx):
         seen.append(ctx.attempt)
-        ctx.executor.run("judge", "Judge.", {}, JudgeVerdict, stage=ctx.stage, attempt=ctx.attempt, tools=[])
+        ctx.executor.run("scout", "Judge.", {}, JudgeVerdict, stage=ctx.stage, attempt=ctx.attempt, tools=[])
         return StageOutcome("done")
 
     def executors(kern, reg):

@@ -14,7 +14,7 @@ GapKind = Literal["contradiction", "stated_limitation", "citation_distortion", "
 TopicStatus = Literal["candidate", "approved", "rejected"]
 
 TASKS_PER_TOPIC = 3  # V-NOVELTY of a topic: 1 scout + 2 judges
-MAX_TOPICS_N = 12  # a topics attempt: 1 ideator + 12 x 3 = 37 role tasks, within the stage budget
+MAX_TOPICS_N = 12  # a topics attempt: 1 ideator + 12 x 3 = 37 role tasks (13 counted: judges' tasks are not), < budget
 assert 1 + TASKS_PER_TOPIC * MAX_TOPICS_N < STAGE_TASK_BUDGET
 
 

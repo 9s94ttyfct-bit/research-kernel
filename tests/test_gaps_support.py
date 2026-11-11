@@ -5,7 +5,7 @@ import pytest
 from rk.argument import ArgumentService
 from rk.checkpoints import list_checkpoints
 from rk.config import load_settings, save_settings
-from rk.discovery.executor import BudgetExceeded, KernelExecutor, RateCapped
+from rk.discovery.executor import KernelExecutor, RateCapped
 from rk.discovery.gaps import GapsWorker, distortion
 from rk.discovery.gaps.contradiction import MAX_PAIRS, ContradictionMiner
 from rk.discovery.gaps.distortion import MAX_ITEMS, DistortionMiner
@@ -389,7 +389,7 @@ def _kernel_executor_run(env, *, max_tasks: int = 40, calls_per_hour: dict | Non
     return GapsWorker(miners=[ContradictionMiner(**judges)]), ctx
 
 
-def test_gap_judges_count_toward_the_stage_budget(env):
+def test_gap_judges_are_linked_to_the_run_but_not_counted_against_the_budget(env):
     _k, ps, _lib = env
     worker, ctx = _kernel_executor_run(env)
     worker.run(ctx)
@@ -400,16 +400,15 @@ def test_gap_judges_count_toward_the_stage_budget(env):
         "ORDER BY r.rowid")]
     assert rows == [("gapminer", "run_g", 1, "gaps", 1), ("judge", "run_g", 1, "gaps", 1),
                     ("judge_2", "run_g", 1, "gaps", 1)]
-    assert tasks_used(ps, "run_g", 1, "gaps") == 3
+    assert tasks_used(ps, "run_g", 1, "gaps") == 1  # your decision (2026-11-11): the judges' tasks do not count
 
 
-def test_gap_judge_beyond_the_stage_budget_stops_the_attempt(env):
+def test_gap_judges_run_on_a_spent_stage_budget(env):
     _k, ps, _lib = env
-    worker, ctx = _kernel_executor_run(env, max_tasks=2)  # the gapminer and the first judge
-    with pytest.raises(BudgetExceeded) as e:
-        worker.run(ctx)
-    assert (e.value.stage, e.value.used, e.value.limit) == ("gaps", 2, 2)
-    assert gaps(ps, 1) == [] and ps.db.execute("SELECT COUNT(*) FROM verifications").fetchone()[0] == 0
+    worker, ctx = _kernel_executor_run(env, max_tasks=1)  # the gapminer only
+    worker.run(ctx)
+    (gap,) = gaps(ps, 1)
+    assert gap["verified"] is True and tasks_used(ps, "run_g", 1, "gaps") == 1
 
 
 def test_rate_capped_gap_judge_pauses_instead_of_an_uncertain_verdict(env):

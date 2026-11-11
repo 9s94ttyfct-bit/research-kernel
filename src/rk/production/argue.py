@@ -34,9 +34,8 @@ One round:
 3. **The fixed point.** The rounds repeat until a critique brings no new objection of priority <= 2 (the conflict
    objections included) and no failed warrant test (a failed critique is no fixed point), and no warrant is left
    untested (the Skeptic is asked again); then one closing Arguer task answers what is still open. They stop earlier
-   when the next round (the last round's cost, or an Arguer and a Skeptic task plus the judges of a response per open
-   objection, plus the final P1 vote) would exceed the open-stage budget; open priority-1 objections then fail the
-   gate.
+   when the next round (the last round's budgeted tasks, at least an Arguer and a Skeptic task) would exceed the
+   open-stage budget; open priority-1 objections then fail the gate.
 
 Contests and objections belong to the attempt: a new attempt takes over the objections earlier attempts left
 unanswered on the findings, raises again the conflict objection of every contested finding (an earlier answer
@@ -45,7 +44,8 @@ finding.
 
 An interrupted attempt (a rate cap, a budget or a crash) runs again in place: the rounds go on from the attempt's notes
 (the claims still to verify, the next Arguer or Skeptic task, a conflict still to decide, the end check). The budget
-is the open stage's per run session (§7.2): every task of the stage in the session counts, an earlier attempt's too.
+is the open stage's per run session (§7.2): every task of the stage in the session counts, an earlier attempt's too,
+except a judge's (V-SUPPORT and the P1 votes: ``tasks_used``).
 
 Finally P1 asks the judges whether the main claim answers the frozen RQ (conservative: it does not, back to question);
 P2 asks you on the final ``uncertain_support`` checkpoint (``_review``): every claim of the argument and every in-scope
@@ -712,13 +712,14 @@ def conflict_checkpoint(ps: ProjectStore, attempt: int, conflict: dict) -> str |
     return r["id"] if r else None
 
 
-# ---- the executor, counted against the open-stage budget ----
+# ---- the executor, counted against the open-stage budget (a judge's task is not: ``tasks_used``) ----
 class _Counted:
     def __init__(self, inner):
         self.inner, self.n = inner, 0
 
     def run(self, *args, **kw):
-        self.n += 1
+        if kw.get("role", args[0] if args else None) not in JUDGE_ROLES:
+            self.n += 1
         return self.inner.run(*args, **kw)
 
 
@@ -867,21 +868,12 @@ class ArgueWorker:
         return tasks_used(ctx.ps, ctx.run_id, row["session"] if row else None, ctx.stage)
 
     @staticmethod
-    def _reserve(ps: ProjectStore, attempt: int, s: _Inputs) -> int:
-        """Tasks kept for the final P1 votes: the RQ check, and the vote on the Arguer's synthesis requests when there
-        are any and ``argue->synthesize`` has a use left (else the kernel proceeds without it); P2 asks you instead."""
-        if s.mode != "auto":
-            return 0
-        asks = synthesis_requests(ps, attempt) and _back_edge_spent(ps) is None
-        return len(JUDGE_ROLES) * (2 if asks else 1)
-
-    def _round_cost(self, ps: ProjectStore, attempt: int, s: _Inputs, r: int) -> int:
-        """The next round's estimated tasks: the last round's, or an Arguer and a Skeptic task plus the V-SUPPORT
-        judges of a response claim per objection still to answer, when that is more."""
+    def _round_cost(ps: ProjectStore, attempt: int, r: int) -> int:
+        """The next round's estimated budgeted tasks: the last round's, or an Arguer and a Skeptic task when that is
+        more. The judges (V-SUPPORT, the P1 votes) are not counted (``tasks_used``)."""
         last = sum(n.get("tasks") or 0 for n in argue_notes(ps, attempt)
                    if n.get("round") == r and n["kind"] in ("draft", "verified", "critique", "conflict_decision"))
-        pending = MIN_ROUND_TASKS + len(JUDGE_ROLES) * len(self._answerable(ps, attempt, s))
-        return max(MIN_ROUND_TASKS, last, pending)
+        return max(MIN_ROUND_TASKS, last)
 
     # ---- the rounds ----
     def _rounds(self, ctx: StageContext, s: _Inputs) -> StageOutcome:
@@ -906,14 +898,14 @@ class ArgueWorker:
                 return out
             if not self._new_issues(ps, attempt, r):
                 if self._untested(ps, attempt):  # no fixed point while a warrant is untested
-                    if self._used(ctx) + 1 + self._reserve(ps, attempt, s) <= self.budget:
+                    if self._used(ctx) + 1 <= self.budget:
                         self._critique(ctx, s, r)
                     else:
                         self._end(ctx, "budget", r)
                     continue
                 self._close(ctx, s, r)
                 continue
-            if self._used(ctx) + self._round_cost(ps, attempt, s, r) + self._reserve(ps, attempt, s) > self.budget:
+            if self._used(ctx) + self._round_cost(ps, attempt, r) > self.budget:
                 self._end(ctx, "budget", r)
                 continue
             if (out := self._draft(ctx, s, r + 1)) is not None:
@@ -937,8 +929,7 @@ class ArgueWorker:
         """The fixed point: one closing Arguer task answers what is still open (budget permitting)."""
         ps = ctx.ps
         open_ = self._answerable(ps, ctx.attempt, s)
-        if open_ and (self._used(ctx) + 1 + len(JUDGE_ROLES) * len(open_) + self._reserve(ps, ctx.attempt, s)
-                      <= self.budget):
+        if open_ and self._used(ctx) + 1 <= self.budget:
             self._draft(ctx, s, r, closing=True)
         self._end(ctx, "fixed_point", r)
 

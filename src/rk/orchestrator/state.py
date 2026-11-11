@@ -11,6 +11,7 @@ from typing import Any
 from rk.discovery.store import intake_of
 from rk.ids import new_id
 from rk.orchestrator.graph import DISCOVERY, PRODUCTION, stages_of
+from rk.roles.policy import JUDGE_ROLES
 from rk.store.events import Event, NewEvent
 from rk.store.project import ProjectStore
 from rk.store.projections import projection
@@ -39,11 +40,16 @@ def record_run_task(ps: ProjectStore, *, task_id: str, run_id: str | None, sessi
 def tasks_used(ps: ProjectStore, run_id: str, session: int | None, stage: str) -> int:
     """Role tasks counted against the stage budget of one run session, those still running or ``interrupted`` by a
     restart included (their call may have used quota). A task that came back ``rate_capped`` made no model call, and
-    one that came back ``session_limited`` did no work (its driver's usage limit was reached): neither is counted."""
+    one that came back ``session_limited`` did no work (its driver's usage limit was reached): neither is counted. Nor
+    is a judge's task (``JUDGE_ROLES``: V-SUPPORT, V-NOVELTY, already-done and the P1 votes): the budget caps the
+    stage's exploration, not the checks of what it produced (your decision, 2026-11-11, after argue spent three run
+    sessions' budgets mostly on judges)."""
+    marks = ", ".join("?" * len(JUDGE_ROLES))
     return ps.db.execute(
         "SELECT COUNT(*) FROM run_tasks r LEFT JOIN tasks t ON t.id = r.task_id WHERE r.run_id=? AND r.session IS ? "
-        "AND r.stage=? AND COALESCE(t.error, '') NOT IN ('rate_capped', 'session_limited')",
-        (run_id, session, stage)).fetchone()[0]
+        f"AND r.stage=? AND COALESCE(t.error, '') NOT IN ('rate_capped', 'session_limited') "
+        f"AND COALESCE(t.role, '') NOT IN ({marks})",
+        (run_id, session, stage, *JUDGE_ROLES)).fetchone()[0]
 
 
 # ---- stage events ----

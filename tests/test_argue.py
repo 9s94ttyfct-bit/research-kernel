@@ -53,7 +53,7 @@ from rk.production.argue import _load as argue_inputs
 from rk.production.extraction import usable_evidence
 from rk.production.models import SynthesisPlan
 from rk.production.synthesis import SynthesizeWorker, _revised, synthesis_claims
-from rk.roles.policy import JUDGE_ROLES, tool_roles
+from rk.roles.policy import tool_roles
 from rk.roles.prompts import build_system_prompt
 from rk.tools import builtin
 from rk.tools.builtin import build_registry
@@ -597,9 +597,9 @@ def test_budget_reached_with_open_priority1_objection_fails_gate(env):
                 "text": f"Problem {len(inputs['argument']['objections'])}."}
 
     ex = _exec([draft(), responses(), responses()], [critique(objections=[objection])] * 3)
-    w = ArgueWorker(budget=8)
+    w = ArgueWorker(budget=3)
     assert w.run(_ctx(env, ex)).status == "done"
-    assert len(ex.calls) <= 8
+    assert len([c for c in ex.calls if not c["role"].startswith("judge")]) <= 3  # the judges' tasks do not count
     (end,) = argue_notes(ps, 1, kind="end")
     assert end["reason"] == "budget"
     g = w.gate(ps, 1)
@@ -753,8 +753,6 @@ def test_p1_synthesis_requests_proceed_without_a_vote_once_the_edge_is_spent(env
     assert (d["decision"], d["by"]) == ("proceed", "kernel") and "argue->synthesize" in d["reason"]
     assert [c["inputs"]["question"] for c in ex.of("judge", "VoteOut")] == [RQ_QUESTION]
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
-    # minor 9: no task is kept for a vote the spent edge will not hold
-    assert w._reserve(ps, 1, argue_inputs(ps)) == len(JUDGE_ROLES)
 
 
 @pytest.mark.parametrize("where", ["first_judge", "rq_vote", "before_the_note"])
@@ -922,7 +920,7 @@ def test_p2_review_skipped_as_hopeless_passes_the_requests_on(env):
     _, ps, _ = env
     _synthesize(env)
     ex = SkepticFails(_exec([draft(needs_synthesis=NEED)]).script)
-    w = ArgueWorker(budget=10)
+    w = ArgueWorker(budget=2)  # an Arguer and a (failed) Skeptic task: no second round
     out = w.run(_ctx(env, ex))
     assert out.status == "done" and "the Skeptic did not review" in out.reason and NEED in out.reason
     g = w.gate(ps, 1)
@@ -1237,15 +1235,20 @@ def test_output_models_forbid_extra_fields_and_dropped_tests_are_noted(env):
     assert crit["tests_dropped"] == [{"edge_id": "edg_unknown", "reason": "not an untested warrant of the argument"}]
 
 
-def test_budget_estimate_counts_the_pending_verifications(env):
+def test_judge_tasks_do_not_count_against_the_budget(env):
+    """Your decision (2026-11-11): the budget caps argue's exploration (the Arguer and the Skeptic), not the judges
+    who check it. Before, three answers needing 3 x 2 V-SUPPORT judges did not fit in 6 tasks after a round of 2: now
+    the second round (an Arguer and a Skeptic task) fits, judges and all."""
     _, ps, _ = env
     _synthesize(env)
     objections = [_o("main", 2, f"Problem {i}.") for i in range(3)]
     ex = _exec([draft(), responses(RESPONSE, RESPONSE, RESPONSE)], [critique(objections=objections), critique()])
-    w = ArgueWorker(budget=15)  # round 1 costs 6; three answers need 2 + 3 x 3 judges more, plus the final vote
+    w = ArgueWorker(budget=4)
     assert w.run(_ctx(env, ex)).status == "done"
-    assert len(ex.of("arguer", "ArgumentDraft")) == 1
-    assert [n["reason"] for n in argue_notes(ps, 1, kind="end")] == ["budget"]
+    assert len(ex.of("arguer", "ArgumentDraft")) == 2 and len(ex.of("skeptic", "Critique")) == 2
+    assert len([c for c in ex.calls if c["role"].startswith("judge")]) > 4  # more judges than the whole budget
+    assert [n["reason"] for n in argue_notes(ps, 1, kind="end")] == ["fixed_point"]
+    assert sum(n.get("tasks") or 0 for n in argue_notes(ps, 1)) == 4  # the notes count the budgeted tasks only
 
 
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
@@ -1400,19 +1403,22 @@ def test_p1_conflict_vote_interrupted_resumes_without_asking_the_skeptic_again(e
 
 class SessionBudget(Exec):
     """``Exec`` that counts each task against the stage budget of run session 1 as ``KernelExecutor`` does: linked to
-    the run (``run.task``) and refused with ``BudgetExceeded`` once the session's tasks reach ``limit``."""
+    the run (``run.task``) and refused with ``BudgetExceeded`` once the session's tasks reach ``limit``; a judge's task
+    is neither refused nor counted (the fake has no ``tasks`` row with its role, so it is not linked)."""
 
     def __init__(self, script, *, ps, run_id: str, limit: int):
         super().__init__(script)
         self.ps, self.run_id, self.limit = ps, run_id, limit
 
     def run(self, role, instructions, inputs, output_schema, **kw):
+        judge = role.startswith("judge")
         used = tasks_used(self.ps, self.run_id, 1, kw["stage"])
-        if used >= self.limit:
+        if not judge and used >= self.limit:
             raise BudgetExceeded(kw["stage"], used, self.limit)
         r = super().run(role, instructions, inputs, output_schema, **kw)
-        record_run_task(self.ps, task_id=r.task_id, run_id=self.run_id, session=1, stage=kw["stage"],
-                        attempt=kw["attempt"])
+        if not judge:
+            record_run_task(self.ps, task_id=r.task_id, run_id=self.run_id, session=1, stage=kw["stage"],
+                            attempt=kw["attempt"])
         return r
 
 
@@ -1427,11 +1433,11 @@ def test_rerun_in_the_same_session_plans_with_the_remaining_session_budget(env):
         record_run_task(ps, task_id=f"tsk_dead{i}", run_id=run_id, session=1, stage="argue", attempt=1)
     ex = SessionBudget(_exec([draft(), responses(), responses(), responses()],
                              [critique(objections=[_o("main", 1, f"Problem {i}.")]) for i in range(4)]).script,
-                       ps=ps, run_id=run_id, limit=20)
-    out = ArgueWorker(budget=20).run(replace(_ctx(env, ex, 2), run_id=run_id))
+                       ps=ps, run_id=run_id, limit=16)  # 10 used + three rounds of an Arguer and a Skeptic task
+    out = ArgueWorker(budget=16).run(replace(_ctx(env, ex, 2), run_id=run_id))
     assert out.status in ("done", "back_edge"), out.reason
     assert [n["reason"] for n in argue_notes(ps, 2, kind="end")] == ["budget"]
-    assert tasks_used(ps, run_id, 1, "argue") <= 20
+    assert tasks_used(ps, run_id, 1, "argue") == 16
 
 
 def test_attempt_resumed_in_a_new_session_gets_the_fresh_session_budget(env):
