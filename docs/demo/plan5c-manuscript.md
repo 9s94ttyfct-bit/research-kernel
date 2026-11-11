@@ -590,17 +590,19 @@ tries gave invalid output and succeeded on their second try; no task failed.
 ### Calibration rerun, fifth resume (2026-11-11): argue passed, draft sent it back, the budget ran out again
 
 The same run, resumed at 12:22:29 UTC (run session 5) by a serve started on 69057c5 (logged HEAD): from that commit a
-judge's task neither counts against the open-stage budget nor is refused by it. argue's 40 budgeted tasks were the
-Arguer's 22 and the Skeptic's 18; the 88 judge tasks (44 each) were not counted. The Writer used 4 tasks in draft. No
-task failed; gpt-6-luna asked twice to retry later (24 s and 5 s).
+judge's task neither counts against the open-stage budget nor is refused by it. Tasks: the Arguer 22 and the Writer 4
+on `anthropic/claude-haiku-5-5`, the Skeptic 18 and the first judge 44 on `openai-codex/gpt-6-luna`, the second judge
+44 on `deepseek-v4.1-flash`. argue's 40 budgeted tasks were the Arguer's and the Skeptic's; the 88 judge tasks were
+not counted. No task failed or was retried.
 
 - **argue, attempts 15–17** (12:22–12:39). The stand-in answered `rerun` twice and allowed argue→argue twice more:
   - attempt 15: the main claim cited an external preprint, not one of the 51 included studies;
   - attempt 16: one objection was open (name the form of substitution); the stand-in gave the main claim's wording;
   - attempt 17 passed at 12:39:23 (12 claims supported, 6 withdrawn). The stand-in withdrew three synthesis findings
-    (workload, recall, "most do not support"). They were listed with `withdraw` as their only answer, because the
-    objections carried onto them were answered by attempt-16 claims outside this attempt's argument. Withdrawn, they
-    left the synthesis for the whole project; only the failure-modes finding stayed supported.
+    (workload, recall, "most do not support"). They were listed with `withdraw` as their only answer: the objections
+    carried onto them were answered by attempt-16 claims outside this attempt's argument (for the third, also by
+    attempt-17 claims that were not supported, and one of its warrants failed unanswered). Withdrawn, they left the
+    synthesis for the whole project; only the failure-modes finding stayed supported.
 - **draft, attempt 2** (12:39–12:40): the first `argue_request` came on the section on recall against human reference
   standards. The stand-in answered `back`, because the included notes hold the recall figures.
 - **argue, attempts 18–19** (12:40–12:44). The Arguer's own check found no recall, workload or design findings in the
@@ -608,15 +610,15 @@ task failed; gpt-6-luna asked twice to retry later (24 s and 5 s).
   Attempt 19 got one Arguer task before the budget ran out at 12:44:59 (`paused_budget`).
 - **The restate reuse applied for the first time:** in attempt 18, round 1, the Arguer's new claim reused the
   supported failure-modes finding by id instead of a copy.
-- **Fixed after this session:** argue's final review now warns, when it lists a synthesis finding, that withdrawing
-  it withdraws it for the project and that a rerun asks the Arguer to answer the objection instead. Triage tasks,
-  like the judges', no longer count against the budget.
+- **Fixed after the run:** argue's final review now warns, when it lists a synthesis finding, that withdrawing
+  it withdraws it for the project, and that a rerun asks the Arguer to answer an objection it left unanswered instead.
+  Triage tasks, like the judges', no longer count against the budget.
 - Other findings, not kernel defects:
   - the Haiku Arguer reused supported findings by id but again left out the response claims to their carried
     objections (attempts 14 and 17);
-  - the gpt-6-luna Skeptic raised the same external counterexample in attempts 15 and 18;
+  - the gpt-6-luna Skeptic raised the same external counterexample in attempts 15, 16 and 18;
   - the judges split on claims with identical text and evidence. Identical claims are merged only when one is
-    already supported: attempt 17 created the "forms of substitution" text four times.
+    already supported: attempt 17 created the "forms of substitution" text five times.
 - Open: the run stays parked at argue attempt 19 with argue→synthesize used 3 of 3 and one supported finding. On the
   researcher's decision, calibration goes on with a fresh project on the same topic.
 
