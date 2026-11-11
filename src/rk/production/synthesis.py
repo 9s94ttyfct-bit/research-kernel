@@ -498,13 +498,14 @@ def _kept_findings(ps: ProjectStore, attempt: int, s: _Inputs) -> tuple[list[tup
     kept, released = [], []
     for cid in synthesis_claims(ps, before):
         c = svc.get_claim(cid)
+        if cid in revised:  # every finding you named that still stands, kept or not: the Arguer writes it again
+            if c["status"] != "withdrawn":
+                released.append(cid)
+            continue
         evidence = svc.list_evidence(cid)
         if (c["status"] != "supported" or c.get("kind") not in get_args(AgentClaimKind) or c.get("contested")
                 or not evidence or any(n not in usable for e in evidence for n in e["note_ids"])
                 or claim_problems(ps, cid)):
-            continue
-        if cid in revised:
-            released.append(cid)
             continue
         kept.append((cid, FindingDraft(
             text=c["text"], kind=c["kind"], scope_limits=c.get("scope_limits") or [],

@@ -57,7 +57,8 @@ The Arguer's synthesis requests are decided there too, never by the Arguer alone
 and also takes ``{"decision": "back", "to": "synthesize", "comment"?, "revise"?}`` and nothing else (with ``claims``
 or ``answers_rq`` it is refused): ``argue->synthesize`` (under its limit; when it has no use left, the review says that
 ``back`` asks you to allow one more) with the requests and your comment as guidance (``synthesis_decision`` ``back``);
-the findings you name in ``revise`` (of ``revisable``) are written again, every other supported one is kept.
+the findings you name in ``revise`` (of ``revisable``; your comment, then required, says how) are written again,
+every other supported one is kept.
 Your claims answer notes ``proceed``; a ``rerun`` notes nothing (the new attempt argues afresh). When the review is not
 asked (no answer can mend the gate), the requests go with the reason and the gate's failures into the rerun's
 guidance. P1: before the RQ vote, the judges vote ``back_to_synthesize`` or ``proceed`` (conservative: ``proceed``,

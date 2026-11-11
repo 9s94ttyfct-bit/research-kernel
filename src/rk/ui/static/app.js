@@ -753,12 +753,19 @@ function backToSynthesizeForm(answer, spent, revisable) {
   const form = el("form", { class: "revise back-synthesize" },
     spent ? el("p", { class: "hint warn back-spent" }, spent) : null,
     kept.field,
-    el("label", { class: "field" }, "Why go back to synthesize (optional; how to write the ticked findings)", why),
+    el("label", { class: "field" }, "Why go back to synthesize (optional; needed when you tick findings: how to write them again)", why),
     el("button", { type: "submit", class: "secondary" }, "Back to synthesize"));
+  why.addEventListener("input", () => why.setCustomValidity(""));
   form.addEventListener("submit", (e) => {
     e.preventDefault();
     const comment = why.value.trim();
-    answer({ decision: "back", to: "synthesize", ...(comment ? { comment } : {}), ...kept.value() });
+    const revise = kept.value();
+    if (revise.revise && !comment) {  // the kernel refuses findings to write again without your comment on how
+      why.setCustomValidity("Say how to write the ticked findings again.");
+      why.reportValidity();
+      return;
+    }
+    answer({ decision: "back", to: "synthesize", ...(comment ? { comment } : {}), ...revise });
   });
   return el("div", { class: "other-answers" }, el("h4", {}, "Or go back to synthesize for what the Arguer asked"), form);
 }
