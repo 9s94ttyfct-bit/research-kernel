@@ -4,7 +4,9 @@ The Plan 5c stages turn a review's argument into an exported manuscript: `draft 
 records the live runs of Task 9:
 - a systematic review (melatonin for delirium), a critical review (large language models as screeners) and a research
   proposal (the melatonin question as a trial), each in P2 with the checkpoints answered. The melatonin review and the
-  proposal exported. The critical review stopped at read_extract on a `stage_blocked` checkpoint, left open.
+  proposal exported. The critical review stopped at read_extract on a `stage_blocked` checkpoint, left open. A
+  calibration rerun on 2026-11-11, on new code, passed read_extract and stopped in synthesize on a kernel defect,
+  since fixed.
 - one P1 project from intake to export, with every checkpoint the mode lets a vote answer voted. It failed at protocol:
   the vote never approved the protocol.
 - the systematic-review reproduction set. All six runs of its third home failed at protocol; the report is
@@ -377,6 +379,75 @@ report, and how far their designs support using a model in place of a second hum
   argue, draft, revise, audit or export.
 - In total the run's Reader finished 252 tasks. All 309 task attempts in the run ran on `anthropic/claude-haiku-5-5`.
   The 12 stand-in answers are in `demo-notes/answers.log`.
+
+### Calibration rerun (2026-11-11): read_extract converged on ad3cbc2, synthesize stopped on a defect
+
+Home `rk-plan5c-critical2`, run `run_01M74GJQV9ZNJJGME0NY3YYDGK`, the same seeded question. It ran on eaecdf8 (record
+fields since b836d14) from 05:16 UTC and on ad3cbc2 from 06:49. Every task ran on `anthropic/claude-haiku-5-5` (283
+task attempts), except the synthesize judges (17 on `openai-codex/gpt-6-luna`, 17 on `deepseek-v4.1-flash`).
+
+- **Protocol**, 2 attempts (05:16–05:19 UTC). Every draft sourced `publication_venue` and `publication_type` from the
+  record (`source: record`). The stand-in asked for the earlier 4 phrase queries (the probe counted 3,629 against the
+  800-record budget). It approved v5 with `record_cap` 800, which froze v6 (probe 768).
+- **search_screen** passed at 05:46:35. It used single screening with 31 Screener-A tasks: 629 records, 73 included
+  at title/abstract (2 not retrieved), 51 at full text (5 read on the abstract alone).
+- **read_extract**, 6 attempts (05:46–06:55). Attempts 1–4 ran on eaecdf8 and attempts 5–6 on ad3cbc2:
+
+  | attempt | read again / kept | verified | not reported | problems | gate failures (studies) |
+  |---|---|---|---|---|---|
+  | 1 | 51 / 0 | 435 | 103 | 23 | 25 (19) |
+  | 2 | 51 / 0 | 428 | 116 | 15 | 17 (13) |
+  | 3 | 51 / 0 | 408 | 111 | 38 | 42 (22) |
+  | 4 | 51 / 0 | 422 | 105 | 34 | 34 (16) |
+  | 5 | 16 / 35 | 438 | 118 | 5 | 6 (4) |
+  | 6 | 4 / 47 | 436 | 125 | 0 | 0: passed at 06:55:06 |
+
+  - The record fields verified in every row: 50/50, 50/50 and 49/49 in attempts 1–3, then 51/51 in each attempt
+    from 4 on.
+  - Every quote failure was in a text field: `quote not verbatim` or an empty quote. The record fields failed only
+    when the Reader left both out ("no value": 2, 2 and 4 in attempts 1–3), and once in attempt 5, where a record
+    value was not what its "Venue: not given" line says.
+  - **On eaecdf8 the attempts did not converge.** Each `read_extract→read_extract` rerun read all 51 studies again,
+    so studies that had passed made new slips. Between attempts, failures were kept / cleared / new: 3/22/14,
+    6/11/36, 7/35/27.
+    - The reruns after attempts 1 and 2 were automatic, since the edge was under its limit.
+    - After attempt 3 the stand-in answered `stage_blocked` with `allow_one_more` and quoting rules.
+    - On ad3cbc2 it answered the next two the same way, each comment naming the remaining failures. The rerun read
+      only the failing studies, and the failures fell from 34 to 6 to 0.
+  - **Values were lost on the re-read.** About 10 values verified earlier came back `not_reported` in attempts 5–6,
+    for example a recall of 0.93 and a `relevant_records_n` of 4545. Not-reported values rose from 105 to 125; the
+    rest of the rise came from former problems. The gate accepts any `not_reported` with a verified quote of the
+    section searched. This is open (see the calibration list).
+- **Fixed on ad3cbc2:**
+  - A rerun after a failed gate reads again only the studies the gate found something against (`rerun_kept`), the
+    way draft keeps its passed sections.
+  - The gate checks that a record value is what its quoted line says. Two contradictions had passed: `preprint`
+    quoting "Publication type: journal article", and "not given (preprint)" quoting "Venue: not given". A record
+    field is `not_reported` only on a "not given" line.
+  - `rk_text_read` ranges and `rk_text_find` snippets start and end on whole words. Quotes cut mid-word ("inment in
+    SR1…") had failed V-QUOTE.
+- **synthesize**, 3 attempts (06:55–07:07). The run stopped on a kernel defect.
+  - The judges rated all but one synthesis claim "partial", for sound reasons: a lower bound no sentence gives, and
+    "most cited" or "minority" wording no sentence supports. One claim in attempt 3 was also V-HEDGE overstated.
+  - The stand-in answered `uncertain_support` claim by claim. Attempt 1 was answered `rerun`, with a fix for each
+    claim, and its comment became attempt 2's guidance. In attempt 2, two claims were withdrawn and two supported.
+  - The answer to attempt 2 was wasted, and attempt 3's checkpoint would have been too. In attempt 2 the Arguer had
+    named one study under an id with a letter dropped; in attempt 3 it left one study out. `_assess` skipped them
+    silently and went on to the claims and their checkpoint. Only the gate, after the stand-in's answer (07:03:12),
+    said "was not assessed".
+  - The checkpoint of attempt 3 (`chk_01M74PVNE9YT0WW4WAM4K3B2ZH`) was left open, with synthesize→synthesize at its
+    limit.
+  - Fixed in 850bfe7: a study the assessment leaves out is asked for once more. If it is still left out, the attempt
+    stops before any claim.
+  - Fixed in 47050dc and 43d7b33, from the review: the gate's narrative checks (the representativeness statement and
+    the SWiM items) had the same flaw. They now run when the narrative comes in, and the narrative is asked for once
+    more. If it still fails, the attempt stops before any claim, and a P2 rerun carries its problems as guidance.
+- Other findings, not kernel defects:
+  - On two long full texts (45k and 101k characters), Haiku marked every text field `not_reported` with an empty
+    quote (`design_support_for_standin` `not_addressed` in each).
+  - Synthesis claims cited record lines ("Publication type: journal article") as evidence of a failure mode.
+  - Screening let in secondary reviews of evaluations. The approved protocol had no exclusion for them, which the
+    stand-in missed. Attempt 1 used a rapid review's median recall as evidence.
 
 ## P1 project: failed at protocol (the vote never approved it)
 
