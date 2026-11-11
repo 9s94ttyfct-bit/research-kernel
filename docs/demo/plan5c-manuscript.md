@@ -449,6 +449,48 @@ task attempts), except the synthesize judges (17 on `openai-codex/gpt-6-luna`, 1
   - Screening let in secondary reviews of evaluations. The approved protocol had no exclusion for them, which the
     stand-in missed. Attempt 1 used a rapid review's median recall as evidence.
 
+### Calibration rerun, continued (2026-11-11): synthesize passed three times, argue paused on its task budget
+
+The same home and run, resumed on 850bfe7 at 07:24 UTC. Tasks from then on: the Arguer 47 on
+`anthropic/claude-haiku-5-5`, the Skeptic 8 and the first judge 40 on `openai-codex/gpt-6-luna` (both through the omp
+auth-gateway), the second judge 39 on `deepseek-v4.1-flash`.
+
+- **synthesize**, attempts 4–8. Attempts 4–6 were `synthesize→synthesize` reruns answered on `uncertain_support`;
+  attempts 7 and 8 came from `argue→synthesize`. It passed at 07:35:48 (attempt 6), 07:41:11 (7) and 07:49:19 (8).
+  - 850bfe7 worked live: in attempt 4 one assessment batch gave 9 of 10 studies, the missing one was asked for again
+    and given (`tsk_01M74QYX9D6276GFC63V6A12HB`, `tsk_01M74QZAJ6QSAT3DCZZKQVE4XG`). Attempts 4–8 each assessed 51/51.
+  - **Judges failed on a gateway rate limit.** The gateway passed Codex's `Codex is at capacity … retry-after-ms=21000`
+    on as a 502; each judge task tried three times within 0.75 s and failed (e.g. `tsk_01M74R1W9HV2S2MHS9Q9WYN8P8`,
+    07:27:13.201–.954). Five claims fell to uncertain for want of opinions.
+  - **Supported findings were lost on every new attempt.** Each attempt wrote its narrative afresh. The high-recall
+    finding was supported in attempts 5 and 7 and came back reworded and over-quantified in 6 and 8, where it was
+    withdrawn, although attempt 6's guidance said "keep that claim exactly".
+
+    | attempt | findings | supported at the end | withdrawn |
+    |---|---|---|---|
+    | 4 | 6 | 0 | 0 (6 uncertain) |
+    | 5 | 5 | 1 | 0 (4 uncertain) |
+    | 6 | 6 | 1 | 5 |
+    | 7 | 7 | 2 | 5 |
+    | 8 | 4 | 3 | 1 |
+- **argue**, 6 attempts (07:35–07:51). Attempts 1 and 4 went back to synthesize for findings the Arguer lacked (recall,
+  failure modes, workload); attempts 2, 3 and 5 reran argue. At 07:51:18 the run paused (`paused_budget`): argue had
+  used its 40 role tasks in the run session. Serve restarts keep the session; `rk run resume` starts a new one.
+- **Fixed after the run:**
+  - c7aa747, 4c8ae13: a reply with a `retry-after-ms` up to 120 s is waited out in the task and tried again; a longer
+    one, or one the last attempt still gives, is a usage limit (the run waits instead of the task failing).
+  - 96135e6, 3a65296: a new synthesize attempt keeps, word for word with their evidence, the findings of the attempt
+    before that still pass the claim gate, are not contested and cite only usable studies. The Arguer writes only the
+    others and releases a kept one only when the guidance asks for a change.
+  - 4b6b23f, 14bc97a: a read_extract rerun reads a study again only for its failing fields; the other fields keep their
+    verified rows (the values lost on re-read above).
+- Other findings, not kernel defects: the Haiku Arguer over-quantifies findings; synthesis claims cited record lines
+  as evidence three more times; argue attempt 1 used secondary reviews as evidence; the gpt-6-luna Skeptic's
+  objections were specific and sound.
+- Open: argue's 40-task budget per run session runs out in one P2 review loop (pause and resume is the workaround);
+  every synthesize attempt assesses all studies again; the omp_gateway driver clips an error body to 500 characters,
+  which can drop a `retry-after-ms`.
+
 ## P1 project: failed at protocol (the vote never approved it)
 
 Home `rk-plan5c-p1`, intake `probiotics for preventing antibiotic-associated diarrhoea in children`, systematic
