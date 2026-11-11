@@ -14,7 +14,13 @@ from rk.llm.drivers import DriverSpec
 from rk.llm.types import TaskResult
 from rk.net.http import HttpError
 from rk.notes import NoteIn, NoteRejected, add_note, list_notes, record_text
-from rk.orchestrator.state import degradations, record_passed, record_ran
+from rk.orchestrator.state import (
+    degradations,
+    record_attempt,
+    record_passed,
+    record_ran,
+    record_reopened,
+)
 from rk.production import store
 from rk.production.audit import quote_note_problem
 from rk.production.extraction import (
@@ -503,3 +509,68 @@ def test_degrade_marks_the_stale_rows_of_a_missing_field(env):
                 "(HttpError: HTTP 503 for https://api.example/works)")
     assert [r["problem"] for r in store.extractions(ps, 1, item_id=b)] == [f"{QUOTE_FAILED}; {excluded}", excluded]
     assert w.gate(ps, 1).ok
+
+
+def test_a_rerun_after_a_failed_gate_reads_only_the_failing_studies(env):
+    """Calibration (critical review rerun, 51 studies): a rerun after a failed gate (``read_extract->read_extract``)
+    reads again only the studies the gate found something against; every other study keeps its extraction, so the
+    attempts converge. A reopen by any other edge reads every study."""
+    _, ps, _ = env
+    ids = _included(env, {"Aspirin A": "full", "Aspirin B": "full"})
+    slip = {"values": [{"field": "n", "value": 100, "quote": "A cohort of 100 elderly people took aspirin daily."},
+                       {"field": "design", "value": "cohort", "quote": "A cohort of 100 people over 80"}]}
+    w = ReadExtractWorker()
+    w.run(_ctx(env, Reader({"Aspirin A": [GOOD], "Aspirin B": [slip]})))
+    record_ran(ps, "read_extract", 1, "done", "", actor="tester")
+    a, b = ids["Aspirin A"], ids["Aspirin B"]
+    assert w.gate(ps, 1).failures == [f'study {b} ("Aspirin B"), field "n": {QUOTE_FAILED}']
+    a_notes = [n["id"] for n in list_notes(ps, a)]
+
+    def attempt(n: int, edge: str, reader: Reader):
+        record_reopened(ps, "read_extract", by_edge=edge, guidance="", actor="tester")
+        record_attempt(ps, "read_extract", n, run_id=None, guidance="", requested=None, actor="tester")
+        out = w.run(_ctx(env, reader, attempt=n))
+        record_ran(ps, "read_extract", n, out.status, out.reason, actor="tester")
+        return out
+
+    rerun = Reader({"Aspirin B": [GOOD]})
+    out = attempt(2, "read_extract->read_extract", rerun)
+    assert rerun.titles() == ["Aspirin B"]
+    assert "1 studies carried over" in out.reason
+    assert {n["item_id"]: n["carried_from"] for n in store.extraction_notes(ps, 2, kind="study")} == {a: 1, b: None}
+    assert [n["id"] for n in list_notes(ps, a)] == a_notes and w.gate(ps, 2).ok
+
+    other = Reader({"Aspirin A": [GOOD], "Aspirin B": [GOOD]})
+    attempt(3, "argue->read_extract", other)
+    assert other.titles() == ["Aspirin A", "Aspirin B"]
+
+
+def test_a_record_value_must_be_what_its_quote_of_the_record_says(env):
+    """Calibration (critical review rerun): a verified quote of the record passed with a value that contradicts it
+    ("preprint" quoting "Publication type: journal article"). A record field's value is what its quoted line says: a
+    category fails when the line names another category of the field and not it; any other value must be in the
+    line. A category the record does not word (here "journal" against "Age Ageing") is not judged."""
+    _, ps, _ = env
+    kind = ExtractionField(name="pub_type", description="Publication type", type="category",
+                           categories=["journal_article", "conference_paper", "preprint"], source="record")
+    venue = ExtractionField(name="venue", description="Venue", type="text", source="record")
+    loose = ExtractionField(name="venue_kind", description="Kind of venue", type="category",
+                            categories=["journal", "preprint"], source="record")
+    ids = _included(env, {"Aspirin A": "full", "Aspirin B": "full"},
+                    a_protocol(extraction_schema=[*a_protocol().extraction_schema, kind, venue, loose]))
+    line = "Publication type: journal article"
+
+    def out(pub_type: str, where: str) -> dict:
+        return {"values": [*GOOD["values"], {"field": "pub_type", "value": pub_type, "quote": line},
+                           {"field": "venue", "value": where, "quote": "Venue: Age Ageing"},
+                           {"field": "venue_kind", "value": "journal", "quote": "Venue: Age Ageing"}]}
+
+    w = ReadExtractWorker()
+    w.run(_ctx(env, Reader({"Aspirin A": [out("preprint", "not given (preprint)")],
+                            "Aspirin B": [out("journal_article", "Age Ageing")]})))
+    a = ids["Aspirin A"]
+    assert w.gate(ps, 1).failures == [
+        (f'study {a} ("Aspirin A"), field "pub_type": its value "preprint" is not what its quote of the record says '
+         f'("{line}")'),
+        (f'study {a} ("Aspirin A"), field "venue": its value "not given (preprint)" is not what its quote of the '
+         'record says ("Venue: Age Ageing")')]
