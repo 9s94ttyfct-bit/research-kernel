@@ -1158,20 +1158,18 @@ def test_a_reason_given_again_is_refused_and_the_refusal_reaches_the_next_round(
 
     def again(inputs):
         (r,) = role(inputs, "reason")
-        return {"reasons": [{"ref": "r1", "claim_id": r, "supports": "main", "warrant": WARRANT}],
-                "responses": [{"objection_id": o["id"], "status": "conceded", "note": "Fair."}
-                              for o in inputs["open_objections"]]}
+        return {"reasons": [{"ref": "r1", "claim_id": r, "supports": "main", "warrant": WARRANT}], "responses": []}
 
-    def last(inputs):
+    def closing(inputs):
         seen["refused"] = inputs.get("refused_last_round")
         return {"responses": [{"objection_id": o["id"], "status": "conceded", "note": "Fair."}
                               for o in inputs["open_objections"]]}
 
-    def vague(text):
-        return lambda i: {"target_id": role(i, "main")[0], "category": "problem", "priority": 2, "text": text}
-
-    ex = _exec([draft(), again, last], [critique(objections=[vague("Vague.")]),
-                                         critique(objections=[vague("Still vague.")]), critique()])
+    vague = {"category": "problem", "priority": 2, "text": "Vague."}
+    # round 2 gives the reason again and leaves the objection open; the Skeptic finds nothing new, so the closing task
+    # (same round) answers it and is told what round 2's answer had refused
+    ex = _exec([draft(), again, closing], [critique(objections=[lambda i: {"target_id": role(i, "main")[0], **vague}]),
+                                           critique()])
     ArgueWorker().run(_ctx(env, ex))
     assert len(ArgumentService(ps).list_edges(type="reason_of")) == 1
     assert seen["refused"] and "already supports" in seen["refused"][0], seen

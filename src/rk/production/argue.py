@@ -218,7 +218,7 @@ DRAFT_TASK = (
 CLOSING_TASK = (
     "The Skeptic found no further weakness. Answer every objection in open_objections, by its id, and only those: "
     "responded (with a claim and its evidence, or a supported claim's id; an earlier_answer did not answer it: write a "
-    "better claim), conceded (a "
+    "better claim; refused_last_round says what of your last answer the kernel refused: do not repeat it), conceded (a "
     "conceded priority-1 objection fails its target claim until the "
     "claim is narrowed or withdrawn, or, on a reason link or its warrant, drops that link), or rejected_invalid with "
     "the reason in note (priority 2 or 3 "
@@ -1021,8 +1021,9 @@ class ArgueWorker:
             inputs["guidance"] = guidance
         # what the kernel refused of the Arguer's last answer: unseen, the Arguer gave the same refused answers round
         # after round (calibration, critical3 attempt 6: 66 answers to objections that were not open, 8 by ids of
-        # claims that were not supported)
-        last = [n for n in argue_notes(ps, attempt) if n["kind"] in ("draft", "closing") and (n.get("round") or 0) < r]
+        # claims that were not supported). A round's draft is asked before it is noted, so the latest note up to round
+        # r is the answer before this task: the previous round's draft, or for the closing task this round's
+        last = [n for n in argue_notes(ps, attempt) if n["kind"] in ("draft", "closing") and (n.get("round") or 0) <= r]
         if last and last[-1].get("refused"):
             inputs["refused_last_round"] = last[-1]["refused"]
         return inputs
