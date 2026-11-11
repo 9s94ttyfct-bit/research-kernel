@@ -21,7 +21,8 @@ class Page(BaseModel):
 
 
 class TextLayer(BaseModel):
-    source_kind: Literal["pdf", "jats", "bioc", "html", "abstract"]  # abstract: in memory only (rk.notes.abstract_layer)
+    # abstract, record: in memory only (rk.notes.abstract_layer, rk.notes.record_layer)
+    source_kind: Literal["pdf", "jats", "bioc", "html", "abstract", "record"]
     pages: list[Page]
     sha256: str
     # Characters of the body (summed over the pages before a place, plus its offset): text appended after it (a JATS

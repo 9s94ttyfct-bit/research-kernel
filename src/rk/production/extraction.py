@@ -18,7 +18,10 @@ failure is recorded on that study, never fatal):
 4. For each value the kernel checks the value against its field (a number, one of the categories, a text; or
    ``"not_reported"``, whose quote shows the section searched) and that it has a quote, then verifies the quote
    (V-QUOTE, ``rk.notes.locate_quote``: a given locator only where it holds the quote) against the text the study is
-   read on: the full text, or the abstract (``against="abstract"``; never for an item with a full text). A verified
+   read on: the full text, or the abstract (``against="abstract"``; never for an item with a full text). A record
+   field (``ExtractionField.source="record"``: where the study was published, its type) is quoted from the study's
+   bibliographic record instead (``against="record"``, ``rk.notes.record_text``, given to the reader as
+   ``study.record``), never from its text, and a text field never from the record. A verified
    quote note of the item with the same text at the same verified position (same snapshot) is linked; else the quote
    is added with ``add_note(kind="quote")``. A value whose quote fails is stored with ``problem="quote not
    verbatim"`` and no note, as is a value that does not fit its field or has no quote (with that problem). A value of
@@ -72,7 +75,15 @@ from rk.canon import canonical_json
 from rk.discovery.boundary import per_item
 from rk.discovery.gaps.retraction import recorded_retraction
 from rk.fulltext import latest_snapshot
-from rk.notes import Locator, NoteIn, NoteRejected, add_note, list_notes, locate_quote
+from rk.notes import (
+    Locator,
+    NoteIn,
+    NoteRejected,
+    add_note,
+    list_notes,
+    locate_quote,
+    record_text,
+)
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.orchestrator.state import record_degraded, stage_row
 from rk.production.models import FULL_TEXT, ExtractionField, Protocol
@@ -112,6 +123,7 @@ SEARCH_SCREEN = "search_screen"
 NO_STUDY = "no included study is left after the retraction check"
 NOT_READ = "not read"
 FULL, ABSTRACT = "full_text", "abstract"  # the text a study is read on
+RECORD = "record"  # the source of a record field (``ExtractionField.source``): the study's bibliographic record
 CHANGED = "the study's full text changed since it was read"
 
 EXTRACT_TASK = (
@@ -120,12 +132,14 @@ EXTRACT_TASK = (
     "no tools: read only the given abstract. For every field give at least one value: field (the field's name), value "
     "(a number for a number field, in its unit; one of the categories for a category field; a short text for a text "
     "field) and quote, a passage copied character for character from the text (from the abstract when the study is "
-    "abstract_only) that shows the value, with the locator rk_text_find gave you when there is one. When the study "
-    f'does not report a field, give the value "{NOT_REPORTED}" with a quote of the section you searched for it (e.g. '
-    "the first sentence of its methods or results). The kernel verifies every quote and rejects a value whose quote "
-    "is not verbatim. Do not save the value quotes yourself; in notes give the ids of the other notes you saved for "
-    "this study with rk_note_add (a paraphrase needs its original passage as source_span). Follow the guidance when "
-    "there is any.")
+    "abstract_only) that shows the value, with the locator rk_text_find gave you when there is one. A field whose "
+    "source is record is about the study's bibliographic record, not its text: quote its value from the study's "
+    "record (copied character for character from it, no locator), e.g. the venue or the publication type line. When "
+    f'the study does not report a field, give the value "{NOT_REPORTED}" with a quote of the section you searched for '
+    "it (e.g. the first sentence of its methods or results; for a record field, a line of its record). The kernel "
+    "verifies every quote and rejects a value whose quote is not verbatim. Do not save the value quotes yourself; in "
+    "notes give the ids of the other notes you saved for this study with rk_note_add (a paraphrase needs its original "
+    "passage as source_span). Follow the guidance when there is any.")
 
 
 class ExtractValue(BaseModel):
@@ -241,6 +255,8 @@ def _paraphrase_ok(n: dict) -> bool:
 def _source_problem(n: dict, study: dict, current: str | None) -> str | None:
     """Why a verified note is not of the text the study was read on (``None``: it is)."""
     against = n["verified"].get("quote", {}).get("against", "text")
+    if against == RECORD:
+        return "its quote was verified against the study's record, not the text the study was read on"
     if study["text"] == ABSTRACT:
         return None if against == "abstract" else "its quote was not verified against the abstract the study was read on"
     if against != "text":
@@ -252,21 +268,27 @@ def _source_problem(n: dict, study: dict, current: str | None) -> str | None:
     return None
 
 
-def _quote_problem(ps: ProjectStore, study: dict, current: str | None, note_id: str) -> str | None:
-    """Why a value's quote note is not usable evidence (``None``: it is)."""
+def _quote_problem(ps: ProjectStore, study: dict, current: str | None, note_id: str,
+                   source: str = "text") -> str | None:
+    """Why a value's quote note is not usable evidence (``None``: it is). A value of a record field (``source``)
+    is quoted from the study's record, any other from the text the study was read on."""
     n = _note_data(ps, note_id)
     if (n is None or n["item_id"] != study["item_id"] or n["kind"] != "quote"
             or not n["verified"].get("quote", {}).get("ok")):
         return "its quote note is not a verified quote of the study"
+    if source == RECORD:
+        ok = n["verified"]["quote"].get("against") == RECORD
+        return None if ok else "its quote was not verified against the study's record (the field's source)"
     return _source_problem(n, study, current)
 
 
-def _field_problem(ps: ProjectStore, study: dict, current: str | None, rows: list[dict]) -> str | None:
+def _field_problem(ps: ProjectStore, study: dict, current: str | None, rows: list[dict],
+                   source: str = "text") -> str | None:
     """Why a field of a study has no value the gate accepts (``None``: it has one)."""
     why = []
     for r in rows:
         if r["problem"] is None and r["note_id"]:
-            p = _quote_problem(ps, study, current, r["note_id"])
+            p = _quote_problem(ps, study, current, r["note_id"], source)
             if p is None:
                 return None
             why.append(p)
@@ -282,7 +304,7 @@ def findings(ps: ProjectStore, attempt: int) -> list[Finding]:
     row = frozen_protocol(ps)
     if row is None:
         return [Finding("protocol", "no frozen protocol")]
-    fields = [f.name for f in Protocol.model_validate(row["body"]).extraction_schema]
+    fields = {f.name: f.source for f in Protocol.model_validate(row["body"]).extraction_schema}
     studies = _studies(ps, attempt)
     excluded, dropped = _degraded(ps, attempt)
     out: list[Finding] = []
@@ -303,8 +325,8 @@ def findings(ps: ProjectStore, attempt: int) -> list[Finding]:
             out.append(Finding("retraction", f"retraction not checked: {err}", iid))
         current = _snapshot_sha(ps, iid) if s["text"] == FULL else None
         values = extractions(ps, attempt, item_id=iid)
-        for f in fields:
-            why = _field_problem(ps, s, current, [v for v in values if v["field"] == f])
+        for f, source in fields.items():
+            why = _field_problem(ps, s, current, [v for v in values if v["field"] == f], source)
             if why is not None:
                 out.append(Finding("field", why, iid, f))
         for nid in s["notes"]:
@@ -446,6 +468,8 @@ def _inputs(ctx: StageContext, protocol: Protocol, rec: dict, kind: str) -> dict
         study["pages"] = len(latest_snapshot(ctx.ps, rec["item_id"])[1].pages)
     out = {"question": protocol.question, "study": study,
            "fields": [f.model_dump(mode="json", exclude_none=True) for f in protocol.extraction_schema]}
+    if any(f.source == RECORD for f in protocol.extraction_schema):
+        study["record"] = record_text(item)  # what a record field's quote is verified against
     if ctx.guidance:
         out["guidance"] = ctx.guidance
     return out
@@ -466,7 +490,7 @@ def _read(ctx: StageContext, protocol: Protocol, rec: dict, kind: str) -> tuple[
     if out is None:
         return [], [f"the reader gave no extraction ({error}), also when asked again"]
     fields = {f.name: f for f in protocol.extraction_schema}
-    against, sufficient = ("text", True) if kind == FULL else ("abstract", False)
+    against, sufficient = ("text", True) if kind == FULL else ("abstract", False)  # a record field: its record
     problems: list[str] = []
     for v in out.values:
         f = fields.get(v.field)
@@ -475,7 +499,7 @@ def _read(ctx: StageContext, protocol: Protocol, rec: dict, kind: str) -> tuple[
             continue
         note_id, problem = None, _value_problem(f, v.value)
         if problem is None:
-            note_id, problem = _quote(ctx, iid, f.name, v, against)
+            note_id, problem = _quote(ctx, iid, f.name, v, RECORD if f.source == RECORD else against)
         add_extraction(ctx.ps, ctx.attempt, iid, f.name, v.value, note_id, sufficient, actor=ctx.actor,
                        problem=problem)
     linked: list[str] = []

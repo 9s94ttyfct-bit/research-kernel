@@ -205,7 +205,10 @@ frozen), `search_screen` (search, deduplication, title/abstract and full-text sc
 - **Reading and extraction (read_extract).** For every study included at full text the retraction status is
   checked (V-RETRACT; a retracted or withdrawn study is flagged, not extracted, and listed for the limitations), then
   the reader extracts each protocol field with a quote the kernel verifies (V-QUOTE, against the full text, or the
-  abstract for a study with no full text: those values carry `sufficient=low`). A value whose quote is not verbatim
+  abstract for a study with no full text: those values carry `sufficient=low`). A field marked `source: record` in
+  the schema (where the study was published, its type) is quoted from the study's bibliographic record instead
+  (title, authors, venue, year, publication type, DOI), which a paper's text rarely states; every other field only
+  from the text, and an effect's numbers never from the record. A value whose quote is not verbatim
   is kept as a problem, never as evidence; a field the study does not report is `not_reported` with a quote of the
   section searched. The gate names each study and field without a verified value; at the edge limit P2 asks
   (`stage_blocked`) and P1 marks those values missing as a limitation. An attempt interrupted by an hourly cap goes

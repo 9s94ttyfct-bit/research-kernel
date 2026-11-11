@@ -37,11 +37,16 @@ class Eligibility(BaseModel):
 
 
 class ExtractionField(BaseModel):
+    """A field the reader extracts from each study. ``source`` is where its value is quoted from: the study's text
+    (``text``: its full text, or its abstract when it has none), or its bibliographic record (``record``: title,
+    authors, venue, year, publication type and DOI, ``rk.notes.record_text``), for what a paper rarely states in its
+    own text, such as where it was published."""
     name: str
     description: str
     type: Literal["text", "number", "category"]
     categories: list[str] | None = None
     unit: str | None = None
+    source: Literal["text", "record"] = "text"
 
     @model_validator(mode="after")
     def _categories_iff_category(self) -> ExtractionField:

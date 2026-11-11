@@ -25,8 +25,9 @@ but P1's vote.
      no open or conceded priority-1 objection, V-STATS of a ``stat_result``; V-HEDGE on the claim).
    - **G-REF:** every cited item's recorded V-REF is ``pass`` (or ``page_metadata_only``) and its V-RETRACT is not
      ``retracted`` or ``withdrawn`` (such a work is never evidence); other flags are warnings.
-   - **G-QUOTE** (notes): every quote note of the project, cited or not, still verifies against the text (or abstract)
-     it was verified against, by read_extract's V-QUOTE (``rk.notes.locate_in_layer``: at its locator).
+   - **G-QUOTE** (notes): every quote note of the project, cited or not, still verifies against the text (or abstract,
+     or bibliographic record) it was verified against, by read_extract's V-QUOTE (``rk.notes.locate_in_layer``: at
+     its locator).
    - **G-DISCLOSE:** ``rk.production.disclosure.disclosure_problems``.
    - **G-PREREG** (systematic and scoping reviews only): ``protocol_prereg_ok``.
    - **V-PRISMA:** where the paper type reports PRISMA, the arithmetic of search_screen's passed attempt
@@ -95,6 +96,7 @@ from rk.notes import (
     abstract_layer,
     list_notes,
     locate_in_layer,
+    record_layer,
 )
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.orchestrator.state import stage_row
@@ -322,13 +324,18 @@ def _verified_in_attempt(ps: ProjectStore, attempt: int) -> set[str]:
 def quote_note_problem(ps: ProjectStore, note: dict) -> str | None:
     """Why a quote note fails V-QUOTE now, read_extract's check again (``rk.notes.locate_in_layer``: its locator counts
     only where it holds the quote): it was never verified, it is malformed (it does not validate as a note), or its
-    text is no longer at its locator in the text it was verified against (its snapshot's text layer, or the item's
-    abstract)."""
+    text is no longer at its locator in the text it was verified against (its snapshot's text layer, the item's
+    abstract or its bibliographic record)."""
     q = (note.get("verified") or {}).get("quote") or {}
     if not q.get("ok"):
         return "it was never verified as a quote (V-QUOTE)"
-    against = "abstract" if q.get("against") == "abstract" or not note.get("snapshot_sha") else "text"
-    if against == "abstract":
+    if q.get("against") == "record":
+        against = "record"
+    else:
+        against = "abstract" if q.get("against") == "abstract" or not note.get("snapshot_sha") else "text"
+    if against == "record":
+        layer = record_layer(Library(ps).get(note["item_id"]))
+    elif against == "abstract":
         layer = abstract_layer(Library(ps).get(note["item_id"]).abstract)
         if layer is None:
             return "the abstract it was verified against is gone"

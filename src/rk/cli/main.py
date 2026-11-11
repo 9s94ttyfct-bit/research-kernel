@@ -1213,7 +1213,8 @@ def extraction_show(item_id: str | None = typer.Argument(None, help="One study (
             for v in s["values"]:
                 note = v["note"] or {}
                 typer.echo(f"  {v['field']} = {v['value']}  [{v['sufficient']}] note {note.get('id')}"
-                           + (" (quote of the abstract)" if note.get("against") == "abstract" else ""))
+                           + {"abstract": " (quote of the abstract)",
+                              "record": " (quote of the bibliographic record)"}.get(note.get("against"), ""))
             for v in s["set_aside"]:
                 typer.echo(f"  not evidence: {v['field']} = {v['value']}: {v['problem']}")
             for p in s["problems"]:

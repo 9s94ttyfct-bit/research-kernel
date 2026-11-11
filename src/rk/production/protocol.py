@@ -128,7 +128,9 @@ DRAFT_TASK = (
     "Draft the review protocol for the frozen research question, its hypotheses and topic, for the intake's paper type "
     "and audience: eligibility (include and exclude criteria, each with a short id and its text), the extraction "
     "schema (each field named, described and typed: text, number or category with its categories, and a unit where "
-    "there is one), the synthesis plan (a meta-analysis, for a systematic review only, with its typed outcomes, "
+    "there is one; source record for a field about the study's bibliographic record, such as where it was published "
+    "or its publication type, which the reader quotes from that record, else text), the synthesis plan (a "
+    "meta-analysis, for a systematic review only, with its typed outcomes, "
     "effect_measure, pool_model, hksj, pi_df and min_studies, the fewest studies with a computable effect a pool "
     "needs, at least 2; a scoping review's plan is an evidence_map; a critical review's or a proposal's is thematic "
     "or narrative_swim, or none) "
@@ -377,6 +379,7 @@ def protocol_prereg_ok(ps: ProjectStore) -> bool:
 def _field_line(f: dict) -> str:
     kind = f["type"] + (": " + " | ".join(f["categories"]) if f.get("categories") else "")
     kind += f", unit {f['unit']}" if f.get("unit") else ""
+    kind += ", from the bibliographic record" if f.get("source") == "record" else ""
     return f"- {f['name']} ({kind}): {f['description']}"
 
 
@@ -415,6 +418,8 @@ def _outcome_problems(plan: SynthesisPlan, schema: dict[str, ExtractionField]) -
                 out.append(f"{say}: {r} -> {f!r} is not a field of the extraction schema")
             elif f is not None and schema[f].type != "number":
                 out.append(f"{say}: {r} -> {f!r} is not a number field")
+            elif f is not None and schema[f].source == "record":
+                out.append(f"{say}: {r} -> {f!r} is a record field; an effect's numbers come from the study's text")
         if not missing:
             fields = frozenset(o.fields[r] for r in roles)
             if fields in sets:

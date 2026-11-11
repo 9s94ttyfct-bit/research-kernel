@@ -16,6 +16,7 @@ from rk.net.http import HttpError
 from rk.notes import NoteIn, NoteRejected, add_note, list_notes
 from rk.orchestrator.state import degradations, record_passed, record_ran
 from rk.production import store
+from rk.production.audit import quote_note_problem
 from rk.production.extraction import (
     CHANGED,
     QUOTE_FAILED,
@@ -24,6 +25,7 @@ from rk.production.extraction import (
     extraction_limitations,
     usable_evidence,
 )
+from rk.production.models import ExtractionField
 from rk.store.events import NewEvent
 from rk.verify.records import record_verification
 from rk.verify.retract import RetractionInfo
@@ -69,12 +71,12 @@ class Reader(ScriptedExecutor):
         return [c["inputs"]["study"]["title"] for c in self.calls]
 
 
-def _included(env, studies: dict[str, str]) -> dict[str, str]:
-    """Freeze the protocol and record ``studies`` (title -> ``"full"``, ``"abstract"``; ``"none"``: no full text and
-    no abstract; ``"gone"``: recorded as retrieved but no full text stored) as included by a passed ``search_screen``
-    attempt 1; returns title -> item id."""
+def _included(env, studies: dict[str, str], protocol=None) -> dict[str, str]:
+    """Freeze the protocol (``a_protocol()`` unless given) and record ``studies`` (title -> ``"full"``,
+    ``"abstract"``; ``"none"``: no full text and no abstract; ``"gone"``: recorded as retrieved but no full text
+    stored) as included by a passed ``search_screen`` attempt 1; returns title -> item id."""
     _, ps, lib = env
-    pid = store.add_protocol(ps, 1, a_protocol(), version=1, actor="tester")
+    pid = store.add_protocol(ps, 1, protocol or a_protocol(), version=1, actor="tester")
     store.freeze_protocol(ps, pid, actor="tester")
     ids = {}
     for i, (title, kind) in enumerate(studies.items()):
@@ -177,6 +179,37 @@ def test_abstract_only_study_is_marked_low_sufficiency(env):  # Review Focus 4
                                             {"field": "design", "value": "cohort", "quote": "in a cohort"}]}]})
     w.run(_ctx(env, ex2, attempt=2))
     assert [r["problem"] for r in store.extractions(ps, 2)] == [QUOTE_FAILED, None]
+
+
+def test_a_record_field_is_quoted_from_the_study_record_and_a_text_field_never(env):
+    """Calibration (critical review, 2026-11-10): the reader quoted the venue it was given as metadata for "where was it
+    published", which no full text states verbatim, so 47 of 63 values failed V-QUOTE on every attempt. A record field
+    is verified against the study's bibliographic record; a text field still only against its text."""
+    _, ps, _ = env
+    venue = ExtractionField(name="venue_kind", description="Where it was published", type="category",
+                            categories=["journal", "preprint"], source="record")
+    ids = _included(env, {"Aspirin A": "full", "Aspirin B": "abstract"},
+                    a_protocol(extraction_schema=[*a_protocol().extraction_schema, venue]))
+    ex = Reader({"Aspirin A": [{"values": [*GOOD["values"],
+                                           {"field": "venue_kind", "value": "journal", "quote": "Venue: Age Ageing"}]}],
+                 "Aspirin B": [{"values": [
+                     {"field": "n", "value": 80, "quote": "80 people over 80"},
+                     {"field": "design", "value": "cohort", "quote": "Publication type: journal article"},
+                     {"field": "venue_kind", "value": "journal", "quote": "in a cohort"}]}]})
+    w = ReadExtractWorker()
+    w.run(_ctx(env, ex))
+    record = ex.calls[0]["inputs"]["study"]["record"]
+    assert "Venue: Age Ageing" in record and "Publication type: journal article" in record
+    rows = {(r["item_id"], r["field"]): r for r in store.extractions(ps, 1)}
+    a = rows[(ids["Aspirin A"], "venue_kind")]
+    assert a["problem"] is None and _note(ps, a["note_id"])["verified"]["quote"]["against"] == "record"
+    assert quote_note_problem(ps, _note(ps, a["note_id"])) is None  # the audit's G-QUOTE re-verifies it
+    # a text field quoted from the record, a record field quoted from the text: neither verifies
+    assert rows[(ids["Aspirin B"], "design")]["problem"] == QUOTE_FAILED
+    assert rows[(ids["Aspirin B"], "venue_kind")]["problem"] == QUOTE_FAILED
+    iid = ids["Aspirin B"]
+    assert w.gate(ps, 1).failures == [f'study {iid} ("Aspirin B"), field "design": {QUOTE_FAILED}',
+                                      f'study {iid} ("Aspirin B"), field "venue_kind": {QUOTE_FAILED}']
 
 
 def test_retracted_study_is_flagged_not_extracted(env):

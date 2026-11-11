@@ -507,7 +507,8 @@ def representativeness_problem(statement: str, k: int) -> str | None:
 def evidence_criteria(ps: ProjectStore, attempt: int, note_ids: list[str]) -> dict:
     """The criteria of an evidence item from the assessments of the studies its notes come from: each criterion's
     lowest score (with that study's reason), except ``sufficient``, judged on the item as a whole: its highest score,
-    capped at 0 ("abstract only") when every note of the item is abstract-sourced (§11.1)."""
+    capped at 0 ("abstract only") when every note of the item that quotes a study's text is abstract-sourced (§11.1;
+    a quote of a study's bibliographic record says nothing about how much of the study was read)."""
     assessed = {a["item_id"]: a["criteria"] for a in synthesis_notes(ps, attempt, kind="assessment")}
     notes = [n for n in (_note_data(ps, i) for i in note_ids) if n is not None]
     studies = [assessed[i] for i in dict.fromkeys(n["item_id"] for n in notes) if i in assessed]
@@ -517,7 +518,8 @@ def evidence_criteria(ps: ProjectStore, attempt: int, note_ids: list[str]) -> di
         if scored:
             pick = max if c == "sufficient" else min
             out[c] = pick(scored, key=lambda x: x["score"])
-    if notes and all(n["verified"].get("quote", {}).get("against") == "abstract" for n in notes):
+    texts = [n for n in notes if n["verified"].get("quote", {}).get("against") != "record"]
+    if texts and all(n["verified"].get("quote", {}).get("against") == "abstract" for n in texts):
         out["sufficient"] = {"score": 0, "reason": ABSTRACT_ONLY}
     return out
 

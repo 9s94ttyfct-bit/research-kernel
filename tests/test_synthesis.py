@@ -683,6 +683,12 @@ def test_meta_analysis_protocol_needs_typed_pool_options():
               "synthesis_plan.outcomes: outcome 'harm': n_treatment -> 'arm' is not a number field",
               "synthesis_plan.outcomes: outcomes 'tuberculosis' and 'death' map to the same fields"):
         assert f in failures, (f, failures)
+    # an effect's numbers come from the study's text, never from its bibliographic record (a record field)
+    rec = [*BINARY, ExtractionField(name="pub_year", description="Year", type="number", source="record")]
+    plan = META.model_copy(update={"outcomes": [OutcomeSpec(name=TB.name, fields={**TB.fields, "n_control": "pub_year"})]})
+    assert (f"synthesis_plan.outcomes: outcome {TB.name!r}: n_control -> 'pub_year' is a record field; an effect's "
+            "numbers come from the study's text") in check_protocol(
+        a_protocol(synthesis_plan=plan, prisma_p=SR_ITEMS, extraction_schema=rec), "systematic_review")
     # a round-2 protocol's plain outcome names still load (with no field mapping), and fail the check
     legacy = SynthesisPlan.model_validate({**META.model_dump(), "outcomes": ["tuberculosis"]})
     assert legacy.outcomes == [OutcomeSpec(name="tuberculosis", fields={})]

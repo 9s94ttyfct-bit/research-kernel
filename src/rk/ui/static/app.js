@@ -292,7 +292,9 @@ function focusNote(box, noteId) {
   q.focus({ preventScroll: true });
 }
 
-const noteLabel = (against) => `Quote note${against === "abstract" ? " (abstract)" : ""}`;
+// What a quote note was verified against, in words (a quote of the full text shows its page instead)
+const AGAINST = { abstract: "abstract", record: "bibliographic record" };
+const noteLabel = (against) => `Quote note${AGAINST[against] ? ` (${AGAINST[against]})` : ""}`;
 
 // The extraction of a study (read_extract): the values that are usable evidence, each linked to its quote note, and
 // apart from them the rows that are no evidence, with their problem. `ex` is the whole extraction: its attempt and
@@ -345,7 +347,7 @@ async function showItem(id, box, noteId = null) {
   el("h2", {}, "Notes"),
   d.notes.length
     ? el("div", {}, d.notes.map((n) => el("blockquote", { class: `note ${n.kind === "quote" && !n.verified?.quote?.ok ? "unverified" : ""}`, "data-note-id": n.id, tabindex: "-1" },
-        n.text, el("div", { class: "hint" }, `${n.kind}${n.verified?.quote?.against === "abstract" ? ", abstract" : n.locator ? `, page ${n.locator.page}` : ""}`))))
+        n.text, el("div", { class: "hint" }, `${n.kind}${AGAINST[n.verified?.quote?.against] ? `, ${AGAINST[n.verified.quote.against]}` : n.locator ? `, page ${n.locator.page}` : ""}`))))
     : el("p", { class: "empty" }, "No notes yet."));
   if (noteId) focusNote(box, noteId);
 }
@@ -568,7 +570,7 @@ async function protocolCard(c, answer) {
     b.extraction_schema.length
       ? el("table", { class: "schema" }, el("thead", {}, el("tr", {}, ["Field", "Type", "Description"].map((h) => el("th", {}, h)))),
           el("tbody", {}, b.extraction_schema.map((f) => el("tr", {}, el("td", {}, f.name),
-            el("td", {}, f.type, f.categories ? `: ${f.categories.join(" | ")}` : "", f.unit ? ` (${f.unit})` : ""), el("td", {}, f.description)))))
+            el("td", {}, f.type, f.categories ? `: ${f.categories.join(" | ")}` : "", f.unit ? ` (${f.unit})` : "", f.source === "record" ? ", from the bibliographic record" : ""), el("td", {}, f.description)))))
       : el("p", { class: "empty" }, "No extraction field."),
     el("h4", {}, "Synthesis plan"),
     plan.length ? facts(plan.map(([k, v]) => [POOL_LABELS[k] ?? label(k), planValue(k, v)])) : el("p", { class: "empty" }, "None."),
@@ -651,7 +653,7 @@ function evidenceList(c) {
   return c.evidence.map((e) => el("div", { class: "evidence" },
     e.notes.map((n) => n.missing ? el("p", { class: "hint bad" }, `Note ${n.id} is missing.`)
       : el("blockquote", { class: `note${n.verified ? "" : " unverified"}` }, n.text,
-        el("div", { class: "hint" }, n.label || n.title || n.item_id, n.against === "abstract" ? " (abstract)" : ""))),
+        el("div", { class: "hint" }, n.label || n.title || n.item_id, AGAINST[n.against] ? ` (${AGAINST[n.against]})` : ""))),
     e.interpretation ? el("p", { class: "hint" }, "How it supports the claim: ", e.interpretation) : null,
     Object.keys(e.criteria).length ? el("p", { class: "hint" }, CRITERIA.filter((k) => e.criteria[k]).map((k) => `${label(k)} ${e.criteria[k].score}/2`).join(" · ")) : null));
 }

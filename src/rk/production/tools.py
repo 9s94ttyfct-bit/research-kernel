@@ -178,7 +178,7 @@ def _titles(ps: ProjectStore) -> dict[str, str]:
 
 def _note(ps: ProjectStore, note_id: str | None) -> dict | None:
     """How an extraction value's note shows: ``against`` is what its quote was verified against (``text``: the full
-    text; ``abstract``)."""
+    text; ``abstract``; ``record``: the study's bibliographic record, a record field's)."""
     r = ps.db.execute("SELECT data FROM notes WHERE id=?", (note_id,)).fetchone() if note_id else None
     if r is None:
         return None

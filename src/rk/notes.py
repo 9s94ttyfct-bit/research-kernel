@@ -38,9 +38,10 @@ class NoteIn(BaseModel):
     role_in_source: RoleInSource | None = None
     keywords: list[str] = Field(default_factory=list)
     source_span: str | None = None
-    # what a quote or paraphrase is verified against: the item's text layer, or its abstract (an item read on its
-    # abstract alone, e.g. a study with no full text); an abstract locator is on page 1 of the abstract
-    against: Literal["text", "abstract"] = "text"
+    # what a quote or paraphrase is verified against: the item's text layer, its abstract (an item read on its
+    # abstract alone, e.g. a study with no full text; an abstract locator is on page 1 of the abstract), or its
+    # bibliographic record (``record_text``; only the kernel's extraction of a record field quotes it)
+    against: Literal["text", "abstract", "record"] = "text"
 
 
 class NoteResult(BaseModel):
@@ -58,7 +59,10 @@ class NoteRejected(Exception):
 
 def _source(ps: ProjectStore, lib: Library, note: NoteIn) -> tuple[str | None, TextLayer]:
     """What a quote or paraphrase is verified against: ``(snapshot sha, text layer)`` of the item's full text, or
-    ``(None, its abstract)``. An item with a full text is never verified against its abstract."""
+    ``(None, its abstract)``, or ``(None, its record)``. An item with a full text is never verified against its
+    abstract."""
+    if note.against == "record":
+        return None, record_layer(lib.get(note.source_id))
     snap = latest_snapshot(ps, note.source_id)
     if note.against == "abstract":
         if snap is not None:
@@ -113,8 +117,8 @@ def add_note(ps: ProjectStore, lib: Library, note: NoteIn, *, actor: str,
             raise ValueError("paraphrase notes need source_span (the original passage)")
         locator, located = locate_in_layer(note, layer)
         verified["quote"] = {"ok": True, "page": locator.page, "located": located}
-        if note.against == "abstract":
-            verified["quote"]["against"] = "abstract"
+        if note.against != "text":
+            verified["quote"]["against"] = note.against
         if note.kind == "paraphrase":
             if verify_quote(note.text, layer).ok:
                 raise NoteRejected("too_close", reason_detail="paraphrase text occurs verbatim in the source")
@@ -144,6 +148,28 @@ def abstract_layer(abstract: str | None) -> TextLayer | None:
     if not (abstract or "").strip():
         return None
     return TextLayer(source_kind="abstract", pages=[Page(n=1, text=abstract)], sha256=sha256_hex(abstract))
+
+
+ITEM_TYPE_WORDS = {"journalArticle": "journal article", "preprint": "preprint", "book": "book",
+                   "bookSection": "book section", "conferencePaper": "conference paper", "thesis": "thesis",
+                   "report": "report", "dataset": "dataset", "webpage": "web page"}
+
+
+def record_text(item) -> str:
+    """An item's bibliographic record as the reader is shown it and its record quotes are verified against: one line
+    each for its title, authors, venue, year, publication type and DOI (a line only when the record has it). These
+    fields of an item never change once it is added (``rk.library.models.UPDATABLE_FIELDS``)."""
+    authors = "; ".join(", ".join(x for x in (c.family, c.given) if x) for c in item.creators)
+    lines = [("Title", item.title), ("Authors", authors), ("Venue", item.venue),
+             ("Year", str(item.year) if item.year is not None else None),
+             ("Publication type", ITEM_TYPE_WORDS.get(item.item_type, item.item_type)), ("DOI", item.ids.doi)]
+    return "\n".join(f"{k}: {v}" for k, v in lines if v)
+
+
+def record_layer(item) -> TextLayer:
+    """An item's bibliographic record (``record_text``) as a one-page text layer, in memory only."""
+    text = record_text(item)
+    return TextLayer(source_kind="record", pages=[Page(n=1, text=text)], sha256=sha256_hex(text))
 
 
 def list_notes(ps: ProjectStore, source_id: str | None = None) -> list[dict]:
