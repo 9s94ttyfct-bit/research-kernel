@@ -28,6 +28,7 @@ from rk.production.extraction import (
     QUOTE_FAILED,
     READER_TOOLS,
     ReadExtractWorker,
+    _record_value_problem,
     extraction_limitations,
     usable_evidence,
 )
@@ -556,7 +557,7 @@ def test_a_record_value_must_be_what_its_quote_of_the_record_says(env):
     venue = ExtractionField(name="venue", description="Venue", type="text", source="record")
     loose = ExtractionField(name="venue_kind", description="Kind of venue", type="category",
                             categories=["journal", "preprint"], source="record")
-    ids = _included(env, {"Aspirin A": "full", "Aspirin B": "full"},
+    ids = _included(env, {"Aspirin A": "full", "Aspirin B": "full", "Aspirin C": "full"},
                     a_protocol(extraction_schema=[*a_protocol().extraction_schema, kind, venue, loose]))
     line = "Publication type: journal article"
 
@@ -567,10 +568,14 @@ def test_a_record_value_must_be_what_its_quote_of_the_record_says(env):
 
     w = ReadExtractWorker()
     w.run(_ctx(env, Reader({"Aspirin A": [out("preprint", "not given (preprint)")],
-                            "Aspirin B": [out("journal_article", "Age Ageing")]})))
-    a = ids["Aspirin A"]
+                            "Aspirin B": [out("journal_article", "Age Ageing")],
+                            "Aspirin C": [out("journal_article", "not_reported")]})))
+    a, c = ids["Aspirin A"], ids["Aspirin C"]
     assert w.gate(ps, 1).failures == [
         (f'study {a} ("Aspirin A"), field "pub_type": its value "preprint" is not what its quote of the record says '
          f'("{line}")'),
         (f'study {a} ("Aspirin A"), field "venue": its value "not given (preprint)" is not what its quote of the '
-         'record says ("Venue: Age Ageing")')]
+         'record says ("Venue: Age Ageing")'),
+        (f'study {c} ("Aspirin C"), field "venue": it is "not_reported", but its quote of the record gives one '
+         '("Venue: Age Ageing")')]
+    assert _record_value_problem(venue, "not_reported", "Venue: not given") is None  # the record has none

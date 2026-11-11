@@ -297,13 +297,14 @@ def _words(text) -> str:
 
 def _record_value_problem(field: ExtractionField, value, quote: str) -> str | None:
     """Why a record field's value is not what its quoted line of the record says (``None``: it is, or the record does
-    not word it): a category fails when the line names another category of the field and not the value; any other
-    value must be in the line."""
+    not word it): ``not_reported`` needs a line the record gives nothing on (``not given``); a category fails when the
+    line names another category of the field and not the value; any other value must be in the line."""
+    said = _words(quote.split(":", 1)[-1])
     if value == NOT_REPORTED:
-        return None
+        return None if said == _words("not given") else (
+            f'it is "{NOT_REPORTED}", but its quote of the record gives one ("{quote.strip()}")')
     if isinstance(value, float) and value.is_integer():
         value = int(value)
-    said = _words(quote.split(":", 1)[-1])
     if _words(value) in said:
         return None
     if field.type == "category" and not any(_words(c) in said for c in field.categories or [] if c != value):
