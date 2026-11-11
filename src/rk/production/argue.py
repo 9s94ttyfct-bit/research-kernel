@@ -22,7 +22,8 @@ One round:
    request is part of the stored round (its ``draft`` note: ``synthesis_requests``) and the rounds go on with the
    findings the Arguer has (its main claim narrowed to what they support, what is missing stated as a limitation); the
    end check decides whether synthesize runs again (below). A failed self-check: the P1 RQ vote or your final review
-   decides (without a main claim, the stage reruns with it, and any synthesis request, as guidance).
+   decides. A round 1 without its self-check or without a main claim is asked for once more, naming what it lacked; a
+   second time, the stage reruns with that (and any synthesis request) as guidance.
 2. **Skeptic** (``Critique``; the codex vendor by default, with search tools that may add sources): objections on
    claims, evidence or edges of the argument (a cited source must be in the library, else it is dropped from the
    objection and noted), the tests of every untested warrant (a failed test becomes a priority-1 ``soundness``
@@ -1025,29 +1026,38 @@ class ArgueWorker:
         cctx, counter = _counted(ctx)
         ps, attempt = ctx.ps, ctx.attempt
         kind = "closing" if closing else "draft"
-        res = cctx.executor.run(ROLE, CLOSING_TASK if closing else DRAFT_TASK,
-                                self._inputs(ps, attempt, s, r, ctx.guidance), ArgumentDraft, stage=ctx.stage,
-                                attempt=attempt, tools=[])
-        if not res.ok or res.output is None:
-            if r == 1 and not closing:
-                return StageOutcome("rerun", reason=f"the arguer gave no argument ({res.error})")
-            _note(ps, attempt, kind, actor=ctx.actor, round=r, error=res.error or "no output", claim_ids=[],
-                  tasks=counter.n, synthesis_attempt=s.synth_attempt)
-            return None
-        d, vendor = res.output, vendor_of(res.provider, res.model)
-        need = "" if closing else d.needs_synthesis.strip()
-        if not closing and r == 1:
-            asked = f"; it asked synthesize for: {need}" if need else ""
+        why = ""  # what round 1's answer lacked: asked for once more naming it (a format slip costs no rerun)
+        for asked_twice in (False, True):
+            guidance = ctx.guidance
+            if asked_twice:
+                guidance = "\n\n".join(filter(None, [guidance, (f"Your argument was not accepted: {why}. Give it "
+                                                                "again with this fixed.")]))
+            res = cctx.executor.run(ROLE, CLOSING_TASK if closing else DRAFT_TASK,
+                                    self._inputs(ps, attempt, s, r, guidance), ArgumentDraft, stage=ctx.stage,
+                                    attempt=attempt, tools=[])
+            if not res.ok or res.output is None:
+                if r == 1 and not closing:
+                    return StageOutcome("rerun", reason=f"the arguer gave no argument ({res.error})")
+                _note(ps, attempt, kind, actor=ctx.actor, round=r, error=res.error or "no output", claim_ids=[],
+                      tasks=counter.n, synthesis_attempt=s.synth_attempt)
+                return None
+            d, vendor = res.output, vendor_of(res.provider, res.model)
+            need = "" if closing else d.needs_synthesis.strip()
+            if closing or r != 1:
+                break
             if d.answers_rq is None:
-                return StageOutcome("rerun", reason="the arguer gave no answers_rq self-check" + asked)
-            if d.main_claim is None:
+                why = "the arguer gave no answers_rq self-check"
+            elif d.main_claim is None:
                 why = "the arguer gave no main claim"
                 if not d.answers_rq.ok:  # the self-check is the next draft's guidance, not a back-edge (I5)
-                    why += (f"; its self-check says the research question is not answered: "
-                            f"{d.answers_rq.reason}")
-                return StageOutcome("rerun", reason=why + asked)
-            # a failed self-check is an input only: round 1 is stored and the rounds go on; the P1 RQ vote or your
-            # final review decides whether the project goes back to question (I5)
+                    why += f"; its self-check says the research question is not answered: {d.answers_rq.reason}"
+            else:
+                break
+        else:
+            asked = f"; it asked synthesize for: {need}" if need else ""
+            return StageOutcome("rerun", reason=f"{why} (asked twice){asked}")
+        # a failed self-check is an input only: round 1 is stored and the rounds go on; the P1 RQ vote or your final
+        # review decides whether the project goes back to question (I5)
         fields = self._store(cctx, s, d, vendor, r, closing=closing)
         # noted before verifying: a round interrupted while its claims are verified resumes with the verification.
         # needs_synthesis is an input too, part of the stored round: the rounds go on, and the P1 vote or your review

@@ -612,7 +612,7 @@ def test_failed_self_check_in_p2_reaches_your_final_review(env):
 def test_failed_self_check_without_a_main_claim_reruns_with_it_as_guidance(env):
     _, ps, _ = env
     _synthesize(env)
-    out = ArgueWorker().run(_ctx(env, _exec([lambda inputs: {"answers_rq": NOT_ANSWERED}])))
+    out = ArgueWorker().run(_ctx(env, _exec([lambda inputs: {"answers_rq": NOT_ANSWERED}] * 2)))  # asked once more
     assert out.status == "rerun" and "It is about trials, not timing." in out.reason
     assert not _claims(ps) and not argue_notes(ps, 1, kind="back_edge")
 
@@ -651,8 +651,9 @@ def test_needs_synthesis_is_noted_and_the_rounds_go_on(env):
 def test_needs_synthesis_without_a_main_claim_reruns_with_the_request(env):
     _, ps, _ = env
     _synthesize(env)
-    out = ArgueWorker().run(_ctx(env, _exec([lambda inputs: {"answers_rq": SELF_CHECK, "needs_synthesis": NEED}])))
-    assert out.status == "rerun" and NEED in out.reason
+    no_main = {"answers_rq": SELF_CHECK, "needs_synthesis": NEED}
+    out = ArgueWorker().run(_ctx(env, _exec([lambda inputs: no_main] * 2)))  # asked once more, still none: a rerun
+    assert out.status == "rerun" and NEED in out.reason and "no main claim (asked twice)" in out.reason
     assert not argue_notes(ps, 1, kind="back_edge")
 
 
@@ -1931,3 +1932,19 @@ def test_objections_answered_by_an_in_scope_finding_are_carried_into_the_new_att
 
 def _claim_text(ps, cid: str) -> str:
     return ArgumentService(ps).get_claim(cid)["text"]
+
+
+def test_a_round_1_without_its_self_check_is_asked_again_not_rerun(env):
+    """Calibration (critical review rerun, argue attempt 8): a sound argument whose output lacked answers_rq cost a
+    whole argue->argue rerun. Round 1 is asked once more naming what it lacked; only a second slip reruns."""
+    _, ps, _ = env
+    _synthesize(env)
+    ex = _exec([draft(answers=None), draft()], [critique()])
+    assert ArgueWorker().run(_ctx(env, ex)).status == "done"
+    first, again = ex.of("arguer", "ArgumentDraft")[:2]
+    assert "guidance" not in first["inputs"] and "no answers_rq self-check" in again["inputs"]["guidance"]
+    (d,) = argue_notes(ps, 1, kind="draft")
+    assert d["answers_rq"] == SELF_CHECK
+    ex2 = _exec([draft(answers=None), draft(answers=None)], [critique()])
+    out = ArgueWorker().run(_ctx(env, ex2, 2))
+    assert (out.status, out.reason) == ("rerun", "the arguer gave no answers_rq self-check (asked twice)")
