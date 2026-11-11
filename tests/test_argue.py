@@ -652,7 +652,8 @@ def test_needs_synthesis_without_a_main_claim_reruns_with_the_request(env):
     _, ps, _ = env
     _synthesize(env)
     no_main = {"answers_rq": SELF_CHECK, "needs_synthesis": NEED}
-    out = ArgueWorker().run(_ctx(env, _exec([lambda inputs: no_main] * 2)))  # asked once more, still none: a rerun
+    # asked once more, still no main claim: a rerun, with the request even though only the first answer made it
+    out = ArgueWorker().run(_ctx(env, _exec([lambda inputs: no_main, lambda inputs: {"answers_rq": SELF_CHECK}])))
     assert out.status == "rerun" and NEED in out.reason and "no main claim (asked twice)" in out.reason
     assert not argue_notes(ps, 1, kind="back_edge")
 

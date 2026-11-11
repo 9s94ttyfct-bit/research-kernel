@@ -1027,6 +1027,7 @@ class ArgueWorker:
         ps, attempt = ctx.ps, ctx.attempt
         kind = "closing" if closing else "draft"
         why = ""  # what round 1's answer lacked: asked for once more naming it (a format slip costs no rerun)
+        asks: list[str] = []  # the synthesis requests of the answers asked for, kept for the rerun's guidance
         for asked_twice in (False, True):
             guidance = ctx.guidance
             if asked_twice:
@@ -1037,12 +1038,15 @@ class ArgueWorker:
                                     attempt=attempt, tools=[])
             if not res.ok or res.output is None:
                 if r == 1 and not closing:
-                    return StageOutcome("rerun", reason=f"the arguer gave no argument ({res.error})")
+                    before = f"; before that, {why}" if why else ""
+                    return StageOutcome("rerun", reason=f"the arguer gave no argument ({res.error}){before}")
                 _note(ps, attempt, kind, actor=ctx.actor, round=r, error=res.error or "no output", claim_ids=[],
                       tasks=counter.n, synthesis_attempt=s.synth_attempt)
                 return None
             d, vendor = res.output, vendor_of(res.provider, res.model)
             need = "" if closing else d.needs_synthesis.strip()
+            if need:
+                asks.append(need)
             if closing or r != 1:
                 break
             if d.answers_rq is None:
@@ -1054,7 +1058,7 @@ class ArgueWorker:
             else:
                 break
         else:
-            asked = f"; it asked synthesize for: {need}" if need else ""
+            asked = f"; it asked synthesize for: {'; '.join(dict.fromkeys(asks))}" if asks else ""
             return StageOutcome("rerun", reason=f"{why} (asked twice){asked}")
         # a failed self-check is an input only: round 1 is stored and the rounds go on; the P1 RQ vote or your final
         # review decides whether the project goes back to question (I5)
