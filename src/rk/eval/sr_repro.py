@@ -536,9 +536,13 @@ def score(ps: ProjectStore, entry: Entry, *, ctx: StageContext | None = None) ->
 
 # ---- runs (rk serve) --------------------------------------------------------------------------------------------
 def run_or_continue(kernel, runs: RunManager, entry: Entry, *, actor: str) -> dict:
-    """Seed the entry's project if needed, then run it until ``export``: start a run when none is active (a failed
-    or cancelled one is replaced), resume a paused one (or give a run back its thread after ``rk serve``
-    restarted); a run in progress is left to go on; an exported project runs no more."""
+    """Seed the entry's project if needed, then run it until ``export``: start a run when none is active (a cancelled
+    one is replaced), resume a paused one (or give a run back its thread after ``rk serve`` restarted); a run in
+    progress is left to go on; an exported project runs no more. A failed run is the entry's result and is not
+    replaced: the back-edge limits count per project, so a new run would start with them already spent (one more vote
+    at most where the old run failed at an edge limit). ``rk run resume`` on the project would also start a new run
+    with only the back-edges the project has left (enough after a failure that spent none, such as a source that kept
+    failing or a crash); to reproduce an entry with its full limits, start from a fresh RK_HOME."""
     slug = slug_of(entry)
     try:
         kernel.project(slug)
@@ -547,8 +551,12 @@ def run_or_continue(kernel, runs: RunManager, entry: Entry, *, actor: str) -> di
         new = True
     ps = seed_project(kernel, entry, actor=actor)
     export = stage_row(ps, "export")
+    last = latest_run(ps)
     if export is not None and export["status"] == "passed":
-        action, run = "exported", latest_run(ps)
+        action, run = "exported", last
+    elif active_run(ps) is None and last is not None and last["status"] == "failed":
+        action, run = (f"its run failed ({last['reason'] or 'no reason recorded'}); not started again (`rk run resume "
+                       f"--project {slug}` starts a new run with the back-edges the project has left)"), last
     elif active_run(ps) is None:
         runs.start(slug, "export", actor=actor)
         action, run = "started a run until export", latest_run(ps)
@@ -582,7 +590,7 @@ def register_sr_repro_tools(tool: Callable, kernel, runs: Callable[[], RunManage
 
     @tool("rk_sr_repro_run", "Reproduce one review of the systematic-review reproduction set (spec §10): seed its "
           "project srrepro-<id> (its question frozen as the RQ) if needed, then run it until export, or continue its "
-          "run. Needs rk serve's orchestrator.", SrReproArg, True)
+          "run; a failed run is reported, not started again. Needs rk serve's orchestrator.", SrReproArg, True)
     def _run(ctx: CallContext, a: SrReproArg) -> dict:
         entry = entry_of(a.entry)
         m = runs()

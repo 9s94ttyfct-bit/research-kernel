@@ -27,7 +27,9 @@ from rk.orchestrator.state import (
     record_attempt,
     record_passed,
     record_ran,
+    record_run_status,
     stage_row,
+    start_run,
 )
 from rk.production import store
 from rk.production.argue import main_claim
@@ -224,6 +226,38 @@ def test_seeded_project_starts_at_protocol_with_frozen_rq(kernel):
                                 production_mode="auto"), actor="tester", actor_kind="human")
     with pytest.raises(ValueError):
         sr.seed_project(kernel, _entry("not-seeded"))
+
+
+class RecordingRuns:
+    """A RunManager stand-in that records ``start`` and ``resume``."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, str]] = []
+
+    def start(self, slug, until, *, actor):
+        self.calls.append(("start", slug))
+
+    def resume(self, slug, *, actor):
+        self.calls.append(("resume", slug))
+
+
+def test_a_failed_run_is_reported_not_replaced(kernel):
+    """Calibration (srrepro3, 2026-11-11): back-edge limits count per project, so a run started in place of a failed
+    one began with protocol->protocol already spent and failed after one vote. A failed run is the entry's result."""
+    entry = _entry()
+    ps = sr.seed_project(kernel, entry)
+    run_id = start_run(ps, until="export", actor="tester", clock=lambda: 0.0)
+    record_run_status(ps, run_id, "failed", reason="the protocol was not approved at the edge limit", actor="tester",
+                      clock=lambda: 1.0)
+    runs = RecordingRuns()
+    out = sr.run_or_continue(kernel, runs, entry, actor="tester")
+    assert runs.calls == []
+    assert (out["run_id"], out["run_status"]) == (run_id, "failed")
+    assert out["action"].startswith("its run failed (the protocol was not approved at the edge limit)")
+    # a cancelled run (your decision, not the run's result) is still started again
+    record_run_status(ps, run_id, "cancelled", actor="tester", clock=lambda: 2.0)
+    sr.run_or_continue(kernel, runs, entry, actor="tester")
+    assert runs.calls == [("start", sr.slug_of(entry))]
 
 
 # ---- the eval command -------------------------------------------------------------------------------------------

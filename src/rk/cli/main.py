@@ -870,7 +870,9 @@ def eval_sr_repro(entry: str | None = typer.Option(None, "--entry", help="One re
     """The systematic-review reproduction set (spec §10): seed each review's project srrepro-<id> in rk serve (its
     question frozen as the RQ), run it until export or continue its run, and score it: recall of the review's
     included studies, whether the main conclusion's direction agrees (the judges' vote) and the hard gates. Runs go
-    on in rk serve: run this again to follow them and to score."""
+    on in rk serve: run this again to follow them and to score. A failed run is the entry's result and is not started
+    again (the back-edge limits count per project): ``rk run resume`` on its project starts a new run with the
+    back-edges the project has left; reproduce the entry with its full limits from a fresh RK_HOME."""
     from rk.eval.sr_repro import load_manifest, report_row
     from rk.eval.sr_repro import write_report as write
 

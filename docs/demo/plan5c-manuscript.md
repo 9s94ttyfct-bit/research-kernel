@@ -476,4 +476,6 @@ The third home (`rk-plan5c-srrepro3`) ran as an `rk serve` named service.
   - the synthesis mixes risk ratios with a bivariate sensitivity/specificity model.
 - `rk eval sr-repro` resumes paused runs and starts a fresh run in place of a failed one, and `--write-report` does
   the same. The report was therefore written by scoring each project (`rk_sr_repro_score`) and
-  `rk.eval.sr_repro.write_report`, without starting runs.
+  `rk.eval.sr_repro.write_report`, without starting runs. Fixed after this run: `rk eval sr-repro` no longer
+  replaces a failed run; it reports it as the entry's result (a new run would start with the back-edge limits
+  already spent).
