@@ -78,7 +78,9 @@ def run_task(kernel, registry, *, project: str, role: str, instructions: str, in
 
     token = None
     if prov.kind == "agentic_cli" and granted:
-        token = kernel.tokens.issue_task(task_id, role, project, granted, ttl_s=timeout_s * MAX_ATTEMPTS + 60)
+        # the attempts and the transient waits between them (retry-after-ms) at most
+        ttl = timeout_s * MAX_ATTEMPTS + (MAX_ATTEMPTS - 1) * RETRY_WAIT_MAX_S + 60
+        token = kernel.tokens.issue_task(task_id, role, project, granted, ttl_s=ttl)
     ctx = RunContext(kernel=kernel, registry=registry, task_token=token, actor=f"{role}@{spec_driver}")
     cap = settings.calls_per_hour.get(spec_driver.provider)
     result: TaskResult | None = None

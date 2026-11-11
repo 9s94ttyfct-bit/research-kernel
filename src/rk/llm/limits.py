@@ -18,7 +18,11 @@ The wording, as the drivers give it (the CLIs' checked against their binaries):
   3:04 PM`` when not today; local time), ``... try again in 2 hours 5 minutes.``, and ``Usage limit reached. You've
   reached your usage limit.``
 - a chat API (``http_limit``): an HTTP 429, with its ``Retry-After`` or a body in the wording above (e.g. Ollama's
-  ``you have reached your monthly usage limit``).
+  ``you have reached your monthly usage limit``);
+- a gateway (``retry_after``): a transient rate limit in another status with a ``retry-after-ms=<ms>`` (the omp
+  auth-gateway gives Codex's ``Codex is at capacity`` as a 502). ``run_task`` waits it out in the task when it is no
+  longer than ``RETRY_WAIT_MAX_S`` and tries again; a longer one, or one the last attempt still gives, is a usage
+  limit.
 
 A reset time is read in the zone the reply names, else in local time. A reset time that already passed (the reply is
 stale: a time up to ``PASSED_S`` ago, a past date with its year, or one without a year less than ``ROLLOVER_S`` ago)

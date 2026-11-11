@@ -46,7 +46,9 @@ class TaskResult:
     error: str | None
     tool_calls: int = 0
     session_id: str | None = None
-    wait_s: float | None = None  # with error SESSION_LIMITED (rk.llm.limits): seconds until the usage limit resets
+    # with error SESSION_LIMITED (rk.llm.limits): seconds until the usage limit resets; on an attempt run_task tries
+    # again, the transient wait a gateway asked for (retry-after-ms)
+    wait_s: float | None = None
 
 
 @dataclass
