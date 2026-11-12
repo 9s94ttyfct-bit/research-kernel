@@ -182,6 +182,8 @@ def test_disclosure_names_each_objection_the_manuscript_cites(env):
     (line,) = [s for s in parse_section(md) if oid in s.text]
     assert source in line.text and "not checked against" in line.text
     assert _evt(ps, "objection.added", oid) in {m.target for m in line.markers}
+    verdict = section_verdict(ps, "disclosure", md, paper_type="critical_review")  # the line verifies too
+    assert verdict.ok, [p for v in verdict.sentences for p in v.problems] + verdict.problems
     write_disclosure(ps, attempt=1, paper_type="critical_review", actor="tester")
     assert _g_disclose(ps) == []
     cut = md[:md.index(line.text)] + md[md.index(line.text) + len(line.text):].lstrip("\n")
