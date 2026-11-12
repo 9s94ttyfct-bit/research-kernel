@@ -1,7 +1,9 @@
 """The protocol stage: the Ideator drafts the review protocol (eligibility, extraction schema, synthesis plan and, for a
 systematic review, the PRISMA-P items) for the frozen RQ, the Scout its search strategy; the kernel builds the
 ``Protocol`` (the question is the frozen RQ's) with the facts only it knows (``with_kernel_facts``: the admin PRISMA-P
-items of a systematic or scoping review, ``KERNEL_PRISMA_P``, and the language exclusion ``E-lang``), stores it as the
+items of a systematic or scoping review, ``KERNEL_PRISMA_P``: registration, amendments, support and competing
+interests, and the language exclusion ``E-lang``; the rendered protocol adds the search execution,
+``search_execution_lines``, with the publication years written out), stores it as the
 next version, checks it (``check_strategy``, ``check_protocol``), sizes the strategy (the record-cap probe:
 ``sources.count`` per query on each counted source of the strategy within its publication years, summed and stored
 as ``protocol.probed``) and then:

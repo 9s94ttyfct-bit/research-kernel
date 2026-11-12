@@ -183,9 +183,17 @@ frozen), `search_screen` (search, deduplication, title/abstract and full-text sc
   attempt (up to `protocol_tries`, default 3, versions; only the role whose part failed is asked), and a probe above
   the record cap sends the strategy back to the Scout to narrow, with the counts (up to `protocol_narrow_tries`,
   default 3, tries; a strategy that does not lower the total is a failed try); the version with the lowest total goes
-  on. In P2 you approve, revise or go back in a `protocol_approval` checkpoint (a revise, like checks still failing
-  after the tries, reruns the stage and uses one of its two reruns); in P1 a two-vendor vote
-  approves or asks for a revision. Approving freezes the protocol (`frozen_hash`, the sha256 of its canonical JSON);
+  on. The kernel writes what only it knows: the administrative PRISMA-P items (registration, amendments, support,
+  competing interests), the language exclusion `E-lang` and the search execution (publication years written out,
+  each query sent verbatim to each source); the checks also reject placeholders, a missing PRISMA-P item of a
+  systematic review, prose naming sources or searches the strategy does not have, missing outcomes or study
+  identifier field, a meta-analysis of diagnostic accuracy, unbalanced or AND/OR-mixed queries, and a redraft that
+  drops a PRISMA-P item. In P2 you approve, revise or go back in a `protocol_approval` checkpoint (a revise, like
+  checks still failing after the tries, reruns the stage and uses one of its two reruns); in P1 a two-vendor vote
+  approves or asks for a revision, and a version still above the record cap is not voted on. P1 judges answer with
+  numbered points (blocking or advisory) kept in a ledger; the next draft answers each open point (changed or
+  rebutted), only the judge that raised a point closes it, and an approve with an open blocking point of the
+  judge's own counts as revise. Approving freezes the protocol (`frozen_hash`, the sha256 of its canonical JSON);
   only you set the record cap (default 3000), with the approval. A frozen protocol is never edited: a later frozen
   version records a deviation from it. For systematic and scoping reviews the freeze counts as preregistration
   (G-PREREG); critical reviews and proposals freeze for traceability and need only the question, search and

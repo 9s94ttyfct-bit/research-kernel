@@ -630,3 +630,22 @@ One row per opinion (sorted by home, project, attempt). Class per category is in
 | 87 | R3/tfa | 2 | deepseek | revise | prisma_p.admin_missing [B1+B2]; prisma_p.methods_missing [B1]; eligibility.internal_conflict [C]; extraction.unit_conversion [C] |
 | 88 | R3/tfa | 3 | openai | revise | prisma_p.placeholder [B1]; synthesis.multiplicity [C] |
 | 89 | R3/tfa | 3 | deepseek | revise | prisma_p.internal_note [B1]; prisma_p.placeholder [B1] |
+
+## What was built (2026-11-12)
+
+Branch `p1-protocol` (commits after 9f8fc1a). Mapping of the rules above to the code (`rk.production.protocol`, `rk.production.vote`):
+
+| rule | what the branch does |
+|---|---|
+| R1a, R3 | `with_kernel_facts` writes the PRISMA-P items `registration`, `amendments`, `support` and `competing_interests` (`KERNEL_PRISMA_P`, systematic and scoping reviews) and the exclusion `E-lang`; the Ideator's versions under those keys are replaced. |
+| R1b/c | `check_protocol` requires every PRISMA-P item of a systematic review (`PRISMA_P_TEXT`) and rejects placeholders in the Ideator's texts ("to be reported/recorded" passes only as a deferral). The kernel's own text is not checked. |
+| R2 | Partly: P1 does not vote on a version whose probe is above the record cap; the stage reruns with the cap as its reason (P2 still opens the approval, probe shown). "Every count a number" is not implemented. |
+| R4 | `search_execution_lines`: publication years written out, each query sent verbatim to each source, search log, deduplication, cap after deduplication, language rule; shown to the judges and on the approval card. |
+| R5 | PRISMA-P texts may name only the strategy's sources and may not promise searches the kernel does not run; narrowing keeps the sources the PRISMA-P texts name. |
+| R6 | A systematic review needs outcomes (unique names); outcomes are checked and shown for narrative plans too; no meta-analysis of diagnostic accuracy. |
+| R7 | Queries must balance parentheses and not mix AND and OR at one depth; a systematic review's extraction schema needs a study identifier field. |
+| R8 | `dropped_prisma_p`: a redraft may not drop a PRISMA-P item of the previous draft, except a placeholder item or one an open point asks to change. |
+| §5.1 | Judges get `render_protocol`, `changes` since the version voted on before, the open points with the authors' answers, and `KERNEL_RULES`. |
+| §5.3, §7 | Point ledger (`points_ledger`): ids `p{attempt}.{role}.{n}`, blocking or advisory, closed only by the judge that raised it; a revise with no open blocking point of its own gets a synthesized point from its reason; scoped to the current cycle (status `open`, `resolved` or `retired`, flag `live`); answers (`PointAnswer`) stored with the version's `tried`, not in the body. Effective choice only tightens: an approve with an own open blocking point counts as revise; unanimity, the edge limit and `protocol_tries` are unchanged. |
+
+Still open: the DTA detector can fire on pharmacokinetic AUC and on "salt sensitivity"; the placeholder rule has no lookahead for when/if/before/after phrasings; narrowing matches kept sources by id, not by display name; stripping old guidance depends on the wording of `_revise_reason`; R2's complete-probe rule (every count a number) is not implemented.
