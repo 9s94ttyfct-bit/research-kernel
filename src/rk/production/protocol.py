@@ -18,13 +18,14 @@ points (``ProtocolVoteOut``: section, fault, change, blocking or advisory) and m
 resolved or not; the kernel numbers them ``p{attempt}.{role}.{n}`` (``points_ledger``, derived from the events, so a
 point survives an edge-limit failure and a new run). A judge whose effective choice is revise but who leaves no
 blocking point of its own open (a reason only, or advisory points only) gets one more blocking point built from its
-reason (section ``other``), so the next attempt always has what to answer. A point's status is ``open``,
-``resolved`` (the latest mark of its own judge says so; only its own judge closes it) or ``retired``: a point is live
-only while its vote was on a version of the current frozen research question and came after the latest protocol
-freeze and the latest reopening of ``protocol`` by another edge than ``protocol->protocol`` (the scope of
-``_previous_draft``); a retired point is kept for the record but never served, never tightens a vote and never
-exempts a dropped PRISMA-P item. The judges see the version rendered (``render_protocol``), what changed since the
-version voted on before (``changes``), every open point with the authors' answers, and the kernel's rules sheet
+reason (section ``other``), so the next attempt always has what to answer. A point is live (``live``) only while its
+vote was on a version of the current frozen research question and came after the latest protocol freeze and the
+latest reopening of ``protocol`` by another edge than ``protocol->protocol`` (the scope of ``_previous_draft``). Its
+status is ``open``, ``resolved`` (the latest mark of its own judge in its cycle says so; only its own judge closes it;
+it stays resolved when its cycle ends) or ``retired`` (it was open when its cycle ended): a retired point is kept for
+the record but never served, never tightens a vote and never exempts a dropped PRISMA-P item. The judges see the
+version rendered (``render_protocol``), what changed since the version voted on before (``changes``), every open
+point with the authors' answers, and the kernel's rules sheet
 (``KERNEL_RULES``). The vote's policy, changed on purpose: a judge answers approve when none of its blocking points is
 open, so a protocol may freeze with advisory points open (they are retired at the freeze); the kernel only tightens,
 never loosens: an approve with an open blocking point of the judge's own (new, earlier and not marked resolved, or
@@ -394,18 +395,22 @@ def _boundaries(ps: ProjectStore) -> list[int]:
 
 def points_ledger(ps: ProjectStore) -> list[dict]:
     """Every point of every protocol vote of the project, in order, each ``{id, attempt, role, vendor, section, fault,
-    change, blocking, status, answers, marks}``. A point's id is ``p{attempt}.{role}.{n}``, ``n`` counting the judge's
-    points of that vote from 1. ``marks``: every later judge's mark on it (``{attempt, role, resolved, why}``).
+    change, blocking, status, live, answers, marks}``. A point's id is ``p{attempt}.{role}.{n}``, ``n`` counting the
+    judge's points of that vote from 1. ``marks``: every later judge's mark on it (``{attempt, role, resolved, why}``).
     ``answers``: the Ideator's and the Scout's (``_answers``). Derived from the events only, so a point survives an
     edge-limit failure and a new run (no reopening is recorded there).
 
+    ``live`` (controller ruling, fix round 2): the point belongs to the current cycle: its vote was on a version of the
+    current frozen research question and came after the latest protocol freeze and the latest reopening of
+    ``protocol`` by another edge than ``protocol->protocol`` (``_boundaries``; the scope of ``_previous_draft``). Only
+    a mark in the point's own cycle changes its status.
+
     ``status`` is one of three (the brief's open|resolved widened by controller ruling, fix round 1):
-    - ``retired``: the point is out of scope. A point is live only while its vote was on a version of the current
-      frozen research question and came after the latest protocol freeze and the latest reopening of ``protocol`` by
-      another edge than ``protocol->protocol`` (``_boundaries``; the scope of ``_previous_draft``). A retired point
-      is never served, never tightens a vote and never exempts a dropped item; it stays for the record.
-    - ``resolved``: live, and the latest mark by its own judge (``role``) says so; another judge's mark closes nothing.
-    - ``open``: live and not resolved.
+    - ``open``: live, and not resolved.
+    - ``resolved``: the latest mark by its own judge (``role``) in its cycle says so; another judge's mark closes
+      nothing. A resolved point stays resolved when its cycle ends.
+    - ``retired``: it was open when its cycle ended. A retired point is never served, never tightens a vote and never
+      exempts a dropped item; it stays for the record.
 
     A judge whose effective choice is revise but who leaves no blocking point of its own open (no new one, and every
     earlier live one resolved: only a reason, or only advisory points) gets one more point built from its reason,
@@ -426,7 +431,7 @@ def points_ledger(ps: ProjectStore) -> list[dict]:
                 if (p := points.get(m["point_id"])) is not None:
                     p["marks"].append({"attempt": v["attempt"], "role": role, "resolved": m["resolved"],
                                        "why": m.get("why", "")})
-                    if p["role"] == role:
+                    if p["role"] == role and p["_cycle"] == cycle:  # a later cycle's mark changes nothing
                         p["status"] = "resolved" if m["resolved"] else "open"
             given = [*(o.get("points") or [])]
             for n, point in enumerate(given, 1):
@@ -442,7 +447,8 @@ def points_ledger(ps: ProjectStore) -> list[dict]:
                                "section": "other", "fault": why, "change": why, "blocking": True, "status": "open",
                                "answers": answers.get(pid, []), "marks": [], "_cycle": cycle}
     for p in points.values():
-        if p.pop("_cycle") != current:
+        p["live"] = p.pop("_cycle") == current
+        if not p["live"] and p["status"] == "open":
             p["status"] = "retired"
     return list(points.values())
 
@@ -455,12 +461,12 @@ def _open_points(ps: ProjectStore) -> list[dict]:
 
 def _own_open_blocking(ledger: list[dict], role: str, out: ProtocolVoteOut, attempt: int) -> list[str]:
     """The ids of the judge's (``role``) blocking points still open after its answer ``out``: its earlier open ones
-    it did not mark resolved, its earlier resolved ones it marks unresolved again, and its new ones (numbered as
-    ``points_ledger`` numbers them). A retired point counts for nothing."""
+    it did not mark resolved, its earlier live resolved ones it marks unresolved again, and its new ones (numbered as
+    ``points_ledger`` numbers them). A retired point, or a resolved one of an earlier cycle, counts for nothing."""
     marks = {m.point_id: m.resolved for m in out.resolved}
     earlier = [p["id"] for p in ledger if p["role"] == role and p["blocking"]
                and ((p["status"] == "open" and marks.get(p["id"]) is not True)
-                    or (p["status"] == "resolved" and marks.get(p["id"]) is False))]
+                    or (p["live"] and p["status"] == "resolved" and marks.get(p["id"]) is False))]
     return earlier + [f"p{attempt}.{role}.{n}" for n, p in enumerate(out.points, 1) if p.blocking]
 
 

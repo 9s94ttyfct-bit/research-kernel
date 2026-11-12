@@ -200,7 +200,7 @@ def test_a_point_closes_only_by_its_judge(env):
     (point,) = points_ledger(ps)
     assert (point["role"], point["section"], point["blocking"]) == ("judge", "eligibility", True)
     assert point["marks"][-1] == {"attempt": 3, "role": "judge", "resolved": True, "why": "answered"}
-    assert point["status"] == "retired"  # the freeze ends its cycle
+    assert point["status"] == "resolved"  # closed by its judge; the freeze does not change that
 
 
 def test_approve_with_an_open_blocking_point_counts_as_revise(env):
@@ -228,7 +228,7 @@ def test_approve_with_an_open_blocking_point_counts_as_revise(env):
     (row,) = store.protocols(ps, 3)
     assert store.frozen_protocol(ps)["id"] == row["id"]
     assert _ids(ps, "open") == []  # advisory points stay in the ledger, retired at the freeze
-    assert _ids(ps, "retired") == ["p1.judge.1", "p3.judge.1", "p3.judge_2.1"]
+    assert _ids(ps, "retired") == ["p3.judge.1", "p3.judge_2.1"] and _ids(ps, "resolved") == ["p1.judge.1"]
 
 
 def test_other_votes_unchanged(env):
@@ -354,3 +354,24 @@ def test_a_narrowing_keeps_the_scout_answers_it_does_not_repeat(env):
     tried = next(e.payload["tried"] for e in ps.log.iter() if e.type == "protocol.added" and e.entity_id == voted["id"])
     assert {a["point_id"]: a["note"] for a in tried["answers"]} == {
         "p1.judge_2.1": "narrowed: dropped query 1", "p1.judge_2.2": "p1.judge_2.2: see eligibility E2"}
+
+
+def test_an_old_cycle_point_marked_unresolved_does_not_tighten_a_current_vote(env):
+    """judge's point, resolved in the cycle a freeze ended, is marked unresolved in a later cycle's vote: it is not
+    live, so the approve stands, and the point stays resolved."""
+    _, ps, _ = env
+    ex = _executor(drafts=[_draft(), _draft("p1.judge.1"), _draft()], strategies=[_strategy()] * 3,
+                   judge=[_opinion("revise", [_point()]), _opinion("approve", resolved=[("p1.judge.1", True)]),
+                          _opinion("approve", resolved=[("p1.judge.1", False)])],
+                   judge_2=[_opinion("approve"), _opinion("approve"), _opinion("approve")])
+    w = ProtocolWorker()
+    assert w.run(_ctx(env, ex)).status == "rerun"
+    assert w.run(_ctx(env, ex, attempt=2)).status == "done"
+    out = w.run(_ctx(env, ex, attempt=3))  # a later cycle (after the freeze)
+    assert out.status == "done", out.reason
+    (row,) = store.protocols(ps, 3)
+    assert store.frozen_protocol(ps)["id"] == row["id"]
+    (v,) = votes_on(ps, "protocol", row["id"])
+    assert "effective" not in v["opinions"][0]
+    (point,) = points_ledger(ps)
+    assert (point["id"], point["status"], point["live"]) == ("p1.judge.1", "resolved", False)
