@@ -708,15 +708,43 @@ def test_a_final_review_request_splits_into_its_points():
     assert request_points("Please:\n1. Name the audience.\n2) Shorten theme-2.\n") == [
         "Please: 1. Name the audience.", "Please: 2) Shorten theme-2."]
     assert request_points("- Name the audience\n- Shorten theme-2") == ["- Name the audience", "- Shorten theme-2"]
+    # the researcher's comment comes after the edge's "final_review: revise: ": its first point follows the colon
+    p2 = "final_review: revise:"
+    assert request_points(f"{p2} 1. Name the audience.\n2. Shorten theme-2.") == [
+        f"{p2} 1. Name the audience.", f"{p2} 2. Shorten theme-2."]
+    assert request_points(f"{p2} - a\n- b\n- c") == [f"{p2} - a", f"{p2} - b", f"{p2} - c"]
+    # a nested bullet stays in its point
+    assert request_points("Points:\n- Discussion:\n  - add limitation X\n  - cite Y\n- Abstract: shorten") == [
+        "Points: - Discussion: - add limitation X - cite Y", "Points: - Abstract: shorten"]
     for one in ("final_review: revise: Say who the audience is.", "Fix (1) the table.",
-                "See version 2. Then (3) it.", "Results (2) and (3) disagree."):
-        assert request_points(one) == [one], one
+                "See version 2. Then (3) it.", "Results (2) and (3) disagree.",
+                "final_review: revise: Equations (1) and (2) use different notation; fix the derivation.",
+                "The ratio: 1.5 at most.\n2. Then the rest."):
+        assert request_points(one) == [one.replace("\n", " ")], one
     # the P1 judges' reasons, one per line: numbering at a line start wins over a reason's own inline numbering
     p1 = ("the judges did not approve the manuscript (P1 vote):\n(1) judge (openai): (1) theme-6 repeats. (2) Fix it."
           "\n(2) judge_2 (deepseek): the conclusion overreaches.")
     assert request_points(p1) == [
         "the judges did not approve the manuscript (P1 vote): (1) judge (openai): (1) theme-6 repeats. (2) Fix it.",
         "the judges did not approve the manuscript (P1 vote): (2) judge_2 (deepseek): the conclusion overreaches."]
+
+
+def test_each_p1_judge_reason_is_one_point_whatever_its_own_lines():
+    """Review of the split: a judge's reason written as its own multi-line list took its items as the request's points,
+    and the next judge's reason was merged into one of them. Several judges: one point per judge; one judge: its own
+    points."""
+    from rk.production.audit import judges_reasons
+    from rk.production.revise import request_points
+
+    head = "the judges did not approve the manuscript (P1 vote):"
+    two = [{"role": "judge", "vendor": "openai", "reason": "Issues:\n1. foo\n2. bar\n3. baz"},
+           {"role": "judge_2", "vendor": "ds", "reason": "qux"}]
+    assert request_points(f"{head} {judges_reasons(two)}") == [
+        f"{head} (1) judge (openai): Issues: 1. foo 2. bar 3. baz", f"{head} (2) judge_2 (ds): qux"]
+    one = [{"role": "judge", "vendor": "openai", "reason": "1. foo\n2. bar"}, {"role": "judge_2", "vendor": "ds",
+                                                                               "reason": ""}]
+    assert request_points(f"{head} {judges_reasons(one)}") == [
+        f"{head} judge (openai): 1. foo", f"{head} judge (openai): 2. bar"]
 
 
 def test_each_point_of_a_final_review_request_needs_its_own_answer(env):
@@ -745,13 +773,19 @@ def test_each_point_of_a_final_review_request_needs_its_own_answer(env):
 
 def test_a_revised_answer_whose_revision_changed_nothing_does_not_settle(env):
     """Calibration (critical3, revise attempt 3): theme-2 answered the request "revised" with its text unchanged, and
-    that counted. An accepted revision whose text is its version's own settles no question it answers "revised"."""
+    that counted. An accepted revision whose text is its version's own settles no question it answers "revised"; nor
+    does one that only lays the same text out differently (review of the fix: a dropped trailing newline or extra
+    blank lines made a no-op count as a change)."""
     from rk.production.tools import revise_view
 
     _, ps, _ = env
     _drafted(env)
     save_settings(load_settings().model_copy(update={"revise_max_rounds": 1}))
-    ex = _exec([ask(("introduction", 1))], [revision(how="revised", note="clarified")])
+    def same_text_other_whitespace(inputs):
+        out = revision(how="revised", note="clarified")(inputs)
+        return {**out, "markdown": out["markdown"].rstrip("\n").replace("\n\n", "\n\n\n")}
+
+    ex = _exec([ask(("introduction", 1))], [same_text_other_whitespace])
     w = ReviseWorker()
     assert _done(w.run(_ctx(env, ex)))
     (decided,) = revise_notes(ps, 1, kind="decided")

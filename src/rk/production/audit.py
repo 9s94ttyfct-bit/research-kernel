@@ -495,6 +495,18 @@ def _load(ps: ProjectStore) -> _Inputs | str:
     return _Inputs(d)
 
 
+def judges_reasons(opinions: list[dict]) -> str:
+    """The P1 judges' not-approved reasons as the request revise splits into points
+    (``rk.production.revise.request_points``): one judge's reason as written, its own points each a point; several
+    judges' reasons each on its own numbered line, made one line, so that each judge's reason is one point however it
+    is laid out (review of the split: a judge's multi-line list took over the numbering and swallowed the next judge's
+    reason)."""
+    reasons = [(f"{o['role']} ({o['vendor']})", o["reason"]) for o in opinions if o["reason"]]
+    if len(reasons) == 1:
+        return f"{reasons[0][0]}: {reasons[0][1]}"
+    return "".join(f"\n({n}) {who}: {' '.join(r.split())}" for n, (who, r) in enumerate(reasons, 1))
+
+
 class AuditWorker:
     # An interrupted attempt runs again in place (rk.orchestrator.engine): ``run`` goes on from the attempt's notes and
     # the stored state (see the module docstring); nothing noted is looked up, voted on or written twice, and an item
@@ -655,9 +667,7 @@ class AuditWorker:
                       "audit_report": report}
             res = vote(ctx, KIND, f"{STAGE}:{ctx.attempt}", VOTE_QUESTION, [APPROVE, NOT_APPROVED], NOT_APPROVED,
                        inputs, generator_vendors=self._generators(ctx, s), reuse=True)
-            reasons = [f"{o['role']} ({o['vendor']}): {o['reason']}" for o in res.opinions if o["reason"]]
-            # one per numbered line, so that revise asks each judge's reason as its own question
-            why = reasons[0] if len(reasons) == 1 else "".join(f"\n({n}) {r}" for n, r in enumerate(reasons, 1))
+            why = judges_reasons(res.opinions)
             v = _note(ps, ctx.attempt, "vote", actor=ctx.actor, vote_id=res.id, decision=res.decision, reason=why,
                       conservative_used=res.conservative_used, vote_reason=res.reason)
         if v["decision"] == APPROVE:

@@ -67,11 +67,11 @@ not asked again but is decided and, when accepted, stored (once, with its verdic
 now.
 
 The gate: every priority-1 question of the attempt is ``revised`` or ``answered`` in an accepted revision, with a note
-(``declined`` is for priority 2–3 only; ``revised`` from a revision whose text is its version's own answers nothing;
-of the answers to a question on the whole manuscript, one that resolves it counts), unless P1's degrade deleted its
-sentence; the latest version of every required
-section verifies and is balanced, checked afresh; the manuscript as a whole passes ``manuscript_problems``. A failing
-gate reruns the stage. P1 at an edge limit (``degrade``, spec §5.3 delete-or-narrow) deletes from the latest versions
+(``declined`` is for priority 2–3 only; ``revised`` from a revision whose text is its version's own, whitespace aside,
+answers nothing; of the answers to a question on the whole manuscript, one that resolves it counts), unless P1's
+degrade deleted its sentence; the latest version of every required section verifies and is balanced, checked afresh;
+the manuscript as a whole passes ``manuscript_problems``. A failing gate reruns the stage. P1 at an edge limit
+(``degrade``, spec §5.3 delete-or-narrow) deletes from the latest versions
 the sentences that cannot verify (draft's rule, ``deletable``) and the sentence each unresolved priority-1 question is
 about, stores what is left as new versions (stage ``revise``, round 0, no Writer task) and records the deleted
 sentences and those questions (``stage.degraded``), which the gate then accepts; it fails the run, naming the cause,
@@ -223,8 +223,8 @@ def revise_notes(ps: ProjectStore, attempt: int, *, kind: str | None = None) -> 
     revision's task, its answers with the repair's own in place of those to the same questions, and ``ignored``
     repairs), ``no_repair`` (a rejected revision ``of`` that task the budget left no repair for: ``used``, ``needed``,
     ``budget``), ``decided`` (the decision on that revision: ``accepted``, ``reasons``, ``broken`` (what the manuscript
-    as a whole lost), ``unchanged`` with its ``version`` when its text is that version's, ``verdict``, ``sentences``,
-    ``reverified``) and ``back_edge`` (``to``, ``reason``)."""
+    as a whole lost), ``unchanged`` with its ``version`` when its text is that version's (whitespace aside),
+    ``verdict``, ``sentences``, ``reverified``) and ``back_edge`` (``to``, ``reason``)."""
     rows = ps.db.execute(f"SELECT payload FROM events WHERE type='{NOTED}' "
                          "AND json_extract(payload, '$.attempt')=? ORDER BY seq", (attempt,))
     notes = [json.loads(r["payload"]) for r in rows]
@@ -411,33 +411,43 @@ def _review_request(ps: ProjectStore, attempt: int) -> str | None:
     return (p.get("guidance") or "").strip() or None
 
 
-# A point of a request: numbered at a line start ("(N)", "N." or "N)"); numbered anywhere ("(N)" after a space, or the
-# line-start forms); a bullet ("-", "*", "•") at a line start.
-_AT_LINE = re.compile(r"(?m:^)[ \t]*(?:\((\d{1,2})\)|(\d{1,2})[.)])(?=\s)")
-_NUMBERED = re.compile(r"(?:(?<=\s)|^)\((\d{1,2})\)(?=\s)|(?m:^)[ \t]*(\d{1,2})[.)](?=\s)")
-_BULLET = re.compile(r"(?m:^)[ \t]*[-*•](?=\s)")
+# Where a point may start: a line start, or right after a colon (the edge's "final_review: revise: " puts the
+# researcher's first point there). A point: numbered there ("(N)", "N." or "N)"); else numbered anywhere ("(N)" after
+# a full stop, colon, semicolon or comma, not a reference such as "Equations (1) and (2)", or the forms above); else a
+# bullet ("-", "*", "•") there, indented like the first (a nested bullet stays in its point).
+_LEAD = r"(?:(?m:^)([ \t]*)|(?<=:)[ \t]+)"
+_AT_LINE = re.compile(rf"{_LEAD}(?:\((\d{{1,2}})\)|(\d{{1,2}})[.)])(?=\s)")
+_NUMBERED = re.compile(rf"(?:(?<=[.:;,])\s+|(?m:^)[ \t]*)\((\d{{1,2}})\)(?=\s)|{_LEAD}(\d{{1,2}})[.)](?=\s)")
+_BULLET = re.compile(rf"{_LEAD}[-*•](?=\s)")
 
 
 def _numbered(pattern: re.Pattern, text: str) -> list[int]:
     """Where the points numbered 1, 2, … in order start (another number is part of a point)."""
     starts: list[int] = []
     for m in pattern.finditer(text):
-        if int(m[1] or m[2]) == len(starts) + 1:
+        if int(next(g for g in m.groups() if g and g.isdigit())) == len(starts) + 1:  # the other group: an indent
             starts.append(m.start())
     return starts
 
 
+def _bullets(text: str) -> list[int]:
+    """Where the bulleted points start: the bullets indented like the first (one after a colon: not indented)."""
+    found = [(m.start(), m[1] or "") for m in _BULLET.finditer(text)]
+    return [a for a, indent in found if indent == found[0][1]] if found else []
+
+
 def request_points(text: str) -> list[str]:
-    """The final review's request as its points: two or more points numbered from 1 in order at line starts (``(1)``,
-    ``1.``, ``1)``; a point's own inline numbering stays in it: the P1 judges' reasons are one per line), else anywhere
-    (``(1)`` inline too), else two or more bulleted lines, each with what precedes the first point as its context;
-    else the whole request. Whitespace is collapsed. Calibration (critical3, final review 1): a three-point request was
-    one question, and one section's answer to one point settled all three."""
+    """The final review's request as its points: two or more points numbered from 1 in order at line starts or right
+    after a colon (``(1)``, ``1.``, ``1)``; a point's own inline numbering stays in it: the P1 judges' reasons are one
+    per line), else anywhere (``(1)`` inline too, after a full stop, colon, semicolon or comma), else two or more
+    bulleted lines (nested bullets stay in their point), each with what precedes the first point as its context; else
+    the whole request. Whitespace is collapsed. Calibration (critical3, final review 1): a three-point request was one
+    question, and one section's answer to one point settled all three."""
     starts = _numbered(_AT_LINE, text)
     if len(starts) < 2:
         starts = _numbered(_NUMBERED, text)
     if len(starts) < 2:
-        starts = [m.start() for m in _BULLET.finditer(text)]
+        starts = _bullets(text)
     flat = lambda s: " ".join(s.split())
     if len(starts) < 2:
         return [flat(text)]
@@ -525,12 +535,12 @@ class ReviseWorker:
     @staticmethod
     def _carry(ctx: StageContext) -> None:
         """Record this attempt's round 0 (once): the previous attempt's unresolved priority-1 questions and, when the
-        final review reopened revise (``audit->revise``), its request as a priority-1 question on the whole manuscript
-        (section ``MANUSCRIPT``, no sentence). A question whose sentence is gone from its section because draft wrote
-        the section afresh after it was asked (``revise->draft``) is not carried: nothing could answer it in the text
-        or delete it, so it is noted (``carry_dropped``, with the reason) instead. One whose sentence a revision
-        rewrote is carried. The round-0 note is written last (empty when every question was dropped), so a resume
-        after the ``carry_dropped`` note still carries the others."""
+        final review reopened revise (``audit->revise``), its request as priority-1 questions on the whole manuscript
+        (section ``MANUSCRIPT``, no sentence), one per point (``request_points``). A question whose sentence is gone
+        from its section because draft wrote the section afresh after it was asked (``revise->draft``) is not carried:
+        nothing could answer it in the text or delete it, so it is noted (``carry_dropped``, with the reason) instead.
+        One whose sentence a revision rewrote is carried. The round-0 note is written last (empty when every question
+        was dropped), so a resume after the ``carry_dropped`` note still carries the others."""
         ps, attempt = ctx.ps, ctx.attempt
         if _recorded(ps, attempt, "questions", 0) is not None:
             return
@@ -782,7 +792,7 @@ class ReviseWorker:
         broken = [p for p in manuscript_problems(ps, s.draft, {**texts, section: rev["markdown"]}) if p not in before]
         reasons = [*(version_failures(rev["markdown"], c["verdict"]) if not c["verdict"]["ok"] else []), *broken]
         ok = not reasons
-        unchanged = ok and rev["markdown"] == draft_text(ps, section, rev["version"])
+        unchanged = ok and rev["markdown"].split() == draft_text(ps, section, rev["version"]).split()  # layout aside
         return _note(ps, attempt, "decided", actor=ctx.actor, **fields, accepted=ok, reasons=reasons, broken=broken,
                      unchanged=unchanged, version=rev["version"] if unchanged else None, **c)
 
