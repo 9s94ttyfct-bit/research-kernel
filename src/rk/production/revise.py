@@ -67,7 +67,7 @@ not asked again but is decided and, when accepted, stored (once, with its verdic
 now.
 
 The gate: every priority-1 question of the attempt is ``revised`` or ``answered`` in an accepted revision, with a note
-(``declined`` is for priority 2–3 only; ``revised`` from a revision whose text is its version's own, whitespace aside,
+(``declined`` is for priority 2–3 only; ``revised`` from a revision whose text is its version's own (``_same_text``)
 answers nothing; of the answers to a question on the whole manuscript, one that resolves it counts), unless P1's
 degrade deleted its sentence; the latest version of every required section verifies and is balanced, checked afresh;
 the manuscript as a whole passes ``manuscript_problems``. A failing gate reruns the stage. P1 at an edge limit
@@ -223,7 +223,7 @@ def revise_notes(ps: ProjectStore, attempt: int, *, kind: str | None = None) -> 
     revision's task, its answers with the repair's own in place of those to the same questions, and ``ignored``
     repairs), ``no_repair`` (a rejected revision ``of`` that task the budget left no repair for: ``used``, ``needed``,
     ``budget``), ``decided`` (the decision on that revision: ``accepted``, ``reasons``, ``broken`` (what the manuscript
-    as a whole lost), ``unchanged`` with its ``version`` when its text is that version's (whitespace aside),
+    as a whole lost), ``unchanged`` with its ``version`` when its text is that version's (``_same_text``),
     ``verdict``, ``sentences``, ``reverified``) and ``back_edge`` (``to``, ``reason``)."""
     rows = ps.db.execute(f"SELECT payload FROM events WHERE type='{NOTED}' "
                          "AND json_extract(payload, '$.attempt')=? ORDER BY seq", (attempt,))
@@ -349,6 +349,14 @@ def _resolved(answer: dict | None) -> bool:
             and not answer.get("unchanged"))
 
 
+def _same_text(a: str, b: str) -> bool:
+    """Whether two section texts say the same in the same paragraphs: spacing within and around paragraphs aside
+    (review of the unchanged rule: a dropped trailing newline or extra blank lines made a no-op count as a change),
+    a paragraph split or merged is a change (re-review: comparing the words alone hid one)."""
+    paragraphs = lambda md: [p.split() for p in re.split(r"\n[ \t]*\n", md.strip())]
+    return paragraphs(a) == paragraphs(b)
+
+
 def _questions_of(ps: ProjectStore, attempt: int) -> list[dict]:
     """The attempt's questions (those carried into it first, as round 0), each with its ``round``."""
     return [{**q, "round": n["round"]} for n in revise_notes(ps, attempt, kind="questions") for q in n["questions"]]
@@ -412,10 +420,11 @@ def _review_request(ps: ProjectStore, attempt: int) -> str | None:
 
 
 # Where a point may start: a line start, or right after a colon (the edge's "final_review: revise: " puts the
-# researcher's first point there). A point: numbered there ("(N)", "N." or "N)"); else numbered anywhere ("(N)" after
-# a full stop, colon, semicolon or comma, not a reference such as "Equations (1) and (2)", or the forms above); else a
-# bullet ("-", "*", "•") there, indented like the first (a nested bullet stays in its point).
-_LEAD = r"(?:(?m:^)([ \t]*)|(?<=:)[ \t]+)"
+# researcher's first point there; only point 1 may start there, so "Note: 2. …" or a judge's reason opening "2." is
+# part of a point). A point: numbered there ("(N)", "N." or "N)"); else numbered anywhere ("(N)" after a full stop,
+# colon, semicolon or comma, not a reference such as "Equations (1) and (2)", or the forms above); else a bullet ("-",
+# "*", "•") there, indented like the first at a line start (a nested bullet stays in its point).
+_LEAD = r"(?:(?m:^)(?P<indent>[ \t]*)|(?<=:)(?P<colon>[ \t]+))"
 _AT_LINE = re.compile(rf"{_LEAD}(?:\((\d{{1,2}})\)|(\d{{1,2}})[.)])(?=\s)")
 _NUMBERED = re.compile(rf"(?:(?<=[.:;,])\s+|(?m:^)[ \t]*)\((\d{{1,2}})\)(?=\s)|{_LEAD}(\d{{1,2}})[.)](?=\s)")
 _BULLET = re.compile(rf"{_LEAD}[-*•](?=\s)")
@@ -425,15 +434,23 @@ def _numbered(pattern: re.Pattern, text: str) -> list[int]:
     """Where the points numbered 1, 2, … in order start (another number is part of a point)."""
     starts: list[int] = []
     for m in pattern.finditer(text):
-        if int(next(g for g in m.groups() if g and g.isdigit())) == len(starts) + 1:  # the other group: an indent
+        if m["colon"] is not None and starts:
+            continue
+        if int(next(g for g in m.groups() if g and g.isdigit())) == len(starts) + 1:  # the other groups: spaces
             starts.append(m.start())
     return starts
 
 
 def _bullets(text: str) -> list[int]:
-    """Where the bulleted points start: the bullets indented like the first (one after a colon: not indented)."""
-    found = [(m.start(), m[1] or "") for m in _BULLET.finditer(text)]
-    return [a for a, indent in found if indent == found[0][1]] if found else []
+    """Where the bulleted points start: the first bullet (at a line start or after a colon) and every line-start
+    bullet indented like the first line-start one (the comment is stripped, so a first bullet after the colon tells
+    nothing of the list's indent)."""
+    found: list[tuple[int, str | None]] = []
+    for m in _BULLET.finditer(text):
+        if m["colon"] is None or not found:
+            found.append((m.start(), m["indent"]))
+    indent = next((i for _, i in found if i is not None), None)
+    return [a for a, i in found if i is None or i == indent]
 
 
 def request_points(text: str) -> list[str]:
@@ -792,7 +809,7 @@ class ReviseWorker:
         broken = [p for p in manuscript_problems(ps, s.draft, {**texts, section: rev["markdown"]}) if p not in before]
         reasons = [*(version_failures(rev["markdown"], c["verdict"]) if not c["verdict"]["ok"] else []), *broken]
         ok = not reasons
-        unchanged = ok and rev["markdown"].split() == draft_text(ps, section, rev["version"]).split()  # layout aside
+        unchanged = ok and _same_text(rev["markdown"], draft_text(ps, section, rev["version"]))
         return _note(ps, attempt, "decided", actor=ctx.actor, **fields, accepted=ok, reasons=reasons, broken=broken,
                      unchanged=unchanged, version=rev["version"] if unchanged else None, **c)
 

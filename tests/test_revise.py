@@ -713,13 +713,18 @@ def test_a_final_review_request_splits_into_its_points():
     assert request_points(f"{p2} 1. Name the audience.\n2. Shorten theme-2.") == [
         f"{p2} 1. Name the audience.", f"{p2} 2. Shorten theme-2."]
     assert request_points(f"{p2} - a\n- b\n- c") == [f"{p2} - a", f"{p2} - b", f"{p2} - c"]
+    # the comment is stripped, so an indented list's first bullet follows the colon unindented
+    assert request_points(f"{p2} - a\n  - b\n  - c") == [f"{p2} - a", f"{p2} - b", f"{p2} - c"]
+    # only point 1 may follow a colon: a later "N." after a colon is part of a point
+    assert request_points(f"{p2} 1. Fix X.\nNote: 2. is optional.\n2. Fix Y.") == [
+        f"{p2} 1. Fix X. Note: 2. is optional.", f"{p2} 2. Fix Y."]
     # a nested bullet stays in its point
     assert request_points("Points:\n- Discussion:\n  - add limitation X\n  - cite Y\n- Abstract: shorten") == [
         "Points: - Discussion: - add limitation X - cite Y", "Points: - Abstract: shorten"]
     for one in ("final_review: revise: Say who the audience is.", "Fix (1) the table.",
                 "See version 2. Then (3) it.", "Results (2) and (3) disagree.",
                 "final_review: revise: Equations (1) and (2) use different notation; fix the derivation.",
-                "The ratio: 1.5 at most.\n2. Then the rest."):
+                "The ratio: 1.5 at most.\n2. Then the rest.", f"{p2} Ratio is 3: 1. Also: 2. fix Y"):
         assert request_points(one) == [one.replace("\n", " ")], one
     # the P1 judges' reasons, one per line: numbering at a line start wins over a reason's own inline numbering
     p1 = ("the judges did not approve the manuscript (P1 vote):\n(1) judge (openai): (1) theme-6 repeats. (2) Fix it."
@@ -741,10 +746,25 @@ def test_each_p1_judge_reason_is_one_point_whatever_its_own_lines():
            {"role": "judge_2", "vendor": "ds", "reason": "qux"}]
     assert request_points(f"{head} {judges_reasons(two)}") == [
         f"{head} (1) judge (openai): Issues: 1. foo 2. bar 3. baz", f"{head} (2) judge_2 (ds): qux"]
+    # a reason that starts with its own "2." (after the judge's colon) is no point 2
+    two[0]["reason"] = "2. Section two overreaches. 3. Fix it."
+    assert request_points(f"{head} {judges_reasons(two)}") == [
+        f"{head} (1) judge (openai): 2. Section two overreaches. 3. Fix it.", f"{head} (2) judge_2 (ds): qux"]
     one = [{"role": "judge", "vendor": "openai", "reason": "1. foo\n2. bar"}, {"role": "judge_2", "vendor": "ds",
                                                                                "reason": ""}]
     assert request_points(f"{head} {judges_reasons(one)}") == [
         f"{head} judge (openai): 1. foo", f"{head} judge (openai): 2. bar"]
+
+
+def test_a_revision_that_only_moves_paragraph_breaks_is_a_change():
+    """Re-review of the unchanged rule: comparing the words alone made a revision that splits or merges paragraphs
+    (asked for, e.g. "split the Discussion by theme") count as unchanged, so it was neither stored nor settled its
+    question. Spacing within and around paragraphs is no change; where paragraphs break is."""
+    from rk.production.revise import _same_text
+
+    assert _same_text("A. B.\n\nC.\n", "A.  B.\n\n\nC.")
+    assert not _same_text("A. B.\n\nC.\n", "A.\n\nB.\n\nC.\n")
+    assert not _same_text("A. B.\n", "A. C.\n")
 
 
 def test_each_point_of_a_final_review_request_needs_its_own_answer(env):
