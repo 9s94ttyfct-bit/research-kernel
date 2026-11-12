@@ -681,7 +681,7 @@ def revise_view(ps: ProjectStore, attempt: int | None = None) -> dict:
                 a = next((x for x in t["answers"] if x["question_id"] == q["id"]), None)
                 revisions.append({"round": t["round"], "task": t["task"], "accepted": t["accepted"],
                                   "reasons": t["reasons"], "how": a["how"] if a else None,
-                                  "note": a["note"] if a else None})
+                                  "note": a["note"] if a else None, "repair_of": t.get("repair_of")})
             answered = [r for r in revisions if r["accepted"] and r["how"]]
             if q["id"] in deleted:
                 outcome, note = "deleted", "P1's degrade deleted the sentence it was about"

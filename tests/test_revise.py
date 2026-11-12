@@ -94,11 +94,14 @@ def _restated(ps, cid: str) -> str:
     return f"In other words, {text[0].lower()}{text[1:]} [[clm:{cid}]]."
 
 
-def repair(*fixes: tuple[int, str]):
+def repair(*fixes: tuple[int, str], answer: tuple[str, str] | None = None):
     """A Writer repair output: each ``(sentence, text)`` replaces that failing sentence (empty text deletes it); none:
-    the rejected revision as it was."""
+    the rejected revision as it was. ``answer`` (``how``, ``note``) answers every question again."""
     def out(inputs):
-        return {"section": inputs["section"]["id"], "repairs": [{"sentence": n, "text": t} for n, t in fixes]}
+        answers = [] if answer is None else [{"question_id": q["id"], "how": answer[0], "note": answer[1]}
+                                             for q in inputs["revise"]["questions"]]
+        return {"section": inputs["section"]["id"], "repairs": [{"sentence": n, "text": t} for n, t in fixes],
+                "answers": answers}
     return out
 
 
@@ -251,7 +254,8 @@ def _numbered(md: str, part: str) -> int:
 def test_a_rejected_revision_is_repaired_once_and_its_answers_count(env):
     """Calibration (critical3, revise attempts 1-2): one untentative [[inf]] sentence rejected whole revisions, and
     with them the change answering a priority-1 question. The Writer gets one repair of the rejected revision's failing
-    sentences; put into that revision, it is decided again and, accepted, stored with the revision's answers."""
+    sentences; put into that revision, it is decided again and, accepted, stored with the revision's answers, the
+    repair's in place of those it gives again (here: the answering sentence was replaced)."""
     _, ps, _ = env
     _drafted(env)
     main = main_claim(ps, 1)
@@ -262,7 +266,7 @@ def test_a_rejected_revision_is_repaired_once_and_its_answers_count(env):
 
     def mend(inputs):
         fixed["n"] = _numbered(inputs["revise"]["markdown"], "1234")
-        return repair((fixed["n"], added))(inputs)
+        return repair((fixed["n"], added), answer=("revised", "the main claim is restated"))(inputs)
 
     ex = _exec([ask(("introduction", 1))], [revision(add=bad, note="the cohort is given")], [mend])
     w = ReviseWorker()
@@ -270,7 +274,8 @@ def test_a_rejected_revision_is_repaired_once_and_its_answers_count(env):
     rejected, mended = revise_notes(ps, 1, kind="revision")
     first, second = revise_notes(ps, 1, kind="decided")
     assert not first["accepted"] and second["accepted"] and second["task"] == mended["task"]
-    assert mended["repair_of"] == rejected["task"] and mended["answers"] == rejected["answers"]
+    assert mended["repair_of"] == rejected["task"] and rejected["answers"][0]["note"] == "the cohort is given"
+    assert [(a["how"], a["note"]) for a in mended["answers"]] == [("revised", "the main claim is restated")]
     assert mended["markdown"] == rejected["markdown"].replace(bad, added) and not mended["ignored"]
     (call,) = ex.of("writer", "RevisionRepair")
     assert call["inputs"]["revise"]["markdown"] == rejected["markdown"]
@@ -284,7 +289,8 @@ def test_a_rejected_revision_is_repaired_once_and_its_answers_count(env):
 
 def test_no_repair_when_the_budget_must_cover_the_rounds_other_revisions(env):
     """A repair is a Writer task of the round: it is asked only while the budget still covers it and every revision
-    the round has still to ask, so a run is never paused mid-round."""
+    the round has still to ask, so a run is never paused mid-round; the repair not made is noted, so that a replay of
+    the round with a fresh budget (a run resumed in a new session) does not make it later."""
     _, ps, _ = env
     _drafted(env)
     main = main_claim(ps, 1)
@@ -297,6 +303,12 @@ def test_no_repair_when_the_budget_must_cover_the_rounds_other_revisions(env):
     assert _done(w.run(_ctx(env, ex)))
     assert not ex.of("writer", "RevisionRepair") and _written(ex) == REVISABLE
     assert [n["accepted"] for n in revise_notes(ps, 1, kind="decided")] == [False, True, True, True]
+    (skipped,) = revise_notes(ps, 1, kind="no_repair")
+    assert (skipped["section"], skipped["used"], skipped["needed"], skipped["budget"]) == ("introduction", 2, 4, 5)
+    w.budget = 40
+    again = _exec([], [], [repair()])
+    assert _done(w.run(_ctx(env, again)))  # the round replayed: nothing asked, the repair not made
+    assert not again.calls and len(revise_notes(ps, 1, kind="no_repair")) == 1
 
 
 def test_rounds_stop_at_k_or_without_priority1_questions(env):
