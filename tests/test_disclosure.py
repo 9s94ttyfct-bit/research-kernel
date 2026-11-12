@@ -21,7 +21,7 @@ from rk.production.disclosure import (
     render_disclosure,
     write_disclosure,
 )
-from rk.production.draft import section_verdict
+from rk.production.draft import latest_version, section_verdict
 from rk.production.manuscript import parse_section, source_markers, write_draft
 from rk.production.store import add_analysis_deviation, add_vote
 from rk.production.synthesis import synthesis_claims
@@ -164,6 +164,31 @@ def test_disclosure_names_conceded_sourced_objections(env):
     (ps.root / DISCLOSURE_PATH).write_text(cut)
     (failure,) = _g_disclose(ps)
     assert finding in failure and oid in failure and source in failure
+
+
+def test_disclosure_names_each_objection_the_manuscript_cites(env):
+    """A sentence citing ``[[obj:]]`` states what an outside work says from the Skeptic's account of it (the
+    objection's text, never checked against the source): the disclosure says so for each, naming the objection and its
+    source, and a disclosure that leaves one out fails G-DISCLOSE."""
+    _, ps, lib = env
+    revised(env)
+    finding = synthesis_claims(ps, 1)[0]
+    source = lib.list()[0].id
+    oid = object_to(ps, finding, source_id=source, status="rejected_invalid")
+    got = latest_version(ps, "introduction")
+    write_draft(ps, "introduction", got[1].rstrip("\n") + f" An outside benchmark disagrees [[obj:{oid}]].\n",
+                stage="revise", attempt=1, round=1, by_task=None, actor="tester")
+    md = render_disclosure(ps)
+    (line,) = [s for s in parse_section(md) if oid in s.text]
+    assert source in line.text and "not checked against" in line.text
+    assert _evt(ps, "objection.added", oid) in {m.target for m in line.markers}
+    write_disclosure(ps, attempt=1, paper_type="critical_review", actor="tester")
+    assert _g_disclose(ps) == []
+    cut = md[:md.index(line.text)] + md[md.index(line.text) + len(line.text):].lstrip("\n")
+    write_draft(ps, "disclosure", cut, stage="audit", attempt=1, round=0, by_task=None, actor="tester")
+    (ps.root / DISCLOSURE_PATH).write_text(cut)
+    (failure,) = _g_disclose(ps)
+    assert oid in failure and source in failure
 
 
 def test_disclosure_lists_the_gaps_behind_the_chosen_topic(tmp_home, replay_http):

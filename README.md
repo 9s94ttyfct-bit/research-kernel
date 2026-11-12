@@ -316,7 +316,9 @@ After argue (and design, for a research proposal), four stages turn the argument
   Every sentence ends with source markers:
   - `[[clm:clm_…]]`: a supported claim;
   - `[[obj:obj_…]]`: what the source of one of the argument's objections says (an outside work, such as a benchmark
-    a Skeptic objection came from); it is exported as a citation of that source, which G-REF checks;
+    a Skeptic objection came from); it is exported as a citation of that source, which G-REF checks. The objection's
+    text is the Skeptic's account of the source, never checked against it: it is paraphrased, never quoted, and the
+    disclosure says so for each objection cited;
   - `[[run:evt_…]]` or `[[run:prt_…]]`: what the kernel ran (a search, the PRISMA counts, the frozen protocol);
   - `[[fig:…]]`, `[[stat:…]]`: a figure or statistic;
   - `[[plan:…]]`: the frozen design or a hypothesis (proposals only);

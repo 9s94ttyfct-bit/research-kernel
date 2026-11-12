@@ -18,8 +18,10 @@ reads):
    records it where there is one (a deviation, a withdrawal, a narrowed claim, a conceded objection, a contested
    claim, a dropped hypothesis), else the stage's pass; every cited claim with a conceded sourced objection
    (``balance_requirements(...).conceded_sourced``: claim, objection and source), the gap V-BALANCE leaves (Task 3);
-   and what a section lacked from the argument (``draft.unmet_support``: each ``draft->argue`` back-edge and what a
-   section still lacked after it, each citing its ``draft.noted`` event), whatever the Writer then wrote.
+   every objection a section cites with ``[[obj:]]``, with its source: what the sentence says the source says rests on
+   the Skeptic's account of it (the objection's text), never checked against the source's text; and what a section
+   lacked from the argument (``draft.unmet_support``: each ``draft->argue`` back-edge and what a section still lacked
+   after it, each citing its ``draft.noted`` event), whatever the Writer then wrote.
 5. **Preregistration deviations:** every protocol deviation (``version`` and ``analysis``).
 
 A part with nothing to list says so, citing the intake (who answers checkpoints follows from its production mode),
@@ -37,7 +39,7 @@ from rk.argument import ArgumentService
 from rk.discovery.store import frozen_rq
 from rk.orchestrator.state import passed_attempt
 from rk.production.argue import argue_limitations
-from rk.production.common import write_atomic
+from rk.production.common import entity_row, write_atomic
 from rk.production.design import design_limitations
 from rk.production.draft import (
     STAGE_NAMES,
@@ -64,6 +66,8 @@ PARTS = ("Models used", "Human decisions", "Not reviewed by a human", "Limitatio
 DISCLOSURE_PATH = "artifacts/audit/disclosure.md"
 NOT_HUMAN = "not reviewed by a human"
 FINAL_REVIEW = "final_review"
+# what a sentence citing ``[[obj:]]`` rests on (the objection's text), as the disclosure says it
+UNCHECKED = "the Skeptic's account of the source, not checked against the source's text"
 # stages of an evaluation of the project (``rk.eval.sr_repro.STAGE``): its tasks and votes score the paper and are not
 # part of how it was made, so the disclosure neither lists them nor G-DISCLOSE asks for them
 EVALUATION_STAGES = frozenset({"sr_repro"})
@@ -264,18 +268,22 @@ def _fields(entry) -> str:
     return ", ".join(f"{_word(k)} {_code(v)}" for k, v in entry.items() if v not in (None, "", [], {}))
 
 
-def _conceded(ps: ProjectStore) -> list[tuple[str, str]]:
-    """``(objection id, line)`` for every claim the manuscript cites that has a conceded sourced objection (the
-    V-BALANCE gap of Task 3): the claim, the objection and its source in one sentence."""
+def _written(ps: ProjectStore) -> list[str]:
+    """The latest text of every required section a Writer writes."""
     paper_type = ps.meta("paper_type")
     synth = passed_attempt(ps, "synthesize")
     if paper_type is None or synth is None:
         return []
-    cited: dict[str, None] = {}
-    for spec in required_sections(paper_type, themes(ps, synth)):
-        if spec.kernel_written or isinstance(got := latest_version(ps, spec.id), str):
-            continue
-        cited |= {m.target: None for m in source_markers(got[1]) if m.kind == "clm" and m.target}
+    return [got[1] for spec in required_sections(paper_type, themes(ps, synth))
+            if not spec.kernel_written and not isinstance(got := latest_version(ps, spec.id), str)]
+
+
+def _conceded(ps: ProjectStore) -> list[tuple[str, str]]:
+    """``(objection id, line)`` for every claim the manuscript cites that has a conceded sourced objection (the
+    V-BALANCE gap of Task 3): the claim, the objection and its source in one sentence."""
+    cited = {m.target: None for md in _written(ps) for m in source_markers(md) if m.kind == "clm" and m.target}
+    if not cited:
+        return []
     try:
         facts = argued(ps)
     except ValueError:
@@ -294,6 +302,25 @@ def _conceded(ps: ProjectStore) -> list[tuple[str, str]]:
             out.append((oid, _line(f"The cited claim {_code(cid)} has the conceded objection {_code(oid)} from the "
                                    f"source {_code(o['source_id'])}: {_code(o['text'])}", evt)))
     return out
+
+
+def cited_objections(ps: ProjectStore) -> list[dict]:
+    """The objections the sections cite with ``[[obj:]]`` (in order, each once; an unknown id is V-COVER's)."""
+    out: dict[str, dict] = {}
+    for md in _written(ps):
+        for m in source_markers(md):
+            if m.kind == "obj" and m.target and m.target not in out:
+                try:
+                    out[m.target] = entity_row(ps, "objections", m.target)
+                except KeyError:
+                    continue
+    return list(out.values())
+
+
+def _cited_objection_lines(ps: ProjectStore) -> list[str]:
+    return [_line(f"The manuscript cites the objection {_code(o['id'])} for what its source {_code(o['source_id'])} "
+                  f"says; that rests on {UNCHECKED}: {_code(o['text'])}", _last(ps, "objection.added", o["id"]))
+            for o in cited_objections(ps)]
 
 
 def _unmet(ps: ProjectStore) -> list[tuple[str, str]]:
@@ -335,6 +362,7 @@ def _limitations(ps: ProjectStore) -> list[str]:
             out.append(_line(f"The {where} limitations list, under {what}: {_fields(entry)}",
                              _entry_event(ps, path, entry) or passed))
     out += [line for _, line in conceded]
+    out += _cited_objection_lines(ps)
     out += [line for _, line in _unmet(ps)]
     synth = passed_attempt(ps, "synthesize")
     return out or [_line("No limitation was recorded by the synthesis, the argument or the design",
@@ -390,7 +418,8 @@ def disclosure_problems(ps: ProjectStore, markdown: str, cited_claims: list[str]
     checkpoint answer (a human's or the P1 vote's), every P1 vote, every P1 degrade, an agent's choice of the research
     question and what a section lacked from the argument (``unmet_support``); it names, in one sentence, each of
     ``cited_claims`` (the live claims the manuscript cites) with a conceded sourced objection, with the objection and the
-    source; and ``disclosure.md`` holds the same text."""
+    source; it says of each objection a section cites with ``[[obj:]]``, in one sentence with its source, that it is
+    the Skeptic's account (``UNCHECKED``); and ``disclosure.md`` holds the same text."""
     out = []
     heads = {ln[4:].strip() for ln in markdown.splitlines() if ln.startswith("### ")}
     out += [f"the disclosure has no “{p}” part" for p in PARTS if p not in heads]
@@ -424,6 +453,10 @@ def disclosure_problems(ps: ProjectStore, markdown: str, cited_claims: list[str]
             if not any(all(n in s for n in names) for s in sentences):
                 out.append(f"the cited claim {cid} has the conceded objection {o['objection_id']} from the source "
                            f"{o['source_id']}, and the disclosure does not name it")
+    for o in cited_objections(ps):
+        if not any(o["id"] in s and str(o["source_id"]) in s and UNCHECKED in s for s in sentences):
+            out.append(f"the manuscript cites the objection {o['id']} from the source {o['source_id']}, and the "
+                       "disclosure does not say that it is the Skeptic's account of that source")
     path = ps.root / DISCLOSURE_PATH
     if not path.is_file():
         out.append(f"{DISCLOSURE_PATH} is missing")
