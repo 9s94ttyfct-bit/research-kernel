@@ -152,7 +152,7 @@ REVISE_TASK = (
     "sentence states what an objection's source (an outside work) says, cite that objection ([[obj:]]), never a claim "
     "that does not say it; never state a number that none of the sentence's marker targets contains; never state "
     "anything more strongly than the claims and objections it cites; quote only verified quote notes (verified true) "
-    "of a claim the sentence cites, or the text of an objection it cites; use [[inf]] only for your "
+    "of a claim the sentence cites, never an objection's text (paraphrase it); use [[inf]] only for your "
     "own inferences and word them tentatively; keep each counterpart (contested_by) and response (answered_by) cited "
     "after its claim. Keep every sentence you do not need to change exactly as it is. Return the whole section as "
     "markdown paragraphs with section set to its id, and one answer per question: revised (your text changed so that "

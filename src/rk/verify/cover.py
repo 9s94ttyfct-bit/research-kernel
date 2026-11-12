@@ -23,8 +23,9 @@ a code span is not checked and does not count).
   the source's wording, not the sentence's, and is left out of the measure.
 - **V-QUOTE:** in a sentence that cites a claim, an objection or the protocol, text in quotation marks (“…”, "…", “…",
   „…“, «…», ‘…’, '…'; an apostrophe is no quotation mark) and a block quote's whole text are (a word-bounded part of) a
-  verified quote note of a claim the sentence cites, the text of an objection it cites or a text of a protocol it
-  cites (e.g. a search string).
+  verified quote note of a claim the sentence cites or a text of a protocol it cites (e.g. a search string). An
+  objection's text is never quoted: it is the Skeptic's wording, never checked against its source, and quoting it
+  would present that wording as the source's own words.
 - **G-SUPPORT:** every cited claim passes the claim gate (``rk.verify.support.claim_problems``: supported, never by
   vote; V-HEDGE; V-STATS for a ``stat_result``; no open or conceded priority-1 objection); a withdrawn claim is never
   cited.
@@ -363,15 +364,13 @@ def _strings(obj) -> list[str]:
 
 
 def _quote_sources(ps: ProjectStore, markers: list[Marker]) -> list[str]:
-    """The normalized texts a quotation in the sentence may come from: the verified quote notes of the claims it cites,
-    the texts of the objections it cites and the texts of the protocols it cites."""
+    """The normalized texts a quotation in the sentence may come from: the verified quote notes of the claims it cites
+    and the texts of the protocols it cites (never an objection's text, see V-QUOTE)."""
     out = []
     for m in markers:
         if m.kind == "clm" and m.target and (c := _claim(ps, m.target)) is not None:
             out += [normalize_query(n["text"]) for e in c["evidence"] for n in e["notes"]
                     if n and n["kind"] == "quote" and (n.get("verified") or {}).get("quote", {}).get("ok")]
-        elif m.kind == "obj" and m.target and (o := _objection(ps, m.target)) is not None:
-            out.append(normalize_query(o["text"]))
         elif m.kind == "run" and m.target and m.target.startswith("prt_") and \
                 (p := protocol_row(ps, m.target)) is not None:
             out += [normalize_query(s) for s in _strings(p["body"])]
@@ -418,7 +417,8 @@ def verify_sentence(ps: ProjectStore, s: Sentence, *, paper_type: str, kernel_wr
             if wanted and not any(find_verbatim(wanted, t) >= 0 for t in sources):
                 what = "the block quote" if s.quoted else "the quoted text"
                 problems.append(f"{what} “{quoted.strip()}” is not a verified quote note of a claim the sentence "
-                                "cites, nor the text of an objection or a text of a protocol it cites")
+                                "cites nor a text of a protocol it cites (an objection's text is paraphrased, never "
+                                "quoted)")
             measured = measured[:a] + " " * (b - a) + measured[b:]
     level = hedge_level(measured) if re.search(r"\w", measured) else 0  # all quoted: no wording of its own
     if "inf" in kinds and level > INF_MAX_LEVEL:

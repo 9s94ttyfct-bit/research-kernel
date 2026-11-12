@@ -93,12 +93,13 @@ def test_an_objection_whose_source_is_retracted_cannot_be_cited(env):
                   f"objection {oid} names the source {item}, which is retracted")
 
 
-def test_quoted_text_in_an_obj_sentence_is_the_objections_text(env):
+def test_an_objections_text_is_never_quoted(env):
+    """The objection's text is the Skeptic's wording, never checked against its source: quoting it would present that
+    wording as the source's own words, so it may only be paraphrased."""
     ps, finding, item = env
     oid = objection(ps, finding, 'SESR-Eval reports "no gain in recall" across its reviews.', item)
-    assert _one(ps, f"SESR-Eval reports “no gain in recall” [[obj:{oid}]].").ok
-    assert _fails(ps, f"SESR-Eval reports “no gain in precision” [[obj:{oid}]].", "is not a verified quote note")
-    assert _fails(ps, f"SESR-Eval reports “gain in rec” [[obj:{oid}]].", "is not a verified quote note")
+    assert _one(ps, f"SESR-Eval reports no gain in recall [[obj:{oid}]].").ok
+    assert _fails(ps, f"SESR-Eval reports “no gain in recall” [[obj:{oid}]].", "is not a verified quote note")
 
 
 def test_obj_target_state_changes_with_the_objection(env):
