@@ -127,6 +127,7 @@ from rk.discovery.sources import COUNTED_SOURCES
 from rk.discovery.store import frozen_rq, hypotheses, intake_of
 from rk.llm.vendors import vendor_of
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
+from rk.orchestrator.state import kernel_grants
 from rk.production.models import (
     RECORD_CAP,
     SCREENED_LANGUAGES,
@@ -159,6 +160,7 @@ VOTE_OPTIONS = ["approve", "revise"]
 QUERIES_MIN, SOURCES_MIN = 3, 2  # what the Scout's strategy needs
 LIGHT_TYPES = frozenset({"critical_review", "research_proposal"})  # question, search and selection principles only
 PREREG_TYPES = frozenset({"systematic_review", "scoping_review"})  # the freeze counts as preregistration (G-PREREG)
+KERNEL_EXTRA_ROUNDS = 2  # protocol->protocol uses the kernel grants a converging P1 protocol (``another_use``)
 # the synthesis plan of a paper type that does no meta-analysis (spec §7.3: V-STATS only for the systematic review)
 OTHER_PLANS = {"scoping_review": "an evidence_map (no pooling)",
                "critical_review": "thematic or narrative_swim, or none (synthesis_plan may be left out)",
@@ -423,12 +425,26 @@ def points_ledger(ps: ProjectStore) -> list[dict]:
 
     Calibration (P1 protocol diagnosis 2026-11-12): §7 items 1-2 and 5; §5.3, the stale guidance after the edge
     limit, lost the attempt-3 vote's reasons. Scope and reason points: review of Task 3 (risks a and b)."""
+    return _walk(ps)[0]
+
+
+def _open_blocking(points: dict[str, dict], cycle: tuple) -> set[str]:
+    """The ids of the blocking points of ``cycle`` open in ``points`` (as the walk has them so far)."""
+    return {pid for pid, p in points.items() if p["_cycle"] == cycle and p["blocking"] and p["status"] == "open"}
+
+
+def _walk(ps: ProjectStore) -> tuple[list[dict], list[dict]]:
+    """The ledger (``points_ledger``) and one round per protocol vote, in order: ``{attempt, live, before, after}``,
+    the ids of the blocking points of the vote's cycle open before and after it (``live``: the vote is of the current
+    cycle)."""
     answers = _answers(ps)
     bounds = _boundaries(ps)
     current = (_rq_sentence(ps), len(bounds))
     points: dict[str, dict] = {}
+    rounds: list[dict] = []
     for v in _protocol_votes(ps):
         cycle = (v["question"], bisect.bisect_left(bounds, v["seq"]))
+        before = _open_blocking(points, cycle)
         for o in v["opinions"]:
             role = o["role"]
             for m in o.get("resolved") or []:
@@ -451,11 +467,34 @@ def points_ledger(ps: ProjectStore) -> list[dict]:
                 points[pid] = {"id": pid, "attempt": v["attempt"], "role": role, "vendor": o["vendor"],
                                "section": "other", "fault": why, "change": why, "blocking": True, "status": "open",
                                "answers": answers.get(pid, []), "marks": [], "_cycle": cycle}
+        rounds.append({"attempt": v["attempt"], "live": cycle == current, "before": before,
+                       "after": _open_blocking(points, cycle)})
     for p in points.values():
         p["live"] = p.pop("_cycle") == current
         if not p["live"] and p["status"] == "open":
             p["status"] = "retired"
-    return list(points.values())
+    return list(points.values()), rounds
+
+
+def another_round(ps: ProjectStore, attempt: int) -> str | None:
+    """Why a P1 protocol still converging at the ``protocol->protocol`` limit gets one more round, else ``None``: the
+    kernel granted fewer than ``KERNEL_EXTRA_ROUNDS`` uses of the edge (yours do not count), and the attempt's vote
+    (the latest of ``attempt``, of the current cycle) closed at least one blocking point (its own judge marked it
+    resolved) and left no more blocking points open than were open before it in its cycle.
+
+    Calibration (P1 protocol rerun 2026-11-12): five of six runs ended at the limit with one to three blocking points
+    open, in all five fewer than after the first vote; fructose (none closed) and ozone (more open than before) would
+    still stop."""
+    if kernel_grants(ps, "protocol->protocol") >= KERNEL_EXTRA_ROUNDS:
+        return None
+    last = next((r for r in reversed(_walk(ps)[1]) if r["attempt"] == attempt), None)
+    if last is None or not last["live"]:
+        return None
+    closed, left, before = len(last["before"] - last["after"]), len(last["after"]), len(last["before"])
+    if not closed or left > before:
+        return None
+    return (f"the vote closed {closed} blocking point{'s' if closed != 1 else ''} and left {left} open ({before} "
+            f"before): one more protocol round")
 
 
 def _open_points(ps: ProjectStore) -> list[dict]:
@@ -1575,6 +1614,12 @@ class ProtocolWorker:
                                                for d in deviations(ps, kind="version")):
                 failures.append(f"frozen version {row['version']} has no deviation from version {earlier}")
         return GateResult(not failures, failures)
+
+    @staticmethod
+    def another_use(ctx: StageContext, edge: str) -> str | None:
+        """P1 at an edge limit, before the degrade: one more ``protocol->protocol`` use while the vote still converges
+        (``another_round``, the reason the kernel records with its grant); ``None`` for any other edge."""
+        return another_round(ctx.ps, ctx.attempt) if edge == "protocol->protocol" else None
 
     def degrade(self, ctx: StageContext, failures: list[str]) -> StageOutcome:
         """P1 at an edge limit: nothing can be deleted or narrowed into an approved protocol, and P1 never freezes a

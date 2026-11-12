@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from rk.discovery.store import intake_of
 from rk.ids import new_id
@@ -161,8 +161,19 @@ def record_edge_taken(ps: ProjectStore, edge: str, count: int, *, actor: str) ->
     _emit(ps, "edge.taken", edge, {"edge": edge, "count": count}, actor)
 
 
-def record_edge_allowed(ps: ProjectStore, edge: str, *, actor: str) -> None:
-    _emit(ps, "edge.allowed", edge, {"edge": edge}, actor)
+def record_edge_allowed(ps: ProjectStore, edge: str, *, actor: str, by: Literal["human", "kernel"] = "human",
+                        reason: str | None = None) -> None:
+    """One more use of ``edge`` is allowed: by you (``allow_one_more`` on ``stage_blocked``), or by the kernel for a P1
+    protocol that still converges (``ProtocolWorker.another_use``), with its ``reason``. Either raises the edge's
+    limit by one (``edge_row``'s ``allowed``)."""
+    _emit(ps, "edge.allowed", edge, {"edge": edge, "by": by, **({"reason": reason} if reason else {})}, actor)
+
+
+def kernel_grants(ps: ProjectStore, edge: str) -> int:
+    """The uses of ``edge`` the kernel allowed (``edge.allowed`` by kernel); a grant recorded without ``by`` (before
+    the kernel granted any) is yours."""
+    return ps.db.execute("SELECT COUNT(*) FROM events WHERE type='edge.allowed' AND json_extract(payload, '$.edge')=? "
+                         "AND json_extract(payload, '$.by')='kernel'", (edge,)).fetchone()[0]
 
 
 # ---- guided (D1) stage calls ----
@@ -327,7 +338,8 @@ def rate_capped_driver(ps: ProjectStore, run_id: str) -> str | None:
 
 
 def edge_rows(ps: ProjectStore) -> dict[str, dict[str, int]]:
-    """Every back-edge (or rerun ``X->X``) used or granted so far: its uses and the extra uses you allowed."""
+    """Every back-edge (or rerun ``X->X``) used or granted so far: its uses and the extra uses allowed (by you, or by
+    the kernel for a converging P1 protocol)."""
     return {r["edge"]: {"count": r["count"], "allowed": r["allowed"]}
             for r in ps.db.execute("SELECT edge, count, allowed FROM back_edges ORDER BY edge")}
 

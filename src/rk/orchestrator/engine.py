@@ -492,8 +492,16 @@ class Orchestrator:
     def _use_edge(self, ps: ProjectStore, worker: Worker, ctx: StageContext, to: str,
                   failures: list[str]) -> _EdgeResult:
         """Take ``stage->to`` unless its uses are spent (§7.2, in D1 and D2 alike). At the limit P2 opens a
-        ``stage_blocked`` checkpoint linked to the attempt; P1 degrades, then gates the attempt, or waits on the
-        checkpoint the degrade opened."""
+        ``stage_blocked`` checkpoint linked to the attempt; P1 first asks the worker for another use
+        (``another_use(ctx, edge)``, a reason or ``None``; only a worker that has it is asked): with a reason the
+        kernel's grant is recorded (``edge.allowed`` by kernel, with the reason) and the edge is taken as an ordinary
+        use. Else P1 degrades, then gates the attempt, or waits on the checkpoint the degrade opened.
+
+        Resume-safe: the grant is recorded before the edge is taken and raises the edge's limit, so a step interrupted
+        between the two takes the edge as an ordinary use the next time it is used, and the worker, which counts its
+        grants from the events, is not asked to grant again for it. P2 never gets a kernel grant.
+        Calibration (P1 protocol rerun 2026-11-12): five of six runs ended at the limit with fewer blocking points
+        open than after their first vote."""
         stage, actor = ctx.stage, ctx.actor
         edge = edge_name(stage, to)
         uses = edge_row(ps, edge)
@@ -511,6 +519,11 @@ class Orchestrator:
                 stage=stage, actor=actor)
             record_waiting(ps, stage, ctx.attempt, cid, actor=actor)
             return _EdgeResult("blocked", checkpoint_id=cid)
+        another = getattr(worker, "another_use", None)
+        if another is not None and (why := another(ctx, edge)):
+            record_edge_allowed(ps, edge, actor=actor, by="kernel", reason=why)
+            self._take_edge(ps, stage, to, failures, actor=actor)
+            return _EdgeResult("taken")
         out = worker.degrade(ctx, list(failures))
         self._check(stage, out)
         if out.status == "waiting_human":
