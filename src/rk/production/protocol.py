@@ -9,7 +9,9 @@ as ``protocol.probed``) and then:
 - P2 (``collab``) opens ``protocol_approval`` (hard human; every section rendered, ``options.protocol_id`` and
   ``options.version`` name the protocol);
 - P1 (``auto``) asks the two-vendor ``vote`` (``conservative="revise"``, ``generator_vendors`` = the Ideator's and the
-  Scout's): ``approve`` freezes the protocol, ``revise`` reruns with the judges' reasons as guidance.
+  Scout's): ``approve`` freezes the protocol, ``revise`` reruns with the judges' reasons as guidance. A version whose
+  probe is still above the record cap is not voted on: only you may raise the cap, so P1 reruns with the cap as its
+  reason and spends no judge round on a search ``search_screen`` would stop.
 
 Tries inside the attempt (Plan 5c Task 9 fix: in P1 every rerun spends a ``protocol->protocol`` edge use, and nothing
 else could narrow a search):
@@ -18,24 +20,32 @@ else could narrow a search):
    ``Settings.protocol_tries`` versions: the role whose part failed (the Ideator for the draft, the Scout for the
    strategy, both when both failed) gets that version as ``previous_draft`` and its failures as guidance; the other
    part is kept. Only when the tries run out does the stage rerun, with the last version's failures as its reason.
+   Besides the structure of the paper type, the checks hold what the judges kept raising that a rule finds in the
+   body (P1 protocol diagnosis 2026-11-12, rules R1b/c, R5-R8): every PRISMA-P item of a systematic review
+   (``PRISMA_P_TEXT``), no placeholder in the Ideator's texts, PRISMA-P texts that name only the strategy's sources
+   and promise no search the kernel does not run, a systematic review's outcomes and study identifier field, no
+   meta-analysis of diagnostic accuracy, queries whose parentheses balance and that mix no AND and OR at one depth,
+   and no PRISMA-P item of a revised draft dropped (``dropped_prisma_p``). The kernel's own text (its PRISMA-P items
+   and ``E-lang``) is not checked as the Ideator's.
 2. **Narrowing.** When the probe of the sound version is above the project's record cap, the Scout is asked again in
    the attempt, up to ``Settings.protocol_narrow_tries`` times, for a narrower strategy (``narrowing``: the cap, the
    per-query and per-source counts of the best strategy so far, the failed tries). Each answer is a version (the
    draft kept, the strategy replaced), probed in turn. An answer that does not lower the total below the best so far
    (a repeated strategy, which takes the earlier probe and is not counted again, one that fails the checks or has no
    count, or a higher total) is a failed try. Narrowing stops when the best total is within the cap or the tries run
-   out; the best version (the lowest total) then goes to your approval or the vote, its probe shown.
+   out; the best version (the lowest total) then goes to your approval, its probe shown, or in P1 to the vote when
+   its total is within the cap (else the stage reruns, with the cap as its reason).
 
 Every try is a version (append-only), recorded with how it was drafted (``protocol.added`` ``tried``: its kind, the
 vendors of its Ideator and Scout, its failures). An interrupted attempt runs again in place (``resumes_in_place``): it
 goes on from the attempt's versions and probes, asks nothing it already has, takes the vote already recorded and the
 approval already opened.
 
-The probe is advisory: it is shown to you and to the judges, with the cap, as an upper bound, but fails nothing. Each
-count runs inside the per-item boundary (a source error or an exhausted source API budget leaves that count ``None``
-with its ``error``), so the probe never fails or interrupts the stage. It is an upper bound (duplicates across queries
-and sources count again) and leaves out the sources without a count; the record cap is enforced by ``search_screen``
-on the deduplicated records.
+The probe is advisory to you: it is shown to you and to the judges, with the cap, as an upper bound, and fails no
+check; in P1 a total above the cap keeps the version from the vote. Each count runs inside the per-item boundary (a
+source error or an exhausted source API budget leaves that count ``None`` with its ``error``), so the probe never
+fails or interrupts the stage. It is an upper bound (duplicates across queries and sources count again) and leaves out
+the sources without a count; the record cap is enforced by ``search_screen`` on the deduplicated records.
 
 A rerun after an unfrozen draft (a revision asked by you or by the vote, failed checks) gives both roles the version
 the earlier attempt offered (the best of its narrowing), else its last version, as ``previous_draft`` (its body and
@@ -127,7 +137,10 @@ PAPER_TYPES: tuple[str, ...] = get_args(PaperType)
 # The PRISMA-P items a systematic review needs that are written as text in ``prisma_p``; the others (eligibility,
 # information sources, search strategy, data items, synthesis) are the structured parts of the protocol, which the
 # structural checks cover.
-PRISMA_P_TEXT = ("rationale", "objectives", "selection_process", "data_collection_process", "risk_of_bias")
+# Calibration (P1 protocol diagnosis 2026-11-12): rule R1b; the last four are the method items the judges asked for
+# after the first five (prisma_p.methods_missing points), and a redraft fell back to the five the task named.
+PRISMA_P_TEXT = ("rationale", "objectives", "selection_process", "data_collection_process", "risk_of_bias",
+                 "meta_bias", "certainty_of_evidence", "data_management", "outcomes_prioritisation")
 # The PRISMA-P items only the kernel can write, from the project's records (a systematic or scoping review only,
 # ``kernel_prisma_p``): the Ideator cannot know them and wrote placeholders the next vote rejected. Each text states
 # only what the project's records establish, never a fact about the world outside them.
@@ -161,13 +174,24 @@ DRAFT_TASK = (
     "effect_measure, pool_model, hksj, pi_df and min_studies, the fewest studies with a computable effect a pool "
     "needs, at least 2; a scoping review's plan is an evidence_map; a critical review's or a proposal's is thematic "
     "or narrative_swim, or none) "
-    "and, for a systematic review, the PRISMA-P items (rationale, objectives, "
-    "selection process, data collection process, risk of bias). The kernel writes, from the project's records, the "
+    f"and, for a systematic review, the PRISMA-P items keyed {', '.join(PRISMA_P_TEXT)} (meta_bias: how bias across "
+    "studies, such as reporting bias, is assessed; certainty_of_evidence: how the certainty of each outcome's evidence "
+    "is rated, e.g. GRADE; data_management: how records and extracted data are kept; outcomes_prioritisation: the "
+    "primary and secondary outcomes, in order). A systematic review also names its outcomes in synthesis_plan.outcomes "
+    "whatever its synthesis method (a plan other than a meta-analysis maps no fields) and has an extraction field "
+    "identifying each study (e.g. study_id: first author and year, source record). The statistics module has no "
+    "diagnostic-accuracy measure: a question about sensitivity, specificity or AUC gets a narrative synthesis that "
+    "states this limitation, not a meta-analysis. The kernel writes, from the project's records, the "
     "PRISMA-P items registration, amendments, support and competing_interests (systematic and scoping reviews) and "
     f"the exclusion criterion {LANGUAGE_CRITERION_ID} (records in a language outside `languages` are excluded by a "
     "kernel rule before screening): do not write them; write the other eligibility criteria and PRISMA-P items to "
-    "agree with them (no criterion admits another language). Never claim that the question or the review is novel. "
-    "When a previous draft is given, revise it: change only what the guidance asks for and keep the rest. When a frozen "
+    "agree with them (no criterion admits another language). Write every text as what the review does, never a "
+    "placeholder for someone to complete later (\"to be completed by the researcher\", \"[TO BE ADDED]\", \"will be "
+    "registered\"). The PRISMA-P texts name only the sources of the search strategy and promise no search the kernel "
+    "does not run (it searches only those sources: no grey literature, trial registries, reference lists, citation or "
+    "hand-searching, no contact with authors). Never claim that the question or the review is novel. "
+    "When a previous draft is given, revise it: change only what the guidance asks for and keep the rest, dropping "
+    "none of its PRISMA-P items. When a frozen "
     "protocol is given, change only what the guidance asks for. Follow the guidance when there is any.")
 STRATEGY_TASK = (
     "Write the search strategy for the protocol: at least 3 English search queries that together cover the research "
@@ -248,11 +272,42 @@ def _unique(values: list[str]) -> list[str]:
 
 # OpenAlex's search answers HTTP 400 to wildcards (* and ?) and fails on fuzzy ~ (checked live 2026-11-09)
 OPENALEX_UNREAD = re.compile(r"[*?~]")
+# a quoted phrase, whose words are no operators and whose parentheses group nothing
+QUOTED = re.compile(r'"[^"]*"')
+
+
+def _query_syntax(query: str) -> list[str]:
+    """What keeps a query's boolean structure from reading the same on every source: parentheses that balance, and
+    no AND and OR at one parenthesis depth (outside quotes; the sources group such a query differently). Operators
+    are the upper-case words; lower-case ``and``/``or`` are search words.
+
+    Calibration (P1 protocol diagnosis 2026-11-12): rule R7; search.query_syntax points."""
+    depth, groups, mixed = 0, [set()], False
+    for token in re.findall(r"\(|\)|\bAND\b|\bOR\b", QUOTED.sub(" ", query)):
+        if token == "(":
+            depth += 1
+            groups.append(set())
+        elif token == ")":
+            depth -= 1
+            if depth < 0:
+                break
+            groups.pop()
+        else:
+            groups[-1].add(token)
+            mixed = mixed or len(groups[-1]) > 1
+    out = []
+    if depth != 0:
+        out.append(f"query {query!r} has unbalanced parentheses: close every ( with a ) after it")
+    if mixed:
+        out.append(f"query {query!r} mixes AND and OR at one parenthesis depth, which the sources group differently: "
+                   "put parentheses around each OR group, e.g. (aspirin OR acetylsalicylic acid) AND stroke")
+    return out
 
 
 def check_strategy(strategy: SearchStrategy, available: list[str]) -> list[str]:
-    """What keeps the Scout's strategy from its required size and its sources: ``QUERIES_MIN`` distinct queries,
-    ``SOURCES_MIN`` distinct available sources, and with OpenAlex no query it cannot read (``OPENALEX_UNREAD``)."""
+    """What keeps the Scout's strategy from its required size, its sources and a syntax each source reads:
+    ``QUERIES_MIN`` distinct queries, ``SOURCES_MIN`` distinct available sources, with OpenAlex no query it cannot read
+    (``OPENALEX_UNREAD``), and every query's parentheses balanced with no AND and OR at one depth (``_query_syntax``)."""
     out = []
     n = len({q.lower() for q in _unique(strategy.queries)})
     if n < QUERIES_MIN:
@@ -267,20 +322,28 @@ def check_strategy(strategy: SearchStrategy, available: list[str]) -> list[str]:
         out += [f"query {q!r} uses a wildcard or fuzzy operator (*, ?, ~), which OpenAlex cannot read (its search "
                 "fails): spell the variants out with OR (e.g. diarrhea OR diarrhoea), or leave OpenAlex out of the "
                 "sources" for q in _unique(strategy.queries) if OPENALEX_UNREAD.search(q)]
+    out += [f for q in _unique(strategy.queries) for f in _query_syntax(q)]
     return out
 
 
 def _free_texts(body: Protocol) -> list[tuple[str, str]]:
-    """Every text of the protocol the Ideator wrote, by name."""
+    """Every text of the protocol the Ideator wrote, by name: the kernel's PRISMA-P items (``KERNEL_PRISMA_P``) and
+    its language exclusion (``LANGUAGE_CRITERION_ID``) are left out, so no text check holds the kernel's text against
+    the Ideator."""
     out = [(f"eligibility.{side}.{c.id}", c.text) for side in ("include", "exclude")
-           for c in getattr(body.eligibility, side)]
+           for c in getattr(body.eligibility, side) if c.id.strip() != LANGUAGE_CRITERION_ID]
     out += [(f"extraction_schema.{f.name}.description", f.description) for f in body.extraction_schema]
     if body.synthesis_plan is not None:
         out += [(f"synthesis_plan.{k}", v) for k, v in body.synthesis_plan.model_dump().items()
                 if isinstance(v, str)]
         out += [(f"synthesis_plan.outcomes[{i}].name", o.name) for i, o in enumerate(body.synthesis_plan.outcomes)]
-    out += [(f"prisma_p.{k}", v) for k, v in (body.prisma_p or {}).items()]
+    out += [(f"prisma_p.{k}", v) for k, v in _own_prisma_p(body.prisma_p).items()]
     return out
+
+
+def _own_prisma_p(items: dict[str, str] | None) -> dict[str, str]:
+    """The PRISMA-P items the Ideator writes: every item but the kernel's (``KERNEL_PRISMA_P``)."""
+    return {k: v for k, v in (items or {}).items() if k not in KERNEL_PRISMA_P}
 
 
 def _prisma_p_missing(body: Protocol) -> list[str]:
@@ -289,14 +352,105 @@ def _prisma_p_missing(body: Protocol) -> list[str]:
     return [i for i in PRISMA_P_TEXT if not (texts.get(i) or "").strip()]
 
 
+# A text that defers to someone who completes it later: what the Ideator wrote for facts it could not know, which the
+# next vote rejected.
+# Calibration (P1 protocol diagnosis 2026-11-12): rule R1c; prisma_p.placeholder points (the regex hits the judges
+# did not raise were real deferrals too).
+PLACEHOLDER = re.compile(
+    r"\bto be (?:completed|stated|declared|recorded|filled|reported|registered|determined)\b|\[\s*to be\b|\btbd\b"
+    r"|\b(?:will|shall) be registered\b|\bbefore (?:the protocol is )?freez|\bby the researcher\b"
+    r"|\bthe researcher (?:must|will)\b|\bleft blank\b|\bwhen assigned\b|\bonce issued\b|\bmust be re-?run\b"
+    r"|\bbefore the search is final\b|\bwritten in the full protocol\b", re.IGNORECASE)
+
+
+def _placeholders(body: Protocol) -> list[str]:
+    """One failure per Ideator text (``_free_texts``) holding a placeholder (``PLACEHOLDER``), naming it."""
+    return [f"{name} holds a placeholder ({m.group(0)!r}): write what the review does, not what someone is to "
+            "complete later; registration, amendments, support and competing interests are written by the kernel"
+            for name, text in _free_texts(body) if (m := PLACEHOLDER.search(text))]
+
+
+# The kernel's search sources (``rk.discovery.sources``) by how a text names them, and the searches the kernel never
+# runs: a PRISMA-P text naming a source outside the strategy, or promising such a search, says the review does what
+# it does not.
+# Calibration (P1 protocol diagnosis 2026-11-12): rule R5; search.prose_vs_strategy points.
+SOURCE_NAMES = {"openalex": ("OpenAlex", r"open ?alex"), "europepmc": ("Europe PMC", r"europe ?pmc"),
+                "pubmed": ("PubMed", r"pub ?med|medline"), "arxiv": ("arXiv", r"arxiv"),
+                "s2": ("Semantic Scholar", r"semantic ?scholar")}
+UNRUN_SEARCHES = re.compile(
+    r"gr[ae]y literature|hand-?search\w*|reference lists?|citation (?:chasing|searching|tracking)|clinicaltrials\.gov"
+    r"|\bictrp\b|\bisrctn\b|trial regist(?:ry|ries|er|ers)\b"
+    r"|contact(?:ing)? (?:the )?(?:study |corresponding )?authors", re.IGNORECASE)
+# a clause that says what is not done (a negated mention is no claim)
+NEGATED = re.compile(r"\b(?:not|no|never|none|without|neither|nor|cannot)\b|n't", re.IGNORECASE)
+CLAUSE_END = re.compile(r"[.;!?](?:\s|$)|\n")
+
+
+def _prisma_p_against_strategy(body: Protocol) -> list[str]:
+    """What the Ideator's PRISMA-P texts say of the search that the strategy does not do: a source named outside the
+    strategy's sources, or a search the kernel does not run (``UNRUN_SEARCHES``). A clause that negates its mention
+    (``NEGATED``) says the review does not do it, and passes."""
+    sources = _unique(body.search_strategy.sources)
+    out = []
+    for key, text in _own_prisma_p(body.prisma_p).items():
+        claims = [c for c in CLAUSE_END.split(text) if not NEGATED.search(c)]
+        named = [name for s, (name, words) in SOURCE_NAMES.items() if s not in sources
+                 and any(re.search(words, c, re.IGNORECASE) for c in claims)]
+        out += [f"prisma_p.{key} names {name}, which is not a source of the search strategy ({', '.join(sources)}): "
+                "name only the strategy's sources, or say the source is not searched" for name in named]
+        promised = list(dict.fromkeys(m.group(0) for c in claims for m in UNRUN_SEARCHES.finditer(c)))
+        if promised:
+            out.append(f"prisma_p.{key} promises {', '.join(map(repr, promised))}, which the kernel does not run (it "
+                       "searches only the strategy's sources: no grey literature, trial registries, reference lists, "
+                       "citation or hand-searching, no contact with authors): remove it, or say it is not done")
+    return out
+
+
+# A diagnostic-accuracy measure the statistics module cannot pool; "insulin sensitivity" and a "sensitivity analysis"
+# are no such measure.
+# Calibration (P1 protocol diagnosis 2026-11-12): rule R6; synthesis.dta_measure_mismatch points.
+DIAGNOSTIC_ACCURACY = re.compile(r"diagnostic accuracy|(?<!insulin )sensitivit(?!y analys)|specificit|\bauc\b"
+                                 r"|\bauroc\b|area under the (?:roc|receiver)", re.IGNORECASE)
+# an extraction field that identifies the study (rule R7; extraction.no_study_id points)
+STUDY_ID_FIELD = re.compile(r"study_?id|author|citation|reference", re.IGNORECASE)
+
+
+def _diagnostic_accuracy(body: Protocol, plan: SynthesisPlan) -> str | None:
+    """Where the question or an outcome names a diagnostic-accuracy measure (``DIAGNOSTIC_ACCURACY``), else ``None``."""
+    for where, text in [("the question", body.question), *((f"outcome {o.name.strip()!r}", o.name)
+                                                            for o in plan.outcomes)]:
+        if m := DIAGNOSTIC_ACCURACY.search(text):
+            return f"{where} names {m.group(0)!r}"
+    return None
+
+
+def dropped_prisma_p(previous: dict | None, body: Protocol) -> list[str]:
+    """One failure per PRISMA-P item of ``previous`` (a protocol body, the draft a redraft revises) that ``body`` no
+    longer has, quoting the dropped text; the kernel's items are not the Ideator's to keep.
+
+    Calibration (P1 protocol diagnosis 2026-11-12): rule R8; six redrafts dropped items the next vote asked for
+    again."""
+    now = body.prisma_p or {}
+    return [f"PRISMA-P item {k!r} of the previous draft is dropped: keep every PRISMA-P item of the previous draft, "
+            f"revised as the guidance asks (its text was: {v!r})"
+            for k, v in _own_prisma_p((previous or {}).get("prisma_p")).items()
+            if (v or "").strip() and not (now.get(k) or "").strip()]
+
+
 def check_protocol(body: Protocol, paper_type: str) -> list[str]:
     """What keeps the protocol from the structure of its paper type, one failure per item; ``[]`` when it has it.
     Every type: the question, a query and a source, an include criterion (the selection principles), named and
-    distinct extraction fields, no novelty claim in the Ideator's texts. The systematic and scoping reviews also need
-    an extraction schema and a synthesis plan; the systematic review also the PRISMA-P items. A meta-analysis plan is
-    for a systematic review only (one failure naming the plan to use instead, ``OTHER_PLANS``); there it needs its
-    typed ``pool_model``, an ``effect_measure`` the statistics module computes (``MEASURES``) and its
-    pre-specified ``outcomes``, each named once and mapping the measure's roles to its own number fields."""
+    distinct extraction fields, outcomes named once, and in the Ideator's texts (``_free_texts``) no placeholder
+    (``PLACEHOLDER``), no novelty claim and no PRISMA-P text naming a source outside the strategy or promising a
+    search the kernel does not run. The systematic and scoping reviews also need an extraction schema and a synthesis
+    plan; the systematic review also the PRISMA-P items (``PRISMA_P_TEXT``), its outcomes for any synthesis method
+    and an extraction field identifying the study (``STUDY_ID_FIELD``). A meta-analysis plan is for a systematic
+    review only (one failure naming the plan to use instead, ``OTHER_PLANS``) and not for a diagnostic-accuracy
+    question or outcome (one failure: the statistics module has no such measure); otherwise it needs its typed
+    ``pool_model``, an ``effect_measure`` the statistics module computes (``MEASURES``) and its pre-specified
+    ``outcomes``, each mapping the measure's roles to its own number fields.
+
+    Calibration (P1 protocol diagnosis 2026-11-12): rules R1b, R1c, R5, R6, R7."""
     if paper_type not in PAPER_TYPES:
         raise ValueError(f"unknown paper type {paper_type!r}")
     out = [] if body.question.strip() else ["question is empty"]
@@ -326,6 +480,11 @@ def check_protocol(body: Protocol, paper_type: str) -> list[str]:
     if plan is not None and plan.method == "meta_analysis" and paper_type != "systematic_review":
         out.append(f"synthesis_plan.method meta_analysis is for a systematic review only; a "
                    f"{paper_type.replace('_', ' ')}'s plan is {OTHER_PLANS[paper_type]}")
+    elif plan is not None and plan.method == "meta_analysis" and (dta := _diagnostic_accuracy(body, plan)):
+        out.append(f"synthesis_plan.method meta_analysis cannot pool diagnostic accuracy ({dta}): rk.stats has no "
+                   f"diagnostic-accuracy measure (it pools only {', '.join(MEASURES)}, none of them sensitivity, "
+                   "specificity or AUC); plan a narrative synthesis (method narrative_swim) and state this limitation "
+                   "in the plan")
     elif plan is not None and plan.method == "meta_analysis":
         if plan.pool_model is None:
             out.append("synthesis_plan.pool_model is required for a meta-analysis (REML, DL or FE)")
@@ -335,8 +494,19 @@ def check_protocol(body: Protocol, paper_type: str) -> list[str]:
         if not plan.outcomes:
             out.append("synthesis_plan.outcomes is required for a meta-analysis (the pre-specified outcome names)")
         out += _outcome_problems(plan, {f.name: f for f in body.extraction_schema})
+    elif plan is not None:
+        out += _outcome_names(plan)
     if paper_type == "systematic_review":
+        if plan is not None and plan.method != "meta_analysis" and not plan.outcomes:
+            out.append("synthesis_plan.outcomes is empty: a systematic review pre-specifies its outcomes (primary "
+                       "first) whatever its synthesis method; list them by name (a plan other than a meta-analysis "
+                       "maps no fields)")
+        if body.extraction_schema and not any(STUDY_ID_FIELD.search(n) for n in names):
+            out.append("extraction_schema has no field identifying the study (a name with study_id, author, citation "
+                       "or reference): add one, e.g. study_id (text, source record): first author and year")
         out += [f"PRISMA-P item {i!r} is missing" for i in _prisma_p_missing(body)]
+    out += _placeholders(body)
+    out += _prisma_p_against_strategy(body)
     out += novelty_claims(_free_texts(body))
     return out
 
@@ -488,16 +658,11 @@ HKSJ_WORDS = {"auto": "auto (the Cochrane Handbook rule)", True: "always", False
 POOL_KEYS = frozenset({"pool_model", "hksj", "pi_df", "min_studies", "outcomes"})  # shown only for a meta-analysis
 
 
-def _outcome_problems(plan: SynthesisPlan, schema: dict[str, ExtractionField]) -> list[str]:
-    """What keeps a meta-analysis plan's outcomes from being computed as pre-specified: each named once (after case
-    and whitespace folding), mapping every role of the effect measure (and nothing else) to a number field of the
-    extraction schema, a field to one role only, no two outcomes to the same fields, and no outcome's numerator
-    fields (events, means, SDs: every role but ``n_*``) to another outcome's."""
+def _outcome_names(plan: SynthesisPlan) -> list[str]:
+    """What keeps a plan's outcomes from being told apart, whatever its method: each named, and once (after case and
+    whitespace folding)."""
     out: list[str] = []
-    seen: dict[str, str] = {}
-    sets: dict[frozenset, str] = {}
-    numerators: dict[str, str] = {}  # numerator field -> the outcome that uses it
-    roles = MEASURES.get(plan.effect_measure or "")
+    seen: set[str] = set()
     for o in plan.outcomes:
         name = o.name.strip()
         if not name:
@@ -505,9 +670,23 @@ def _outcome_problems(plan: SynthesisPlan, schema: dict[str, ExtractionField]) -
         elif (key := " ".join(name.split()).casefold()) in seen:
             out.append(f"synthesis_plan.outcomes: outcome {name!r} is given twice")
         else:
-            seen[key] = name
-        if roles is None:
-            continue
+            seen.add(key)
+    return out
+
+
+def _outcome_problems(plan: SynthesisPlan, schema: dict[str, ExtractionField]) -> list[str]:
+    """What keeps a meta-analysis plan's outcomes from being computed as pre-specified: each named once
+    (``_outcome_names``), mapping every role of the effect measure (and nothing else) to a number field of the
+    extraction schema, a field to one role only, no two outcomes to the same fields, and no outcome's numerator
+    fields (events, means, SDs: every role but ``n_*``) to another outcome's."""
+    out = _outcome_names(plan)
+    sets: dict[frozenset, str] = {}
+    numerators: dict[str, str] = {}  # numerator field -> the outcome that uses it
+    roles = MEASURES.get(plan.effect_measure or "")
+    if roles is None:
+        return out
+    for o in plan.outcomes:
+        name = o.name.strip()
         say = f"synthesis_plan.outcomes: outcome {name!r}"
         if missing := [r for r in roles if r not in o.fields]:
             out.append(f"{say} maps no field to {', '.join(missing)}")
@@ -743,9 +922,9 @@ def _narrowed(ps: ProjectStore, chain: list[dict]) -> tuple[dict, list[dict]]:
 
 
 def _offered(ps: ProjectStore, attempt: int) -> dict | None:
-    """The version the attempt offered for approval (to you or the vote): the best of its narrowing (``_narrowed``)
-    when its last draft try passed the checks; ``None`` when there is none (its tries failed, or no try was
-    recorded)."""
+    """The version the attempt offered for approval (to you or the vote; in P1 one still above the record cap reruns
+    unvoted instead): the best of its narrowing (``_narrowed``) when its last draft try passed the checks; ``None``
+    when there is none (its tries failed, or no try was recorded)."""
     tries = _tries(ps, attempt)
     last = _last_draft(tries)
     if last is None or _failed(tries[last]):
@@ -780,6 +959,19 @@ def _with_guidance(guidance: str, more: str) -> str:
 def _strategy_of(out: SearchStrategyOut) -> SearchStrategy:
     return SearchStrategy(queries=_unique(out.queries), sources=_unique(out.sources), date_from=out.date_from,
                           date_to=out.date_to)
+
+
+def _over_cap(best: dict, tries: int) -> str:
+    """Why P1 reruns instead of voting: the best version's probe is still above the record cap after the narrowing
+    tries, and only you may raise the cap (P2), so no judge round is spent on a search ``search_screen`` would stop.
+
+    Calibration (P1 protocol diagnosis 2026-11-12): rule R2; search.cap_exceeded points."""
+    probe, cap = best["probe"], best["body"]["record_cap"]
+    return (f"the record-cap probe of version {best['version']} counts {probe['total']} records (an upper bound), "
+            f"above the record cap {cap}, after {tries} narrowing tries, and P1 does not vote on a protocol above the "
+            "cap: narrow the search strategy to fewer records (drop or tighten the broadest queries, which the probe's "
+            "counts show, e.g. with quoted phrases and AND between the concepts every record needs) and keep every "
+            "eligibility criterion covered")
 
 
 def _revise_reason(res) -> str:
@@ -845,6 +1037,8 @@ class ProtocolWorker:
         if intake.production_mode == "collab":
             cid = opened_for_attempt(ps, KIND, ctx.stage, ctx.attempt) or _open(ctx, best["id"])
             return StageOutcome("waiting_human", checkpoint_id=cid, reason="the protocol awaits your approval")
+        if total is not None and total > best["body"]["record_cap"]:
+            return StageOutcome("rerun", reason=_over_cap(best, len(chain) - 1))
         return self._vote(ctx, best["id"], set(best["vendors"].values()))
 
     @staticmethod
@@ -852,7 +1046,9 @@ class ProtocolWorker:
                paper_type: str) -> StageOutcome | None:
         """One draft try, stored as the next version with its try: the Ideator's draft and the Scout's strategy, or,
         after a failed try (``last``), only the part that failed asked again, with that version as ``previous_draft``
-        and its failures as guidance. An outcome when a role gave nothing, else ``None``."""
+        and its failures as guidance. A PRISMA-P item of a draft the try revises (the attempt's ``previous_draft`` or
+        ``last``) that the try dropped is one of its draft failures (``dropped_prisma_p``). An outcome when a role gave
+        nothing, else ``None``."""
         ps = ctx.ps
         inputs = dict(context)
         vendors = dict(last["vendors"]) if last is not None else {}
@@ -882,9 +1078,11 @@ class ProtocolWorker:
             strategy = last["body"]["search_strategy"]
         body = with_kernel_facts(Protocol.model_validate({**part, "question": question, "search_strategy": strategy,
                                                           "record_cap": _current_cap(ps)}), paper_type)
+        failures = _failures(body, paper_type, ctx.sources.sources())
+        revised = [d["body"] for d in (context.get("previous_draft"), last) if d is not None]
+        failures["draft"] += list(dict.fromkeys(f for b in revised for f in dropped_prisma_p(b, body)))
         add_protocol(ps, ctx.attempt, body, version=_next_version(ps), actor=ctx.actor,
-                     tried={"kind": "draft", "vendors": vendors,
-                            "failures": _failures(body, paper_type, ctx.sources.sources())})
+                     tried={"kind": "draft", "vendors": vendors, "failures": failures})
         return None
 
     @staticmethod

@@ -72,8 +72,10 @@ DRAFT = {"eligibility": {"include": [{"id": "I1", "text": "People over 80"}],
                          "exclude": [{"id": "E1", "text": "Animal studies <script>"}]},
          "extraction_schema": [{"name": "n", "description": "Participants", "type": "number", "unit": "people"},
                                {"name": "design", "description": "Study design", "type": "category",
-                                "categories": ["rct", "cohort", "other"]}],
-         "synthesis_plan": {"method": "narrative_swim", "hksj": False},
+                                "categories": ["rct", "cohort", "other"]},
+                               {"name": "study_id", "description": "First author and year", "type": "text",
+                                "source": "record"}],
+         "synthesis_plan": {"method": "narrative_swim", "hksj": False, "outcomes": [{"name": "stroke"}]},
          "prisma_p": dict(SR_ITEMS)}
 STRATEGY = {"queries": ["aspirin stroke elderly", "antiplatelet therapy octogenarians", "stroke prevention over 80"],
             "sources": ["openalex", "europepmc"], "date_from": 2000, "date_to": None}

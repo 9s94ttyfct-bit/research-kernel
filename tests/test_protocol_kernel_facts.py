@@ -23,7 +23,11 @@ from tests.production_fakes import a_protocol, make_frozen_project, production_c
 SR_ITEMS = {"rationale": "Guidelines stop at 80.", "objectives": "Estimate benefit and harm.",
             "selection_process": "Two screeners, title/abstract then full text.",
             "data_collection_process": "One reader extracts, a second checks.",
-            "risk_of_bias": "RoB 2 for trials, ROBINS-I otherwise."}
+            "risk_of_bias": "RoB 2 for trials, ROBINS-I otherwise.",
+            "meta_bias": "Funnel plots when ten or more studies report an outcome.",
+            "certainty_of_evidence": "GRADE for each outcome.",
+            "data_management": "Records and extracted values are kept with their quotes.",
+            "outcomes_prioritisation": "Stroke first, then major bleeding."}
 PLACEHOLDER = "to be completed by the researcher"
 
 
@@ -58,8 +62,10 @@ def test_kernel_writes_admin_prisma_p_items(sr_env):
     k, ps, lib = sr_env
     draft = {"eligibility": {"include": [{"id": "I1", "text": "People over 80"}],
                              "exclude": [{"id": "E1", "text": "Animal studies"}]},
-             "extraction_schema": [{"name": "n", "description": "Participants", "type": "number"}],
-             "synthesis_plan": {"method": "narrative_swim"},
+             "extraction_schema": [{"name": "study_id", "description": "First author and year", "type": "text",
+                                    "source": "record"},
+                                   {"name": "n", "description": "Participants", "type": "number"}],
+             "synthesis_plan": {"method": "narrative_swim", "outcomes": [{"name": "stroke"}]},
              "prisma_p": {**SR_ITEMS, "registration": PLACEHOLDER}}
     strategy = {"queries": ["aspirin stroke elderly", "aspirin primary prevention octogenarians",
                             "antiplatelet stroke over 80"], "sources": ["openalex", "europepmc"],

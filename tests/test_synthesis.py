@@ -59,7 +59,9 @@ from tests.production_fakes import (
 TA, FT = "title_abstract", "full_text"
 SR_ITEMS = {"rationale": "Guidelines stop at 80.", "objectives": "Estimate benefit and harm.",
             "selection_process": "Two screeners.", "data_collection_process": "One reader.",
-            "risk_of_bias": "RoB 2."}
+            "risk_of_bias": "RoB 2.", "meta_bias": "Funnel plots.", "certainty_of_evidence": "GRADE.",
+            "data_management": "Values kept with quotes.", "outcomes_prioritisation": "Tuberculosis first."}
+STUDY_ID = ExtractionField(name="study_id", description="First author and year", type="text", source="record")
 BINARY = [ExtractionField(name=f, description=f, type="number") for f in BINARY_FIELDS]
 AE_FIELDS = [f"ae_{f}" for f in BINARY_FIELDS]  # the adverse-event outcome's own fields
 BINARY_AE = BINARY + [ExtractionField(name=f, description=f, type="number") for f in AE_FIELDS]
@@ -662,10 +664,10 @@ def test_meta_analysis_protocol_needs_typed_pool_options():
     assert "synthesis_plan.pool_model is required for a meta-analysis (REML, DL or FE)" in failures
     assert "synthesis_plan.outcomes is required for a meta-analysis (the pre-specified outcome names)" in failures
     assert any("synthesis_plan.effect_measure" in f and "RR, OR, RD, MD or SMD" in f for f in failures)
-    assert check_protocol(a_protocol(synthesis_plan=META, prisma_p=SR_ITEMS, extraction_schema=BINARY),
+    assert check_protocol(a_protocol(synthesis_plan=META, prisma_p=SR_ITEMS, extraction_schema=[STUDY_ID, *BINARY]),
                           "systematic_review") == []
-    assert check_protocol(a_protocol(synthesis_plan=META2, prisma_p=SR_ITEMS, extraction_schema=BINARY_AE),
-                          "systematic_review") == []
+    assert check_protocol(a_protocol(synthesis_plan=META2, prisma_p=SR_ITEMS,
+                                     extraction_schema=[STUDY_ID, *BINARY_AE]), "systematic_review") == []
     assert (META.pool_model, META.hksj, META.pi_df) == ("DL", "auto", "k-2")
     twice = META.model_copy(update={"outcomes": [TB, OutcomeSpec(name=" Tuberculosis", fields=AE.fields),
                                                  OutcomeSpec(name="", fields={})]})
@@ -710,8 +712,8 @@ def _outcome_failures(*outcomes: OutcomeSpec) -> list[str]:
     from rk.production.protocol import check_protocol
 
     plan = META.model_copy(update={"outcomes": list(outcomes)})
-    return check_protocol(a_protocol(synthesis_plan=plan, prisma_p=SR_ITEMS, extraction_schema=BINARY_AE),
-                          "systematic_review")
+    return check_protocol(a_protocol(synthesis_plan=plan, prisma_p=SR_ITEMS,
+                                     extraction_schema=[STUDY_ID, *BINARY_AE]), "systematic_review")
 
 
 def test_outcome_fields_are_distinct():

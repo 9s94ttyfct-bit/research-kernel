@@ -18,8 +18,9 @@ from rk.net.http import BudgetExhausted, HttpClient, HttpError
 from rk.orchestrator.engine import Orchestrator, StageOutcome, default_workers
 from rk.orchestrator.state import latest_attempt, record_attempt, start_run
 from rk.production import store
-from rk.production.models import Protocol, SynthesisPlan
+from rk.production.models import ExtractionField, OutcomeSpec, Protocol, SynthesisPlan
 from rk.production.protocol import (
+    PRISMA_P_TEXT,
     STRATEGY_TASK,
     VOTE_QUESTION,
     ProtocolWorker,
@@ -44,8 +45,21 @@ T0 = 1_800_000_000.0
 SR_ITEMS = {"rationale": "Guidelines stop at 80.", "objectives": "Estimate benefit and harm.",
             "selection_process": "Two screeners, title/abstract then full text.",
             "data_collection_process": "One reader extracts, a second checks.",
-            "risk_of_bias": "RoB 2 for trials, ROBINS-I otherwise."}
+            "risk_of_bias": "RoB 2 for trials, ROBINS-I otherwise.",
+            "meta_bias": "Funnel plots when ten or more studies report an outcome.",
+            "certainty_of_evidence": "GRADE for each outcome.",
+            "data_management": "Records and extracted values are kept with their quotes.",
+            "outcomes_prioritisation": "Stroke first, then major bleeding."}
 QUERIES = ["aspirin stroke elderly", "aspirin primary prevention octogenarians", "antiplatelet stroke over 80"]
+STUDY_ID = {"name": "study_id", "description": "First author and year", "type": "text", "source": "record"}
+
+
+def _sr_protocol(**overrides) -> Protocol:
+    """``a_protocol`` with what a systematic review also needs but its PRISMA-P items: a study identifier field and
+    named outcomes."""
+    return a_protocol(extraction_schema=[*a_protocol().extraction_schema, ExtractionField(**STUDY_ID)],
+                      synthesis_plan=SynthesisPlan(method="narrative_swim", outcomes=[OutcomeSpec(name="stroke")])
+                      ).model_copy(update=overrides)
 
 
 def _draft(*, prisma: bool = True, **overrides) -> dict:
@@ -53,8 +67,8 @@ def _draft(*, prisma: bool = True, **overrides) -> dict:
                          "exclude": [{"id": "E1", "text": "Animal studies"}]},
          "extraction_schema": [{"name": "n", "description": "Participants", "type": "number", "unit": "people"},
                                {"name": "design", "description": "Study design", "type": "category",
-                                "categories": ["rct", "cohort", "other"]}],
-         "synthesis_plan": {"method": "narrative_swim"},
+                                "categories": ["rct", "cohort", "other"]}, STUDY_ID],
+         "synthesis_plan": {"method": "narrative_swim", "outcomes": [{"name": "stroke"}]},
          "prisma_p": dict(SR_ITEMS) if prisma else {}}
     return {**d, **overrides}
 
@@ -106,10 +120,9 @@ def _settings(k, **values) -> None:
 
 # ---- structure per paper type ----
 def test_sr_protocol_needs_prisma_p_items():
-    body = a_protocol()  # PRISMA-P: only the rationale
+    body = _sr_protocol()  # PRISMA-P: only the rationale
     failures = check_protocol(body, "systematic_review")
-    assert failures == [f"PRISMA-P item {i!r} is missing" for i in
-                        ("objectives", "selection_process", "data_collection_process", "risk_of_bias")]
+    assert failures == [f"PRISMA-P item {i!r} is missing" for i in PRISMA_P_TEXT[1:]]
     assert check_protocol(body.model_copy(update={"prisma_p": SR_ITEMS}), "systematic_review") == []
     no_plan = body.model_copy(update={"prisma_p": SR_ITEMS, "synthesis_plan": None, "extraction_schema": []})
     assert check_protocol(no_plan, "systematic_review") == [  # each structural PRISMA-P item is reported once
@@ -189,7 +202,7 @@ def test_meta_analysis_draft_without_typed_fields_fails_the_gate_and_is_redrafte
     _, ps, _ = env
     old = _draft(synthesis_plan={"method": "meta_analysis", "effect_measure": "RR", "model": "random effects (DL)"})
     roles = ("events_treatment", "n_treatment", "events_control", "n_control")
-    schema = [{"name": f"stroke_{r}", "description": r, "type": "number"} for r in roles]
+    schema = [STUDY_ID, *({"name": f"stroke_{r}", "description": r, "type": "number"} for r in roles)]
     stroke = {"name": "stroke", "fields": {r: f"stroke_{r}" for r in roles}}
     typed = _draft(extraction_schema=schema,
                    synthesis_plan={"method": "meta_analysis", "effect_measure": "RR", "model": "random effects",
@@ -585,24 +598,23 @@ def _big(n_openalex: int, n_epmc: int) -> FakeSources:
 
 
 def test_record_cap_probe_is_advisory(env):
-    k, ps, _ = env
-    _settings(k, protocol_narrow_tries=0)  # no narrowing: the over-cap strategy goes to the vote as it is
+    _, ps, _ = env
     ex = _executor([_draft()], [_strategy(sources=["openalex", "europepmc", "arxiv"])],
                    votes=_votes(("approve", "approve")))
-    sources = _big(2500, 1500)
+    sources = _big(1500, 1000)
     w = ProtocolWorker()
     out = w.run(_ctx(env, ex, sources=sources))
-    assert out.status == "done"  # 4000 > 3000 fails nothing: search_screen enforces the cap after deduplication
+    assert out.status == "done"  # an uncounted source or query fails nothing: the probe is an upper bound
     assert [c for c in sources.calls if c[0] == "count"] == [("count", q, s) for q in QUERIES
                                                              for s in ("openalex", "europepmc")]
     (row,) = store.protocols(ps, 1)
     probe = probe_of(ps, row["id"])
-    assert (probe["total"], probe["uncounted"]) == (4000, ["arxiv"])
+    assert (probe["total"], probe["uncounted"]) == (2500, ["arxiv"])
     assert {"query": QUERIES[1], "source": "openalex", "count": None} in probe["counts"]  # no count: recorded, not 0
     assert w.gate(ps, 1).ok
     (judged, _) = [c for c in ex.calls if c["schema"] == "VoteOut"]
     seen = judged["inputs"]["subject"]["record_probe"]  # the judges see it, as an upper bound with the cap
-    assert (seen["total"], seen["record_cap"]) == (4000, 3000) and "upper bound" in seen["note"]
+    assert (seen["total"], seen["record_cap"]) == (2500, 3000) and "upper bound" in seen["note"]
     assert "no date range" not in seen["note"]
     assert judged["inputs"]["question"] == VOTE_QUESTION and judged["inputs"]["options"] == ["approve", "revise"]
 
@@ -653,14 +665,15 @@ def test_an_over_cap_probe_has_the_scout_narrow_and_the_narrower_strategy_goes_t
     assert store.frozen_protocol(ps)["id"] == v2["id"] and w.gate(ps, 1).ok
 
 
-def test_narrowing_that_does_not_lower_the_total_fails_and_the_best_strategy_goes_to_the_vote(env):
+def test_narrowing_that_does_not_lower_the_total_fails_and_p1_reruns_above_the_cap(env):
+    """The tries run out with the best total still above the cap: P1 spends no judge round on it (P2 asks you, who
+    may raise the cap: ``test_protocol_checks``) and reruns with the cap as its reason."""
     _, ps, _ = env
     sources = FakeSources({}, record_counts=COUNTS)
-    ex = _executor([_draft()], [_strategy(), _strategy(), _strategy(queries=WIDER), _strategy(queries=SOMEWHAT)],
-                   votes=_votes(("revise", "revise")))
+    ex = _executor([_draft()], [_strategy(), _strategy(), _strategy(queries=WIDER), _strategy(queries=SOMEWHAT)])
     out = ProtocolWorker().run(_ctx(env, ex, sources=sources))
-    assert out.status == "rerun" and "judge: revise" in out.reason  # the vote decides: no approval by the kernel
-    assert [c["role"] for c in ex.calls] == ["ideator"] + ["scout"] * 4 + ["judge", "judge_2"]
+    assert out.status == "rerun" and "3500 records" in out.reason and "record cap 3000" in out.reason
+    assert [c["role"] for c in ex.calls] == ["ideator"] + ["scout"] * 4  # no judge task
     rows = store.protocols(ps, 1)
     assert [probe_of(ps, r["id"])["total"] for r in rows] == [4000, 4000, 54000, 3500]
     assert _counted(sources) == [q for q in QUERIES + WIDER + SOMEWHAT for _ in ("openalex", "europepmc")]
@@ -670,27 +683,24 @@ def test_narrowing_that_does_not_lower_the_total_fails_and_the_best_strategy_goe
     assert same["version"] == 2 and "the same strategy as version 1" in same["why"]
     wider = fourth["failed_tries"][1]
     assert wider["version"] == 3 and wider["total"] == 54000 and "not fewer than the 4000" in wider["why"]
-    (judged, _) = [c for c in ex.calls if c["schema"] == "VoteOut"]  # tries exhausted: the best one is voted on
-    assert judged["inputs"]["subject"]["protocol"] == rows[3]["body"]
-    assert judged["inputs"]["subject"]["record_probe"]["total"] == 3500
+    assert f"version {rows[3]['version']}" in out.reason  # the best try, its total named
     assert store.frozen_protocol(ps) is None
 
 
-def test_a_rerun_revises_the_version_offered_to_the_vote_not_a_failed_later_try(env):
-    """The best try went to the vote; a later, failed narrowing try is newer. The judges' revise reruns protocol, and
-    the next attempt revises the version they voted on."""
+def test_a_rerun_revises_the_best_version_not_a_failed_later_try(env):
+    """The best try is still above the cap when the narrowing runs out, so P1 reruns without a vote; a later, failed
+    narrowing try is newer. The next attempt revises the best try, with its probe."""
     _, ps, _ = env
     sources = FakeSources({}, record_counts=COUNTS)
     ex = _executor([_draft(), _draft()],
                    [_strategy(), _strategy(queries=SOMEWHAT), _strategy(queries=WIDER), _strategy(queries=WIDER),
                     _strategy(queries=NARROW)],
-                   votes=_votes(("revise", "revise"), ("approve", "approve")))
+                   votes=_votes(("approve", "approve")))
     w = ProtocolWorker()
     assert w.run(_ctx(env, ex, sources=sources)).status == "rerun"
     rows = store.protocols(ps, 1)
     assert [probe_of(ps, r["id"])["total"] for r in rows] == [4000, 3500, 54000, 54000]
-    (judged, _) = [c for c in ex.calls if c["schema"] == "VoteOut"]
-    assert judged["inputs"]["subject"]["protocol"] == rows[1]["body"]  # the best try, not the last
+    assert not [c for c in ex.calls if c["schema"] == "VoteOut"]
     asked = len(ex.calls)
     assert w.run(_ctx(env, ex, attempt=2, sources=sources)).status == "done"
     revising = [c for c in ex.calls[asked:] if c["role"] in ("ideator", "scout")]
