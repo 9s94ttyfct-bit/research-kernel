@@ -1,8 +1,10 @@
 """The protocol stage: the Ideator drafts the review protocol (eligibility, extraction schema, synthesis plan and, for a
 systematic review, the PRISMA-P items) for the frozen RQ, the Scout its search strategy; the kernel builds the
-``Protocol`` (the question is the frozen RQ's), stores it as the next version, checks it (``check_strategy``,
-``check_protocol``), sizes the strategy (the record-cap probe: ``sources.count`` per query on each counted source of
-the strategy within its publication years, summed and stored as ``protocol.probed``) and then:
+``Protocol`` (the question is the frozen RQ's) with the facts only it knows (``with_kernel_facts``: the admin PRISMA-P
+items of a systematic or scoping review, ``KERNEL_PRISMA_P``, and the language exclusion ``E-lang``), stores it as the
+next version, checks it (``check_strategy``, ``check_protocol``), sizes the strategy (the record-cap probe:
+``sources.count`` per query on each counted source of the strategy within its publication years, summed and stored
+as ``protocol.probed``) and then:
 
 - P2 (``collab``) opens ``protocol_approval`` (hard human; every section rendered, ``options.protocol_id`` and
   ``options.version`` name the protocol);
@@ -88,6 +90,7 @@ from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.production.models import (
     RECORD_CAP,
     SCREENED_LANGUAGES,
+    Criterion,
     Eligibility,
     ExtractionField,
     Protocol,
@@ -125,6 +128,28 @@ PAPER_TYPES: tuple[str, ...] = get_args(PaperType)
 # information sources, search strategy, data items, synthesis) are the structured parts of the protocol, which the
 # structural checks cover.
 PRISMA_P_TEXT = ("rationale", "objectives", "selection_process", "data_collection_process", "risk_of_bias")
+# The PRISMA-P items only the kernel can write, from the project's records (a systematic or scoping review only,
+# ``kernel_prisma_p``): the Ideator cannot know them and wrote placeholders the next vote rejected. Each text states
+# only what the project's records establish, never a fact about the world outside them.
+# Calibration (P1 protocol diagnosis 2026-11-12): rule R1a; prisma_p.admin_missing and prisma_p.placeholder points.
+KERNEL_PRISMA_P = {
+    "registration": ("No external registration is recorded in this project (whether the review is registered "
+                     "elsewhere is not verified). The frozen protocol's SHA-256 and the time of its freeze are "
+                     "recorded in the project's event log."),
+    "amendments": ("A change after the freeze is stored as a new protocol version with a recorded deviation from the "
+                   "frozen one."),
+    "support": ("No funding or sponsor is recorded in this project; the protocol was drafted by the kernel's agent "
+                "roles."),
+    "competing_interests": ("No competing interests are recorded in this project (not verified beyond the project's "
+                            "records)."),
+}
+# the exclusion criterion of the record languages search_screen excludes by rule (rule R3)
+LANGUAGE_CRITERION_ID = "E-lang"
+LANGUAGE_NAMES = {"en": "English"}
+DEDUP_RULE = ("duplicates: each hit joins the library item of the same work, matched by identifier (DOI, PMID, "
+              "PMCID, arXiv id, OpenAlex id, Semantic Scholar id or ISBN), else by normalised title (case, accents, "
+              "spaces and punctuation ignored) and publication year; the first record of each work is screened, "
+              "every later hit is counted as a duplicate removed")
 
 DRAFT_TASK = (
     "Draft the review protocol for the frozen research question, its hypotheses and topic, for the intake's paper type "
@@ -137,9 +162,11 @@ DRAFT_TASK = (
     "needs, at least 2; a scoping review's plan is an evidence_map; a critical review's or a proposal's is thematic "
     "or narrative_swim, or none) "
     "and, for a systematic review, the PRISMA-P items (rationale, objectives, "
-    "selection process, data collection process, risk of bias). Records in a language outside `languages` are "
-    "excluded by a kernel rule before screening: write the eligibility criteria and the PRISMA-P items to agree with "
-    "it (no criterion admits another language). Never claim that the question or the review is novel. "
+    "selection process, data collection process, risk of bias). The kernel writes, from the project's records, the "
+    "PRISMA-P items registration, amendments, support and competing_interests (systematic and scoping reviews) and "
+    f"the exclusion criterion {LANGUAGE_CRITERION_ID} (records in a language outside `languages` are excluded by a "
+    "kernel rule before screening): do not write them; write the other eligibility criteria and PRISMA-P items to "
+    "agree with them (no criterion admits another language). Never claim that the question or the review is novel. "
     "When a previous draft is given, revise it: change only what the guidance asks for and keep the rest. When a frozen "
     "protocol is given, change only what the guidance asks for. Follow the guidance when there is any.")
 STRATEGY_TASK = (
@@ -163,6 +190,37 @@ VOTE_QUESTION = (
     "Is this review protocol complete and fit to freeze for the research question: its eligibility criteria, search "
     "strategy, extraction schema, synthesis plan and, for a systematic review, the PRISMA-P items? Answer approve to "
     "freeze it, or revise and say what to change.")
+# The judges' rules sheet: what the kernel does whatever the protocol says, so a judge does not ask the authors for
+# what they cannot change or the kernel cannot do. Every statement is what the code does (rk.production.search,
+# rk.production.screening, rk.sources.resolver) or what the project's records establish.
+# Calibration (P1 protocol diagnosis 2026-11-12): §7 item 6; rules R1a, R3, R4.
+KERNEL_RULES = (
+    "Rules of the kernel that runs this review. They hold whatever the protocol says: the protocol's authors cannot "
+    "change them, so do not ask them to.\n"
+    "1. Kernel-written text. The PRISMA-P items registration, amendments, support and competing_interests (systematic "
+    f"and scoping reviews), the exclusion criterion {LANGUAGE_CRITERION_ID} and the search execution block are "
+    "written by the kernel from the project's records. The protocol is drafted by the kernel's agent roles, which "
+    "know no fact outside the project's records (an external registration, funding, interests).\n"
+    "2. Sources. The search runs only on the sources in the search strategy, taken from the kernel's search sources: "
+    "OpenAlex, Europe PMC, PubMed, arXiv and, when its API key is set, Semantic Scholar. The kernel has no search of "
+    "trial registries or grey literature, no reference-list or citation searching, no hand-searching and no contact "
+    "with authors.\n"
+    "3. Queries. Each query is sent verbatim to the search API of each listed source (arXiv receives it as "
+    "all:<query>); the kernel does not translate a query into a source's own syntax (no MeSH or field-tag mapping). "
+    "OpenAlex rejects wildcards (* and ?) and ~, so the protocol's checks fail a query with them on OpenAlex.\n"
+    "4. Years. The publication years are applied as each source's own publication-year filter (arXiv: its "
+    "submission date); an open start is the earliest record a source indexes, an open end the date of the search.\n"
+    "5. Log. Every page a source returns is logged in the project's search log with its time, source, query, "
+    "publication years, offset and the records it returned. A search a source cannot finish (e.g. its paging limit) "
+    "is logged as incomplete; a systematic or scoping review then goes back to protocol.\n"
+    f"6. Deduplication. {DEDUP_RULE[0].upper()}{DEDUP_RULE[1:]}.\n"
+    "7. Record cap. The cap counts records after deduplication. Once the search finds more distinct works than the "
+    "cap, search_screen stops, screens none of them and goes back to protocol; records are never cut to the cap. The "
+    f"record-cap probe shown with the protocol is {PROBE_NOTE}; only OpenAlex, Europe PMC and PubMed give counts.\n"
+    "8. Language. A record whose language a source records outside the search strategy's languages is excluded by "
+    f"rule before screening ({LANGUAGE_CRITERION_ID}); a record with no recorded language is screened as English.\n"
+    "9. Freeze. The frozen protocol's SHA-256 and the time of its freeze are recorded in the project's event log; a "
+    "change after the freeze is a new protocol version with a recorded deviation from the frozen one.")
 
 
 class ProtocolDraftOut(BaseModel):
@@ -170,7 +228,8 @@ class ProtocolDraftOut(BaseModel):
     eligibility: Eligibility
     extraction_schema: list[ExtractionField] = []
     synthesis_plan: SynthesisPlan | None = None
-    prisma_p: dict[str, str] = {}  # PRISMA-P item -> text (systematic review: the PRISMA_P_TEXT items)
+    prisma_p: dict[str, str] = {}  # PRISMA-P item -> text (systematic review: the PRISMA_P_TEXT items; the kernel
+    # writes the KERNEL_PRISMA_P items itself, ``with_kernel_facts``)
 
 
 class SearchStrategyOut(BaseModel):
@@ -284,6 +343,43 @@ def check_protocol(body: Protocol, paper_type: str) -> list[str]:
 def counts_as_preregistration(paper_type: str) -> bool:
     """Whether freezing the protocol counts as preregistration (G-PREREG): systematic and scoping reviews only."""
     return paper_type in PREREG_TYPES
+
+
+# ---- the kernel's facts ----
+def kernel_prisma_p(paper_type: str) -> dict[str, str]:
+    """The PRISMA-P items the kernel writes for the paper type (``KERNEL_PRISMA_P``): a systematic or scoping review
+    (whose freeze counts as preregistration) gets them, the other types none."""
+    return dict(KERNEL_PRISMA_P) if counts_as_preregistration(paper_type) else {}
+
+
+def _language_names(codes: list[str]) -> str:
+    return ", ".join(f"{LANGUAGE_NAMES[c]} ({c})" if c in LANGUAGE_NAMES else c for c in codes)
+
+
+def _language_criterion(languages: list[str]) -> Criterion:
+    return Criterion(id=LANGUAGE_CRITERION_ID, text=(
+        f"Reports in a language other than {_language_names(languages)}: search_screen excludes a record whose "
+        "language a source records as another language, by a kernel rule before screening; a record with no recorded "
+        "language is screened. Written by the kernel."))
+
+
+def with_kernel_facts(body: Protocol, paper_type: str) -> Protocol:
+    """The protocol with the facts only the kernel writes: the PRISMA-P items of ``kernel_prisma_p`` replace any the
+    Ideator wrote under those keys (dropped for a type that gets none; ``prisma_p`` is ``None`` when nothing is
+    left), and the exclusion criterion ``LANGUAGE_CRITERION_ID`` naming the strategy's screened languages is the last
+    exclude criterion, once (a criterion of that id the Ideator wrote, on either side, is replaced). Applied again it
+    changes nothing.
+
+    Calibration (P1 protocol diagnosis 2026-11-12): rules R1a and R3. The Ideator cannot know registration, funding or
+    competing interests and wrote placeholders the next vote rejected; the language rule is the kernel's, and drafts
+    contradicted it."""
+    own = {k: v for k, v in (body.prisma_p or {}).items() if k not in KERNEL_PRISMA_P}
+    elig = body.eligibility
+    include = [c for c in elig.include if c.id.strip() != LANGUAGE_CRITERION_ID]
+    exclude = [c for c in elig.exclude if c.id.strip() != LANGUAGE_CRITERION_ID]
+    exclude.append(_language_criterion(body.search_strategy.languages))
+    return body.model_copy(update={"prisma_p": {**own, **kernel_prisma_p(paper_type)} or None,
+                                   "eligibility": Eligibility(include=include, exclude=exclude)})
 
 
 # ---- the record-cap probe (advisory) ----
@@ -484,6 +580,46 @@ def probe_lines(probe: dict | None, cap: int) -> list[str]:
     return lines
 
 
+def _years(ss: dict) -> str:
+    """The strategy's publication years written out: an open start is the earliest indexed record, an open end the
+    date of the search."""
+    start = ss["date_from"] if ss.get("date_from") is not None else "the earliest indexed record"
+    end = ss["date_to"] if ss.get("date_to") is not None else "the date of the search"
+    return f"{start} to {end}"
+
+
+def search_execution_lines(body: dict) -> list[str]:
+    """How ``search_screen`` runs the protocol's search strategy (``rk.production.search``), as the protocol's review
+    shows it after the strategy: the publication years written out, each query sent verbatim to each source, the
+    search log, deduplication, the record cap counted after deduplication and the language rule. Facts of the kernel,
+    not of the draft; the judges read them as facts.
+
+    Calibration (P1 protocol diagnosis 2026-11-12): rule R4; no_start_date, not_reproducible, dedup_unspecified and
+    cap_handling_unspecified points."""
+    ss, cap = body["search_strategy"], body["record_cap"]
+    n_q, n_s = len(ss["queries"]), len(ss["sources"])
+    return [
+        "Search execution (written by the kernel: how search_screen runs this strategy after the freeze):",
+        (f"- publication years: {_years(ss)} (inclusive), applied as each source's own publication-year filter "
+         "(arXiv: its submission date)."),
+        (f"- each query is sent verbatim, as written above, to the search API of each listed source ({n_q} queries x "
+         f"{n_s} sources = {n_q * n_s} searches; arXiv receives it as all:<query>); the kernel does not translate a "
+         "query into a source's own syntax (no MeSH or field-tag mapping)."),
+        ("- every page a source returns is logged in the project's search log with its time (the search date), "
+         "source, query, publication years, offset and the records it returned. Each source and query is paged to its "
+         "last result; a search a source cannot finish (e.g. its paging limit) is logged as incomplete with its "
+         "source and query, and a systematic or scoping review then goes back to protocol."),
+        f"- {DEDUP_RULE}.",
+        (f"- record cap: {cap} records, counted after deduplication. Once the search finds more than {cap} distinct "
+         "works, search_screen stops searching, screens none of them and goes back to protocol to narrow the "
+         "strategy; records are never cut to the cap. A version frozen after that records a deviation from the "
+         "frozen one."),
+        (f"- language: a record whose language a source records as other than {_language_names(ss['languages'])} is "
+         f"excluded by rule before screening ({LANGUAGE_CRITERION_ID}); a record with no recorded language is "
+         "screened as English."),
+    ]
+
+
 def render_protocol(ps: ProjectStore, row: dict) -> list[str]:
     """Every section of the protocol ``row``, for its review."""
     b = row["body"]
@@ -492,11 +628,11 @@ def render_protocol(ps: ProjectStore, row: dict) -> list[str]:
     purpose = ("freezing it counts as preregistration (G-PREREG)" if counts_as_preregistration(paper_type)
                else "freezing it is for traceability only, not preregistration")
     ss = b["search_strategy"]
-    dates = f"{ss['date_from'] or 'any year'} to {ss['date_to'] or 'now'}"
     lines = [f"Protocol version {row['version']} ({paper_type}; {purpose}).", "", f"Research question: {b['question']}",
-             "", "Search strategy:", f"- sources: {', '.join(ss['sources'])}", f"- publication years: {dates}",
+             "", "Search strategy:", f"- sources: {', '.join(ss['sources'])}", f"- publication years: {_years(ss)}",
              f"- languages: {', '.join(ss['languages'])}", "- queries:"]
     lines += [f"  - {q}" for q in ss["queries"]]
+    lines += ["", *search_execution_lines(b)]
     lines += ["", f"Record cap: {b['record_cap']} records.", *probe_lines(probe_of(ps, row["id"]), b["record_cap"])]
     lines += ["", "Eligibility:", "Include:"] + [f"- {c['id']}: {c['text']}" for c in b["eligibility"]["include"]]
     lines += ["Exclude:"] + ([f"- {c['id']}: {c['text']}" for c in b["eligibility"]["exclude"]] or ["- none"])
@@ -741,8 +877,8 @@ class ProtocolWorker:
             vendors["scout"] = vendor_of(s.provider, s.model)
         else:
             strategy = last["body"]["search_strategy"]
-        body = Protocol.model_validate({**part, "question": question, "search_strategy": strategy,
-                                        "record_cap": _current_cap(ps)})
+        body = with_kernel_facts(Protocol.model_validate({**part, "question": question, "search_strategy": strategy,
+                                                          "record_cap": _current_cap(ps)}), paper_type)
         add_protocol(ps, ctx.attempt, body, version=_next_version(ps), actor=ctx.actor,
                      tried={"kind": "draft", "vendors": vendors,
                             "failures": _failures(body, paper_type, ctx.sources.sources())})
