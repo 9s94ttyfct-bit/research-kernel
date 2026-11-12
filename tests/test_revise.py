@@ -94,8 +94,17 @@ def _restated(ps, cid: str) -> str:
     return f"In other words, {text[0].lower()}{text[1:]} [[clm:{cid}]]."
 
 
-def _exec(reader: list, writer: list, cls=Exec, **kw) -> Exec:
-    return cls({("simreader", "ReaderQuestions"): list(reader), ("writer", "Revision"): list(writer)}, **kw)
+def repair(*fixes: tuple[int, str]):
+    """A Writer repair output: each ``(sentence, text)`` replaces that failing sentence (empty text deletes it); none:
+    the rejected revision as it was."""
+    def out(inputs):
+        return {"section": inputs["section"]["id"], "repairs": [{"sentence": n, "text": t} for n, t in fixes]}
+    return out
+
+
+def _exec(reader: list, writer: list, repairs: list = (), cls=Exec, **kw) -> Exec:
+    return cls({("simreader", "ReaderQuestions"): list(reader), ("writer", "Revision"): list(writer),
+                ("writer", "RevisionRepair"): list(repairs)}, **kw)
 
 
 def _written(ex: Exec) -> list[str]:
@@ -215,13 +224,15 @@ def test_revision_that_adds_failing_sentence_is_rejected(env):
     first = ArgumentService(ps).get_claim(main)["text"].rstrip(".")
     verified = f"{first} [[clm:{main}]]."
     save_settings(load_settings().model_copy(update={"revise_max_rounds": 1}))
-    # the introduction gains an ungrounded number; theme-1's verified sentence is rewritten without its marker
+    # the introduction gains an ungrounded number; theme-1's verified sentence is rewritten without its marker; each
+    # repair leaves its revision as it was
     ex = _exec([ask(("introduction", 1), ("theme-1", 1))],
-               [revision(add=bad), revision(drop=verified, add=f"It is likely that {first[0].lower()}{first[1:]}.")])
+               [revision(add=bad), revision(drop=verified, add=f"It is likely that {first[0].lower()}{first[1:]}.")],
+               [repair(), repair()])
     w = ReviseWorker()
     assert w.run(_ctx(env, ex)).status == "done"
-    intro, theme = revise_notes(ps, 1, kind="decided")
-    assert not intro["accepted"] and not theme["accepted"]
+    intro, intro_repaired, theme, theme_repaired = revise_notes(ps, 1, kind="decided")
+    assert not any(n["accepted"] for n in (intro, intro_repaired, theme, theme_repaired))
     assert any(r.startswith("sentence ") and "1234" in r and "the number 1234 is not in any marker's target" in r
                for r in intro["reasons"]), intro["reasons"]
     assert any("no source marker" in r for r in theme["reasons"]), theme["reasons"]
@@ -229,6 +240,63 @@ def test_revision_that_adds_failing_sentence_is_rejected(env):
     res = w.gate(ps, 1)
     assert not res.ok
     assert sum("priority-1 question" in f for f in res.failures) == 2, res.failures
+
+
+def _numbered(md: str, part: str) -> int:
+    """The number (from 1) of the section's sentence that contains ``part``."""
+    (x,) = [x for x in parse_section(md) if part in x.text]
+    return x.index + 1
+
+
+def test_a_rejected_revision_is_repaired_once_and_its_answers_count(env):
+    """Calibration (critical3, revise attempts 1-2): one untentative [[inf]] sentence rejected whole revisions, and
+    with them the change answering a priority-1 question. The Writer gets one repair of the rejected revision's failing
+    sentences; put into that revision, it is decided again and, accepted, stored with the revision's answers."""
+    _, ps, _ = env
+    _drafted(env)
+    main = main_claim(ps, 1)
+    bad = f"Aspirin was studied in 1234 older people [[clm:{main}]]."
+    added = _restated(ps, main)
+    save_settings(load_settings().model_copy(update={"revise_max_rounds": 1}))
+    fixed = {}
+
+    def mend(inputs):
+        fixed["n"] = _numbered(inputs["revise"]["markdown"], "1234")
+        return repair((fixed["n"], added))(inputs)
+
+    ex = _exec([ask(("introduction", 1))], [revision(add=bad, note="the cohort is given")], [mend])
+    w = ReviseWorker()
+    assert _done(w.run(_ctx(env, ex)))
+    rejected, mended = revise_notes(ps, 1, kind="revision")
+    first, second = revise_notes(ps, 1, kind="decided")
+    assert not first["accepted"] and second["accepted"] and second["task"] == mended["task"]
+    assert mended["repair_of"] == rejected["task"] and mended["answers"] == rejected["answers"]
+    assert mended["markdown"] == rejected["markdown"].replace(bad, added) and not mended["ignored"]
+    (call,) = ex.of("writer", "RevisionRepair")
+    assert call["inputs"]["revise"]["markdown"] == rejected["markdown"]
+    assert any(r.startswith(f"sentence {fixed['n']} ") and "1234" in r for r in call["inputs"]["revise"]["failures"])
+    assert _written(ex) == ["introduction"]
+    versions = draft_versions(ps, "introduction")
+    assert [(v["stage"], v["round"]) for v in versions] == [("draft", 0), ("revise", 1)]
+    assert draft_text(ps, "introduction", 2) == mended["markdown"] and versions[-1]["verdict"]["ok"]
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures  # the priority-1 question is settled by the repaired revision
+
+
+def test_no_repair_when_the_budget_must_cover_the_rounds_other_revisions(env):
+    """A repair is a Writer task of the round: it is asked only while the budget still covers it and every revision
+    the round has still to ask, so a run is never paused mid-round."""
+    _, ps, _ = env
+    _drafted(env)
+    main = main_claim(ps, 1)
+    save_settings(load_settings().model_copy(update={"revise_max_rounds": 1}))
+    w = ReviseWorker()
+    w.budget = 5  # the SimReader, the introduction's revision, then 3 left for the 3 other sections' revisions
+    ex = _exec([ask(*((sec, 2) for sec in REVISABLE))],
+               [revision(add=f"Aspirin was studied in 1234 older people [[clm:{main}]]."),
+                *[revision(how="answered", note="clear")] * 3], [repair()])
+    assert _done(w.run(_ctx(env, ex)))
+    assert not ex.of("writer", "RevisionRepair") and _written(ex) == REVISABLE
+    assert [n["accepted"] for n in revise_notes(ps, 1, kind="decided")] == [False, True, True, True]
 
 
 def test_rounds_stop_at_k_or_without_priority1_questions(env):
@@ -327,13 +395,13 @@ def test_unverifiable_section_takes_revise_to_draft(env):
         _p1_objection(ps, main)
         return revision(add=_restated(ps, main))(inputs)
 
-    ex = _exec([ask(("introduction", 1)), ask()], [writer])
+    ex = _exec([ask(("introduction", 1)), ask()], [writer], [repair()])
     w = ReviseWorker()
     out = w.run(_ctx(env, ex))
     assert (out.status, out.to) == ("back_edge", "draft"), out.reason
     assert ("revise", "draft") in BACK_EDGES
-    (decided,) = revise_notes(ps, 1, kind="decided")
-    assert not decided["accepted"] and 0 in decided["reverified"]
+    decided, repaired = revise_notes(ps, 1, kind="decided")
+    assert not decided["accepted"] and not repaired["accepted"] and 0 in decided["reverified"]
     assert any("fails the claim gate" in r for r in decided["reasons"]), decided["reasons"]
     assert "section introduction v1: sentence 1 “" in out.reason and main in out.reason
     assert len(ex.of("simreader")) == 1 and [v["stage"] for v in draft_versions(ps, "introduction")] == ["draft"]
@@ -380,7 +448,7 @@ def test_resume_stores_an_accepted_revision_made_for_a_carried_question(env, mon
     # round 1 rejects the introduction's revision; round 2 asks only about theme-1 (priority 2), and the introduction
     # is revised for its carried priority-1 question alone; the store fails right after that revision is accepted
     ex = _exec([ask(("introduction", 1)), ask(("theme-1", 2))],
-               [revision(add=bad), revision(add=added), revision(how="answered", note="stated in Methods")])
+               [revision(add=bad), revision(add=added), revision(how="answered", note="stated in Methods")], [repair()])
     real = revise_mod.write_draft
 
     def boom(*a, **kw):
@@ -391,7 +459,8 @@ def test_resume_stores_an_accepted_revision_made_for_a_carried_question(env, mon
     with pytest.raises(RuntimeError):
         w.run(_ctx(env, ex))
     monkeypatch.setattr(revise_mod, "write_draft", real)
-    assert [(n["round"], n["accepted"]) for n in revise_notes(ps, 1, kind="decided")] == [(1, False), (2, True)]
+    assert [(n["round"], n["accepted"]) for n in revise_notes(ps, 1, kind="decided")] == [(1, False), (1, False),
+                                                                                          (2, True)]
     assert _done(w.run(_ctx(env, ex)))
     assert _written(ex) == ["introduction", "introduction", "theme-1"] and len(ex.of("simreader")) == 2
     versions = draft_versions(ps, "introduction")
@@ -609,10 +678,10 @@ def test_a_manuscript_request_stays_open_while_its_latest_revised_answer_was_rej
     save_settings(load_settings().model_copy(update={"revise_max_rounds": 1}))
     _reopened_by_the_final_review(ps, 1, "final_review: revise: Say who the audience is.")
     ex = _exec([ask()], [revision(add="An unmarked sentence names the audience.", how="revised", note="added"),
-                         *[revision(how="answered", note="already clear")] * 3])
+                         *[revision(how="answered", note="already clear")] * 3], [repair()])
     w = ReviseWorker()
     assert _done(w.run(_ctx(env, ex)))
-    assert [n["accepted"] for n in revise_notes(ps, 1, kind="decided")] == [False, True, True, True]
+    assert [n["accepted"] for n in revise_notes(ps, 1, kind="decided")] == [False, False, True, True, True]
     gate = w.gate(ps, 1)
     (q,) = revise_view(ps, 1)["questions"]
     assert not gate.ok and any(q["id"] in f and "rejected" in f for f in gate.failures), gate.failures
@@ -639,11 +708,11 @@ def test_a_request_held_in_round_1_gets_round_2_within_the_round_limit(env):
     ex = _exec([ask()] * 3, [revision(add="An unmarked sentence names the audience.", how="revised", note="added"),
                              *[revision(how="answered", note="already clear")] * 3,
                              revision(add=_restated(ps, main), how="revised", note="the audience is named"),
-                             *[revision(how="declined", note="not mine")] * 3])
+                             *[revision(how="declined", note="not mine")] * 3], [repair()])
     w = ReviseWorker()
     assert _done(w.run(_ctx(env, ex)))
     assert [n["round"] for n in revise_notes(ps, 1, kind="questions")] == [0, 1, 2]
-    assert [n["accepted"] for n in revise_notes(ps, 1, kind="decided")] == [False, True, True, True] + [True] * 4
+    assert [n["accepted"] for n in revise_notes(ps, 1, kind="decided")] == [False, False, True, True, True] + [True] * 4
     (request,) = revise_notes(ps, 1, kind="questions")[0]["questions"]
     assert [c["inputs"]["revise"]["questions"][0]["id"] for c in ex.of("writer", "Revision")[4:]] == [request["id"]] * 4
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures

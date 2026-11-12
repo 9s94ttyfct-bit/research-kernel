@@ -275,7 +275,7 @@ def test_a_retry_repairs_only_its_failing_sentences(env):
     after = draft_text(ps, "introduction", second["version"])
     assert after == before.replace(bad + " ", "", 1) and second["verdict"]["ok"]
     (note,) = draft_notes(ps, 1, kind="repaired")
-    assert note["sentences"] == [1, 2] and note["ignored"] == ["sentence 2: not a failing sentence of the previous draft"]
+    assert note["sentences"] == [1, 2] and note["ignored"] == ["sentence 2: not a failing sentence of the version repaired"]
 
 
 def test_a_section_failing_at_draft_reruns_is_repaired_from_its_last_version(env):

@@ -413,7 +413,7 @@ def repair_sentences(markdown: str, verdict: SectionVerdict | dict,
     for r in repairs:
         i = r.sentence - 1
         if i not in failing or i not in sentences:
-            ignored.append(f"sentence {r.sentence}: not a failing sentence of the previous draft")
+            ignored.append(f"sentence {r.sentence}: not a failing sentence of the version repaired")
         elif i in chosen:
             ignored.append(f"sentence {r.sentence}: repaired twice; the first repair is kept")
         elif (span := _own_span(markdown, sentences[i])) is None:
@@ -423,6 +423,17 @@ def repair_sentences(markdown: str, verdict: SectionVerdict | dict,
     for (a, z), text in sorted(chosen.values(), reverse=True):
         markdown = markdown[:a] + text + markdown[z:] if text else markdown[:a] + markdown[z:].lstrip(" ")
     return markdown, ignored
+
+
+def repairable(markdown: str, verdict: SectionVerdict | dict) -> bool:
+    """Whether repairs can mend the failing version: it fails on sentences only (no section-level problem) and every
+    failing sentence can be repaired on its own (``_own_span``)."""
+    v = SectionVerdict.model_validate(verdict)
+    if v.ok or v.problems:
+        return False
+    sentences = {x.index: x for x in parse_section(markdown)}
+    return all(x.index in sentences and _own_span(markdown, sentences[x.index]) is not None
+               for x in v.sentences if not x.ok)
 
 
 def _own_span(markdown: str, x: Sentence) -> tuple[int, int] | None:
@@ -659,12 +670,7 @@ class DraftWorker:
     def _sentences_only(ps: ProjectStore, s: DraftInputs, section: str, md: str) -> bool:
         """Whether a whole new section is refused as a retry of ``md``: it fails now on sentences only (no
         section-level problem) and every failing sentence can be repaired on its own (``_own_span``)."""
-        now = section_verdict(ps, section, md, paper_type=s.paper_type)
-        if now.ok or now.problems:
-            return False
-        sentences = {x.index: x for x in parse_section(md)}
-        return all(x.index in sentences and _own_span(md, sentences[x.index]) is not None
-                   for x in now.sentences if not x.ok)
+        return repairable(md, section_verdict(ps, section, md, paper_type=s.paper_type))
 
     @staticmethod
     def _base(ctx: StageContext, s: DraftInputs, spec: SectionSpec, mine: list[dict]) -> tuple[str, dict] | None:
