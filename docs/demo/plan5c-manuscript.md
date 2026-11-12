@@ -783,6 +783,37 @@ went on in place.
   sentence whose text occurs twice only at the reader's position).
 - Open: a new run (`rk run resume` replaces a failed run) goes on from revise, which passed, with audit attempt 2.
 
+### critical3, a new run (2026-11-12): exported
+
+A serve on 7417ac2 (the Bookshelf fix above). `rk run resume` replaced the failed run with
+`run_01M76Q5XYNWDW13SXW3NM7S1W4`, which went on from revise (passed) and ended `done` at 01:56:25 UTC.
+
+| Stage, attempts | Window (UTC) | Role tasks | Outcome |
+|---|---|---|---|
+| audit 2 | 01:50:26–01:50:34 | none | every hard gate passed; final_review: revise |
+| revise 3 | 01:53:18–01:54:36 | SimReader 2, Writer 11 (9 revisions, 2 repairs) | passed in 2 rounds |
+| audit 3 | 01:54:36–01:56:22 | none | every hard gate passed; final_review: approved |
+| export 1 | 01:56:22–01:56:25 | none | passed |
+
+- **audit:** all 12 cited items passed V-REF; the AHRQ report through PubMed (title score 100, year and first author
+  equal). Its V-RETRACT is `unknown` (no DOI), the report's one warning. No task failed, waited or was retried.
+- **final_review 1** (the stand-in, after reading every section against its claims): theme-6 repeated theme-1 and
+  said nothing on its heading; theme-3's last paragraphs repeated theme-5 and theme-6 and one sentence cited a claim
+  that does not say it; the conclusion cited the batch-size claim for a sentence it does not support. The request
+  went to revise as one priority-1 question on the whole manuscript. theme-6 (by a repair) and theme-3 were rewritten;
+  the conclusion's revision and its repair failed V-HEDGE, so its sentence stayed. One resolving answer settles a
+  question on the whole manuscript, so the gate passed with the third point unmet. **final_review 2** approved.
+- **export:** paper.pdf (39 pages), .docx, .md, .tex, refs.json and refs.bib (12 references) and the package zip
+  with the approved audit report all open. The AHRQ report is exported as a journal article with no venue: the item
+  was added from Europe PMC, whose adapter read every record as a journal article, and V-REF does not change an item.
+- **V-HEDGE misread a negation:** "not an established general causal rule" was level 3 (categorical), "not
+  established" level 2: an article between the negator and the word kept the negation from counting.
+- **Not caught:** sentences on an outside benchmark (the SESR-Eval objection's source, not an included study) cite
+  a claim that does not mention it, and render as citations of included studies; the marker grammar has no marker
+  for an objection's source. The stand-in missed it at both reviews.
+- **Fixed after the run:** the Europe PMC adapter reads a Bookshelf book (its publisher as venue) and a chapter (the
+  book as venue); V-HEDGE's negation reaches over an article ("not an established", "not a proven").
+
 ## P1 project: failed at protocol (the vote never approved it)
 
 Home `rk-plan5c-p1`, intake `probiotics for preventing antibiotic-associated diarrhoea in children`, systematic
