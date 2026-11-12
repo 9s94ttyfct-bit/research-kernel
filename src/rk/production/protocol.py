@@ -546,6 +546,19 @@ def _own_open_blocking(ledger: list[dict], role: str, out: ProtocolVoteOut, atte
     return earlier + [f"p{attempt}.{role}.{n}" for n, p in enumerate(out.points, 1) if p.blocking]
 
 
+def _owned(ps: ProjectStore, by: str, given: list[PointAnswer]) -> list[PointAnswer]:
+    """``given``, ``by``'s answers (the Ideator's or the Scout's), without those to a point of the ledger that ``by``
+    does not own (``owner``): an author answers only its own points, so the judges never read its answers to another's.
+    The unanswered-point check (``_unanswered``) is unaffected: it asks each author only for its own points.
+
+    Calibration (P1 protocol rerun 2026-11-12): Ideator-owned points collected Scout answers \"rebutted: this is the
+    Ideator's\" (fructose p1.judge.1: four of its six answers), which the judges then read."""
+    if not given:
+        return []
+    owners = {p["id"]: owner(p) for p in points_ledger(ps)}
+    return [a for a in given if owners.get(a.point_id, by) == by]
+
+
 def _answered(answers: list[dict], by: str, given: list[PointAnswer]) -> list[dict]:
     """The try's answers: ``answers`` (the ones it carries over) with ``by``'s replaced by ``given``."""
     return [a for a in answers if a["by"] != by] + [{**a.model_dump(mode="json"), "by": by} for a in given]
@@ -1453,7 +1466,8 @@ class ProtocolWorker:
         (``open_points``): one it leaves unanswered is one of its failures (``_unanswered``), so it is asked again in
         the attempt and no edge is spent.
         The try records the answers (``tried.answers``, each with the role, ``by``; a part kept from ``last`` keeps
-        its answers), never in the protocol body. An outcome when a role gave nothing, else ``None``."""
+        its answers; an answer to a point the role does not own is dropped, ``_owned``), never in the protocol body. An
+        outcome when a role gave nothing, else ``None``."""
         ps = ctx.ps
         inputs = dict(context)
         points = context.get("open_points") or []
@@ -1473,7 +1487,7 @@ class ProtocolWorker:
             part = d.output.model_dump(mode="json", exclude={"answers"})
             part["prisma_p"] = part["prisma_p"] or None
             vendors["ideator"] = vendor_of(d.provider, d.model)
-            answers = _answered(answers, "ideator", d.output.answers)
+            answers = _answered(answers, "ideator", _owned(ps, "ideator", d.output.answers))
             unanswered["draft"] = _unanswered(points, "ideator", d.output.answers)
         else:
             part = {k: last["body"][k] for k in DRAFT_KEYS}
@@ -1484,7 +1498,7 @@ class ProtocolWorker:
                 return StageOutcome("rerun", reason=f"the scout gave no search strategy ({s.error})")
             strategy = _strategy_of(s.output).model_dump(mode="json")
             vendors["scout"] = vendor_of(s.provider, s.model)
-            answers = _answered(answers, "scout", s.output.answers)
+            answers = _answered(answers, "scout", _owned(ps, "scout", s.output.answers))
             unanswered["strategy"] = _unanswered(points, "scout", s.output.answers)
         else:
             strategy = last["body"]["search_strategy"]
@@ -1520,8 +1534,8 @@ class ProtocolWorker:
         """One narrowing try: the Scout, given the best version so far (``previous_draft``, with its probe) and
         ``narrowing`` (the cap, that version's total and per-query, per-source counts, the failed tries, and the
         sources the PRISMA-P texts name, ``keep_sources``, which it keeps), answers with a strategy, stored with that
-        version's draft as the next version; the best version's answers carry over, with any the Scout gives merged
-        in by point id (``_merged``). An outcome when the Scout gave nothing, else ``None``."""
+        version's draft as the next version; the best version's answers carry over, with any the Scout gives to its own
+        points (``_owned``) merged in by point id (``_merged``). An outcome when the Scout gave nothing, else ``None``."""
         probe, cap = best["probe"], best["body"]["record_cap"]
         keep = _prisma_p_sources(Protocol.model_validate(best["body"]))
         inputs = {**context, "eligibility": best["body"]["eligibility"],
@@ -1541,7 +1555,8 @@ class ProtocolWorker:
         add_protocol(ctx.ps, ctx.attempt, body, version=_next_version(ctx.ps), actor=ctx.actor,
                      tried={"kind": "narrow", "vendors": {**best["vendors"], "scout": vendor_of(s.provider, s.model)},
                             "failures": _failures(body, paper_type, ctx.sources.sources()),
-                            "answers": _merged(best.get("answers", []), "scout", s.output.answers)})
+                            "answers": _merged(best.get("answers", []), "scout",
+                                               _owned(ctx.ps, "scout", s.output.answers))})
         return None
 
     @staticmethod

@@ -494,3 +494,28 @@ def test_a_mark_matching_two_own_points_matches_none():
     assert marked_point(points, "judge_2", "p1.judge.2.1") == "p1.judge_2.1"
     assert marked_point(points, "judge_2", "p2judge1") is None  # judge's point is never judge_2's
     assert marked_point(points, "judge_2", "p2.judge.1") == "p2.judge.1"  # an id of the ledger is taken as given
+
+
+def test_an_author_answers_only_the_points_it_owns(env):
+    """The Scout answers the Ideator's point (\"rebutted: this is the Ideator's\") with its own, in its draft try and
+    in its narrowing: the ledger keeps only its answers to its own search point."""
+    _, ps, _ = env
+    narrow = ["aspirin stroke elderly trial", *QUERIES[1:]]
+    counts = {(QUERIES[0], "openalex"): 4000}  # above the cap 3000: attempt 2's strategy is narrowed
+    not_mine = {"point_id": "p1.judge.1", "how": "rebutted", "note": "rebutted: this is the Ideator's"}
+    own = {"point_id": "p1.judge_2.1", "how": "changed", "note": "narrowed: dropped query 1"}
+    ex = _executor(drafts=[_draft(), _draft("p1.judge.1")],
+                   strategies=[{**_strategy(), "queries": narrow},
+                               {**_strategy(), "answers": [_answer("p1.judge_2.1"), not_mine]},
+                               {**_strategy(), "queries": narrow, "answers": [own, not_mine]}],
+                   judge=[_opinion("revise", [_point()]), _opinion("approve", resolved=[("p1.judge.1", True)])],
+                   judge_2=[_opinion("revise", [_point("search", "no octogenarian query")]),
+                            _opinion("approve", resolved=[("p1.judge_2.1", True)])])
+    w = ProtocolWorker()
+    sources = FakeSources({}, record_counts=counts)
+    assert w.run(_ctx(env, ex, sources=sources)).status == "rerun"
+    assert w.run(_ctx(env, ex, attempt=2, sources=sources)).status == "done"
+    ledger = {p["id"]: p for p in points_ledger(ps)}
+    assert [a["by"] for a in ledger["p1.judge.1"]["answers"]] == ["ideator"]
+    assert [(a["by"], a["note"]) for a in ledger["p1.judge_2.1"]["answers"]] == [
+        ("scout", "p1.judge_2.1: see eligibility E2"), ("scout", "narrowed: dropped query 1")]
