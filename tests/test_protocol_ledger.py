@@ -1,7 +1,8 @@
 """The judges' point ledger (P1 protocol diagnosis 2026-11-12, §7): the protocol vote's judges return numbered points,
 the Ideator and the Scout answer every open point routed to them inside the attempt, the next vote sees the points,
 the answers, the kernel's rules sheet and a diff, and each judge closes only its own points. An approve with an open
-blocking point of the judge's own counts as revise."""
+blocking point of the judge's own counts as revise; one that leaves such a point unmarked is first asked once to mark
+it (P1 protocol rerun 2, 2026-11-12)."""
 
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ from rk.orchestrator.state import latest_attempt, stage_row, start_run
 from rk.production import store
 from rk.production.protocol import (
     KERNEL_RULES,
+    MARKS_TASK,
     PRISMA_P_TEXT,
     ProtocolVoteOut,
     ProtocolWorker,
@@ -218,6 +220,7 @@ def test_approve_with_an_open_blocking_point_counts_as_revise(env):
                                    resolved=[("p1.judge.1", True)])],
                    judge_2=[_opinion("approve"), _opinion("approve"),
                             _opinion("approve", [_point("synthesis", "say why narrative", blocking=False)])])
+    ex.script[("judge", "PointMarksOut")] = [{"resolved": []}]  # asked to mark p1.judge.1 in attempt 2: no mark
     w = ProtocolWorker()
     for attempt in (1, 2):
         out = w.run(_ctx(env, ex, attempt=attempt))
@@ -256,6 +259,7 @@ def test_other_votes_unchanged(env):
     assert [set(o) for o in with_points["opinions"]] == [{"role", "vendor", "choice", "reason", "points",
                                                           "resolved"}] * 3
     assert with_points["opinions"][0]["points"] == [_point()]
+    assert [c["schema"] for c in pointed.calls] == ["ProtocolVoteOut"] * 3  # no follow-up without the hook
 
 
 def test_a_redraft_may_drop_an_item_an_open_point_asks_to_remove():
@@ -473,6 +477,7 @@ def test_an_unmatched_mark_is_ignored_and_listed(env):
                    judge=[_opinion("revise", [_point()]), _opinion("approve", resolved=[("p1.judge.1", False)])],
                    judge_2=[_opinion("revise", [_point("synthesis", "no harm outcome")]),
                             _opinion("approve", resolved=[("p1judge1", True), ("p9.judge_2.1", True)])])
+    ex.script[("judge_2", "PointMarksOut")] = [{"resolved": []}]  # asked to mark p1.judge_2.1: no mark
     w = ProtocolWorker()
     assert w.run(_ctx(env, ex)).status == "rerun"
     assert w.run(_ctx(env, ex, attempt=2)).status == "rerun"
@@ -518,3 +523,110 @@ def test_an_author_answers_only_the_points_it_owns(env):
     assert [a["by"] for a in ledger["p1.judge.1"]["answers"]] == ["ideator"]
     assert [(a["by"], a["note"]) for a in ledger["p1.judge_2.1"]["answers"]] == [
         ("scout", "p1.judge_2.1: see eligibility E2"), ("scout", "narrowed: dropped query 1")]
+
+
+# ---- calibration 2 (P1 protocol rerun 2, 2026-11-12) ----
+def _marks(*marks: tuple[str, bool]) -> dict:
+    return {"resolved": [{"point_id": p, "resolved": ok, "why": "changed by the Scout" if ok else "still missing"}
+                         for p, ok in marks]}
+
+
+def _cade_script(*follow_ups: dict) -> dict:
+    """cade's shape: judge raises an eligibility point and a search point; the Ideator answers the first, the Scout
+    the second (changed); judge then approves marking only the first, judge_2 approves with nothing of its own."""
+    return {("ideator", "ProtocolDraftOut"): [_draft(), _draft("p1.judge.1")],
+            ("scout", "SearchStrategyOut"): [_strategy(), _strategy("p1.judge.2")],
+            ("judge", "ProtocolVoteOut"): [_opinion("revise", [_point(), _point("search", "no terminology variants")]),
+                                           _opinion("approve", resolved=[("p1.judge.1", True)])],
+            ("judge_2", "ProtocolVoteOut"): [_opinion("approve"), _opinion("approve")],
+            ("judge", "PointMarksOut"): list(follow_ups)}
+
+
+def _follow_ups(ex: ScriptedExecutor) -> list[dict]:
+    return [c for c in ex.calls if c["schema"] == "PointMarksOut"]
+
+
+def test_an_approve_leaving_an_own_point_unmarked_is_asked_once_to_mark_it(env):
+    """judge approves and leaves its search point, answered changed by the Scout, unmarked: the vote asks it once,
+    with the same driver, to mark exactly that point. Its mark is merged into the opinion (marks on other ids are
+    ignored), the approve stands and the protocol freezes; a resumed attempt reuses the vote and asks nothing."""
+    _, ps, _ = env
+    ex = ScriptedExecutor(_cade_script(_marks(("p1.judge.2", True), ("p1.judge.1", False), ("p1.judge_2.1", False))))
+    w = ProtocolWorker()
+    assert w.run(_ctx(env, ex)).status == "rerun"
+    assert w.run(_ctx(env, ex, attempt=2)).status == "done"
+    (asked,) = _follow_ups(ex)
+    voted = [c for c in ex.calls if c["role"] == "judge" and c["schema"] == "ProtocolVoteOut"][1]
+    assert (asked["role"], asked["instructions"], asked["attempt"], asked["tools"]) == ("judge", MARKS_TASK, 2, [])
+    assert asked["driver"] == voted["driver"] is not None
+    (row,) = store.protocols(ps, 2)
+    assert asked["inputs"]["version"] == row["version"] and "Protocol version 2" in asked["inputs"]["protocol"]
+    (point,) = asked["inputs"]["points"]
+    assert (point["id"], point["fault"], point["change"]) == ("p1.judge.2", "no terminology variants",
+                                                              "fix: no terminology variants")
+    assert [(a["by"], a["how"]) for a in point["answers"]] == [("scout", "changed")]
+    (v,) = votes_on(ps, "protocol", row["id"])
+    judge, judge_2 = v["opinions"]
+    assert judge["repaired"] == ["p1.judge.2"] and "effective" not in judge
+    assert [(m["point_id"], m["resolved"]) for m in judge["resolved"]] == [("p1.judge.1", True), ("p1.judge.2", True)]
+    assert "repaired" not in judge_2  # nothing of its own open: not asked
+    assert store.frozen_protocol(ps)["id"] == row["id"]
+    assert {p["id"]: p["status"] for p in points_ledger(ps)} == {"p1.judge.1": "resolved", "p1.judge.2": "resolved"}
+    calls = len(ex.calls)
+    assert w.run(_ctx(env, ex, attempt=2)).status == "done" and len(ex.calls) == calls  # the recorded vote, reused
+
+
+def test_a_point_the_follow_up_marks_unresolved_tightens_the_approve(env):
+    _, ps, _ = env
+    ex = ScriptedExecutor(_cade_script(_marks(("p1.judge.2", False))))
+    w = ProtocolWorker()
+    w.run(_ctx(env, ex))
+    out = w.run(_ctx(env, ex, attempt=2))
+    assert out.status == "rerun" and "judge (openai) approved with a blocking point open (p1.judge.2)" in out.reason
+    (row,) = store.protocols(ps, 2)
+    (v,) = votes_on(ps, "protocol", row["id"])
+    assert (v["opinions"][0]["repaired"], v["opinions"][0]["effective"]) == (["p1.judge.2"], "revise")
+    point = next(p for p in points_ledger(ps) if p["id"] == "p1.judge.2")
+    assert point["status"] == "open"
+    assert point["marks"] == [{"attempt": 2, "role": "judge", "resolved": False, "why": "still missing"}]
+    assert len(_follow_ups(ex)) == 1 and store.frozen_protocol(ps) is None
+
+
+class _FailsFollowUp(ScriptedExecutor):
+    """Every follow-up task fails (no output); the other tasks answer as scripted."""
+
+    def run(self, role, instructions, inputs, output_schema, **kw):
+        if output_schema.__name__ != "PointMarksOut":
+            return super().run(role, instructions, inputs, output_schema, **kw)
+        self.calls.append({"role": role, "schema": output_schema.__name__, "inputs": inputs})
+        return TaskResult(new_id("tsk"), False, None, "", "ollama", "deepseek-v4.1-flash:cloud", 0.0, "timeout")
+
+
+def test_a_failed_follow_up_leaves_the_opinion_as_it_was(env):
+    _, ps, _ = env
+    ex = _FailsFollowUp(_cade_script())
+    w = ProtocolWorker()
+    w.run(_ctx(env, ex))
+    out = w.run(_ctx(env, ex, attempt=2))
+    assert out.status == "rerun" and "(p1.judge.2)" in out.reason
+    assert len(_follow_ups(ex)) == 1  # asked once, not again
+    (row,) = store.protocols(ps, 2)
+    (v,) = votes_on(ps, "protocol", row["id"])
+    judge = v["opinions"][0]
+    assert "repaired" not in judge and judge["effective"] == "revise"
+    assert [(m["point_id"], m["resolved"]) for m in judge["resolved"]] == [("p1.judge.1", True)]
+
+
+def test_no_follow_up_for_a_judge_that_marks_every_own_point_or_revises(env):
+    """judge approves marking its one point; judge_2 revises leaving its point unmarked: neither is asked again."""
+    _, ps, _ = env
+    ex = _executor(drafts=[_draft(), _draft("p1.judge.1", "p1.judge_2.1")], strategies=[_strategy()] * 2,
+                   judge=[_opinion("revise", [_point()]), _opinion("approve", resolved=[("p1.judge.1", True)])],
+                   judge_2=[_opinion("revise", [_point("synthesis", "no harm outcome")]), _opinion("revise")])
+    w = ProtocolWorker()
+    w.run(_ctx(env, ex))
+    assert w.run(_ctx(env, ex, attempt=2)).status == "rerun"
+    assert _follow_ups(ex) == []
+    (row,) = store.protocols(ps, 2)
+    (v,) = votes_on(ps, "protocol", row["id"])
+    assert not any("repaired" in o for o in v["opinions"])

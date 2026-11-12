@@ -159,7 +159,7 @@ from rk.production.store import (
     protocol_row,
     protocols,
 )
-from rk.production.vote import VoteOut, VoteResult, vote
+from rk.production.vote import FollowUp, VoteOut, VoteResult, vote
 from rk.stats.effects import MEASURES
 from rk.store.events import ActorKind, NewEvent
 from rk.store.project import ProjectStore
@@ -277,6 +277,15 @@ VOTE_QUESTION = (
     "points is open (an approve with one of your blocking points open counts as revise), else revise. The rules sheet "
     "(`kernel_rules`) is what the kernel does and cannot do whatever the protocol says: do not ask for anything it "
     "rules out.")
+# The follow-up a judge gets when it approved and left some of its own open blocking points unmarked.
+# Calibration (P1 protocol rerun 2, 2026-11-12): cade attempts 2 and 3; judge approved, left p1.judge.2 (answered
+# changed by the Scout) unmarked, and the kernel counted it open and tightened the approve.
+MARKS_TASK = (
+    "You answered approve on protocol version `version` (`protocol`) but did not mark these open points of yours "
+    "(`points`, each with its fault, the change you asked for and the authors' `answers` to it). Mark each of them in "
+    "`resolved`, by its `id`: resolved true when this version resolves it, false when it does not, with why. A point "
+    "you leave unmarked or mark false keeps your approve from counting (it counts as revise). Do not search or use "
+    "tools.")
 # The judges' rules sheet: what the kernel does whatever the protocol says, so a judge does not ask the authors for
 # what they cannot change or the kernel cannot do. Every statement is what the code does (rk.production.search,
 # rk.production.screening, rk.sources.resolver) or what the project's records establish.
@@ -359,6 +368,11 @@ class ProtocolVoteOut(VoteOut):
     """A protocol judge's answer: the choice and reason, its marks on its earlier open points (``resolved``) and its
     new points (``points``)."""
     points: list[JudgePoint] = Field(default_factory=list)
+    resolved: list[PointMark] = Field(default_factory=list)
+
+
+class PointMarksOut(BaseModel):
+    """A judge's answer to its follow-up (``MARKS_TASK``): its marks on the points it was asked about."""
     resolved: list[PointMark] = Field(default_factory=list)
 
 
@@ -558,6 +572,45 @@ def _own_open_blocking(ledger: list[dict], role: str, out: ProtocolVoteOut, atte
                and ((p["status"] == "open" and marks.get(p["id"]) is not True)
                     or (p["live"] and p["status"] == "resolved" and marks.get(p["id"]) is False))]
     return earlier + [f"p{attempt}.{role}.{n}" for n, p in enumerate(out.points, 1) if p.blocking]
+
+
+def _unmarked(ledger: list[dict], role: str, out: ProtocolVoteOut) -> list[dict]:
+    """The judge's (``role``) earlier open blocking points (live: of the current cycle) that its answer ``out`` does
+    not mark at all (no mark ``marked_point`` matches them), in ledger order."""
+    points = {p["id"]: p for p in ledger}
+    marked = {pid for m in out.resolved if (pid := marked_point(points, role, m.point_id)) is not None}
+    return [p for p in ledger
+            if p["role"] == role and p["blocking"] and p["status"] == "open" and p["id"] not in marked]
+
+
+def marks_follow_up(ledger: list[dict], role: str, out: ProtocolVoteOut, version: int,
+                    protocol: str) -> FollowUp | None:
+    """The follow-up (``vote``'s ``follow_up``) of a judge that answered approve and left some of its own open
+    blocking points unmarked (``_unmarked``), else ``None``: the judge is asked (``MARKS_TASK``) to mark exactly those
+    points on the version (``version``, ``protocol`` as the judges see it), each given with its fault, change and the
+    authors' answers. Its marks on those points (``marked_point``; the last one per point) are added to the answer's
+    ``resolved``, its marks on any other id are ignored, and the opinion records the points it marked
+    (``repaired``). The tightening then applies to the merged answer as to any other: a point still unmarked, or
+    marked unresolved, keeps the approve from counting. A point closes only by its judge's explicit mark.
+
+    Calibration (P1 protocol rerun 2, 2026-11-12): cade attempts 2 and 3 failed with both judges approving, judge
+    having left p1.judge.2, answered changed by the Scout, unmarked."""
+    if out.choice != "approve" or not (asked := _unmarked(ledger, role, out)):
+        return None
+    ids = [p["id"] for p in asked]
+    points = {p["id"]: p for p in ledger}
+
+    def merge(answer: ProtocolVoteOut, given: PointMarksOut) -> tuple[ProtocolVoteOut, dict]:
+        marks = {pid: PointMark(point_id=pid, resolved=m.resolved, why=m.why) for m in given.resolved
+                 if (pid := marked_point(points, role, m.point_id)) in ids}
+        repaired = [pid for pid in ids if pid in marks]
+        return (answer.model_copy(update={"resolved": [*answer.resolved, *(marks[pid] for pid in repaired)]}),
+                {"repaired": repaired})
+
+    inputs = {"version": version, "protocol": protocol,
+              "points": [{k: p[k] for k in ("id", "section", "fault", "change", "answers")} for p in asked]}
+    return FollowUp(MARKS_TASK, inputs, PointMarksOut, merge)
+
 
 
 def _owned(ps: ProjectStore, by: str, given: list[PointAnswer]) -> list[PointAnswer]:
@@ -1612,13 +1665,15 @@ class ProtocolWorker:
         """The P1 vote on the version: the judges see it rendered (``render_protocol``), its probe, what changed since
         the version voted on before (``changes``), every open point with its answers (``open_points``), the kernel's
         rules sheet (``kernel_rules``) and which judge each is (``you``), and answer with points
-        (``ProtocolVoteOut``). A judge's approve with an open blocking point of its own (``_own_open_blocking``)
-        counts as revise."""
+        (``ProtocolVoteOut``). A judge that approves and leaves some of its own open blocking points unmarked is asked
+        once to mark them (``marks_follow_up``). A judge's approve with an open blocking point of its own
+        (``_own_open_blocking``) counts as revise."""
         ps = ctx.ps
         row = protocol_row(ps, protocol_id)
         probe = probe_of(ps, protocol_id)
         ledger = points_ledger(ps)
-        inputs = {"paper_type": intake_of(ps).paper_type, "protocol": "\n".join(render_protocol(ps, row)),
+        rendered = "\n".join(render_protocol(ps, row))
+        inputs = {"paper_type": intake_of(ps).paper_type, "protocol": rendered,
                   "record_probe": probe and {**probe, "record_cap": row["body"]["record_cap"], "note": PROBE_NOTE},
                   "changes": _changes(ps, row), "open_points": [{**p, "owner": owner(p)} for p in ledger
                                                                 if p["status"] == "open"],
@@ -1630,7 +1685,8 @@ class ProtocolWorker:
 
         res = vote(ctx, "protocol", protocol_id, VOTE_QUESTION, VOTE_OPTIONS, "revise", inputs,
                    generator_vendors=generator_vendors, reuse=True, output=ProtocolVoteOut,
-                   per_judge=lambda role: {"you": role}, tighten=tighten)
+                   per_judge=lambda role: {"you": role}, tighten=tighten,
+                   follow_up=lambda role, out: marks_follow_up(ledger, role, out, row["version"], rendered))
         if res.decision == "approve":
             _freeze(ctx, protocol_id, actor=ctx.actor, actor_kind="kernel")
             return StageOutcome("done", reason="protocol approved by the P1 vote (not reviewed by a human)")
