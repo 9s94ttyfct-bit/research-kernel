@@ -753,6 +753,34 @@ A serve on abc604e (the draft repairs above). Run session 4 resumed draft and we
   sentence word for word) and decides again; accepted, it is stored and its answers count. A repair costs one Writer
   task of the round's budget and is asked only while the budget covers it and the round's remaining revisions.
 
+### critical3, run session 5 (2026-11-12): revise passed; audit failed on a book's reference
+
+A serve on b6de7a1 (the revise repairs above). `rk run resume` started run session 5 at 01:34:13 UTC; revise attempt 2
+went on in place.
+
+| Stage, attempts | Window (UTC) | Role tasks | Outcome |
+|---|---|---|---|
+| revise 2 | 01:34:13–01:34:55 | SimReader 2, Writer 9 (4 revisions, 5 repairs) | passed |
+| audit 1 | 01:34:55–01:35:04 | none | failed: G-REF; the run `failed` |
+
+- **Repairs:** 5 asked, 3 accepted. Replaying round 1, the three revisions session 4 had rejected each got their
+  repair (session 4 ran before repairs existed, so none was noted `no_repair`). No repair changed a sentence other
+  than the failing ones. The accepted repairs settled `a1r3q3` (theme-2) and `a2r1q11` (gaps-agenda); the gate
+  passed with no failure. No task failed or waited, and no `no_repair` note was written.
+- **A sentence numbered two ways.** The gaps-agenda repair input named its failing sentence "sentence 4" (from 1)
+  while the question on it carried the reader's `sentence_index` 3 (from 0); the Writer repaired "sentence 3", which
+  the kernel ignored as not failing.
+- **Audit:** every hard gate passed but G-REF. The AHRQ report "Artificial Intelligence and Machine Learning Tools To
+  (Semi-)Automate Evidence Synthesis … 2026 Review Update" (PMID 42981454) is a PubMed book: its summary has an empty
+  `title` and the title in `booktitle`, so the kernel read it as "(untitled)" and V-REF scored the item's correct
+  title 11.2 (`mismatch`). V-REF `mismatch` is owned by the item's metadata, so the stage failed and so did the run.
+- **Model faults:** the theme-6 repair gave no repairs; theme-5 and theme-6 revisions came back empty, declining their
+  questions as "not in this section" although the sentence was in their input.
+- **Fixed after the run:** a PubMed book takes its title from `booktitle` (item type `book`, the publisher as venue;
+  a chapter is a `bookSection` with the book as venue); V-REF of that item now passes (title score 100). The Writer's
+  questions give their sentence as `sentence_number` in the text it is given, counted from 1 like the failures.
+- Open: a new run (`rk run resume` replaces a failed run) goes on from revise, which passed, with audit attempt 2.
+
 ## P1 project: failed at protocol (the vote never approved it)
 
 Home `rk-plan5c-p1`, intake `probiotics for preventing antibiotic-associated diarrhoea in children`, systematic
