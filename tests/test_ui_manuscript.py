@@ -57,7 +57,7 @@ from tests.test_audit import _judges, _passed, revised
 from tests.test_draft import _ready, writes
 from tests.test_export import _fake_render, audited
 from tests.test_revise import _exec as revise_exec
-from tests.test_revise import _restated, ask, revision
+from tests.test_revise import _restated, ask, repair, revision
 from tests.test_synthesis import Exec
 from tests.test_ui_api import ORIGIN, SERVE_TOKEN, login
 from tests.test_ui_argument import _pass_before
@@ -98,7 +98,7 @@ def _get(api, path: str, **params) -> dict:
 def revise_with_questions(env) -> None:
     """argue passed; every section drafted (draft passed); revise attempt 1 ran one round (``revise_max_rounds`` 1
     would stop it too): a priority-1 question on the introduction, revised and accepted; a priority-2 one on the
-    discussion whose revision adds an unmarked sentence and is rejected."""
+    discussion whose revision adds an unmarked sentence and is rejected, as is its repair (which changes nothing)."""
     k, ps, lib = env
     _ready(env)
     ex = Exec({("writer", "SectionDraft"): [writes()] * 10})
@@ -107,7 +107,7 @@ def revise_with_questions(env) -> None:
     _passed(ps, "draft")
     main = main_claim(ps, 1)
     ex = revise_exec([ask(("introduction", 1), ("discussion", 2), ("appendix", 2)), ask()],
-                     [revision(add=_restated(ps, main)), revision(add="An unmarked sentence here.")])
+                     [revision(add=_restated(ps, main)), revision(add="An unmarked sentence here.")], [repair()])
     ex.script[("simreader", "ReaderQuestions")][0]["questions"][0]["text"] = "Why <b>this</b> age group?"
     record_attempt(ps, "revise", 1, run_id=None, guidance="", requested=None, actor="tester")
     out = ReviseWorker().run(replace(production_ctx(k, ps, lib, ex, stage="revise"), guidance=""))
@@ -187,8 +187,9 @@ def test_revise_view_lists_questions_and_how_each_was_handled(api):
     assert q1["sentence"] and (q1["outcome"], q1["note"]) == ("revised", "clarified")
     assert [(t["accepted"], t["how"]) for t in q1["revisions"]] == [(True, "revised")]
     assert (q2["section"], q2["priority"], q2["outcome"]) == ("discussion", 2, "rejected")
-    (t,) = q2["revisions"]
-    assert t["accepted"] is False and any("marker" in r for r in t["reasons"])
+    rejected, repaired = q2["revisions"]
+    assert rejected["accepted"] is False and any("marker" in r for r in rejected["reasons"])
+    assert repaired["accepted"] is False and repaired["reasons"] == rejected["reasons"]
     assert _get(api, "/ui/api/manuscript")["revise"] == rv
     assert stage_row(ps, "revise")["attempt"] == 1
     (r,) = rv["refused"]  # a question on a section the Writer does not revise is refused, with why
