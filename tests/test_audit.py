@@ -736,6 +736,29 @@ def test_g_ref_covers_the_studies_pooled_into_a_cited_stat_result(env):
     assert (out.status, out.to) == ("back_edge", "read_extract"), (out.status, out.reason)
 
 
+def test_g_ref_covers_the_source_of_a_cited_objection(env):
+    """``[[obj:]]`` cites what an objection's source says: that item is a cited item too (looked up again, checked by
+    G-REF), like a cited claim's evidence. A retracted one is no study read_extract could exclude: the sentence
+    citing it fails V-COVER, and the audit goes back to draft."""
+    _, ps, lib = env
+    revised(env)
+    source = lib.add_item(ItemIn(title="An outside benchmark", year=2024), added_by="agent", actor="tester").item_id
+    oid = object_to(ps, synthesis_claims(ps, 1)[0], status="conceded", source_id=source)
+    assert cited_items(ps, [], objection_ids=[oid]) == {source: [oid]}
+    _, md = latest_draft(ps, "conclusion")
+    write_draft(ps, "conclusion", md.rstrip("\n") + f" Another trial found otherwise [[obj:{oid}]].\n", stage="revise",
+                attempt=1, round=1, by_task=None, actor="tester")
+    ctx = _ctx(env, _judges("approve"),
+               retractions={"An outside benchmark": RetractionInfo(status="retracted", sources=["openalex"])})
+    out = AuditWorker().run(ctx)
+    assert ("verify", source) in ctx.sources.calls
+    assert any(source in f and f"source of {oid}" in f and "retracted" in f
+               for f in _report(ps)["gates"]["G-REF"]), _report(ps)["gates"]
+    assert any(f"objection {oid} names the source {source}, which is retracted" in f
+               for f in _report(ps)["gates"]["G-COVER"]), _report(ps)["gates"]
+    assert (out.status, out.to) == ("back_edge", "draft"), (out.status, out.reason)
+
+
 @pytest.mark.parametrize("probe", ["## Melatonin halves mortality by 50% in all patients\n\n",
                                    "[^1]: <Melatonin cures 90% of cancers>\n\n"])
 def test_a_writer_heading_or_footnote_fails_the_audit_and_goes_back_to_draft(env, probe):

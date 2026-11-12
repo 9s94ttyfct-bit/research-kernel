@@ -7,6 +7,7 @@ import pytest
 
 from rk.argument import ArgumentService, ObjectionIn
 from rk.library.models import Creator, ItemIn
+from rk.library.service import Library
 from rk.production.argue import _note as argue_note
 from rk.production.manuscript import parse_section
 from rk.production.synthesis import synthesis_claims
@@ -80,6 +81,16 @@ def test_obj_marker_pools_the_objections_numbers_and_caps_the_wording(env):
     assert _one(ps, f"SESR-Eval may show lower accuracy in 412 reviews [[obj:{tentative}]].").ok
     # with a strong objection beside it, the tentative one does not lower the ceiling: the strongest text counts
     assert _one(ps, f"SESR-Eval shows lower accuracy in 412 reviews [[obj:{tentative}]] [[obj:{oid}]].").ok
+
+
+def test_an_objection_whose_source_is_retracted_cannot_be_cited(env):
+    """A retracted or withdrawn work is never cited (V-RETRACT): the sentence fails, so the audit's G-REF failure on
+    such a source goes back to draft, which can drop the citation."""
+    ps, finding, item = env
+    oid = objection(ps, finding, TEXT, item)
+    Library(ps).update(item, retraction="retracted", actor="tester")
+    assert _fails(ps, f"SESR-Eval shows lower accuracy in 412 reviews [[obj:{oid}]].",
+                  f"objection {oid} names the source {item}, which is retracted")
 
 
 def test_quoted_text_in_an_obj_sentence_is_the_objections_text(env):

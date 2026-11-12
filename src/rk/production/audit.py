@@ -4,8 +4,9 @@ required section, writes the verification report and ``disclosure.md``, and asks
 but P1's vote.
 
 1. **References** (G-REF's lookups, once per attempt, noted ``refs``): V-REF and V-RETRACT of every item the
-   manuscript cites (the items of the live cited claims' evidence notes, and the studies pooled into a cited
-   ``stat_result``'s artifacts or into an artifact cited directly) are looked up again with ``sources.verify``, which
+   manuscript cites (the items of the live cited claims' evidence notes, the studies pooled into a cited
+   ``stat_result``'s artifacts or into an artifact cited directly, and the source of every cited objection,
+   ``[[obj:]]``) are looked up again with ``sources.verify``, which
    records both and writes them to the item, so a retraction found at audit counts. A source error that may go away
    (HTTP 429, 5xx, a transport error) is raised before the note: the engine waits and runs the attempt again in place,
    using no edge, and an item whose V-REF was recorded after the attempt started is not looked up again. Any other
@@ -41,7 +42,8 @@ but P1's vote.
    it (the researcher fixes it and runs again): G-PREREG (the protocol), V-PRISMA's arithmetic (search_screen), V-REF
    ``mismatch``/``not_found`` (the library item's metadata), G-QUOTE on a quote note (an integrity defect: notes are
    append-only), and G-DISCLOSE or any failure of the kernel-written ``disclosure`` section (a kernel defect).
-   Otherwise: a sentence, coverage, balance or stale-PRISMA failure → ``audit->draft``; a cited claim's gate or
+   Otherwise: a sentence, coverage, balance or stale-PRISMA failure, and a retracted or withdrawn work cited only as an
+   objection's source (no study: the sentence citing it fails V-COVER too) → ``audit->draft``; a cited claim's gate or
    V-HEDGE, and an objection left unanswered by a withdrawn response (``rk.verify.balance.UNANSWERED``: argue must
    answer it again) → ``audit->argue``; a retracted or withdrawn cited study (read_extract excludes it) and V-STATS →
    ``audit->read_extract``. A ``fail`` owner wins; else the most upstream stage is taken (a back-edge reopens every
@@ -268,10 +270,11 @@ def _live_claims(ps: ProjectStore, cited: list[str]) -> list[str]:
     return out
 
 
-def cited_items(ps: ProjectStore, claim_ids: list[str], artifact_ids: list[str] | tuple[str, ...] = ()) -> \
-        dict[str, list[str]]:
+def cited_items(ps: ProjectStore, claim_ids: list[str], artifact_ids: list[str] | tuple[str, ...] = (),
+                objection_ids: list[str] | tuple[str, ...] = ()) -> dict[str, list[str]]:
     """item id -> what cites it, in order: a claim through its evidence notes or the studies its artifacts pool (a
-    ``stat_result``'s evidence), an artifact cited directly through the studies it pools."""
+    ``stat_result``'s evidence), an artifact cited directly through the studies it pools, an objection (``[[obj:]]``)
+    through its source, when that is a library item (an unknown objection or source fails its sentence: V-COVER)."""
     svc = ArgumentService(ps)
     out: dict[str, list[str]] = {}
 
@@ -295,6 +298,11 @@ def cited_items(ps: ProjectStore, claim_ids: list[str], artifact_ids: list[str] 
     for a in artifact_ids:
         for iid in pooled(a):
             add(iid, a)
+    for oid in objection_ids:
+        r = ps.db.execute("SELECT json_extract(data, '$.source_id') AS s FROM objections WHERE id=?",
+                          (oid,)).fetchone()
+        if r is not None and r["s"] and ps.db.execute("SELECT 1 FROM items WHERE id=?", (r["s"],)).fetchone():
+            add(r["s"], oid)
     return out
 
 
@@ -433,15 +441,21 @@ def audit_manuscript(ps: ProjectStore, *, paper_type: str) -> AuditReport:
     for cid in live:
         for p in claim_problems(ps, cid):
             fail("G-HEDGE" if p.kind == "hedge" else "G-SUPPORT", "argue", f"claim {cid}: {p.detail}")
-    items, lib = cited_items(ps, live, _cited(texts, ("stat", "fig"))), Library(ps)
+    items, lib = cited_items(ps, live, _cited(texts, ("stat", "fig")), _cited(texts, ("obj",))), Library(ps)
     for iid, by in items.items():
         item = lib.get(iid)
-        label = f"item {iid} “{item.title}” (evidence of {', '.join(by)})"
+        claims, objections = [b for b in by if not b.startswith("obj_")], [b for b in by if b.startswith("obj_")]
+        cites = ([f"evidence of {', '.join(claims)}"] if claims else []) + \
+            ([f"source of {', '.join(objections)}"] if objections else [])
+        label = f"item {iid} “{item.title}” ({'; '.join(cites)})"
         ref, ret = item.ref_status, item.retraction
         if ref not in REF_OK:
             fail("G-REF", FAIL, f"{label}: V-REF {ref} ({REF_OWNER})")
-        if ret in REMOVED:  # read_extract excludes a retracted or withdrawn study
-            fail("G-REF", "read_extract", f"{label}: V-RETRACT {ret}: a {ret} work is never evidence")
+        # read_extract excludes a retracted or withdrawn study; a work only an objection cites is no study, and the
+        # sentence citing it fails V-COVER (``rk.verify.balance.objection_problem``): draft drops the citation
+        if ret in REMOVED:
+            fail("G-REF", "read_extract" if claims else "draft",
+                 f"{label}: V-RETRACT {ret}: a {ret} work is never {'evidence' if claims else 'cited'}")
         elif ret != "none":
             warnings.append(f"{label}: V-RETRACT {ret}")
     # every quote note of the project (G-QUOTE)
@@ -548,7 +562,8 @@ class AuditWorker:
         texts, _, _ = latest_texts(ps, s.draft)
         done = _verified_in_attempt(ps, ctx.attempt)
         results, errors = [], []
-        for iid in cited_items(ps, _live_claims(ps, _cited(texts, ("clm",))), _cited(texts, ("stat", "fig"))):
+        for iid in cited_items(ps, _live_claims(ps, _cited(texts, ("clm",))), _cited(texts, ("stat", "fig")),
+                               _cited(texts, ("obj",))):
             if iid in done:
                 item = ctx.lib.get(iid)
                 results.append({"item_id": iid, "ref": item.ref_status, "retraction": item.retraction})

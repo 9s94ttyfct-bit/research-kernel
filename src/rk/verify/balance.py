@@ -30,9 +30,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from rk.argument import ArgumentService
+from rk.library.service import Library
 from rk.orchestrator.state import passed_attempt
 from rk.production.argue import argument_objection_ids, conflict_counterparts
 from rk.production.common import entity_row
+from rk.production.extraction import RETRACTED
 from rk.production.manuscript import Sentence
 from rk.store.project import ProjectStore
 
@@ -156,7 +158,8 @@ def objection_problem(ps: ProjectStore, oid: str, *, facts: Argued | None = None
     """Why ``[[obj:<oid>]]`` cites nothing (V-COVER), else ``None``: the objection must exist, be one of argue's passed
     attempt's objections (``argument_objection_ids``; whatever its answer: the marker states what its source says, and
     the answer bears on the claim, which V-BALANCE and G-SUPPORT read) and name a source (``source_id``) that is a
-    library item. ``facts`` when the caller already read them (``argued``)."""
+    library item not retracted or withdrawn (its recorded V-RETRACT: such a work is never cited). ``facts`` when the
+    caller already read them (``argued``)."""
     try:
         o = entity_row(ps, "objections", oid)
     except KeyError:
@@ -170,8 +173,12 @@ def objection_problem(ps: ProjectStore, oid: str, *, facts: Argued | None = None
     if not (sid := o.get("source_id")):
         return (f"objection {oid} has no source, so it cannot be cited: [[obj:]] states what an objection's source "
                 "says; an unsourced objection is stated from the claims that answer it, or as [[inf]]")
-    if ps.db.execute("SELECT 1 FROM items WHERE id=?", (sid,)).fetchone() is None:
+    try:
+        retraction = Library(ps).get(sid).retraction
+    except KeyError:
         return f"objection {oid} names the source {sid}, which is not in the library"
+    if retraction in RETRACTED:
+        return f"objection {oid} names the source {sid}, which is {retraction} (V-RETRACT): such a work is never cited"
     return None
 
 
