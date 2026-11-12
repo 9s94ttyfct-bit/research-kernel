@@ -291,6 +291,19 @@ def test_a_rejected_revision_is_repaired_once_and_its_answers_count(env):
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures  # the priority-1 question is settled by the repaired revision
 
 
+def test_a_question_numbers_its_sentence_only_where_the_text_says_which():
+    """A sentence whose text occurs twice is numbered by the reader's position only when that position holds it, never
+    by its first occurrence; a sentence not in the text, or a question on the section, has no number."""
+    from rk.production.revise import _sentence_number
+
+    texts = ["A.", "B.", "A.", "C."]
+    assert _sentence_number(texts, {"sentence": "B.", "sentence_index": 0}) == 2  # once: wherever the reader saw it
+    assert _sentence_number(texts, {"sentence": "A.", "sentence_index": 2}) == 3
+    assert _sentence_number(texts, {"sentence": "A.", "sentence_index": 1}) is None
+    assert _sentence_number(texts, {"sentence": "D.", "sentence_index": 3}) is None
+    assert _sentence_number(texts, {"sentence": None, "sentence_index": None}) is None
+
+
 def test_no_repair_when_the_budget_must_cover_the_rounds_other_revisions(env):
     """A repair is a Writer task of the round: it is asked only while the budget still covers it and every revision
     the round has still to ask, so a run is never paused mid-round; the repair not made is noted, so that a replay of

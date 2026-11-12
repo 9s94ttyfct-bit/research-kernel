@@ -233,6 +233,16 @@ def _recorded(ps: ProjectStore, attempt: int, kind: str, rnd: int, section: str 
     return found[-1] if found else None
 
 
+def _sentence_number(texts: list[str], q: dict) -> int | None:
+    """The number (from 1) in a section of sentence ``texts`` of the sentence question ``q`` is about: where its text
+    occurs once; where it occurs more than once, the reader's position (``sentence_index``) when the text is there;
+    else, or for a question on the section, ``None``."""
+    at = [i for i, t in enumerate(texts) if q.get("sentence") and t == q["sentence"]]
+    if len(at) == 1:
+        return at[0] + 1
+    return q["sentence_index"] + 1 if q.get("sentence_index") in at else None
+
+
 def _decided(ps: ProjectStore, attempt: int, rev: dict) -> dict | None:
     """The decision recorded on the revision (by its task: a round's section can have a revision and its repair)."""
     found = [n for n in revise_notes(ps, attempt, kind="decided") if n["task"] == rev["task"]]
@@ -643,17 +653,15 @@ class ReviseWorker:
     def _writer_inputs(ctx: StageContext, s: _Inputs, spec: SectionSpec, prisma: str | None, version: int, md: str,
                        questions: list[dict]) -> dict:
         """The Writer's inputs on ``md``: each question's sentence by its ``sentence_number`` in ``md`` (from 1, as
-        ``revise.failures`` numbers them; ``None`` when the question is on the section or its sentence is not in
-        ``md``). Calibration (critical3, revise attempt 2): with the reader's index (from 0) beside failures numbered
-        from 1, a repair of sentence 4 was given as sentence 3 and ignored."""
+        ``revise.failures`` numbers them): where its text occurs once in ``md``; where it occurs more than once, the
+        reader's position when ``md`` holds that text there; else (or when the question is on the section) ``None``.
+        Calibration (critical3, revise attempt 2): with the reader's index (from 0) beside failures numbered from 1, a
+        repair of sentence 4 was given as sentence 3 and ignored."""
         ps = ctx.ps
-        numbers: dict[str, int] = {}
-        for x in parse_section(md):
-            numbers.setdefault(x.text, x.index + 1)
+        texts = [x.text for x in parse_section(md)]
         inputs = writer_inputs(ps, s.draft, spec, prisma)
         inputs["revise"] = {"version": version, "markdown": md, "questions": [
-            {"id": q["id"], "priority": q["priority"], "text": q["text"],
-             "sentence_number": numbers.get(q["sentence"]) if q.get("sentence") else None,
+            {"id": q["id"], "priority": q["priority"], "text": q["text"], "sentence_number": _sentence_number(texts, q),
              "sentence": q.get("sentence"), "round": q["round"], "earlier_answer": q["earlier_answer"]}
             for q in questions]}
         inputs["other_sections"] = [
