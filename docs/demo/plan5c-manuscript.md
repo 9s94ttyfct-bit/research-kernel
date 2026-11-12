@@ -811,8 +811,10 @@ A serve on 7417ac2 (the Bookshelf fix above). `rk run resume` replaced the faile
 - **Not caught:** sentences on an outside benchmark (the SESR-Eval objection's source, not an included study) cite
   a claim that does not mention it, and render as citations of included studies; the marker grammar has no marker
   for an objection's source. The stand-in missed it at both reviews.
-- **Fixed after the run:** the Europe PMC adapter reads a Bookshelf book (its publisher as venue) and a chapter (the
-  book as venue); V-HEDGE's negation reaches over an article ("not an established", "not a proven").
+- **Fixed after the run:** the Europe PMC adapter reads a Bookshelf book (its publisher as venue), a chapter (the
+  book as venue, even where Europe PMC tags it `Book`), a thesis and a guideline (report); an item already in the
+  library keeps its metadata (V-REF does not change it). V-HEDGE's negation reaches over an article ("not an
+  established", "not a proven"), but "whether or not" negates nothing.
 
 ## P1 project: failed at protocol (the vote never approved it)
 

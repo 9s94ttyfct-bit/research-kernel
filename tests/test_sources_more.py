@@ -29,6 +29,21 @@ def test_europepmc_bookshelf_records_are_books_and_chapters():
                                        "comprisingTitle": "GeneReviews®", "yearOfPublication": 1993}}
     it = europepmc.result_to_item(chapter)
     assert (it.item_type, it.title, it.venue) == ("bookSection", "Loeys-Dietz Syndrome", "GeneReviews®")
+    # a chapter Europe PMC tags Book too (Endotext, PMID 25905364) is still a chapter: its book's title is not its own
+    tagged = {**chapter, "pmid": "25905364", "title": "Hypoglycemia in the Newborn",
+              "pubTypeList": {"pubType": ["Book", "Review"]},
+              "bookOrReportDetails": {"publisher": "MDText.com, Inc., South Dartmouth (MA)", "comprisingTitle": "Endotext"}}
+    assert (europepmc.result_to_item(tagged).item_type, europepmc.result_to_item(tagged).venue) == (
+        "bookSection", "Endotext")
+    thesis = {"source": "ETH", "id": "1", "title": "A thesis.", "pubYear": "2019",
+              "pubTypeList": {"pubType": ["Dissertation"]},
+              "bookOrReportDetails": {"publisher": "University of St Andrews"}}
+    assert (europepmc.result_to_item(thesis).item_type, europepmc.result_to_item(thesis).venue) == (
+        "thesis", "University of St Andrews")
+    guideline = {"source": "HIR", "id": "2", "title": "Sepsis: recognition.", "pubYear": "2016",
+                 "pubTypeList": {"pubType": ["Practice Guideline"]}, "bookOrReportDetails": {"publisher": "NICE"}}
+    assert (europepmc.result_to_item(guideline).item_type, europepmc.result_to_item(guideline).venue) == (
+        "report", "NICE")
     article = {"source": "MED", "pmid": "1", "title": "A trial.", "pubYear": "2020",
                "journalInfo": {"journal": {"title": "The Lancet"}}}
     assert (europepmc.result_to_item(article).item_type, europepmc.result_to_item(article).venue) == (

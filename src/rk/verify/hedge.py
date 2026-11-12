@@ -32,9 +32,11 @@ SYNONYMS: dict[str, frozenset[str]] = {u: frozenset({u}) for u in UNIVERSALS} | 
 _BETWEEN = (r"(?:\s+(?:been|be|being|yet|ever|always|fully|clearly|conclusively|definitively|firmly|entirely|completely"
             r"|a|an|the))")
 # Words that keep what follows from being stated: a negator or hedge right before it, or a "too … to", "insufficient
-# to" or "not … enough to" leading to it ("too few events to establish", "not large enough to prove").
+# to" or "not … enough to" leading to it ("too few events to establish", "not large enough to prove"). "whether or
+# not" negates nothing ("whether or not the proven therapy was given").
 _WORD = r"[\w'’-]+\s+"
-_QUALIFIERS = re.compile(r"(?:\bnot|\bnever|\bcannot|n['’]t|\balmost|\bnearly|\bvirtually|\bhardly|\bpractically"
+_QUALIFIERS = re.compile(r"(?:(?<!whether or )\bnot|\bnever|\bcannot|n['’]t|\balmost|\bnearly|\bvirtually|\bhardly"
+                         r"|\bpractically"
                          r"|\btoo\s+(?:" + _WORD + r"){1,3}to|\binsufficient\s+to"
                          r"|(?:\bnot|n['’]t)\s+(?!(?:only|just|merely|simply)\b)(?:" + _WORD + r"){0,3}enough\s+(?:"
                          + _WORD + r"){0,3}to)"

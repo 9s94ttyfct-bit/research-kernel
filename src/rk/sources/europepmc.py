@@ -9,19 +9,25 @@ BASE = "https://www.ebi.ac.uk/europepmc/webservices/rest"
 
 
 def _kind(r: dict) -> tuple[str, str | None]:
-    """The record's item type and venue: a preprint (source PPR); a Bookshelf book (``pubType`` Book, or a book or
-    report whose title is its own) with its publisher as venue; a chapter (``bookOrReportDetails`` naming a book whose
-    title is not the record's) with the book as venue; else a journal article in its journal."""
+    """The record's item type and venue: a preprint (source PPR); a thesis (source ETH or pubType Dissertation) or a
+    guideline (source HIR: a report) with its publisher (the university, the agency) as venue; a record of a book
+    (``bookOrReportDetails``) whose book has another title (``comprisingTitle``) is a chapter, with the book as venue
+    (Europe PMC tags many chapters ``Book`` too: Endotext's), else the book itself, with its publisher as venue; else a
+    journal article in its journal."""
+    journal = ((r.get("journalInfo") or {}).get("journal") or {}).get("title")
     if r.get("source") == "PPR":
-        return "preprint", ((r.get("journalInfo") or {}).get("journal") or {}).get("title")
+        return "preprint", journal
     book = r.get("bookOrReportDetails") or {}
+    if r.get("source") == "ETH" or "Dissertation" in ((r.get("pubTypeList") or {}).get("pubType") or []):
+        return "thesis", book.get("publisher")
+    if r.get("source") == "HIR":
+        return "report", book.get("publisher")
     if book:
         whole = (book.get("comprisingTitle") or "").rstrip(".")
-        is_book = "Book" in ((r.get("pubTypeList") or {}).get("pubType") or [])
-        if whole and not is_book and whole.casefold() != (r.get("title") or "").rstrip(".").casefold():
+        if whole and whole.casefold() != (r.get("title") or "").rstrip(".").casefold():
             return "bookSection", whole
         return "book", book.get("publisher")
-    return "journalArticle", ((r.get("journalInfo") or {}).get("journal") or {}).get("title")
+    return "journalArticle", journal
 
 
 def result_to_item(r: dict) -> ItemIn:
@@ -32,8 +38,9 @@ def result_to_item(r: dict) -> ItemIn:
         if u.get("documentStyle") == "pdf" and u.get("availabilityCode") in ("OA", "F")
     ]
     year = r.get("pubYear")
+    item_type, venue = _kind(r)
     return ItemIn(
-        item_type=_kind(r)[0],
+        item_type=item_type,
         title=(r.get("title") or "(untitled)").rstrip("."),
         creators=[
             Creator(family=a.get("lastName") or a.get("fullName") or a.get("collectiveName", ""), given=a.get("firstName"))
@@ -41,7 +48,7 @@ def result_to_item(r: dict) -> ItemIn:
             if a.get("lastName") or a.get("fullName") or a.get("collectiveName")
         ],
         year=int(year) if year and str(year).isdigit() else None,
-        venue=_kind(r)[1] or None,
+        venue=venue or None,
         abstract=r.get("abstractText"),
         ids=Ids(doi=r.get("doi"), pmid=r.get("pmid"), pmcid=r.get("pmcid")).normalized(),
         oa_urls=pdfs,

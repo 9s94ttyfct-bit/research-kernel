@@ -77,12 +77,14 @@ def test_negation_reaches_over_two_auxiliaries_or_adverbs():
                  "The benefit is not fully established.", "It hasn't been proven.", "It cannot be proven.",
                  # calibration (critical3 conclusion): an article between them kept the negation from counting
                  "It is not an established general causal rule.", "It is not a proven benefit.",
-                 "This is not the definitive answer."):
+                 "It is not the established cause."):
         assert hedge_level(text) == 2, text
     assert universal_terms("It has not been always safe.") == []
     for text in ("Aspirin has been proven to prevent stroke.", "It was clearly established that X.",
                  "Not only was it proven, it was replicated.", "It was not tested, but it is established.",
-                 "It has not yet been fully proven."):  # three words between: no longer the negator's scope
+                 "It has not yet been fully proven.",  # three words between: no longer the negator's scope
+                 "It is not the only proven benefit.",  # "only" stands between: "proven" is stated
+                 "Regardless of whether or not the proven therapy was given, mortality fell."):
         assert hedge_level(text) == 3, text
 
 
