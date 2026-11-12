@@ -13,6 +13,7 @@ import pytest
 from rk.argument import ArgumentService
 from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
 from rk.config import load_settings, save_settings
+from rk.library.models import ItemIn
 from rk.orchestrator.engine import default_workers
 from rk.orchestrator.graph import BACK_EDGES
 from rk.orchestrator.state import (
@@ -884,6 +885,27 @@ def test_writer_claims_carry_their_balance_requirements(env):
     for word in ("contested_by", "answered_by", "after the claim, in the same section", "conceded_sourced",
                  "qualify the claim"):
         assert word in prompt, word
+
+
+def test_writer_gets_the_citable_objections_with_their_sources(env):
+    """The Writer cites an objection's source through ``[[obj:]]`` (what an outside work says), so it is given the
+    sourced objections of argue's passed attempt with their source's title and year; an unsourced one (no source to
+    cite) is not offered."""
+    _, ps, lib = env
+    _ready(env)
+    finding = synthesis_claims(ps, 1)[0]
+    source = lib.add_item(ItemIn(title="SESR-Eval", year=2024), added_by="agent", actor="tester").item_id
+    cited = object_to(ps, finding, status="conceded", source_id=source)
+    object_to(ps, finding, status="conceded")  # unsourced
+    ex = _writer([writes()] * 12)
+    DraftWorker().run(_ctx(env, ex))
+    inputs = ex.of("writer", "SectionDraft")[0]["inputs"]
+    assert inputs["objections"] == [{"objection_id": cited, "text": "another trial found otherwise",
+                                     "status": "conceded", "target_id": finding,
+                                     "source": {"item_id": source, "title": "SESR-Eval", "year": 2024}}]
+    assert "[[obj:" in inputs["markers"]
+    prompt = build_system_prompt("writer", SectionDraft)
+    assert "[[obj:obj_…]]" in prompt and "never a claim that does not say it" in prompt
 
 
 def test_missing_design_refusal_survives_a_crash_after_its_version(env, monkeypatch):
