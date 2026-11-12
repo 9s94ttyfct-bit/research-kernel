@@ -1061,7 +1061,7 @@ async function finalReviewCard(c, answer) {
       el("a", { href: "#/audit" }, "Audit"), " page."),
     el("div", { class: "other-answers" },
       el("div", { class: "toolbar" }, el("button", { type: "button", disabled: !(rep && rep.ok), onclick: () => answer({ decision: "approve" }) }, "Approve for export")),
-      reviseForm("What should change in the manuscript", (comment) => answer({ decision: "revise", comment })),
+      reviseForm("What should change in the manuscript (number separate points (1), (2), … : each is asked and answered on its own)", (comment) => answer({ decision: "revise", comment })),
       back),
   ];
 }

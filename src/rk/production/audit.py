@@ -655,7 +655,9 @@ class AuditWorker:
                       "audit_report": report}
             res = vote(ctx, KIND, f"{STAGE}:{ctx.attempt}", VOTE_QUESTION, [APPROVE, NOT_APPROVED], NOT_APPROVED,
                        inputs, generator_vendors=self._generators(ctx, s), reuse=True)
-            why = "; ".join(f"{o['role']} ({o['vendor']}): {o['reason']}" for o in res.opinions if o["reason"])
+            reasons = [f"{o['role']} ({o['vendor']}): {o['reason']}" for o in res.opinions if o["reason"]]
+            # one per numbered line, so that revise asks each judge's reason as its own question
+            why = reasons[0] if len(reasons) == 1 else "".join(f"\n({n}) {r}" for n, r in enumerate(reasons, 1))
             v = _note(ps, ctx.attempt, "vote", actor=ctx.actor, vote_id=res.id, decision=res.decision, reason=why,
                       conservative_used=res.conservative_used, vote_reason=res.reason)
         if v["decision"] == APPROVE:

@@ -670,7 +670,8 @@ def revise_view(ps: ProjectStore, attempt: int | None = None) -> dict:
     notes = revise_notes(ps, attempt)
     decided = {n["task"]: n for n in notes if n["kind"] == "decided"}
     tries = [{**n, "accepted": decided[n["task"]]["accepted"] if n["task"] in decided else None,
-              "reasons": decided[n["task"]]["reasons"] if n["task"] in decided else []}
+              "reasons": decided[n["task"]]["reasons"] if n["task"] in decided else [],
+              "unchanged": bool(decided.get(n["task"], {}).get("unchanged"))}
              for n in notes if n["kind"] == "revision"]
     deleted = degraded_questions(ps, REVISE, attempt)
     settled, held = settled_answers(ps, attempt), withheld_questions(ps, attempt)
@@ -682,8 +683,11 @@ def revise_view(ps: ProjectStore, attempt: int | None = None) -> dict:
                 a = next((x for x in t["answers"] if x["question_id"] == q["id"]), None)
                 revisions.append({"round": t["round"], "task": t["task"], "accepted": t["accepted"],
                                   "reasons": t["reasons"], "how": a["how"] if a else None,
-                                  "note": a["note"] if a else None, "repair_of": t.get("repair_of")})
-            answered = [r for r in revisions if r["accepted"] and r["how"]]
+                                  "note": a["note"] if a else None, "repair_of": t.get("repair_of"),
+                                  "unchanged": t["unchanged"]})
+            # a "revised" answer from a revision that changed nothing answers nothing (the gate's rule)
+            answered = [r for r in revisions if r["accepted"] and r["how"]
+                        and not (r["how"] == "revised" and r["unchanged"])]
             if q["id"] in deleted:
                 outcome, note = "deleted", "P1's degrade deleted the sentence it was about"
             elif q["id"] in settled:  # the gate's rule: a settling answer wins over a later section's decline

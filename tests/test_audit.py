@@ -625,9 +625,9 @@ def _revisable(ps) -> list[str]:
 
 
 def test_p1_not_approved_reasons_reach_every_writer_and_gate_revise_through_the_engine(env):
-    """I3 of the final review: the judges' not-approved reasons become a priority-1 question on the whole manuscript
-    that every revisable section's Writer gets, though the SimReader asks nothing; revise passes only with an accepted
-    answer to it. At the edge limit P1 still never exports the manuscript unapproved."""
+    """I3 of the final review: the judges' not-approved reasons become priority-1 questions on the whole manuscript,
+    one per judge, that every revisable section's Writer gets, though the SimReader asks nothing; revise passes only
+    with an accepted answer to each. At the edge limit P1 still never exports the manuscript unapproved."""
     k, ps, lib = env
     revised(env)
     n = len(_revisable(ps))
@@ -643,8 +643,10 @@ def test_p1_not_approved_reasons_reach_every_writer_and_gate_revise_through_the_
     writers = ex.of("writer", "Revision")
     assert sorted(c["inputs"]["section"]["id"] for c in writers) == sorted(_revisable(ps))
     for c in writers:
-        (q,) = c["inputs"]["revise"]["questions"]
-        assert q["priority"] == 1 and "judge says not_approved" in q["text"] and "not reviewed by a human" in q["text"]
+        qs = c["inputs"]["revise"]["questions"]
+        assert len(qs) == 2 and [q["priority"] for q in qs] == [1, 1]
+        assert all("judge says not_approved" in q["text"] and "not reviewed by a human" in q["text"] for q in qs)
+        assert ["(1) judge " in qs[0]["text"], "(2) judge_2 " in qs[1]["text"]] == [True, True], qs
     record_edge_taken(ps, "audit->revise", EDGE_LIMIT, actor="tester")
     assert o.step("demo", run_id, actor="tester") == "failed"  # P1 at the limit never exports it unapproved
     run = run_row(ps, run_id)
@@ -662,7 +664,7 @@ def test_p2_final_review_revise_comment_reaches_every_writer_and_gates_revise(en
     n = len(_revisable(ps))
     ex = Exec({("simreader", "ReaderQuestions"): [{"questions": []}] * 2,
                ("writer", "Revision"): [_revision("declined", "not my section")] * n
-               + [_revision("revised", "the introduction now names the audience")] * n})
+               + [_revision("answered", "the introduction already names the audience")] * n})
     o, run_id = stage_run(k, ps, lib, "audit", ex)
     assert o.step("demo", run_id, actor="tester") == "paused_waiting_human"
     (cp,) = [c for c in list_checkpoints(ps) if c["kind"] == "final_review" and c["status"] == "open"]

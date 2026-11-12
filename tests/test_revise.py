@@ -694,6 +694,74 @@ def test_a_final_review_request_is_a_manuscript_question_every_writer_gets_and_t
     assert w.gate(ps, 2).ok, w.gate(ps, 2).failures
 
 
+def test_a_final_review_request_splits_into_its_points():
+    """Calibration (critical3, final review 1): a three-point request was one question, so one section's answer to one
+    point settled all three. Numbered (``(1)``, ``1.``, ``1)``) or bulleted points, two or more, numbered from 1 in
+    order, are each a question, with what comes before the first point as their context."""
+    from rk.production.revise import request_points
+
+    head = "final_review: revise: Three sections need changes."
+    assert request_points(f"{head} (1) theme-6 repeats theme-1. (2) theme-3 cites clm_x wrongly. (3) Fix the "
+                          "conclusion.") == [f"{head} (1) theme-6 repeats theme-1.",
+                                             f"{head} (2) theme-3 cites clm_x wrongly.",
+                                             f"{head} (3) Fix the conclusion."]
+    assert request_points("Please:\n1. Name the audience.\n2) Shorten theme-2.\n") == [
+        "Please: 1. Name the audience.", "Please: 2) Shorten theme-2."]
+    assert request_points("- Name the audience\n- Shorten theme-2") == ["- Name the audience", "- Shorten theme-2"]
+    for one in ("final_review: revise: Say who the audience is.", "Fix (1) the table.",
+                "See version 2. Then (3) it.", "Results (2) and (3) disagree."):
+        assert request_points(one) == [one], one
+    # the P1 judges' reasons, one per line: numbering at a line start wins over a reason's own inline numbering
+    p1 = ("the judges did not approve the manuscript (P1 vote):\n(1) judge (openai): (1) theme-6 repeats. (2) Fix it."
+          "\n(2) judge_2 (deepseek): the conclusion overreaches.")
+    assert request_points(p1) == [
+        "the judges did not approve the manuscript (P1 vote): (1) judge (openai): (1) theme-6 repeats. (2) Fix it.",
+        "the judges did not approve the manuscript (P1 vote): (2) judge_2 (deepseek): the conclusion overreaches."]
+
+
+def test_each_point_of_a_final_review_request_needs_its_own_answer(env):
+    _, ps, _ = env
+    _drafted(env)
+    save_settings(load_settings().model_copy(update={"revise_max_rounds": 1}))
+    _reopened_by_the_final_review(ps, 1, "final_review: revise: (1) Say who the audience is. (2) Shorten theme-2.")
+    w = ReviseWorker()
+
+    def first_only(inputs):
+        out = revision(how="answered", note="the introduction names the audience")(inputs)
+        out["answers"] = [a if a["question_id"].endswith("q1") else {**a, "how": "declined", "note": "not mine"}
+                          for a in out["answers"]]
+        return out
+
+    ex = _exec([ask()], [first_only] + [revision(how="declined", note="not mine")] * 3)
+    assert _done(w.run(_ctx(env, ex)))
+    q1, q2 = revise_notes(ps, 1, kind="questions")[0]["questions"]
+    assert (q1["id"], q2["id"]) == ("a1r0q1", "a1r0q2") and {q1["section"], q2["section"]} == {"manuscript"}
+    assert q2["text"] == "final_review: revise: (2) Shorten theme-2."
+    assert [x["id"] for x in ex.of("writer", "Revision")[0]["inputs"]["revise"]["questions"]] == [q1["id"], q2["id"]]
+    gate = w.gate(ps, 1)
+    assert not gate.ok and [f for f in gate.failures if "a1r0q" in f] == [
+        f for f in gate.failures if q2["id"] in f], gate.failures  # q1 is settled, q2 is not
+
+
+def test_a_revised_answer_whose_revision_changed_nothing_does_not_settle(env):
+    """Calibration (critical3, revise attempt 3): theme-2 answered the request "revised" with its text unchanged, and
+    that counted. An accepted revision whose text is its version's own settles no question it answers "revised"."""
+    from rk.production.tools import revise_view
+
+    _, ps, _ = env
+    _drafted(env)
+    save_settings(load_settings().model_copy(update={"revise_max_rounds": 1}))
+    ex = _exec([ask(("introduction", 1))], [revision(how="revised", note="clarified")])
+    w = ReviseWorker()
+    assert _done(w.run(_ctx(env, ex)))
+    (decided,) = revise_notes(ps, 1, kind="decided")
+    assert decided["accepted"] and decided["unchanged"]
+    gate = w.gate(ps, 1)
+    assert not gate.ok and any("revised" in f and "unchanged" in f for f in gate.failures), gate.failures
+    (q,) = revise_view(ps, 1)["questions"]
+    assert q["outcome"] == "open"
+
+
 def test_the_revise_view_reports_a_settled_manuscript_request_as_answered(env):
     """N1 of the re-review: the request one section answered and the others declined is settled; the Revise view (the
     Workbench panel, ``rk revise show``) says so, by the gate's rule, not "declined"."""
