@@ -18,7 +18,9 @@ from rk.production.protocol import (
     ProtocolVoteOut,
     ProtocolWorker,
     dropped_prisma_p,
+    marked_point,
     points_ledger,
+    unmatched_marks,
 )
 from rk.production.vote import vote
 from tests.discovery_fakes import FakeSources, FakeWorker, ScriptedExecutor
@@ -442,3 +444,53 @@ def test_any_open_ideator_point_may_ask_to_remove_an_item():
     (failure,) = dropped_prisma_p(previous, redraft, [{**reason_point, "section": "search"}])  # the Scout's
     assert "'certainty_of_evidence'" in failure
 
+
+
+# ---- calibration 1 (P1 protocol rerun 2026-11-12) ----
+def test_a_mark_id_is_matched_ignoring_separators(env):
+    """judge_2 marks its point p1.judge_2.1 as p1.judge.2.1: the mark closes it and the approve stands; the vote keeps
+    the mark as given."""
+    _, ps, _ = env
+    ex = _executor(drafts=[_draft(), _draft("p1.judge_2.1")], strategies=[_strategy()] * 2,
+                   judge=[_opinion("approve"), _opinion("approve")],
+                   judge_2=[_opinion("revise", [_point()]), _opinion("approve", resolved=[("p1.judge.2.1", True)])])
+    w = ProtocolWorker()
+    assert w.run(_ctx(env, ex)).status == "rerun"
+    assert w.run(_ctx(env, ex, attempt=2)).status == "done"
+    (point,) = points_ledger(ps)
+    assert (point["id"], point["status"]) == ("p1.judge_2.1", "resolved")
+    (row,) = store.protocols(ps, 2)
+    (v,) = votes_on(ps, "protocol", row["id"])
+    judge_2 = v["opinions"][1]
+    assert "effective" not in judge_2 and judge_2["resolved"][0]["point_id"] == "p1.judge.2.1"
+    assert unmatched_marks(ps) == []
+
+
+def test_an_unmatched_mark_is_ignored_and_listed(env):
+    """A mark matching no own point (another judge's point without separators, an id that does not exist) closes
+    nothing, keeps judge_2's approve from standing while its own point is open, and is listed."""
+    _, ps, _ = env
+    ex = _executor(drafts=[_draft(), _draft("p1.judge.1", "p1.judge_2.1")], strategies=[_strategy()] * 2,
+                   judge=[_opinion("revise", [_point()]), _opinion("approve", resolved=[("p1.judge.1", False)])],
+                   judge_2=[_opinion("revise", [_point("synthesis", "no harm outcome")]),
+                            _opinion("approve", resolved=[("p1judge1", True), ("p9.judge_2.1", True)])])
+    w = ProtocolWorker()
+    assert w.run(_ctx(env, ex)).status == "rerun"
+    assert w.run(_ctx(env, ex, attempt=2)).status == "rerun"
+    assert _ids(ps, "open") == ["p1.judge.1", "p1.judge_2.1"]
+    assert [m["role"] for m in next(p for p in points_ledger(ps) if p["id"] == "p1.judge.1")["marks"]] == ["judge"]
+    (row,) = store.protocols(ps, 2)
+    (v,) = votes_on(ps, "protocol", row["id"])
+    assert v["opinions"][1]["effective"] == "revise"
+    assert [(m["attempt"], m["role"], m["point_id"]) for m in unmatched_marks(ps)] == [
+        (2, "judge_2", "p1judge1"), (2, "judge_2", "p9.judge_2.1")]
+
+
+def test_a_mark_matching_two_own_points_matches_none():
+    points = {"p1.judge_2.1": {"role": "judge_2"}, "p1-judge-2-1": {"role": "judge_2"},
+              "p2.judge.1": {"role": "judge"}}
+    assert marked_point(points, "judge_2", "p1.judge.2.1") is None
+    del points["p1-judge-2-1"]
+    assert marked_point(points, "judge_2", "p1.judge.2.1") == "p1.judge_2.1"
+    assert marked_point(points, "judge_2", "p2judge1") is None  # judge's point is never judge_2's
+    assert marked_point(points, "judge_2", "p2.judge.1") == "p2.judge.1"  # an id of the ledger is taken as given

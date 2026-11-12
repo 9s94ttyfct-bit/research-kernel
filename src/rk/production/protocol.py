@@ -401,9 +401,11 @@ def _boundaries(ps: ProjectStore) -> list[int]:
 def points_ledger(ps: ProjectStore) -> list[dict]:
     """Every point of every protocol vote of the project, in order, each ``{id, attempt, role, vendor, section, fault,
     change, blocking, status, live, answers, marks}``. A point's id is ``p{attempt}.{role}.{n}``, ``n`` counting the
-    judge's points of that vote from 1. ``marks``: every later judge's mark on it (``{attempt, role, resolved, why}``).
-    ``answers``: the Ideator's and the Scout's (``_answers``). Derived from the events only, so a point survives an
-    edge-limit failure and a new run (no reopening is recorded there).
+    judge's points of that vote from 1. ``marks``: every later judge's mark on it (``{attempt, role, resolved, why}``),
+    a mark being on the point ``marked_point`` matches (an id that differs from one of the judge's own points only in
+    its separators is that point; a mark that matches none is ignored and listed by ``unmatched_marks``). ``answers``:
+    the Ideator's and the Scout's (``_answers``). Derived from the events only, so a point survives an edge-limit
+    failure and a new run (no reopening is recorded there).
 
     ``live`` (controller ruling, fix round 2): the point belongs to the current cycle: its vote was on a version of the
     current frozen research question and came after the latest protocol freeze and the latest reopening of
@@ -434,9 +436,9 @@ def _open_blocking(points: dict[str, dict], cycle: tuple) -> set[str]:
 
 
 def _walk(ps: ProjectStore) -> tuple[list[dict], list[dict]]:
-    """The ledger (``points_ledger``) and one round per protocol vote, in order: ``{attempt, live, before, after}``,
-    the ids of the blocking points of the vote's cycle open before and after it (``live``: the vote is of the current
-    cycle)."""
+    """The ledger (``points_ledger``) and one round per protocol vote, in order: ``{attempt, live, before, after,
+    unmatched}``, the ids of the blocking points of the vote's cycle open before and after it (``live``: the vote is of
+    the current cycle) and the marks it gave that matched no point (``unmatched_marks``)."""
     answers = _answers(ps)
     bounds = _boundaries(ps)
     current = (_rq_sentence(ps), len(bounds))
@@ -444,15 +446,19 @@ def _walk(ps: ProjectStore) -> tuple[list[dict], list[dict]]:
     rounds: list[dict] = []
     for v in _protocol_votes(ps):
         cycle = (v["question"], bisect.bisect_left(bounds, v["seq"]))
-        before = _open_blocking(points, cycle)
+        before, unmatched = _open_blocking(points, cycle), []
         for o in v["opinions"]:
             role = o["role"]
             for m in o.get("resolved") or []:
-                if (p := points.get(m["point_id"])) is not None:
-                    p["marks"].append({"attempt": v["attempt"], "role": role, "resolved": m["resolved"],
-                                       "why": m.get("why", "")})
-                    if p["role"] == role and p["_cycle"] == cycle:  # a later cycle's mark changes nothing
-                        p["status"] = "resolved" if m["resolved"] else "open"
+                if (pid := marked_point(points, role, m["point_id"])) is None:
+                    unmatched.append({"attempt": v["attempt"], "role": role, "point_id": m["point_id"],
+                                      "resolved": m["resolved"], "why": m.get("why", "")})
+                    continue
+                p = points[pid]
+                p["marks"].append({"attempt": v["attempt"], "role": role, "resolved": m["resolved"],
+                                   "why": m.get("why", "")})
+                if p["role"] == role and p["_cycle"] == cycle:  # a later cycle's mark changes nothing
+                    p["status"] = "resolved" if m["resolved"] else "open"
             given = [*(o.get("points") or [])]
             for n, point in enumerate(given, 1):
                 pid = f"p{v['attempt']}.{role}.{n}"
@@ -468,7 +474,7 @@ def _walk(ps: ProjectStore) -> tuple[list[dict], list[dict]]:
                                "section": "other", "fault": why, "change": why, "blocking": True, "status": "open",
                                "answers": answers.get(pid, []), "marks": [], "_cycle": cycle}
         rounds.append({"attempt": v["attempt"], "live": cycle == current, "before": before,
-                       "after": _open_blocking(points, cycle)})
+                       "after": _open_blocking(points, cycle), "unmatched": unmatched})
     for p in points.values():
         p["live"] = p.pop("_cycle") == current
         if not p["live"] and p["status"] == "open":
@@ -497,6 +503,30 @@ def another_round(ps: ProjectStore, attempt: int) -> str | None:
             f"before): one more protocol round")
 
 
+def _bare(point_id: str) -> str:
+    """A point id with every character that is not a letter or a digit removed."""
+    return "".join(c for c in point_id if c.isalnum())
+
+
+def marked_point(points: dict[str, dict], role: str, point_id: str) -> str | None:
+    """The ledger point (of ``points``, by id) a judge's (``role``) mark on ``point_id`` is about: ``point_id`` when it
+    is a point of the ledger; else the one point of the judge's own whose id is ``point_id`` ignoring separators
+    (``_bare``); else ``None`` (no own point matches, or more than one): the mark is ignored.
+
+    Calibration (P1 protocol rerun 2026-11-12): judge_2 marked its point p1.judge_2.1 as p1.judge.2.1; the point stayed
+    open and its approve was tightened to revise, which cost a round."""
+    if point_id in points:
+        return point_id
+    hits = [pid for pid, p in points.items() if p["role"] == role and _bare(pid) == _bare(point_id)]
+    return hits[0] if len(hits) == 1 else None
+
+
+def unmatched_marks(ps: ProjectStore) -> list[dict]:
+    """Every judge's mark that matched no point (``marked_point``) and was ignored, in order, each ``{attempt, role,
+    point_id, resolved, why}`` as the judge gave it; the vote keeps it as given too."""
+    return [m for r in _walk(ps)[1] for m in r["unmatched"]]
+
+
 def _open_points(ps: ProjectStore) -> list[dict]:
     """The ledger's open points (live and not resolved), each with its ``owner`` (``owner``): what the Ideator, the
     Scout and the judges see."""
@@ -506,8 +536,10 @@ def _open_points(ps: ProjectStore) -> list[dict]:
 def _own_open_blocking(ledger: list[dict], role: str, out: ProtocolVoteOut, attempt: int) -> list[str]:
     """The ids of the judge's (``role``) blocking points still open after its answer ``out``: its earlier open ones
     it did not mark resolved, its earlier live resolved ones it marks unresolved again, and its new ones (numbered as
-    ``points_ledger`` numbers them). A retired point, or a resolved one of an earlier cycle, counts for nothing."""
-    marks = {m.point_id: m.resolved for m in out.resolved}
+    ``points_ledger`` numbers them). A retired point, or a resolved one of an earlier cycle, counts for nothing. A mark
+    is on the point ``marked_point`` matches; an unmatched mark counts for nothing."""
+    points = {p["id"]: p for p in ledger}
+    marks = {pid: m.resolved for m in out.resolved if (pid := marked_point(points, role, m.point_id)) is not None}
     earlier = [p["id"] for p in ledger if p["role"] == role and p["blocking"]
                and ((p["status"] == "open" and marks.get(p["id"]) is not True)
                     or (p["live"] and p["status"] == "resolved" and marks.get(p["id"]) is False))]
