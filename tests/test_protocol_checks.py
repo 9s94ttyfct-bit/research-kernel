@@ -250,16 +250,17 @@ def test_a_redraft_that_drops_an_item_is_drafted_again_in_the_attempt(env):
 
 # ---- R2: P1 does not vote above the cap (calibration: the probe's lower bound decides, P1 protocol rerun 2) ----
 SOMEWHAT = ["aspirin stroke elderly trial", *QUERIES[1:]]
-COUNTS = {(QUERIES[0], "openalex"): 2500, (QUERIES[0], "europepmc"): 1500,  # 4000: over the cap 3000
+COUNTS = {(QUERIES[0], "openalex"): 3100, (QUERIES[0], "europepmc"): 900,  # 4000, at least 3100: over the cap 3000
           (SOMEWHAT[0], "openalex"): 3200, (SOMEWHAT[0], "europepmc"): 300}  # 3500, at least 3200: still over
 BETWEEN = {**COUNTS, (SOMEWHAT[0], "openalex"): 2000, (SOMEWHAT[0], "europepmc"): 1500}  # 3500, at least 2000
+KEEPS = {**COUNTS, (QUERIES[0], "openalex"): 2500, (QUERIES[0], "europepmc"): 1500}  # v1 4000, at least 2500
 
 
 @pytest.mark.parametrize("env", [{"production_mode": "auto"}, {"production_mode": "collab"}], indirect=True,
                          ids=["P1", "P2"])
 def test_p1_does_not_vote_above_the_cap(env):
-    """The best version's largest single count (3200) is above the cap: the search finds more distinct records than
-    the cap whatever the duplicates, so P1 spends no judge round on it."""
+    """Both versions' largest single counts (3100, then 3200) are above the cap: the search nearly always finds more
+    distinct records than the cap, so P1 spends no judge round on the best (the lower total, 3500)."""
     k, ps, _ = env
     cfg = k.settings()
     cfg.protocol_narrow_tries = 1
@@ -278,6 +279,26 @@ def test_p1_does_not_vote_above_the_cap(env):
     else:  # P2: you may raise the cap, so your approval opens on the best version
         assert out.status == "waiting_human"
         assert get_checkpoint(ps, out.checkpoint_id)["options"]["protocol_id"] == best["id"]
+
+
+def test_the_best_version_is_one_p1_may_vote_on(env):
+    """v1 (4000 records, at least 2500) and the narrowing's v2 (3500, at least 3200): v2's lower total does not make
+    it the best, since its largest single count is above the cap and v1's is not; v1 goes to the vote."""
+    k, ps, _ = env
+    cfg = k.settings()
+    cfg.protocol_narrow_tries = 2
+    save_settings(cfg)
+    ex = ScriptedExecutor({("ideator", "ProtocolDraftOut"): [_draft()],
+                           ("scout", "SearchStrategyOut"): [_strategy(), _strategy(SOMEWHAT), _strategy(SOMEWHAT)],
+                           **_votes("approve")})
+    out = ProtocolWorker().run(_ctx(env, ex, sources=FakeSources({}, record_counts=KEEPS)))
+    v1 = store.protocols(ps, 1)[0]
+    assert out.status == "done" and store.frozen_protocol(ps)["id"] == v1["id"]
+    (failed,) = [c for c in ex.calls if c["role"] == "scout"][2]["inputs"]["narrowing"]["failed_tries"]
+    assert failed["version"] == 2 and "largest single count, 3200, is above the record cap 3000" in failed["why"]
+    (judged, _) = [c for c in ex.calls if c["schema"] == "ProtocolVoteOut"]
+    seen = judged["inputs"]["subject"]["record_probe"]
+    assert (seen["total"], seen["lower"]) == (4000, 2500)
 
 
 @pytest.mark.parametrize("env", [{"production_mode": "auto"}, {"production_mode": "collab"}], indirect=True,

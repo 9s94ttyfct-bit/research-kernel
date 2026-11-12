@@ -321,6 +321,7 @@ def test_p2_opens_protocol_approval_p1_votes(env):
     prompt = cp["prompt"]
     for text in ("Protocol version 1", "traceability only", "I am studying aspirin over 80", "Search strategy",
                  *QUERIES, "openalex, europepmc", "2000", "Record cap: 3000", "Record-cap probe (advisory): 0 records",
+                 "Within the record cap 3000; the cap that holds is search_screen's count of the deduplicated records",
                  "Eligibility", "I1: People over 80", "E1: Animal studies", "Extraction schema",
                  "n (number, unit people): Participants", "design (category: rct | cohort | other): Study design",
                  "Synthesis plan", "narrative_swim", "PRISMA-P", "risk_of_bias: RoB 2 for trials",
@@ -637,7 +638,7 @@ def test_the_probe_counts_within_the_strategy_years(env):
 NARROW = ["aspirin stroke elderly randomized trial", QUERIES[1], QUERIES[2]]
 WIDER = [*QUERIES, "aspirin"]
 SOMEWHAT = ["aspirin stroke elderly trial", QUERIES[1], QUERIES[2]]
-COUNTS = {(QUERIES[0], "openalex"): 2500, (QUERIES[0], "europepmc"): 1500,  # 4000: over the cap 3000
+COUNTS = {(QUERIES[0], "openalex"): 3100, (QUERIES[0], "europepmc"): 900,  # 4000, at least 3100: over the cap 3000
           (NARROW[0], "openalex"): 900, (NARROW[0], "europepmc"): 600,  # 1500
           ("aspirin", "openalex"): 40000, ("aspirin", "europepmc"): 10000,  # WIDER: 54000
           (SOMEWHAT[0], "openalex"): 3200, (SOMEWHAT[0], "europepmc"): 300}  # 3500, at least 3200: over the cap
@@ -659,7 +660,7 @@ def test_an_over_cap_probe_has_the_scout_narrow_and_the_narrower_strategy_goes_t
     assert narrow["instructions"] == STRATEGY_TASK and "narrowing" in STRATEGY_TASK
     asked = narrow["inputs"]["narrowing"]
     assert (asked["record_cap"], asked["version"], asked["total"], asked["failed_tries"]) == (3000, 1, 4000, [])
-    assert {"query": QUERIES[0], "source": "openalex", "count": 2500} in asked["counts"]
+    assert {"query": QUERIES[0], "source": "openalex", "count": 3100} in asked["counts"]
     assert narrow["inputs"]["previous_draft"] == {"version": 1, "body": v1["body"],
                                                   "record_probe": probe_of(ps, v1["id"])}
     assert narrow["inputs"]["eligibility"] == v1["body"]["eligibility"]

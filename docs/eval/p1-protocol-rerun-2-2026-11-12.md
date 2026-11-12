@@ -48,11 +48,12 @@ The kernel's extra rounds were used where the rule allows (fructose, ozone); nei
 ## Calibration 2 (branch `p1-calib2`)
 
 - **P1 skips the vote only when the probe shows the cap is exceeded:** the probe stores `lower`, the largest single
-  query-on-source count (a probe stored before has it computed from its counts), and P1 reruns without a vote only
-  when `lower` is above the cap, with `lower`, the total and the cap in the reason. Between the bounds the version is
-  voted on; the judges' probe input and the rendered probe state both bounds and that search_screen's deduplicated
-  count is the cap that holds (above it, `search_screen->protocol`). The narrowing is unchanged (it narrows while the
-  total is above the cap), as are P2 and the cap itself, which only the researcher sets.
+  query-on-source count, nearly always a lower bound (a probe stored before has it computed from its counts), and P1
+  reruns without a vote only when `lower` is above the cap, with `lower`, the total and the cap in the reason. Between
+  the bounds the version is voted on; the judges' probe input and the rendered probe state both bounds and that
+  search_screen's deduplicated count is the cap that holds (above it, `search_screen->protocol`). The narrowing still
+  narrows while the total is above the cap; its best version is one whose `lower` is within the cap when there is
+  one, then the lowest total. P2 and the cap itself, which only the researcher sets, are unchanged.
 - **A judge that approves and leaves some of its own live blocking points unmarked is asked once more, in the same
   vote and on its own driver, to mark exactly those points** (resolved or not, with why; `MARKS_TASK`, answered as
   `PointMarksOut`). Its marks on those points join its opinion's `resolved` (marks on other ids are ignored) and the

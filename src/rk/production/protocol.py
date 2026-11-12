@@ -56,10 +56,11 @@ Calibration (P1 protocol rerun 2026-11-12, ``docs/eval/p1-protocol-rerun-2026-11
 Calibration 2 (P1 protocol rerun 2, 2026-11-12, ``docs/eval/p1-protocol-rerun-2-2026-11-12.md``):
 
 - The probe gives two bounds: ``total`` (the counts summed, an upper bound) and ``lower`` (the largest single count of
-  one query on one source, a lower bound; ``_lower``, computed from the counts for a probe stored without it). P1
-  skips the vote only when ``lower`` is above the cap (``_over_cap``); between the bounds the version is voted on, the
-  judges seeing both bounds, and search_screen's deduplicated count holds the cap (above it,
-  ``search_screen->protocol``). The narrowing is unchanged: it narrows while ``total`` is above the cap.
+  one query on one source, nearly always a lower bound; ``_lower``, computed from the counts for a probe stored
+  without it). P1 skips the vote only when ``lower`` is above the cap (``_over_cap``); between the bounds the version
+  is voted on, the judges seeing both bounds, and search_screen's deduplicated count holds the cap (above it,
+  ``search_screen->protocol``). The narrowing still narrows while ``total`` is above the cap; its best version is one
+  whose ``lower`` is within the cap when there is one, then the lowest total (``_narrowed``).
 - A judge that answers approve and leaves some of its own open blocking points unmarked (``_unmarked``) is asked once
   more in the same vote, on its own driver, to mark exactly those (``marks_follow_up``, ``MARKS_TASK``,
   ``PointMarksOut``). Its marks on them join the opinion's ``resolved`` (marks on other ids are ignored) and the
@@ -85,11 +86,12 @@ else could narrow a search):
 2. **Narrowing.** When the probe of the sound version is above the project's record cap, the Scout is asked again in
    the attempt, up to ``Settings.protocol_narrow_tries`` times, for a narrower strategy (``narrowing``: the cap, the
    per-query and per-source counts of the best strategy so far, the failed tries). Each answer is a version (the
-   draft kept, the strategy replaced), probed in turn. An answer that does not lower the total below the best so far
-   (a repeated strategy, which takes the earlier probe and is not counted again, one that fails the checks or has no
-   count, or a higher total) is a failed try. Narrowing stops when the best total is within the cap or the tries run
-   out; the best version (the lowest total) then goes to your approval, its probe shown, or in P1 to the vote unless
-   its probe's lower bound is above the cap (then the stage reruns, with the bounds and the cap as its reason).
+   draft kept, the strategy replaced), probed in turn. An answer that is not better than the best so far (a repeated
+   strategy, which takes the earlier probe and is not counted again, one that fails the checks or has no count, one
+   whose largest single count is above the cap when the best's is within it, or one in the same class without a lower
+   total) is a failed try. Narrowing stops when the best total is within the cap or the tries run out; the best
+   version then goes to your approval, its probe shown, or in P1 to the vote unless its probe's largest single count
+   is above the cap (then the stage reruns, with the bounds and the cap as its reason).
 
 Every try is a version (append-only), recorded with how it was drafted (``protocol.added`` ``tried``: its kind, the
 vendors of its Ideator and Scout, its failures and its answers to the open points). An interrupted attempt runs again
@@ -97,11 +99,11 @@ in place (``resumes_in_place``): it goes on from the attempt's versions and prob
 the vote already recorded and the approval already opened.
 
 The probe is advisory to you: it is shown to you and to the judges, with the cap, as two bounds, and fails no check;
-in P1 a lower bound above the cap keeps the version from the vote. Each count runs inside the per-item boundary (a
-source error or an exhausted source API budget leaves that count ``None`` with its ``error``), so the probe never
-fails or interrupts the stage. Its total is an upper bound (duplicates across queries and sources count again), its
-largest single count a lower bound, and it leaves out the sources without a count; the record cap is enforced by
-``search_screen`` on the deduplicated records.
+in P1 a largest single count above the cap keeps the version from the vote. Each count runs inside the per-item
+boundary (a source error or an exhausted source API budget leaves that count ``None`` with its ``error``), so the
+probe never fails or interrupts the stage. Its total is an upper bound (duplicates across queries and sources count
+again), its largest single count nearly always a lower bound, and it leaves out the sources without a count; the
+record cap is enforced by ``search_screen`` on the deduplicated records.
 
 A rerun after an unfrozen draft (a revision asked by you or by the vote, failed checks) gives both roles the version
 the earlier attempt offered (the best of its narrowing), else its last version, as ``previous_draft`` (its body and
@@ -277,8 +279,8 @@ STRATEGY_TASK = (
 # Calibration (P1 protocol rerun 2, 2026-11-12): both bounds; the deduplicated count is the cap that holds.
 PROBE_NOTE = ("advisory, two bounds on the records the search finds: `total`, an upper bound (the record counts of "
               "each query on each counted source within the strategy's publication years, summed, so duplicates "
-              "across queries and sources count again), and `lower`, a lower bound (the largest single count of one "
-              "query on one source); the record cap that holds is search_screen's, on the deduplicated records")
+              "across queries and sources count again), and `lower`, nearly always a lower bound (the largest single "
+              "query-on-source count); the record cap that holds is search_screen's, on the deduplicated records")
 DRAFT_KEYS = ("eligibility", "extraction_schema", "synthesis_plan", "prisma_p")  # the Ideator's part of a protocol
 # Calibration (P1 protocol diagnosis 2026-11-12): §7 items 1, 5 and 6; free-text reasons mixed 3-9 faults, judges saw
 # neither earlier points nor answers, and asked for what the kernel cannot do. The blocking/advisory split is the
@@ -1043,8 +1045,8 @@ def _count(ctx: StageContext, query: str, source: str, strategy: SearchStrategy)
 
 
 def _lower(counts: list[dict]) -> int | None:
-    """The probe's lower bound on the deduplicated records: the largest single count of one query on one source
-    (``None`` when no count is known)."""
+    """The probe's ``lower``: the largest single count of one query on one source (``None`` when no count is known),
+    nearly always a lower bound on the deduplicated records."""
     given = [c["count"] for c in counts if c["count"] is not None]
     return max(given) if given else None
 
@@ -1052,10 +1054,10 @@ def _lower(counts: list[dict]) -> int | None:
 def _probe(ctx: StageContext, strategy: SearchStrategy) -> dict:
     """``sources.count`` of every query on every counted source of the strategy within its publication years
     (``_count``), the sum of the counts given (``total``: an upper bound, since duplicates across queries and sources
-    count again) and the largest of them (``lower``, ``_lower``: a lower bound, since that one query on that one source
-    already finds that many distinct records). A source that gave no count keeps ``count: None`` (and its ``error``
-    when the count failed); the strategy's sources without a count at all are listed as ``uncounted``. ``total`` and
-    ``lower`` are ``None`` when nothing was counted.
+    count again) and the largest of them (``lower``, ``_lower``: nearly always a lower bound; deduplication within a
+    source may still merge records of the same normalised title and year, and drops unreadable entries). A source that
+    gave no count keeps ``count: None`` (and its ``error`` when the count failed); the strategy's sources without a
+    count at all are listed as ``uncounted``. ``total`` and ``lower`` are ``None`` when nothing was counted.
 
     Calibration (P1 protocol rerun 2, 2026-11-12): ``lower``; six of 22 attempts stopped above the cap on the total
     while the largest single count was under it."""
@@ -1232,8 +1234,8 @@ def plan_value(key: str, value, method: str | None = None) -> str | None:
 
 
 def probe_lines(probe: dict | None, cap: int) -> list[str]:
-    """The record-cap probe, as the protocol's review shows it: both bounds, and, when the upper bound is above the
-    cap, whether the lower bound shows the cap exceeded or search_screen's deduplicated count decides.
+    """The record-cap probe, as the protocol's review shows it: both bounds, and whether the largest single count shows
+    the cap exceeded, or search_screen's deduplicated count decides.
 
     Calibration (P1 protocol rerun 2, 2026-11-12): the lower bound is shown."""
     if probe is None:
@@ -1247,18 +1249,21 @@ def probe_lines(probe: dict | None, cap: int) -> list[str]:
         lines = [f"Record-cap probe (advisory): not counted (no source gave a record count; {per})."]
     else:
         lines = [(f"Record-cap probe (advisory): {total} records (an upper bound: summed per query and counted source "
-                  f"within the publication years, so duplicates count again), at least {lower} records (a lower "
-                  f"bound: the largest single count of one query on one source); {per}.")]
+                  f"within the publication years, so duplicates count again), nearly always at least {lower} records "
+                  f"(the largest single query-on-source count); {per}.")]
     if probe["uncounted"]:
         lines.append(f"Not counted (no record count): {', '.join(probe['uncounted'])}.")
     if lower is not None and lower > cap:
-        lines.append(f"The probe shows at least {lower} records, above the record cap {cap}: search_screen stops "
-                     f"above the cap after deduplication. Narrow the strategy (revise), or approve with a raised "
-                     f"record_cap.")
+        lines.append(f"The largest single count, {lower} records, is above the record cap {cap}: search_screen nearly "
+                     f"always stops above the cap after deduplication. Narrow the strategy (revise), or approve with a "
+                     f"raised record_cap.")
     elif total is not None and total > cap:
-        lines.append(f"The probe's upper bound, {total} records, is above the record cap {cap}; its lower bound, "
-                     f"{lower}, is not. The cap that holds is search_screen's count of the deduplicated records: "
+        lines.append(f"The probe's upper bound, {total} records, is above the record cap {cap}; its largest single "
+                     f"count, {lower}, is not. The cap that holds is search_screen's count of the deduplicated records: "
                      f"search_screen stops above the cap after deduplication.")
+    elif total is not None:
+        lines.append(f"Within the record cap {cap}; the cap that holds is search_screen's count of the deduplicated "
+                     f"records.")
     return lines
 
 
@@ -1413,13 +1418,21 @@ def _scout_failures(tried: dict) -> list[str]:
 
 def _narrowed(ps: ProjectStore, chain: list[dict]) -> tuple[dict, list[dict]]:
     """The best version of a sound draft try and its narrowing tries (``chain``, the draft try first), with its
-    ``probe``: the latest try that lowered the probe total below every version before it. And the failed narrowing
-    tries, each ``{version, total, why}``: a repeated strategy, one that fails the checks (as the Scout answers them,
-    ``_scout_failures``) or has no count, or a total not below the best so far."""
+    ``probe``: a version whose largest single count (``lower``) is within the record cap is preferred over one whose
+    ``lower`` is above it (P1 votes only on the former, ``_over_cap``), and within the same class the lowest total; a
+    try replaces the best so far only when it is better. And the failed narrowing tries, each ``{version, total,
+    why}``: a repeated strategy, one that fails the checks (as the Scout answers them, ``_scout_failures``) or has no
+    count, one whose ``lower`` is above the cap when the best's is within it, or one of the same class with a total
+    not below the best's.
+
+    Calibration (P1 protocol rerun 2, 2026-11-12, review): ranking by the total alone let a try with a lower total but
+    a largest single count above the cap replace a version P1 would have voted on."""
     best = {**chain[0], "probe": probe_of(ps, chain[0]["id"])}
+    cap = chain[0]["body"]["record_cap"]
     failed = []
     for i, t in enumerate(chain[1:], 1):
         probe = probe_of(ps, t["id"])
+        tried = {**t, "probe": probe}
         total = probe["total"] if probe else None
         low = best["probe"]["total"] if best["probe"] else None
         same = next((e for e in chain[:i] if e["body"]["search_strategy"] == t["body"]["search_strategy"]), None)
@@ -1429,10 +1442,13 @@ def _narrowed(ps: ProjectStore, chain: list[dict]) -> tuple[dict, list[dict]]:
             why = "it fails the checks: " + "; ".join(_scout_failures(t))
         elif total is None:
             why = "no source gave a record count"
-        elif low is not None and total >= low:
+        elif low is not None and _over_cap(tried) and not _over_cap(best):
+            why = (f"its largest single count, {probe['lower']}, is above the record cap {cap}, and that of version "
+                   f"{best['version']} is not")
+        elif low is not None and _over_cap(tried) == _over_cap(best) and total >= low:
             why = f"{total} records, not fewer than the {low} of version {best['version']}"
         else:
-            best = {**t, "probe": probe}
+            best = tried
             continue
         failed.append({"version": t["version"], "total": total, "why": why})
     return best, failed
@@ -1479,8 +1495,8 @@ def _strategy_of(out: SearchStrategyOut) -> SearchStrategy:
 
 
 def _over_cap(best: dict) -> bool:
-    """Whether the best version's probe shows it above the record cap: its lower bound (``lower``, the largest single
-    count of one query on one source) is above the cap. Only then P1 reruns instead of voting (only you may raise the
+    """Whether the best version's probe shows it above the record cap: its largest single count (``lower``, nearly
+    always a lower bound) is above the cap. Only then P1 reruns instead of voting (only you may raise the
     cap, P2); between the bounds the version is voted on, and search_screen's deduplicated count holds the cap.
 
     Calibration (P1 protocol diagnosis 2026-11-12): rule R2; search.cap_exceeded points. Calibration (P1 protocol
@@ -1493,8 +1509,8 @@ def _over_cap(best: dict) -> bool:
 def _over_cap_reason(best: dict, tries: int) -> str:
     """Why P1 reruns instead of voting (``_over_cap``): the bounds, the cap and what to narrow."""
     probe, cap = best["probe"], best["body"]["record_cap"]
-    return (f"the record-cap probe of version {best['version']} shows at least {probe['lower']} records (its largest "
-            f"single count of one query on one source, a lower bound; {probe['total']} summed, an upper bound), above "
+    return (f"the record-cap probe of version {best['version']} shows nearly always at least {probe['lower']} records "
+            f"(its largest single query-on-source count; {probe['total']} summed, an upper bound), above "
             f"the record cap {cap}, after {tries} narrowing tries, and P1 does not vote on a protocol the probe shows "
             "above the cap: narrow the search strategy to fewer records (drop or tighten the broadest queries, which "
             "the probe's counts show, e.g. with quoted phrases and AND between the concepts every record needs) and "

@@ -180,10 +180,11 @@ frozen), `search_screen` (search, deduplication, title/abstract and full-text sc
   checks the draft (its free texts may not claim novelty, the same rule as for topics and RQs) and sizes it: the
   record-cap probe counts each query on each source that reports counts (OpenAlex, Europe PMC, PubMed) within the strategy's publication years. The probe
   is advisory and gives two bounds on the records: the sum of the counts (an upper bound: duplicates count again) and
-  the largest single count (a lower bound). A draft that fails the checks is drafted again within the
+  the largest single count (nearly always a lower bound). A draft that fails the checks is drafted again within the
   attempt (up to `protocol_tries`, default 3, versions; only the role whose part failed is asked), and a probe above
   the record cap sends the strategy back to the Scout to narrow, with the counts (up to `protocol_narrow_tries`,
-  default 3, tries; a strategy that does not lower the total is a failed try); the version with the lowest total goes
+  default 3, tries; a strategy that does not lower the total is a failed try, and so is one whose largest single count
+  is above the cap when the best version's is within it); the version with the lowest total goes
   on. The kernel writes what only it knows: the administrative PRISMA-P items (registration, amendments, support,
   competing interests), the language exclusion `E-lang` and the search execution (publication years written out,
   each query sent verbatim to each source); the checks also reject placeholders, a missing PRISMA-P item of a
