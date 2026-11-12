@@ -1,7 +1,8 @@
 """Draft preview (spec §8.7): the stored versions of each section (the ``drafts`` projection; a file without a row is
 no draft, and a file whose sha256 changed is refused) rendered to HTML with every source marker (``[[kind:id]]``,
 spec §9.1 V-COVER; ``rk.production.manuscript.source_markers``, the verifier's markers: none inside a code span or a
-code block) turned into a hover card that names its target and links to the evidence.
+code block) turned into a hover card that names its target and links to the evidence (an objection, ``[[obj:]]``:
+its text and answer, and the source item it cites).
 
 Raw HTML in a draft is escaped (markdown-it with ``html=False``); markers are swapped for placeholders before rendering
 and for ``<span class="mk mk-<kind>">`` elements after it, so no draft text can inject markup."""
@@ -16,6 +17,7 @@ from markdown_it import MarkdownIt
 from rk.argument import ArgumentService
 from rk.library.service import Library
 from rk.production.artifacts import artifact
+from rk.production.common import entity_row
 from rk.production.manuscript import draft_text, latest_draft, source_markers
 from rk.production.store import design, protocol_row
 from rk.store.project import ProjectStore
@@ -54,6 +56,20 @@ def _resolve(ps: ProjectStore, lib: Library, kind: str, target: str | None) -> d
                 evidence.append({"note_id": n["id"], "item_id": n["item_id"], "item_title": title,
                                  "kind": n["kind"], "text": n["text"], "locator": n.get("locator")})
         return {**info, "label": c.get("text"), "status": c.get("status"), "evidence": evidence}
+    if kind == "obj" and target:
+        try:
+            o = entity_row(ps, "objections", target)
+        except KeyError:
+            return {**info, "missing": True, "label": f"unknown objection {target}"}
+        if not o.get("source_id"):  # the verifier refuses it too: [[obj:]] cites what an objection's source says
+            return {**info, "missing": True, "label": f"objection {target} has no source to cite: {o['text']}"}
+        try:
+            item = lib.get(o["source_id"])
+        except KeyError:
+            return {**info, "missing": True, "label": f"the source {o['source_id']} of objection {target} is not in "
+                                                      "the library"}
+        return {**info, "label": o["text"], "status": o.get("status"), "target_id": o["target_id"],
+                "source": {"item_id": item.id, "title": item.title, "year": item.year}}
     if kind == "run" and target and target.startswith("prt_"):
         if (p := protocol_row(ps, target)) is not None:
             return {**info, "label": f"protocol version {p['version']} ({p['status']})"}

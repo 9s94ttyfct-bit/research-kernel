@@ -1624,7 +1624,10 @@ pages.drafts = async (root, params) => {
     const mk = d.markers[Number(span.dataset.i)];
     note.className = `margin-note${mk.missing ? " missing" : ""}`;
     fill(note, el("strong", {}, mk.label || mk.kind),
-      mk.status ? el("div", { class: "hint" }, `Claim status: ${mk.status}`) : null,
+      mk.status ? el("div", { class: "hint" }, `${mk.kind === "obj" ? "Objection" : "Claim"} status: ${mk.status}`) : null,
+      mk.source ? el("div", { class: "hint" }, "Source of the objection: ",
+        el("a", { href: `#/library?item=${encodeURIComponent(mk.source.item_id)}` },
+          `${mk.source.title || mk.source.item_id}${mk.source.year ? ` (${mk.source.year})` : ""}`)) : null,
       (mk.evidence || []).map((ev) => el("blockquote", { class: "note" }, ev.text,
         el("div", { class: "hint" }, `${ev.item_title || ev.item_id}${ev.locator ? `, page ${ev.locator.page}` : ""}`))),
       mk.missing ? el("p", { class: "hint" }, "This marker points to nothing in the project. The sentence is not supported until it does.") : null);

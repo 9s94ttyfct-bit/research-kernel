@@ -183,6 +183,32 @@ def test_render_draft_resolves_statistics_figures_and_missing_plans(ui, project,
     assert "not a figure" in wrong["markers"][0]["label"] and "not a statistic" in wrong["markers"][1]["label"]
 
 
+def test_render_draft_shows_an_objection_with_its_source(ui, project, kernel):
+    """``[[obj:]]`` cites what an objection's source says: the card shows the objection, its answer and the source it
+    links to; one without a source (which cites nothing) or unknown is marked missing."""
+    from rk.argument import ArgumentService, ClaimIn, ObjectionIn
+    from rk.ui.drafts import render_draft
+
+    ps, lib = project
+    iid = add_item_with_pdf(kernel)
+    svc = ArgumentService(ps)
+    cid = svc.add_claim(ClaimIn(text="Encapsulation slows degradation."), generator_vendor="human", actor="t")
+    oid = svc.add_objection(ObjectionIn(target_id=cid, category="counterexample", priority=2, source_id=iid,
+                                        text="Unsealed cells lasted as long."), actor="t")
+    bare = svc.add_objection(ObjectionIn(target_id=cid, category="problem", priority=2, text="Too few cells."),
+                             actor="t")
+    d = render_draft(ps, lib, f"Unsealed cells lasted as long [[obj:{oid}]]. Few [[obj:{bare}]]. "
+                              "Gone [[obj:obj_01HXXXXXXXXXXXXXXXXXXXXXXX]].")
+    assert 'class="mk mk-obj"' in d["html"]
+    found, unsourced, unknown = d["markers"]
+    assert found["label"] == "Unsealed cells lasted as long." and found["status"] == "open"
+    assert found["source"] == {"item_id": iid, "title": "Fixture article", "year": 2024}
+    assert not found.get("missing")
+    assert unsourced["missing"] is True and "no source" in unsourced["label"]
+    assert unknown["missing"] is True and "unknown objection" in unknown["label"]
+
+
+
 @pytest.mark.parametrize("md", [
     'See [text](http://x "[[clm:clm_A]]") here [[inf]].', "See [text](http://x/[[clm:clm_A]]) here [[inf]].",
     "See <http://x/[[clm:clm_A]]> here [[inf]].", "# Results [[clm:clm_A]]\n\nSee text here [[inf]].",

@@ -280,6 +280,7 @@ ol.stages { list-style: none; display: flex; flex-wrap: wrap; gap: 0.5rem; paddi
   font: 600 0.68rem/1.45 var(--sans); background: rgba(47, 125, 109, 0.12); color: var(--verified); cursor: pointer;
 }
 .mk.mk-inf, .mk.mk-ck { background: rgba(74, 84, 104, 0.12); color: var(--ink-soft); }
+.mk.mk-obj { background: rgba(176, 116, 38, 0.14); color: var(--attention); }
 .mk.mk-missing { background: rgba(162, 59, 59, 0.12); color: var(--refuted); }
 .mk[aria-expanded="true"] { outline: 2px solid currentColor; }
 .margin-note { position: sticky; top: 1rem; background: var(--panel); border-left: 3px solid var(--verified); padding: 0.8rem 1rem; font-size: 0.9rem; border-radius: 0 var(--radius-control) var(--radius-control) 0; }
