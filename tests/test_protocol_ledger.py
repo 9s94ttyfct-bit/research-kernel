@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import pytest
 
-from rk.orchestrator.engine import Orchestrator
+from rk.orchestrator.engine import Orchestrator, StageOutcome
 from rk.orchestrator.state import latest_attempt, stage_row, start_run
 from rk.production import store
 from rk.production.protocol import (
     KERNEL_RULES,
+    PRISMA_P_TEXT,
     ProtocolVoteOut,
     ProtocolWorker,
     dropped_prisma_p,
@@ -28,6 +29,7 @@ from tests.production_fakes import (
 
 T0 = 1_800_000_000.0
 QUERIES = ["aspirin stroke elderly", "aspirin primary prevention octogenarians", "antiplatelet stroke over 80"]
+SR_ITEMS = {k: f"The review's {k.replace('_', ' ')}: as the methods state." for k in PRISMA_P_TEXT}
 
 
 def _draft(*answers: str, exclude=(("E1", "Animal studies"),)) -> dict:
@@ -73,9 +75,9 @@ def env(tmp_home, replay_http, request):
     k.close()
 
 
-def _ctx(env, ex, *, attempt: int = 1):
+def _ctx(env, ex, *, attempt: int = 1, sources=None):
     k, ps, lib = env
-    return production_ctx(k, ps, lib, ex, stage="protocol", attempt=attempt, sources=FakeSources({}))
+    return production_ctx(k, ps, lib, ex, stage="protocol", attempt=attempt, sources=sources or FakeSources({}))
 
 
 def _ids(ps, status: str | None = None) -> list[str]:
@@ -93,11 +95,13 @@ def _steps(o: Orchestrator, run_id: str) -> str:
 def test_points_are_numbered_and_carried_across_runs(env):
     """Three P1 votes say revise with points; the third hits the edge limit and the run fails, leaving the stage's
     guidance at the attempt-2 vote's reasons (diagnosis §5.3). A new run's attempt 4 gets every open point from the
-    ledger, numbered by attempt, judge and order, and none of that stale text."""
+    ledger, numbered by attempt, judge and order (judge_2's first revise, a reason only, became p1.judge_2.1), and
+    none of that stale text."""
     k, ps, _ = env
+    a2 = ("p1.judge.1", "p1.judge_2.1")
+    a3 = (*a2, "p2.judge.1", "p2.judge_2.1")
     ex = _executor(
-        drafts=[_draft(), _draft("p1.judge.1"), _draft("p1.judge.1", "p2.judge.1", "p2.judge_2.1"),
-                _draft("p1.judge.1", "p2.judge.1", "p2.judge_2.1", "p3.judge_2.1"), _draft()],
+        drafts=[_draft(), _draft(*a2), _draft(*a3), _draft(*a3, "p3.judge_2.1"), _draft()],
         strategies=[_strategy()] * 5,
         judge=[_opinion("revise", [_point()], reason="STALE-1"),
                _opinion("revise", [_point("synthesis", "no harm outcome")], reason="STALE-2"),
@@ -118,8 +122,9 @@ def test_points_are_numbered_and_carried_across_runs(env):
 
     _steps(o, start_run(ps, until="protocol", actor="tester", clock=lambda: T0))
     ideator = next(c["inputs"] for c in ex.calls if c["role"] == "ideator" and c["attempt"] == 4)
-    assert [p["id"] for p in ideator["open_points"]] == ["p1.judge.1", "p2.judge.1", "p2.judge_2.1", "p3.judge_2.1"]
-    assert [p["owner"] for p in ideator["open_points"]] == ["ideator"] * 4
+    assert [p["id"] for p in ideator["open_points"]] == ["p1.judge.1", "p1.judge_2.1", "p2.judge.1", "p2.judge_2.1",
+                                                         "p3.judge_2.1"]
+    assert [p["owner"] for p in ideator["open_points"]] == ["ideator"] * 5
     assert not any(f"STALE-{n}" in ideator.get("guidance", "") for n in (1, 2, 3))
     # the answers each version gave are in the ledger, from the versions' events
     first = next(p for p in points_ledger(ps) if p["id"] == "p1.judge.1")
@@ -191,10 +196,11 @@ def test_a_point_closes_only_by_its_judge(env):
     (point,) = points_ledger(ps)
     assert point["status"] == "open"  # judge_2's mark does not close judge's point
     assert [(m["role"], m["resolved"]) for m in point["marks"]] == [("judge", False), ("judge_2", True)]
-    assert w.run(_ctx(env, ex, attempt=3)).status == "done"
+    assert w.run(_ctx(env, ex, attempt=3)).status == "done"  # its judge's mark closed it: the approve stands
     (point,) = points_ledger(ps)
-    assert (point["status"], point["role"], point["section"], point["blocking"]) == (
-        "resolved", "judge", "eligibility", True)
+    assert (point["role"], point["section"], point["blocking"]) == ("judge", "eligibility", True)
+    assert point["marks"][-1] == {"attempt": 3, "role": "judge", "resolved": True, "why": "answered"}
+    assert point["status"] == "retired"  # the freeze ends its cycle
 
 
 def test_approve_with_an_open_blocking_point_counts_as_revise(env):
@@ -221,7 +227,8 @@ def test_approve_with_an_open_blocking_point_counts_as_revise(env):
     assert w.run(_ctx(env, ex, attempt=3)).status == "done"
     (row,) = store.protocols(ps, 3)
     assert store.frozen_protocol(ps)["id"] == row["id"]
-    assert _ids(ps, "open") == ["p3.judge.1", "p3.judge_2.1"]  # advisory points stay in the ledger
+    assert _ids(ps, "open") == []  # advisory points stay in the ledger, retired at the freeze
+    assert _ids(ps, "retired") == ["p1.judge.1", "p3.judge.1", "p3.judge_2.1"]
 
 
 def test_other_votes_unchanged(env):
@@ -256,3 +263,94 @@ def test_a_redraft_may_drop_an_item_an_open_point_asks_to_remove():
     for point in ({**remove, "change": "Name the journal in dissemination"}, {**remove, "section": "search"}):
         (failure,) = dropped_prisma_p(previous, redraft, [point])
         assert "'dissemination'" in failure
+
+
+# ---- fix round 1 ----
+def test_a_revise_with_no_blocking_point_of_its_own_becomes_a_point(env):
+    """A judge whose effective choice is revise but who leaves no blocking point of its own open (only a reason, or
+    only advisory points) gets one blocking point built from its reason, so the next attempt has it to answer; an
+    approve gets none."""
+    _, ps, _ = env
+    advisory = _point("synthesis", "say why narrative", blocking=False)
+    ex = _executor(drafts=[_draft()], strategies=[_strategy()],
+                   judge=[_opinion("revise", reason="Add a harm outcome.")],
+                   judge_2=[_opinion("revise", [advisory], reason="Name the RoB tool.")])
+    assert ProtocolWorker().run(_ctx(env, ex)).status == "rerun"
+    built = {p["id"]: p for p in points_ledger(ps)}
+    assert list(built) == ["p1.judge.1", "p1.judge_2.1", "p1.judge_2.2"]
+    for pid, reason in (("p1.judge.1", "Add a harm outcome."), ("p1.judge_2.2", "Name the RoB tool.")):
+        p = built[pid]
+        assert (p["section"], p["fault"], p["change"], p["blocking"], p["status"]) == (
+            "other", reason, reason, True, "open")
+    # the disagreeing side: only the revising judge gets a point built from its reason
+    ex2 = _executor(drafts=[_draft("p1.judge.1", "p1.judge_2.1", "p1.judge_2.2")], strategies=[_strategy()],
+                    judge=[_opinion("approve", resolved=[("p1.judge.1", True)])],
+                    judge_2=[_opinion("revise", resolved=[("p1.judge_2.2", True)], reason="Still vague.")])
+    assert ProtocolWorker().run(_ctx(env, ex2, attempt=2)).status == "rerun"
+    assert _ids(ps, "open") == ["p1.judge_2.1", "p2.judge_2.1"]
+    assert next(p for p in points_ledger(ps) if p["id"] == "p2.judge_2.1")["fault"] == "Still vague."
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_points_retire_at_a_freeze_and_are_not_served_after_a_reopening(env):
+    k, ps, _ = env
+    sr = {**_draft(), "prisma_p": dict(SR_ITEMS)}
+    ex = _executor(drafts=[sr, sr], strategies=[_strategy(), _strategy()],
+                   judge=[_opinion("approve", [_point(blocking=False)]), _opinion("approve")],
+                   judge_2=[_opinion("approve"), _opinion("approve")])
+    workers = {s: FakeWorker() for s in ("landscape", "gaps", "topics", "question", "read_extract")}
+    workers["search_screen"] = FakeWorker(runs=[StageOutcome("back_edge", to="protocol", reason="too broad"),
+                                                StageOutcome("done")])
+    workers["protocol"] = ProtocolWorker()
+    o = Orchestrator(k, None, workers=workers, executor_factory=lambda project, run_id, session: ex,
+                     sources_factory=lambda project: FakeSources({}), clock=lambda: T0)
+    assert _steps(o, start_run(ps, until="search_screen", actor="tester", clock=lambda: T0)) == "done"
+    assert latest_attempt(ps, "protocol") == 2
+    second = next(c["inputs"] for c in ex.calls if c["role"] == "ideator" and c["attempt"] == 2)
+    assert second["open_points"] == []  # the advisory point open at the freeze is not served again
+    judged = [c for c in ex.calls if c["role"] == "judge"][1]
+    assert judged["inputs"]["subject"]["open_points"] == []
+    (point,) = points_ledger(ps)
+    assert (point["id"], point["status"]) == ("p1.judge.1", "retired")
+
+
+def test_an_own_point_marked_unresolved_again_keeps_an_approve_from_freezing(env):
+    _, ps, _ = env
+    ex = _executor(drafts=[_draft(), _draft("p1.judge.1"), _draft("p2.judge_2.1")],
+                   strategies=[_strategy()] * 3,
+                   judge=[_opinion("revise", [_point()]), _opinion("approve", resolved=[("p1.judge.1", True)]),
+                          _opinion("approve", resolved=[("p1.judge.1", False)])],
+                   judge_2=[_opinion("approve"), _opinion("revise", [_point("other", "typo")]),
+                            _opinion("approve", resolved=[("p2.judge_2.1", True)])])
+    w = ProtocolWorker()
+    for attempt in (1, 2):
+        assert w.run(_ctx(env, ex, attempt=attempt)).status == "rerun"
+    out = w.run(_ctx(env, ex, attempt=3))
+    assert out.status == "rerun" and store.frozen_protocol(ps) is None
+    (row,) = store.protocols(ps, 3)
+    (v,) = votes_on(ps, "protocol", row["id"])
+    assert v["opinions"][0]["effective"] == "revise" and "(p1.judge.1)" in out.reason
+
+
+def test_a_narrowing_keeps_the_scout_answers_it_does_not_repeat(env):
+    _, ps, _ = env
+    narrow = ["aspirin stroke elderly trial", *QUERIES[1:]]
+    counts = {(QUERIES[0], "openalex"): 4000}  # above the cap 3000; the narrower strategy counts 0
+    narrowed = {**_strategy(), "queries": narrow,
+                "answers": [{"point_id": "p1.judge_2.1", "how": "changed", "note": "narrowed: dropped query 1"}]}
+    ex = _executor(drafts=[_draft(), _draft()],
+                   strategies=[{**_strategy(), "queries": narrow}, _strategy("p1.judge_2.1", "p1.judge_2.2"),
+                               narrowed],
+                   judge=[_opinion("approve"), _opinion("approve")],
+                   judge_2=[_opinion("revise", [_point("search", "no octogenarian query"),
+                                                _point("search", "no 2024 cut-off")]),
+                            _opinion("approve", resolved=[("p1.judge_2.1", True), ("p1.judge_2.2", True)])])
+    w = ProtocolWorker()
+    sources = FakeSources({}, record_counts=counts)
+    assert w.run(_ctx(env, ex, sources=sources)).status == "rerun"
+    assert w.run(_ctx(env, ex, attempt=2, sources=sources)).status == "done"
+    voted = store.frozen_protocol(ps)
+    assert voted["body"]["search_strategy"]["queries"] == narrow
+    tried = next(e.payload["tried"] for e in ps.log.iter() if e.type == "protocol.added" and e.entity_id == voted["id"])
+    assert {a["point_id"]: a["note"] for a in tried["answers"]} == {
+        "p1.judge_2.1": "narrowed: dropped query 1", "p1.judge_2.2": "p1.judge_2.2: see eligibility E2"}

@@ -383,7 +383,10 @@ def test_p2_revise_reruns_and_back_goes_to_question(env):
 
 def test_p1_vote_approves_or_reruns_with_the_judges_reasons(env):
     _, ps, _ = env
-    ex = _executor([_draft(), _draft()], votes=_votes(("revise", "approve"), ("approve", "approve")))
+    answered = {**_draft(), "answers": [{"point_id": "p1.judge.1", "how": "changed", "note": "E1 narrowed"}]}
+    votes = _votes(("revise", "approve"), ("approve", "approve"))
+    votes[("judge", "ProtocolVoteOut")][1]["resolved"] = [{"point_id": "p1.judge.1", "resolved": True}]
+    ex = _executor([_draft(), answered], votes=votes)
     w = ProtocolWorker()
     out = w.run(_ctx(env, ex))
     assert out.status == "rerun"
@@ -400,7 +403,10 @@ def test_p1_vote_approves_or_reruns_with_the_judges_reasons(env):
         assert call["inputs"]["previous_draft"]["version"] == 1
         assert call["inputs"]["previous_draft"]["body"] == first["body"]
         assert call["inputs"]["previous_draft"]["record_probe"]["total"] == 0
-        assert "guidance" not in call["inputs"] and call["inputs"]["open_points"] == []  # P1: points, not reasons
+        # P1: the revising judge's reason reaches them as a point it built, not as guidance
+        assert "guidance" not in call["inputs"]
+        assert [(p["id"], p["fault"], p["blocking"]) for p in call["inputs"]["open_points"]] == [
+            ("p1.judge.1", "judge: revise", True)]
     (second,) = store.protocols(ps, 2)
     assert store.frozen_protocol(ps)["id"] == second["id"] and w.gate(ps, 2).ok
     judged = [c for c in ex.calls if c["schema"] == "ProtocolVoteOut"]

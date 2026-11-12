@@ -16,18 +16,25 @@ as ``protocol.probed``) and then:
 The judges' point ledger (P1; calibration: P1 protocol diagnosis 2026-11-12, §5.3 and §7). Each judge answers with
 points (``ProtocolVoteOut``: section, fault, change, blocking or advisory) and marks its own earlier open points
 resolved or not; the kernel numbers them ``p{attempt}.{role}.{n}`` (``points_ledger``, derived from the events, so a
-point survives an edge-limit failure and a new run). A point is closed only by its own judge. The judges see the
-version rendered (``render_protocol``), what changed since the version voted on before (``changes``), every open
-point with the authors' answers, and the kernel's rules sheet (``KERNEL_RULES``). The vote's policy, changed on
-purpose: a judge answers approve when none of its blocking points is open, so a protocol may freeze with advisory
-points open (they stay in the ledger); the kernel only tightens, never loosens: an approve with an open blocking
-point of the judge's own (new, or earlier and not marked resolved) counts as revise (the opinion keeps its
-``choice`` with ``effective`` revise, and the vote's reason names it). Unanimity of the admitted judges is unchanged.
-The next attempt's Ideator and Scout get the open points (``open_points``, each with its ``owner``: the Scout a
-search point, the Ideator every other) instead of the vote's reasons as guidance (``_p1_guidance``), and answer each
-point routed to them (``PointAnswer``: changed with where, or rebutted with why) inside the attempt: one left
-unanswered is a failure of that role's try, retried without spending an edge. The answers are stored with the
-version's ``tried``, never in the protocol body. P2 has no ledger: your comment is the guidance.
+point survives an edge-limit failure and a new run). A judge whose effective choice is revise but who leaves no
+blocking point of its own open (a reason only, or advisory points only) gets one more blocking point built from its
+reason (section ``other``), so the next attempt always has what to answer. A point's status is ``open``,
+``resolved`` (the latest mark of its own judge says so; only its own judge closes it) or ``retired``: a point is live
+only while its vote was on a version of the current frozen research question and came after the latest protocol
+freeze and the latest reopening of ``protocol`` by another edge than ``protocol->protocol`` (the scope of
+``_previous_draft``); a retired point is kept for the record but never served, never tightens a vote and never
+exempts a dropped PRISMA-P item. The judges see the version rendered (``render_protocol``), what changed since the
+version voted on before (``changes``), every open point with the authors' answers, and the kernel's rules sheet
+(``KERNEL_RULES``). The vote's policy, changed on purpose: a judge answers approve when none of its blocking points is
+open, so a protocol may freeze with advisory points open (they are retired at the freeze); the kernel only tightens,
+never loosens: an approve with an open blocking point of the judge's own (new, earlier and not marked resolved, or
+earlier and marked unresolved again) counts as revise (the opinion keeps its ``choice`` with ``effective`` revise,
+and the vote's reason names it). Unanimity of the admitted judges is unchanged. The next attempt's Ideator and Scout
+get the open points (``open_points``, each with its ``owner``: the Scout a search point, the Ideator every other)
+instead of the vote's reasons as guidance (``_p1_guidance``), and answer each point routed to them (``PointAnswer``:
+changed with where, or rebutted with why) inside the attempt: one left unanswered is a failure of that role's try,
+retried without spending an edge. The answers are stored with the version's ``tried`` (a narrowing try merges the
+Scout's new answers in by point id), never in the protocol body. P2 has no ledger: your comment is the guidance.
 
 Tries inside the attempt (Plan 5c Task 9 fix: in P1 every rerun spends a ``protocol->protocol`` edge use, and nothing
 else could narrow a search):
@@ -94,6 +101,7 @@ version before it, if any. A P1 degrade fails: P1 never freezes a protocol the v
 
 from __future__ import annotations
 
+import bisect
 import difflib
 import json
 import re
@@ -341,10 +349,13 @@ def owner(point: dict) -> Literal["scout", "ideator"]:
 
 
 def _protocol_votes(ps: ProjectStore) -> list[dict]:
-    """Every protocol vote of the project (its ``vote.decided`` payload), in order."""
-    rows = ps.db.execute("SELECT payload FROM events WHERE type='vote.decided' AND "
-                         "json_extract(payload, '$.subject_type')='protocol' ORDER BY seq").fetchall()
-    return [json.loads(r["payload"]) for r in rows]
+    """Every protocol vote of the project (its ``vote.decided`` payload, with its ``seq`` and the ``question`` of the
+    version voted on), in order."""
+    rows = ps.db.execute("SELECT e.seq, e.payload, json_extract(p.body, '$.question') AS question FROM events e "
+                         "LEFT JOIN protocols p ON p.id=json_extract(e.payload, '$.subject_id') "
+                         "WHERE e.type='vote.decided' AND json_extract(e.payload, '$.subject_type')='protocol' "
+                         "ORDER BY e.seq").fetchall()
+    return [{**json.loads(r["payload"]), "seq": r["seq"], "question": r["question"]} for r in rows]
 
 
 def _answers(ps: ProjectStore) -> dict[str, list[dict]]:
@@ -365,51 +376,104 @@ def _answers(ps: ProjectStore) -> dict[str, list[dict]]:
     return out
 
 
+def _rq_sentence(ps: ProjectStore) -> str | None:
+    """The current frozen research question's sentence (what a protocol's ``question`` is), else ``None``."""
+    rq = frozen_rq(ps)
+    return RQBody.model_validate(rq["body"]).three_step.sentence() if rq is not None else None
+
+
+def _boundaries(ps: ProjectStore) -> list[int]:
+    """The seqs, in order, that end a cycle of the ledger: every freeze of a protocol, and every reopening of
+    ``protocol`` by an edge other than its own rerun (``protocol->protocol``), as ``_previous_draft`` scopes."""
+    rows = ps.db.execute(
+        "SELECT seq FROM events WHERE type='protocol.frozen' OR (type='stage.reopened' AND "
+        "json_extract(payload, '$.stage')='protocol' AND "
+        "COALESCE(json_extract(payload, '$.by_edge'), '')!='protocol->protocol') ORDER BY seq").fetchall()
+    return [r["seq"] for r in rows]
+
+
 def points_ledger(ps: ProjectStore) -> list[dict]:
     """Every point of every protocol vote of the project, in order, each ``{id, attempt, role, vendor, section, fault,
     change, blocking, status, answers, marks}``. A point's id is ``p{attempt}.{role}.{n}``, ``n`` counting the judge's
-    points of that vote from 1. ``marks``: every later judge's mark on it (``{attempt, role, resolved, why}``); it is
-    ``resolved`` when the latest mark by its own judge (``role``) says so, else ``open``: another judge's mark closes
-    nothing. ``answers``: the Ideator's and the Scout's (``_answers``). Derived from the events only, so a point
-    survives an edge-limit failure and a new run.
+    points of that vote from 1. ``marks``: every later judge's mark on it (``{attempt, role, resolved, why}``).
+    ``answers``: the Ideator's and the Scout's (``_answers``). Derived from the events only, so a point survives an
+    edge-limit failure and a new run (no reopening is recorded there).
+
+    ``status`` is one of three (the brief's open|resolved widened by controller ruling, fix round 1):
+    - ``retired``: the point is out of scope. A point is live only while its vote was on a version of the current
+      frozen research question and came after the latest protocol freeze and the latest reopening of ``protocol`` by
+      another edge than ``protocol->protocol`` (``_boundaries``; the scope of ``_previous_draft``). A retired point
+      is never served, never tightens a vote and never exempts a dropped item; it stays for the record.
+    - ``resolved``: live, and the latest mark by its own judge (``role``) says so; another judge's mark closes nothing.
+    - ``open``: live and not resolved.
+
+    A judge whose effective choice is revise but who leaves no blocking point of its own open (no new one, and every
+    earlier live one resolved: only a reason, or only advisory points) gets one more point built from its reason,
+    ``p{attempt}.{role}.{n+1}``, section ``other``, blocking, its fault and change the reason: the next attempt then
+    has it to answer, and the judge closes it like any other.
 
     Calibration (P1 protocol diagnosis 2026-11-12): §7 items 1-2 and 5; §5.3, the stale guidance after the edge
-    limit, lost the attempt-3 vote's reasons."""
+    limit, lost the attempt-3 vote's reasons. Scope and reason points: review of Task 3 (risks a and b)."""
     answers = _answers(ps)
+    bounds = _boundaries(ps)
+    current = (_rq_sentence(ps), len(bounds))
     points: dict[str, dict] = {}
     for v in _protocol_votes(ps):
+        cycle = (v["question"], bisect.bisect_left(bounds, v["seq"]))
         for o in v["opinions"]:
+            role = o["role"]
             for m in o.get("resolved") or []:
                 if (p := points.get(m["point_id"])) is not None:
-                    p["marks"].append({"attempt": v["attempt"], "role": o["role"], "resolved": m["resolved"],
+                    p["marks"].append({"attempt": v["attempt"], "role": role, "resolved": m["resolved"],
                                        "why": m.get("why", "")})
-            for n, point in enumerate(o.get("points") or [], 1):
-                pid = f"p{v['attempt']}.{o['role']}.{n}"
-                points[pid] = {"id": pid, "attempt": v["attempt"], "role": o["role"], "vendor": o["vendor"], **point,
-                               "status": "open", "answers": answers.get(pid, []), "marks": []}
+                    if p["role"] == role:
+                        p["status"] = "resolved" if m["resolved"] else "open"
+            given = [*(o.get("points") or [])]
+            for n, point in enumerate(given, 1):
+                pid = f"p{v['attempt']}.{role}.{n}"
+                points[pid] = {"id": pid, "attempt": v["attempt"], "role": role, "vendor": o["vendor"], **point,
+                               "status": "open", "answers": answers.get(pid, []), "marks": [], "_cycle": cycle}
+            if o.get("effective", o["choice"]) == "revise" and not any(
+                    p["role"] == role and p["_cycle"] == cycle and p["blocking"] and p["status"] == "open"
+                    for p in points.values()):
+                pid = f"p{v['attempt']}.{role}.{len(given) + 1}"
+                why = o["reason"].strip() or "revise, with no reason given"
+                points[pid] = {"id": pid, "attempt": v["attempt"], "role": role, "vendor": o["vendor"],
+                               "section": "other", "fault": why, "change": why, "blocking": True, "status": "open",
+                               "answers": answers.get(pid, []), "marks": [], "_cycle": cycle}
     for p in points.values():
-        own = [m for m in p["marks"] if m["role"] == p["role"]]
-        p["status"] = "resolved" if own and own[-1]["resolved"] else "open"
+        if p.pop("_cycle") != current:
+            p["status"] = "retired"
     return list(points.values())
 
 
 def _open_points(ps: ProjectStore) -> list[dict]:
-    """The ledger's open points, each with its ``owner`` (``owner``): what the Ideator, the Scout and the judges see."""
+    """The ledger's open points (live and not resolved), each with its ``owner`` (``owner``): what the Ideator, the
+    Scout and the judges see."""
     return [{**p, "owner": owner(p)} for p in points_ledger(ps) if p["status"] == "open"]
 
 
 def _own_open_blocking(ledger: list[dict], role: str, out: ProtocolVoteOut, attempt: int) -> list[str]:
     """The ids of the judge's (``role``) blocking points still open after its answer ``out``: its earlier open ones
-    it did not mark resolved, and its new ones (numbered as ``points_ledger`` numbers them)."""
-    closed = {m.point_id for m in out.resolved if m.resolved}
-    earlier = [p["id"] for p in ledger if p["role"] == role and p["status"] == "open" and p["blocking"]
-               and p["id"] not in closed]
+    it did not mark resolved, its earlier resolved ones it marks unresolved again, and its new ones (numbered as
+    ``points_ledger`` numbers them). A retired point counts for nothing."""
+    marks = {m.point_id: m.resolved for m in out.resolved}
+    earlier = [p["id"] for p in ledger if p["role"] == role and p["blocking"]
+               and ((p["status"] == "open" and marks.get(p["id"]) is not True)
+                    or (p["status"] == "resolved" and marks.get(p["id"]) is False))]
     return earlier + [f"p{attempt}.{role}.{n}" for n, p in enumerate(out.points, 1) if p.blocking]
 
 
 def _answered(answers: list[dict], by: str, given: list[PointAnswer]) -> list[dict]:
     """The try's answers: ``answers`` (the ones it carries over) with ``by``'s replaced by ``given``."""
     return [a for a in answers if a["by"] != by] + [{**a.model_dump(mode="json"), "by": by} for a in given]
+
+
+def _merged(answers: list[dict], by: str, given: list[PointAnswer]) -> list[dict]:
+    """The try's answers: ``answers`` (the ones it carries over) with ``given`` (``by``'s) merged in by point id, the
+    newer answer winning."""
+    new = {a.point_id for a in given}
+    return [a for a in answers if a["point_id"] not in new] + [{**a.model_dump(mode="json"), "by": by} for a in given]
 
 
 def _unanswered(points: list[dict], role: str, given: list[PointAnswer]) -> list[str]:
@@ -1359,8 +1423,8 @@ class ProtocolWorker:
         """One narrowing try: the Scout, given the best version so far (``previous_draft``, with its probe) and
         ``narrowing`` (the cap, that version's total and per-query, per-source counts, the failed tries, and the
         sources the PRISMA-P texts name, ``keep_sources``, which it keeps), answers with a strategy, stored with that
-        version's draft as the next version; the best version's answers carry over, the Scout's replaced by any it
-        gives. An outcome when the Scout gave nothing, else ``None``."""
+        version's draft as the next version; the best version's answers carry over, with any the Scout gives merged
+        in by point id (``_merged``). An outcome when the Scout gave nothing, else ``None``."""
         probe, cap = best["probe"], best["body"]["record_cap"]
         keep = _prisma_p_sources(Protocol.model_validate(best["body"]))
         inputs = {**context, "eligibility": best["body"]["eligibility"],
@@ -1377,11 +1441,10 @@ class ProtocolWorker:
         if not s.ok or s.output is None:
             return StageOutcome("rerun", reason=f"the scout gave no narrower search strategy ({s.error})")
         body = Protocol.model_validate({**best["body"], "search_strategy": _strategy_of(s.output).model_dump(mode="json")})
-        answers = best.get("answers", [])
         add_protocol(ctx.ps, ctx.attempt, body, version=_next_version(ctx.ps), actor=ctx.actor,
                      tried={"kind": "narrow", "vendors": {**best["vendors"], "scout": vendor_of(s.provider, s.model)},
                             "failures": _failures(body, paper_type, ctx.sources.sources()),
-                            "answers": _answered(answers, "scout", s.output.answers) if s.output.answers else answers})
+                            "answers": _merged(best.get("answers", []), "scout", s.output.answers)})
         return None
 
     @staticmethod

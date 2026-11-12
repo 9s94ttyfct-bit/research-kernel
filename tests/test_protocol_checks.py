@@ -229,9 +229,14 @@ def test_redraft_may_not_drop_prisma_p_items():
 def test_a_redraft_that_drops_an_item_is_drafted_again_in_the_attempt(env):
     _, ps, _ = env
     full = _draft(**SR_ITEMS, dissemination="A preprint and a journal article.")
-    ex = ScriptedExecutor({("ideator", "ProtocolDraftOut"): [full, _draft(**SR_ITEMS), full],
-                           ("scout", "SearchStrategyOut"): [_strategy(), _strategy()],
-                           **_votes("revise", "approve")})
+    # both judges revise with a reason only: each reason is a point the redrafts answer and its judge closes
+    answers = [{"point_id": p, "how": "rebutted", "note": "kept"} for p in ("p1.judge.1", "p1.judge_2.1")]
+    votes = _votes("revise", "approve")
+    for judge in ("judge", "judge_2"):
+        votes[(judge, "ProtocolVoteOut")][1]["resolved"] = [{"point_id": f"p1.{judge}.1", "resolved": True}]
+    ex = ScriptedExecutor({("ideator", "ProtocolDraftOut"): [full, {**_draft(**SR_ITEMS), "answers": answers},
+                                                              {**full, "answers": answers}],
+                           ("scout", "SearchStrategyOut"): [_strategy(), _strategy()], **votes})
     w = ProtocolWorker()
     assert w.run(_ctx(env, ex)).status == "rerun"  # the judges ask for a revision
     assert w.run(_ctx(env, ex, attempt=2)).status == "done"
