@@ -79,8 +79,8 @@ def _strategy(**overrides) -> dict:
 
 
 def _votes(*choices: tuple[str, str]) -> dict:
-    return {("judge", "VoteOut"): [{"choice": a, "reason": f"judge: {a}"} for a, _ in choices],
-            ("judge_2", "VoteOut"): [{"choice": b, "reason": f"judge_2: {b}"} for _, b in choices]}
+    return {("judge", "ProtocolVoteOut"): [{"choice": a, "reason": f"judge: {a}"} for a, _ in choices],
+            ("judge_2", "ProtocolVoteOut"): [{"choice": b, "reason": f"judge_2: {b}"} for _, b in choices]}
 
 
 def _executor(drafts: list[dict], strategies: list[dict] | None = None, votes: dict | None = None) -> ScriptedExecutor:
@@ -400,12 +400,12 @@ def test_p1_vote_approves_or_reruns_with_the_judges_reasons(env):
         assert call["inputs"]["previous_draft"]["version"] == 1
         assert call["inputs"]["previous_draft"]["body"] == first["body"]
         assert call["inputs"]["previous_draft"]["record_probe"]["total"] == 0
-        assert "judge: revise" in call["inputs"]["guidance"]
+        assert "guidance" not in call["inputs"] and call["inputs"]["open_points"] == []  # P1: points, not reasons
     (second,) = store.protocols(ps, 2)
     assert store.frozen_protocol(ps)["id"] == second["id"] and w.gate(ps, 2).ok
-    judged = [c for c in ex.calls if c["schema"] == "VoteOut"]
+    judged = [c for c in ex.calls if c["schema"] == "ProtocolVoteOut"]
     assert [c["role"] for c in judged] == ["judge", "judge_2"] * 2
-    assert judged[0]["inputs"]["subject"]["protocol"] == first["body"]
+    assert judged[0]["inputs"]["subject"]["protocol"] == "\n".join(render_protocol(ps, first))
     # the generator vendors are the Ideator's and the Scout's (anthropic): both judges (openai, deepseek) were admitted
     assert [o["vendor"] for o in votes_on(ps, "protocol", second["id"])[0]["opinions"]] == ["openai", "deepseek"]
 
@@ -612,7 +612,7 @@ def test_record_cap_probe_is_advisory(env):
     assert (probe["total"], probe["uncounted"]) == (2500, ["arxiv"])
     assert {"query": QUERIES[1], "source": "openalex", "count": None} in probe["counts"]  # no count: recorded, not 0
     assert w.gate(ps, 1).ok
-    (judged, _) = [c for c in ex.calls if c["schema"] == "VoteOut"]
+    (judged, _) = [c for c in ex.calls if c["schema"] == "ProtocolVoteOut"]
     seen = judged["inputs"]["subject"]["record_probe"]  # the judges see it, as an upper bound with the cap
     assert (seen["total"], seen["record_cap"]) == (2500, 3000) and "upper bound" in seen["note"]
     assert "no date range" not in seen["note"]
@@ -659,8 +659,8 @@ def test_an_over_cap_probe_has_the_scout_narrow_and_the_narrower_strategy_goes_t
     assert "4000" in narrow["inputs"]["guidance"] and "3000" in narrow["inputs"]["guidance"]
     assert v2["body"] == {**v1["body"], "search_strategy": {**v1["body"]["search_strategy"], "queries": NARROW}}
     assert (probe_of(ps, v1["id"])["total"], probe_of(ps, v2["id"])["total"]) == (4000, 1500)  # each try probed
-    (judged, _) = [c for c in ex.calls if c["schema"] == "VoteOut"]
-    assert judged["inputs"]["subject"]["protocol"] == v2["body"]
+    (judged, _) = [c for c in ex.calls if c["schema"] == "ProtocolVoteOut"]
+    assert judged["inputs"]["subject"]["protocol"] == "\n".join(render_protocol(ps, v2))
     assert judged["inputs"]["subject"]["record_probe"]["total"] == 1500
     assert store.frozen_protocol(ps)["id"] == v2["id"] and w.gate(ps, 1).ok
 
@@ -700,7 +700,7 @@ def test_a_rerun_revises_the_best_version_not_a_failed_later_try(env):
     assert w.run(_ctx(env, ex, sources=sources)).status == "rerun"
     rows = store.protocols(ps, 1)
     assert [probe_of(ps, r["id"])["total"] for r in rows] == [4000, 3500, 54000, 54000]
-    assert not [c for c in ex.calls if c["schema"] == "VoteOut"]
+    assert not [c for c in ex.calls if c["schema"] == "ProtocolVoteOut"]
     asked = len(ex.calls)
     assert w.run(_ctx(env, ex, attempt=2, sources=sources)).status == "done"
     revising = [c for c in ex.calls[asked:] if c["role"] in ("ideator", "scout")]

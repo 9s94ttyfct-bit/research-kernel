@@ -2,11 +2,16 @@
 question. Only admitted judges vote: distinct known, non-human vendors, none the generator's (the shared admission of
 ``rk.verify.judge.admitted_judges``). The decision is the choice shared by every admitted judge; fewer than two
 admitted judges, any disagreement, or a failed or invalid answer gives the conservative option. Every vote is recorded
-(``vote.decided``) as not human-reviewed."""
+(``vote.decided``) as not human-reviewed.
+
+A vote may ask for a richer answer (``output``, a ``VoteOut`` with more fields, e.g. the protocol judges' points):
+each opinion then stores those fields too. A caller may also tighten a judge's choice (``tighten``): a non-conservative
+choice the caller rules out counts as the conservative option (the opinion's ``effective`` choice), never the other
+way. Every other vote asks and stores exactly ``{role, vendor, choice, reason}``."""
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -32,7 +37,9 @@ class VoteOut(BaseModel):
 @dataclass(frozen=True)
 class VoteResult:
     """``opinions``: each judge that ran, as ``{role, vendor, choice, reason}`` (``choice`` is None when the judge
-    failed or answered outside the options); ``reason`` says why the conservative option was used, if it was."""
+    failed or answered outside the options), plus the extra fields of the vote's ``output`` and, for a tightened
+    choice, ``effective``; ``reason`` says why the conservative option was used and why a choice was tightened, if
+    either happened."""
     id: str
     decision: str
     conservative_used: bool
@@ -41,12 +48,20 @@ class VoteResult:
 
 
 def vote(ctx: StageContext, subject_type: str, subject_id: str, question: str, options: list[str], conservative: str,
-         inputs: dict, *, generator_vendors: Collection[str | None] = (), reuse: bool = False) -> VoteResult:
+         inputs: dict, *, generator_vendors: Collection[str | None] = (), reuse: bool = False,
+         output: type[VoteOut] = VoteOut, per_judge: Callable[[str], dict] | None = None,
+         tighten: Callable[[str, VoteOut], str] | None = None) -> VoteResult:
     """Ask every admitted judge ``question`` about the subject (``inputs``, what they see of it) through
     ``ctx.executor``. ``generator_vendors`` are the vendors that generated the subject (e.g. the Ideator's and the
     Scout's for a protocol), empty when it is no generated text (e.g. a screened record). With ``reuse``, a vote
     already recorded on the subject in the attempt (one interrupted before its outcome was noted) is returned instead
-    of asking again."""
+    of asking again.
+
+    ``output`` is the answer's model (default ``VoteOut``); each opinion also stores its fields beyond ``choice`` and
+    ``reason``. ``per_judge(role)`` adds task inputs for that judge (e.g. which judge it is). ``tighten(role, answer)``
+    says why a judge's valid, non-conservative choice counts as the conservative option (``""``: it does not); the
+    opinion keeps the ``choice`` as given with that ``effective`` choice, the decision is taken over the effective
+    choices, and the vote's ``reason`` names each tightened judge."""
     if not options or len(set(options)) != len(options):
         raise ValueError(f"options must be distinct and non-empty: {options!r}")
     if conservative not in options:
@@ -56,30 +71,39 @@ def vote(ctx: StageContext, subject_type: str, subject_id: str, question: str, o
         return VoteResult(done["id"], done["decision"], done["conservative_used"], done["opinions"], done["reason"])
     admitted, skipped = admitted_judges(ctx, generator_vendors, None)
     opinions: list[dict] = []
+    tightened: list[str] = []
     if len(admitted) < 2:
         reason = f"fewer than two admitted judges (skipped: {skipped})"
     else:
         task_inputs = {"question": question, "options": options, "subject": inputs}
         for role, spec, vendor in admitted:
-            r = ctx.executor.run(role, VOTE_TASK, task_inputs, VoteOut, stage=ctx.stage, attempt=ctx.attempt,
-                                 tools=[], driver=spec, max_turns=4, timeout_s=300)
+            r = ctx.executor.run(role, VOTE_TASK, task_inputs | (per_judge(role) if per_judge else {}), output,
+                                 stage=ctx.stage, attempt=ctx.attempt, tools=[], driver=spec, max_turns=4,
+                                 timeout_s=300)
             if not r.ok or r.output is None:
                 opinions.append({"role": role, "vendor": vendor, "choice": None, "reason": r.error or "failed"})
-            elif r.output.choice not in options:
-                opinions.append({"role": role, "vendor": vendor, "choice": None,
-                                 "reason": f"answered {r.output.choice!r}, not one of the options: {r.output.reason}"})
-            else:
-                opinions.append({"role": role, "vendor": vendor, "choice": r.output.choice,
-                                 "reason": r.output.reason})
-        choices = {o["choice"] for o in opinions}
+                continue
+            extra = r.output.model_dump(mode="json", exclude=set(VoteOut.model_fields))
+            if r.output.choice not in options:
+                opinions.append({"role": role, "vendor": vendor, "choice": None, "reason": (
+                    f"answered {r.output.choice!r}, not one of the options: {r.output.reason}"), **extra})
+                continue
+            opinion = {"role": role, "vendor": vendor, "choice": r.output.choice, "reason": r.output.reason, **extra}
+            if r.output.choice != conservative and tighten is not None and (why := tighten(role, r.output)):
+                opinion["effective"] = conservative
+                tightened.append(f"{role} ({vendor}) {why}")
+            opinions.append(opinion)
+        choices = {o.get("effective", o["choice"]) for o in opinions}
         if None in choices:
             reason = "a judge gave no valid choice"
         elif len(choices) > 1:
             reason = "the judges disagree"
         else:
             reason = ""
-    decision = opinions[0]["choice"] if not reason else conservative
+    conservative_used = bool(reason)
+    decision = conservative if conservative_used else opinions[0].get("effective", opinions[0]["choice"])
+    reason = "; ".join(r for r in (reason, *tightened) if r)
     vid = add_vote(ctx.ps, subject_type=subject_type, subject_id=subject_id, question=question, options=options,
-                   conservative=conservative, decision=decision, conservative_used=bool(reason), reason=reason,
+                   conservative=conservative, decision=decision, conservative_used=conservative_used, reason=reason,
                    opinions=opinions, skipped=skipped, stage=ctx.stage, attempt=ctx.attempt, actor=ctx.actor)
-    return VoteResult(vid, decision, bool(reason), opinions, reason)
+    return VoteResult(vid, decision, conservative_used, opinions, reason)

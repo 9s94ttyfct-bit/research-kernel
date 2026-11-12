@@ -1,0 +1,258 @@
+"""The judges' point ledger (P1 protocol diagnosis 2026-11-12, §7): the protocol vote's judges return numbered points,
+the Ideator and the Scout answer every open point routed to them inside the attempt, the next vote sees the points,
+the answers, the kernel's rules sheet and a diff, and each judge closes only its own points. An approve with an open
+blocking point of the judge's own counts as revise."""
+
+from __future__ import annotations
+
+import pytest
+
+from rk.orchestrator.engine import Orchestrator
+from rk.orchestrator.state import latest_attempt, stage_row, start_run
+from rk.production import store
+from rk.production.protocol import (
+    KERNEL_RULES,
+    ProtocolVoteOut,
+    ProtocolWorker,
+    dropped_prisma_p,
+    points_ledger,
+)
+from rk.production.vote import vote
+from tests.discovery_fakes import FakeSources, FakeWorker, ScriptedExecutor
+from tests.production_fakes import (
+    a_protocol,
+    make_frozen_project,
+    production_ctx,
+    votes_on,
+)
+
+T0 = 1_800_000_000.0
+QUERIES = ["aspirin stroke elderly", "aspirin primary prevention octogenarians", "antiplatelet stroke over 80"]
+
+
+def _draft(*answers: str, exclude=(("E1", "Animal studies"),)) -> dict:
+    """A sound draft (any paper type) answering ``answers`` (point ids) as changed."""
+    return {"eligibility": {"include": [{"id": "I1", "text": "People over 80"}],
+                            "exclude": [{"id": i, "text": t} for i, t in exclude]},
+            "extraction_schema": [{"name": "study_id", "description": "First author and year", "type": "text",
+                                   "source": "record"},
+                                  {"name": "n", "description": "Participants", "type": "number"}],
+            "synthesis_plan": {"method": "narrative_swim", "outcomes": [{"name": "stroke"}]},
+            "prisma_p": {"rationale": "Guidelines stop at 80.", "objectives": "Estimate benefit and harm."},
+            "answers": [_answer(a) for a in answers]}
+
+
+def _answer(point_id: str, how: str = "changed") -> dict:
+    return {"point_id": point_id, "how": how, "note": f"{point_id}: see eligibility E2"}
+
+
+def _strategy(*answers: str) -> dict:
+    return {"queries": list(QUERIES), "sources": ["openalex", "europepmc"], "date_from": 2000, "date_to": None,
+            "answers": [_answer(a) for a in answers]}
+
+
+def _point(section: str = "eligibility", fault: str = "I1 does not say how age is measured", *,
+           blocking: bool = True) -> dict:
+    return {"section": section, "fault": fault, "change": f"fix: {fault}", "blocking": blocking}
+
+
+def _opinion(choice: str, points=(), resolved=(), reason: str = "") -> dict:
+    return {"choice": choice, "reason": reason or f"says {choice}", "points": list(points),
+            "resolved": [{"point_id": p, "resolved": ok, "why": "answered" if ok else "not yet"} for p, ok in resolved]}
+
+
+def _executor(drafts, strategies, judge, judge_2) -> ScriptedExecutor:
+    return ScriptedExecutor({("ideator", "ProtocolDraftOut"): drafts, ("scout", "SearchStrategyOut"): strategies,
+                             ("judge", "ProtocolVoteOut"): judge, ("judge_2", "ProtocolVoteOut"): judge_2})
+
+
+@pytest.fixture
+def env(tmp_home, replay_http, request):
+    k, ps, lib, _ = make_frozen_project(tmp_home, replay_http, **getattr(request, "param", {}))
+    yield k, ps, lib
+    k.close()
+
+
+def _ctx(env, ex, *, attempt: int = 1):
+    k, ps, lib = env
+    return production_ctx(k, ps, lib, ex, stage="protocol", attempt=attempt, sources=FakeSources({}))
+
+
+def _ids(ps, status: str | None = None) -> list[str]:
+    return [p["id"] for p in points_ledger(ps) if status is None or p["status"] == status]
+
+
+def _steps(o: Orchestrator, run_id: str) -> str:
+    for _ in range(40):
+        status = o.step("demo", run_id, actor="tester")
+        if status in {"done", "failed", "paused_waiting_human", "paused_budget"}:
+            return status
+    raise AssertionError("run did not settle")
+
+
+def test_points_are_numbered_and_carried_across_runs(env):
+    """Three P1 votes say revise with points; the third hits the edge limit and the run fails, leaving the stage's
+    guidance at the attempt-2 vote's reasons (diagnosis §5.3). A new run's attempt 4 gets every open point from the
+    ledger, numbered by attempt, judge and order, and none of that stale text."""
+    k, ps, _ = env
+    ex = _executor(
+        drafts=[_draft(), _draft("p1.judge.1"), _draft("p1.judge.1", "p2.judge.1", "p2.judge_2.1"),
+                _draft("p1.judge.1", "p2.judge.1", "p2.judge_2.1", "p3.judge_2.1"), _draft()],
+        strategies=[_strategy()] * 5,
+        judge=[_opinion("revise", [_point()], reason="STALE-1"),
+               _opinion("revise", [_point("synthesis", "no harm outcome")], reason="STALE-2"),
+               _opinion("revise", reason="judge round 3"), _opinion("revise")],
+        judge_2=[_opinion("revise", reason="judge_2 round 1"),
+                 _opinion("revise", [_point("prisma_p", "rationale cites no source", blocking=False)],
+                          reason="STALE-3"),
+                 _opinion("revise", [_point("eligibility", "E1 too broad")], reason="judge_2 round 3"),
+                 _opinion("revise")])
+    workers = {s: FakeWorker() for s in ("landscape", "gaps", "topics", "question")}
+    workers["protocol"] = ProtocolWorker()
+    o = Orchestrator(k, None, workers=workers, executor_factory=lambda project, run_id, session: ex,
+                     sources_factory=lambda project: FakeSources({}), clock=lambda: T0)
+    assert _steps(o, start_run(ps, until="protocol", actor="tester", clock=lambda: T0)) == "failed"
+    assert latest_attempt(ps, "protocol") == 3
+    stale = stage_row(ps, "protocol")["guidance"]
+    assert "STALE-2" in stale and "STALE-3" in stale  # the attempt-2 vote's reasons are still the stage's guidance
+
+    _steps(o, start_run(ps, until="protocol", actor="tester", clock=lambda: T0))
+    ideator = next(c["inputs"] for c in ex.calls if c["role"] == "ideator" and c["attempt"] == 4)
+    assert [p["id"] for p in ideator["open_points"]] == ["p1.judge.1", "p2.judge.1", "p2.judge_2.1", "p3.judge_2.1"]
+    assert [p["owner"] for p in ideator["open_points"]] == ["ideator"] * 4
+    assert not any(f"STALE-{n}" in ideator.get("guidance", "") for n in (1, 2, 3))
+    # the answers each version gave are in the ledger, from the versions' events
+    first = next(p for p in points_ledger(ps) if p["id"] == "p1.judge.1")
+    assert [(a["attempt"], a["by"], a["how"]) for a in first["answers"]] == [
+        (2, "ideator", "changed"), (3, "ideator", "changed"), (4, "ideator", "changed")]
+
+
+def test_every_open_point_must_be_answered_in_the_attempt(env):
+    """An Ideator draft that leaves its open point unanswered, and a Scout strategy that leaves its search point
+    unanswered, fail in the attempt with the point named; the retry answers them and goes to the vote."""
+    _, ps, _ = env
+    search = _point("search", "no query for octogenarians")
+    ex = _executor(drafts=[_draft(), _draft(), _draft("p1.judge.1")],
+                   strategies=[_strategy(), _strategy(), _strategy("p1.judge_2.1")],
+                   judge=[_opinion("revise", [_point()]), _opinion("approve", resolved=[("p1.judge.1", True)])],
+                   judge_2=[_opinion("revise", [search]), _opinion("approve", resolved=[("p1.judge_2.1", True)])])
+    w = ProtocolWorker()
+    assert w.run(_ctx(env, ex)).status == "rerun"
+    assert w.run(_ctx(env, ex, attempt=2)).status == "done"
+    unanswered, answered = store.protocols(ps, 2)  # one attempt: the retry spent no edge
+    tried = {e.entity_id: e.payload["tried"] for e in ps.log.iter() if e.type == "protocol.added"}
+    first = tried[unanswered["id"]]["failures"]
+    assert any("p1.judge.1" in f and "changed" in f and "rebutted" in f for f in first["draft"])
+    assert any("p1.judge_2.1" in f for f in first["strategy"])
+    assert not any("p1.judge_2.1" in f for f in first["draft"]) and not any("p1.judge.1" in f for f in first["strategy"])
+    assert tried[answered["id"]]["failures"] == {"strategy": [], "draft": []}
+    retry = [c["inputs"] for c in ex.calls if c["role"] == "ideator"][2]
+    assert "p1.judge.1" in retry["guidance"]
+    # answers live in the version's event, never in the protocol body
+    assert "answers" not in answered["body"]
+    assert [(a["point_id"], a["by"]) for a in tried[answered["id"]]["answers"]] == [
+        ("p1.judge.1", "ideator"), ("p1.judge_2.1", "scout")]
+    assert store.frozen_protocol(ps)["id"] == answered["id"] and _ids(ps, "open") == []
+
+
+def test_judges_see_points_answers_rules_and_a_diff(env):
+    redraft = _draft("p1.judge.1", exclude=(("E1", "Animal studies"), ("E2", "Case reports")))
+    ex = _executor(drafts=[_draft(), redraft],
+                   strategies=[_strategy(), _strategy()],
+                   judge=[_opinion("revise", [_point()]), _opinion("approve", resolved=[("p1.judge.1", True)])],
+                   judge_2=[_opinion("approve"), _opinion("approve")])
+    w = ProtocolWorker()
+    w.run(_ctx(env, ex))
+    assert w.run(_ctx(env, ex, attempt=2)).status == "done"
+    first, second = [c for c in ex.calls if c["role"] == "judge"]
+    subject = second["inputs"]["subject"]
+    (shown,) = subject["open_points"]
+    assert shown["id"] == "p1.judge.1" and [a["note"] for a in shown["answers"]] == ["p1.judge.1: see eligibility E2"]
+    assert subject["kernel_rules"] == KERNEL_RULES
+    assert isinstance(subject["protocol"], str) and "Protocol version 2" in subject["protocol"]
+    assert "hksj" not in subject["protocol"] and "pi_df" not in subject["protocol"]  # a narrative plan
+    assert "+- E2: Case reports" in subject["changes"] and "version 1" in subject["changes"]
+    assert first["inputs"]["subject"]["changes"] is None and first["inputs"]["subject"]["open_points"] == []
+    judge_2 = next(c for c in ex.calls if c["role"] == "judge_2")
+    assert (first["inputs"]["you"], judge_2["inputs"]["you"]) == ("judge", "judge_2")
+
+
+def test_a_point_closes_only_by_its_judge(env):
+    _, ps, _ = env
+    ex = _executor(drafts=[_draft(), _draft("p1.judge.1"), _draft("p1.judge.1")],
+                   strategies=[_strategy()] * 3,
+                   judge=[_opinion("revise", [_point()]), _opinion("revise", resolved=[("p1.judge.1", False)]),
+                          _opinion("approve", resolved=[("p1.judge.1", True)])],
+                   judge_2=[_opinion("approve"), _opinion("approve", resolved=[("p1.judge.1", True)]),
+                            _opinion("approve")])
+    w = ProtocolWorker()
+    w.run(_ctx(env, ex))
+    assert w.run(_ctx(env, ex, attempt=2)).status == "rerun"
+    (point,) = points_ledger(ps)
+    assert point["status"] == "open"  # judge_2's mark does not close judge's point
+    assert [(m["role"], m["resolved"]) for m in point["marks"]] == [("judge", False), ("judge_2", True)]
+    assert w.run(_ctx(env, ex, attempt=3)).status == "done"
+    (point,) = points_ledger(ps)
+    assert (point["status"], point["role"], point["section"], point["blocking"]) == (
+        "resolved", "judge", "eligibility", True)
+
+
+def test_approve_with_an_open_blocking_point_counts_as_revise(env):
+    """judge answers approve with a blocking point of its own (new, then earlier and not marked): its effective
+    choice is revise and nothing freezes. Advisory points alone do not keep an approve from freezing."""
+    _, ps, _ = env
+    ex = _executor(drafts=[_draft(), _draft("p1.judge.1"), _draft("p1.judge.1")],
+                   strategies=[_strategy()] * 3,
+                   judge=[_opinion("approve", [_point()]), _opinion("approve"),
+                          _opinion("approve", [_point("other", "a typo", blocking=False)],
+                                   resolved=[("p1.judge.1", True)])],
+                   judge_2=[_opinion("approve"), _opinion("approve"),
+                            _opinion("approve", [_point("synthesis", "say why narrative", blocking=False)])])
+    w = ProtocolWorker()
+    for attempt in (1, 2):
+        out = w.run(_ctx(env, ex, attempt=attempt))
+        assert out.status == "rerun" and store.frozen_protocol(ps) is None
+        (row,) = store.protocols(ps, attempt)
+        (v,) = votes_on(ps, "protocol", row["id"])
+        judge = v["opinions"][0]
+        assert (v["decision"], judge["choice"], judge["effective"]) == ("revise", "approve", "revise")
+        assert "judge (openai) approved with a blocking point open (p1.judge.1)" in out.reason
+        assert "effective" not in v["opinions"][1]
+    assert w.run(_ctx(env, ex, attempt=3)).status == "done"
+    (row,) = store.protocols(ps, 3)
+    assert store.frozen_protocol(ps)["id"] == row["id"]
+    assert _ids(ps, "open") == ["p3.judge.1", "p3.judge_2.1"]  # advisory points stay in the ledger
+
+
+def test_other_votes_unchanged(env):
+    """A vote without ``output`` (screening, final review, audit) asks and stores what it did before; with
+    ``output`` each opinion also stores the output's extra fields."""
+    k, ps, lib = env
+    plain = ScriptedExecutor({(r, "VoteOut"): [{"choice": "exclude", "reason": "animal study"}]
+                              for r in ("judge", "judge_2", "judge_3")})
+    rid = store.add_record(ps, 1, "src_1", language="en", actor="tester")
+    res = vote(production_ctx(k, ps, lib, plain), "record", rid, "Meets the criteria?", ["include", "exclude"],
+               "include", {"title": "Aspirin over 80"})
+    assert res.decision == "exclude"
+    assert all(set(c["inputs"]) == {"question", "options", "subject"} for c in plain.calls)
+    (v,) = votes_on(ps, "record", rid)
+    assert [set(o) for o in v["opinions"]] == [{"role", "vendor", "choice", "reason"}] * 3
+    pointed = ScriptedExecutor({(r, "ProtocolVoteOut"): [_opinion("exclude", [_point()])]
+                                for r in ("judge", "judge_2", "judge_3")})
+    vote(production_ctx(k, ps, lib, pointed, attempt=2), "record", rid, "Meets the criteria?",
+         ["include", "exclude"], "include", {"title": "Aspirin over 80"}, output=ProtocolVoteOut)
+    _, with_points = votes_on(ps, "record", rid)
+    assert [set(o) for o in with_points["opinions"]] == [{"role", "vendor", "choice", "reason", "points",
+                                                          "resolved"}] * 3
+    assert with_points["opinions"][0]["points"] == [_point()]
+
+
+def test_a_redraft_may_drop_an_item_an_open_point_asks_to_remove():
+    previous = {"prisma_p": {"rationale": "Guidelines stop at 80.", "dissemination": "A press release."}}
+    redraft = a_protocol(prisma_p={"rationale": "Guidelines stop at 80."})
+    remove = {**_point("prisma_p", "dissemination is no protocol item"), "change": "Remove the dissemination item"}
+    assert dropped_prisma_p(previous, redraft, [remove]) == []
+    # a point that names the item without asking to remove it, or a search point (the Scout's), exempts nothing
+    for point in ({**remove, "change": "Name the journal in dissemination"}, {**remove, "section": "search"}):
+        (failure,) = dropped_prisma_p(previous, redraft, [point])
+        assert "'dissemination'" in failure

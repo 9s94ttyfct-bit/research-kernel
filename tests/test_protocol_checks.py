@@ -204,8 +204,8 @@ def _strategy(queries=QUERIES, sources=("openalex", "europepmc")) -> dict:
 
 
 def _votes(*choices: str) -> dict:
-    return {("judge", "VoteOut"): [{"choice": c, "reason": f"judge: {c}"} for c in choices],
-            ("judge_2", "VoteOut"): [{"choice": c, "reason": f"judge_2: {c}"} for c in choices]}
+    return {("judge", "ProtocolVoteOut"): [{"choice": c, "reason": f"judge: {c}"} for c in choices],
+            ("judge_2", "ProtocolVoteOut"): [{"choice": c, "reason": f"judge_2: {c}"} for c in choices]}
 
 
 def _ctx(env, ex, *, attempt: int = 1, sources=None):

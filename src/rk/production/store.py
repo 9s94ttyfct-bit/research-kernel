@@ -222,7 +222,9 @@ def add_vote(ps: ProjectStore, *, subject_type: str, subject_id: str, question: 
              conservative: str, decision: str, conservative_used: bool, reason: str, opinions: list[dict],
              skipped: dict[str, str], stage: str, attempt: int, actor: str) -> str:
     """The P1 two-vendor vote's decision (``rk.production.vote``). ``opinions``: each judge that ran, as ``{role,
-    vendor, choice, reason}``; ``skipped``: the judges not admitted, role -> why. Never human-reviewed."""
+    vendor, choice, reason}`` plus the extra fields of a richer answer (the protocol judges' ``points`` and
+    ``resolved``) and a tightened choice's ``effective``; ``skipped``: the judges not admitted, role -> why. Never
+    human-reviewed."""
     vid = new_id("vot")
     ps.apply(NewEvent(type="vote.decided", entity_id=vid, actor_kind="kernel", actor=actor,
                       payload={"subject_type": subject_type, "subject_id": subject_id, "question": question,

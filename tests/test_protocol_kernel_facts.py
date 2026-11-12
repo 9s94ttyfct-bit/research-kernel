@@ -71,15 +71,15 @@ def test_kernel_writes_admin_prisma_p_items(sr_env):
                             "antiplatelet stroke over 80"], "sources": ["openalex", "europepmc"],
                 "date_from": 2000, "date_to": None}
     ex = ScriptedExecutor({("ideator", "ProtocolDraftOut"): [draft], ("scout", "SearchStrategyOut"): [strategy],
-                           ("judge", "VoteOut"): [{"choice": "approve", "reason": "ok"}],
-                           ("judge_2", "VoteOut"): [{"choice": "approve", "reason": "ok"}]})
+                           ("judge", "ProtocolVoteOut"): [{"choice": "approve", "reason": "ok"}],
+                           ("judge_2", "ProtocolVoteOut"): [{"choice": "approve", "reason": "ok"}]})
     ctx = production_ctx(k, ps, lib, ex, stage="protocol", attempt=1, sources=FakeSources({}))
     assert ProtocolWorker().run(ctx).status == "done"
     (v1,) = store.protocols(ps, 1)
     assert v1["body"]["prisma_p"] == {**SR_ITEMS, **KERNEL_PRISMA_P}
     assert [c["id"] for c in v1["body"]["eligibility"]["exclude"]] == ["E1", LANGUAGE_CRITERION_ID]
-    judged = next(c for c in ex.calls if c["schema"] == "VoteOut")
-    assert judged["inputs"]["subject"]["protocol"]["prisma_p"]["registration"] == KERNEL_PRISMA_P["registration"]
+    judged = next(c for c in ex.calls if c["schema"] == "ProtocolVoteOut")
+    assert KERNEL_PRISMA_P["registration"] in judged["inputs"]["subject"]["protocol"]  # the rendered protocol
 
 
 def test_language_exclusion_is_appended_once():
