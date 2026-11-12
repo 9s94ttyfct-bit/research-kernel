@@ -19,10 +19,11 @@ The judges' point ledger (P1; calibration: P1 protocol diagnosis 2026-11-12, §5
 points (``ProtocolVoteOut``: section, fault, change, blocking or advisory) and marks its own earlier open points
 resolved or not; the kernel numbers them ``p{attempt}.{role}.{n}`` (``points_ledger``, derived from the events, so a
 point survives an edge-limit failure and a new run). A judge whose effective choice is revise but who leaves no
-blocking point of its own open (a reason only, or advisory points only) gets one more blocking point built from its
-reason (section ``other``), so the next attempt always has what to answer. A point is live (``live``) only while its
-vote was on a version of the current frozen research question and came after the latest protocol freeze and the
-latest reopening of ``protocol`` by another edge than ``protocol->protocol`` (the scope of ``_previous_draft``). Its
+blocking point of its own open (a reason only, or advisory points only), or who answered outside the options, gets
+one more blocking point built from its reason (section ``other``), so the next attempt always has what to answer. A
+point is live (``live``) only while its vote was on a version of the current frozen research question and came after
+the latest protocol freeze and the latest reopening of ``protocol`` by another edge than ``protocol->protocol`` (the
+scope of ``_previous_draft``). Its
 status is ``open``, ``resolved`` (the latest mark of its own judge in its cycle says so; only its own judge closes it;
 it stays resolved when its cycle ends) or ``retired`` (it was open when its cycle ended): a retired point is kept for
 the record but never served, never tightens a vote and never exempts a dropped PRISMA-P item. The judges see the
@@ -220,7 +221,7 @@ DRAFT_TASK = (
     "does not run (it searches only those sources: no grey literature, trial registries, reference lists, citation or "
     "hand-searching, no contact with authors). Never claim that the question or the review is novel. "
     "When a previous draft is given, revise it: change only what the guidance asks for and keep the rest, dropping "
-    "none of its PRISMA-P items unless an open point asks you to remove one. When a frozen "
+    "none of its PRISMA-P items unless an open point or the guidance asks you to remove one. When a frozen "
     "protocol is given, change only what the guidance asks for. Follow the guidance when there is any. When "
     "`open_points` is given (the judges' open points), answer in `answers` every point whose `owner` is ideator, by "
     "its `id`: how changed, with where the protocol changes it in note, or how rebutted, with why it stays in note; a "
@@ -415,9 +416,10 @@ def points_ledger(ps: ProjectStore) -> list[dict]:
       exempts a dropped item; it stays for the record.
 
     A judge whose effective choice is revise but who leaves no blocking point of its own open (no new one, and every
-    earlier live one resolved: only a reason, or only advisory points) gets one more point built from its reason,
-    ``p{attempt}.{role}.{n+1}``, section ``other``, blocking, its fault and change the reason: the next attempt then
-    has it to answer, and the judge closes it like any other.
+    earlier live one resolved: only a reason, or only advisory points), or who answered outside the options (its
+    choice ``None`` with the answer's fields stored; a failed judge task gives none), gets one more point built from
+    its reason, ``p{attempt}.{role}.{n+1}``, section ``other``, blocking, its fault and change the reason: the next
+    attempt then has it to answer, and the judge closes it like any other.
 
     Calibration (P1 protocol diagnosis 2026-11-12): §7 items 1-2 and 5; §5.3, the stale guidance after the edge
     limit, lost the attempt-3 vote's reasons. Scope and reason points: review of Task 3 (risks a and b)."""
@@ -440,7 +442,8 @@ def points_ledger(ps: ProjectStore) -> list[dict]:
                 pid = f"p{v['attempt']}.{role}.{n}"
                 points[pid] = {"id": pid, "attempt": v["attempt"], "role": role, "vendor": o["vendor"], **point,
                                "status": "open", "answers": answers.get(pid, []), "marks": [], "_cycle": cycle}
-            if o.get("effective", o["choice"]) == "revise" and not any(
+            answered_off = o["choice"] is None and "points" in o  # answered (not a failed task) outside the options
+            if (o.get("effective", o["choice"]) == "revise" or answered_off) and not any(
                     p["role"] == role and p["_cycle"] == cycle and p["blocking"] and p["status"] == "open"
                     for p in points.values()):
                 pid = f"p{v['attempt']}.{role}.{len(given) + 1}"
@@ -702,32 +705,45 @@ def _diagnostic_accuracy(body: Protocol, plan: SynthesisPlan) -> str | None:
     return None
 
 
-# what a point's change says to take an item out
+# what a point's change or your comment says to take an item out
 REMOVAL = re.compile(r"\b(?:remov|delet|drop|omit)\w*|\b(?:leave|take) (?:it |the item )?out\b", re.IGNORECASE)
 
 
-def _asked_to_remove(key: str, points: Sequence[dict]) -> bool:
-    """Whether an open point routed to the Ideator about the PRISMA-P items (section ``prisma_p``) asks to remove the
-    item ``key``: its change names the item (its key, or the key with spaces) and says to remove it (``REMOVAL``)."""
-    names = {key.casefold(), key.replace("_", " ").casefold()}
-    return any(p["section"] == "prisma_p" and owner(p) == "ideator" and REMOVAL.search(p["change"])
-               and any(n in p["change"].casefold() for n in names) for p in points)
+def _words(text: str) -> str:
+    """``text`` folded for naming an item: case folded, hyphens and underscores as spaces, whitespace collapsed."""
+    return " ".join(re.sub(r"[-_]", " ", text).casefold().split())
 
 
-def dropped_prisma_p(previous: dict | None, body: Protocol, points: Sequence[dict] = ()) -> list[str]:
+def _asks_removal(key: str, text: str) -> bool:
+    """Whether a clause of ``text`` names the item ``key`` (in any of its spellings: underscores, hyphens or spaces)
+    and says to remove it (``REMOVAL``)."""
+    name = _words(key)
+    return any(REMOVAL.search(c) and name in _words(c) for c in CLAUSE_END.split(text or ""))
+
+
+def _asked_to_remove(key: str, points: Sequence[dict], guidance: str = "") -> bool:
+    """Whether the item ``key`` may go: an open point routed to the Ideator (any section, a point built from a judge's
+    reason too) asks to remove it in its change, or the guidance does (in P2, your comment, which has no points)."""
+    return _asks_removal(key, guidance) or any(owner(p) == "ideator" and _asks_removal(key, p["change"])
+                                               for p in points)
+
+
+def dropped_prisma_p(previous: dict | None, body: Protocol, points: Sequence[dict] = (), *,
+                     guidance: str = "") -> list[str]:
     """One failure per PRISMA-P item of ``previous`` (a protocol body, the draft a redraft revises) that ``body`` no
     longer has, quoting the dropped text; the kernel's items are not the Ideator's to keep, an item that held a
     placeholder (``PLACEHOLDER``) may go, as the placeholder's failure allows, and so may an item an open point
-    (``points``, the ledger's open points) asks the Ideator to remove (``_asked_to_remove``).
+    (``points``, the ledger's open points) or the guidance (your comment in P2) asks the Ideator to remove
+    (``_asked_to_remove``).
 
     Calibration (P1 protocol diagnosis 2026-11-12): rule R8; six redrafts dropped items the next vote asked for
-    again."""
+    again. The guidance exemption: final review of the P1 protocol work (P2 asks nothing new of you)."""
     now = body.prisma_p or {}
     return [f"PRISMA-P item {k!r} of the previous draft is dropped: keep every PRISMA-P item of the previous draft, "
             f"revised as the guidance asks (its text was: {v!r})"
             for k, v in _own_prisma_p((previous or {}).get("prisma_p")).items()
             if (v or "").strip() and not PLACEHOLDER.search(v) and not (now.get(k) or "").strip()
-            and not _asked_to_remove(k, points)]
+            and not _asked_to_remove(k, points, guidance)]
 
 
 def check_protocol(body: Protocol, paper_type: str) -> list[str]:
@@ -1361,9 +1377,10 @@ class ProtocolWorker:
         """One draft try, stored as the next version with its try: the Ideator's draft and the Scout's strategy, or,
         after a failed try (``last``), only the part that failed asked again, with that version as ``previous_draft``
         and its failures as guidance. A PRISMA-P item of a draft the try revises (the attempt's ``previous_draft`` or
-        ``last``) that the try dropped is one of its draft failures (``dropped_prisma_p``), unless an open point asks
-        to remove it. In P1 each role answers every open point routed to it (``open_points``): one it leaves
-        unanswered is one of its failures (``_unanswered``), so it is asked again in the attempt and no edge is spent.
+        ``last``) that the try dropped is one of its draft failures (``dropped_prisma_p``), unless an open point or
+        the guidance (your comment in P2) asks to remove it. In P1 each role answers every open point routed to it
+        (``open_points``): one it leaves unanswered is one of its failures (``_unanswered``), so it is asked again in
+        the attempt and no edge is spent.
         The try records the answers (``tried.answers``, each with the role, ``by``; a part kept from ``last`` keeps
         its answers), never in the protocol body. An outcome when a role gave nothing, else ``None``."""
         ps = ctx.ps
@@ -1404,7 +1421,8 @@ class ProtocolWorker:
                                                           "record_cap": _current_cap(ps)}), paper_type)
         failures = _failures(body, paper_type, ctx.sources.sources())
         revised = [d["body"] for d in (context.get("previous_draft"), last) if d is not None]
-        failures["draft"] += list(dict.fromkeys(f for b in revised for f in dropped_prisma_p(b, body, points)))
+        failures["draft"] += list(dict.fromkeys(f for b in revised for f in dropped_prisma_p(
+            b, body, points, guidance=context.get("guidance", ""))))
         failures["draft"] += unanswered["draft"]
         failures["strategy"] += unanswered["strategy"]
         add_protocol(ps, ctx.attempt, body, version=_next_version(ps), actor=ctx.actor,

@@ -188,7 +188,8 @@ frozen), `search_screen` (search, deduplication, title/abstract and full-text sc
   each query sent verbatim to each source); the checks also reject placeholders, a missing PRISMA-P item of a
   systematic review, prose naming sources or searches the strategy does not have, missing outcomes or study
   identifier field, a meta-analysis of diagnostic accuracy, unbalanced or AND/OR-mixed queries, and a redraft that
-  drops a PRISMA-P item. In P2 you approve, revise or go back in a `protocol_approval` checkpoint (a revise, like
+  drops a PRISMA-P item no open point and no revise comment of yours asked to remove. In P2 you approve, revise or go
+  back in a `protocol_approval` checkpoint (a revise, like
   checks still failing after the tries, reruns the stage and uses one of its two reruns); in P1 a two-vendor vote
   approves or asks for a revision, and a version still above the record cap is not voted on. P1 judges answer with
   numbered points (blocking or advisory) kept in a ledger; the next draft answers each open point (changed or

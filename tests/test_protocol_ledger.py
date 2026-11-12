@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import pytest
 
+from rk.ids import new_id
+from rk.llm.types import TaskResult
 from rk.orchestrator.engine import Orchestrator, StageOutcome
 from rk.orchestrator.state import latest_attempt, stage_row, start_run
 from rk.production import store
@@ -375,3 +377,68 @@ def test_an_old_cycle_point_marked_unresolved_does_not_tighten_a_current_vote(en
     assert "effective" not in v["opinions"][0]
     (point,) = points_ledger(ps)
     assert (point["id"], point["status"], point["live"]) == ("p1.judge.1", "resolved", False)
+
+
+# ---- final-review fix round ----
+@pytest.mark.parametrize("env", [{"paper_type": "scoping_review", "production_mode": "collab"}], indirect=True)
+def test_p2_a_comment_asking_to_remove_an_item_lets_the_redraft_drop_it(env):
+    """P2 has no open points: your revise comment is the guidance, and an item it asks to remove may go."""
+    _, ps, _ = env
+    with_rob = {**_draft(), "synthesis_plan": {"method": "evidence_map"},
+                "prisma_p": {"rationale": "Guidelines stop at 80.", "risk_of_bias": "RoB 2 for trials."}}
+    without = {**with_rob, "prisma_p": {"rationale": "Guidelines stop at 80."}}
+    ex = ScriptedExecutor({("ideator", "ProtocolDraftOut"): [with_rob, without, without],
+                           ("scout", "SearchStrategyOut"): [_strategy(), _strategy()]})
+    w = ProtocolWorker()
+    assert w.run(_ctx(env, ex)).status == "waiting_human"
+    rerun = _ctx(env, ex, attempt=2)
+    rerun.guidance = "A scoping review does not assess bias. Remove the risk of bias item."
+    assert w.run(rerun).status == "waiting_human"
+    (redraft, *_) = store.protocols(ps, 2)
+    assert "risk_of_bias" not in redraft["body"]["prisma_p"]
+    tried = next(e.payload["tried"] for e in ps.log.iter() if e.type == "protocol.added" and e.entity_id == redraft["id"])
+    assert tried["failures"]["draft"] == []
+    # guidance that names the item without asking to remove it exempts nothing
+    previous = {"prisma_p": with_rob["prisma_p"]}
+    body = a_protocol(prisma_p=without["prisma_p"])
+    assert dropped_prisma_p(previous, body, guidance="Remove the funnel plot. Keep risk of bias.")
+    assert dropped_prisma_p(previous, body, guidance="Please drop the risk-of-bias item.") == []
+
+
+class _Crashes(ScriptedExecutor):
+    """``crash`` gives no output (a failed task); the other roles answer as scripted."""
+
+    def __init__(self, script, crash: str):
+        super().__init__(script)
+        self.crash = crash
+
+    def run(self, role, instructions, inputs, output_schema, **kw):
+        if role != self.crash:
+            return super().run(role, instructions, inputs, output_schema, **kw)
+        self.calls.append({"role": role, "schema": output_schema.__name__, "inputs": inputs})
+        return TaskResult(new_id("tsk"), False, None, "", "ollama", "deepseek-v4.1-flash:cloud", 0.0, "timeout")
+
+
+def test_a_judge_answering_outside_the_options_still_reaches_the_authors(env):
+    """A judge that answered (its points and marks are stored) with a choice outside the options gets a point built
+    from its reason; a judge whose task failed gives none."""
+    _, ps, _ = env
+    script = {("ideator", "ProtocolDraftOut"): [_draft()], ("scout", "SearchStrategyOut"): [_strategy()],
+              ("judge", "ProtocolVoteOut"): [_opinion("maybe", reason="E1 is vague.")]}
+    ex = _Crashes(script, "judge_2")
+    assert ProtocolWorker().run(_ctx(env, ex)).status == "rerun"
+    (point,) = points_ledger(ps)
+    assert (point["id"], point["section"], point["blocking"], point["status"]) == ("p1.judge.1", "other", True, "open")
+    assert point["fault"] == "answered 'maybe', not one of the options: E1 is vague."  # the reason as stored
+
+
+def test_any_open_ideator_point_may_ask_to_remove_an_item():
+    """A point built from a judge's reason (section other) asks to remove an item in hyphenated words."""
+    previous = {"prisma_p": {"rationale": "Guidelines stop at 80.", "certainty_of_evidence": "GRADE per outcome."}}
+    redraft = a_protocol(prisma_p={"rationale": "Guidelines stop at 80."})
+    why = "Drop the certainty-of-evidence item: the review rates no certainty."
+    reason_point = {"section": "other", "fault": why, "change": why, "blocking": True}
+    assert dropped_prisma_p(previous, redraft, [reason_point]) == []
+    (failure,) = dropped_prisma_p(previous, redraft, [{**reason_point, "section": "search"}])  # the Scout's
+    assert "'certainty_of_evidence'" in failure
+
