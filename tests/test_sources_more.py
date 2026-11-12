@@ -11,6 +11,30 @@ def test_europepmc_search_and_fulltext(replay_http):
     assert xml and b"<article" in xml
 
 
+def test_europepmc_bookshelf_records_are_books_and_chapters():
+    """Calibration (critical3 export, 2026-11-12): the AHRQ report (PMID 42981454) was added from Europe PMC as a journal
+    article with no venue and exported so. A book (pubType Book) has its publisher as venue; a chapter (a book whose
+    title is not its own: GeneReviews' Loeys-Dietz Syndrome) is a book section with the book as venue."""
+    book = {"source": "MED", "pmid": "42981454", "title": "AI and ML Tools: A Rapid Review, 2026 Review Update",
+            "pubYear": "2026", "pubTypeList": {"pubType": ["Book", "Review"]},
+            "bookOrReportDetails": {"publisher": "Agency for Healthcare Research and Quality (US), Rockville (MD)",
+                                    "comprisingTitle": "AI and ML Tools: A Rapid Review, 2026 Review Update",
+                                    "yearOfPublication": 2026}}
+    it = europepmc.result_to_item(book)
+    assert (it.item_type, it.venue, it.year) == ("book", "Agency for Healthcare Research and Quality (US), Rockville (MD)",
+                                                 2026)
+    chapter = {"source": "MED", "pmid": "20301312", "title": "Loeys-Dietz Syndrome", "pubYear": "1993",
+               "pubTypeList": {"pubType": ["Review"]},
+               "bookOrReportDetails": {"publisher": "University of Washington, Seattle, Seattle (WA)",
+                                       "comprisingTitle": "GeneReviews®", "yearOfPublication": 1993}}
+    it = europepmc.result_to_item(chapter)
+    assert (it.item_type, it.title, it.venue) == ("bookSection", "Loeys-Dietz Syndrome", "GeneReviews®")
+    article = {"source": "MED", "pmid": "1", "title": "A trial.", "pubYear": "2020",
+               "journalInfo": {"journal": {"title": "The Lancet"}}}
+    assert (europepmc.result_to_item(article).item_type, europepmc.result_to_item(article).venue) == (
+        "journalArticle", "The Lancet")
+
+
 def test_pubmed_esummary(replay_http):
     items = pubmed.esummary(replay_http, ["26528420"])
     assert len(items) == 1

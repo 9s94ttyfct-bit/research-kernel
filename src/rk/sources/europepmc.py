@@ -8,6 +8,22 @@ from rk.net.http import HttpClient
 BASE = "https://www.ebi.ac.uk/europepmc/webservices/rest"
 
 
+def _kind(r: dict) -> tuple[str, str | None]:
+    """The record's item type and venue: a preprint (source PPR); a Bookshelf book (``pubType`` Book, or a book or
+    report whose title is its own) with its publisher as venue; a chapter (``bookOrReportDetails`` naming a book whose
+    title is not the record's) with the book as venue; else a journal article in its journal."""
+    if r.get("source") == "PPR":
+        return "preprint", ((r.get("journalInfo") or {}).get("journal") or {}).get("title")
+    book = r.get("bookOrReportDetails") or {}
+    if book:
+        whole = (book.get("comprisingTitle") or "").rstrip(".")
+        is_book = "Book" in ((r.get("pubTypeList") or {}).get("pubType") or [])
+        if whole and not is_book and whole.casefold() != (r.get("title") or "").rstrip(".").casefold():
+            return "bookSection", whole
+        return "book", book.get("publisher")
+    return "journalArticle", ((r.get("journalInfo") or {}).get("journal") or {}).get("title")
+
+
 def result_to_item(r: dict) -> ItemIn:
     authors = (r.get("authorList") or {}).get("author", [])
     pdfs = [
@@ -17,7 +33,7 @@ def result_to_item(r: dict) -> ItemIn:
     ]
     year = r.get("pubYear")
     return ItemIn(
-        item_type="preprint" if r.get("source") == "PPR" else "journalArticle",
+        item_type=_kind(r)[0],
         title=(r.get("title") or "(untitled)").rstrip("."),
         creators=[
             Creator(family=a.get("lastName") or a.get("fullName") or a.get("collectiveName", ""), given=a.get("firstName"))
@@ -25,7 +41,7 @@ def result_to_item(r: dict) -> ItemIn:
             if a.get("lastName") or a.get("fullName") or a.get("collectiveName")
         ],
         year=int(year) if year and str(year).isdigit() else None,
-        venue=((r.get("journalInfo") or {}).get("journal") or {}).get("title"),
+        venue=_kind(r)[1] or None,
         abstract=r.get("abstractText"),
         ids=Ids(doi=r.get("doi"), pmid=r.get("pmid"), pmcid=r.get("pmcid")).normalized(),
         oa_urls=pdfs,

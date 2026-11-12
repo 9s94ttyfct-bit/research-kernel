@@ -74,7 +74,10 @@ def test_negation_reaches_over_two_auxiliaries_or_adverbs():
     """T3: "has not been proven" is negated as "was not proven" is; at most two auxiliaries/adverbs in between."""
     for text in ("Aspirin has not been proven to prevent stroke.", "It is not clearly established that X.",
                  "It has not yet been established.", "This has not been conclusively proven.",
-                 "The benefit is not fully established.", "It hasn't been proven.", "It cannot be proven."):
+                 "The benefit is not fully established.", "It hasn't been proven.", "It cannot be proven.",
+                 # calibration (critical3 conclusion): an article between them kept the negation from counting
+                 "It is not an established general causal rule.", "It is not a proven benefit.",
+                 "This is not the definitive answer."):
         assert hedge_level(text) == 2, text
     assert universal_terms("It has not been always safe.") == []
     for text in ("Aspirin has been proven to prevent stroke.", "It was clearly established that X.",

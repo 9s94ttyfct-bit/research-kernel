@@ -8,8 +8,8 @@ declared synonym (``SYNONYMS``: none ↔ never) (``rk.verify.support.check_claim
 A categorical word or universal quantifier counts only where it is stated positively (``_stated``): not when a
 negator or hedge precedes it ("not all", "not proven", "almost every", "cannot always", "don't always") or a
 "too … to", "insufficient to" or "not … enough to" leads to it ("too few events to establish", "not large enough to
-prove": ``_QUALIFIERS``), also across up to two auxiliaries or adverbs ("has not been proven", "is not clearly
-established": ``_BETWEEN``), when a hyphen follows it ("all-cause", "never-smokers"), in "every other", or in the idiom "in all"
+prove": ``_QUALIFIERS``), also across up to two auxiliaries, adverbs or articles ("has not been proven", "is not clearly
+established", "is not an established rule": ``_BETWEEN``), when a hyphen follows it ("all-cause", "never-smokers"), in "every other", or in the idiom "in all"
 meaning "in total", before punctuation or the end of the text ("In all, 12 trials", "12 trials in all."; "in all
 patients" and "in all 12 trials" stay universal). ``hedge_level`` applies the same filter to the categorical
 (level-3) words."""
@@ -27,8 +27,10 @@ UNIVERSALS = ("all", "every", "never", "always", "none")
 # Quantifiers that state the same universal: a note saying "never" covers a claim saying "none", and back.
 SYNONYMS: dict[str, frozenset[str]] = {u: frozenset({u}) for u in UNIVERSALS} | {
     u: frozenset({"none", "never"}) for u in ("none", "never")}
-# Auxiliaries and adverbs that may stand between a negator and the word it negates (at most two of them).
-_BETWEEN = r"(?:\s+(?:been|be|being|yet|ever|always|fully|clearly|conclusively|definitively|firmly|entirely|completely))"
+# Auxiliaries, adverbs and articles that may stand between a negator and the word it negates (at most two of them).
+# Calibration (critical3 conclusion): "not an established general causal rule" was read as categorical.
+_BETWEEN = (r"(?:\s+(?:been|be|being|yet|ever|always|fully|clearly|conclusively|definitively|firmly|entirely|completely"
+            r"|a|an|the))")
 # Words that keep what follows from being stated: a negator or hedge right before it, or a "too … to", "insufficient
 # to" or "not … enough to" leading to it ("too few events to establish", "not large enough to prove").
 _WORD = r"[\w'’-]+\s+"
