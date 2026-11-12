@@ -1406,8 +1406,7 @@ def _handled(q: dict) -> str:
     if q["outcome"] in ("revised", "answered", "declined", "deleted"):
         return f"{q['outcome']}: {q['note'] or 'no note'}"
     if q["outcome"] == "rejected":
-        last = [r for r in q["revisions"] if r["accepted"] is False][-1]
-        return "rejected: the revision answering it was not accepted: " + "; ".join(last["reasons"])
+        return "rejected: the revision answering it was not accepted: " + "; ".join(q["rejected_reasons"])
     return "not answered yet"
 
 

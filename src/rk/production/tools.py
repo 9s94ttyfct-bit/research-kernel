@@ -660,9 +660,10 @@ def _section_view(ps: ProjectStore, section: str, title: str | None, version: in
 def revise_view(ps: ProjectStore, attempt: int | None = None) -> dict:
     """revise's questions (of the attempt it shows, or ``attempt``), each with how it was handled: ``outcome``
     ``revised`` / ``answered`` / ``declined`` (its answer in an accepted revision, with the ``note``), ``rejected`` (only
-    rejected revisions answered it), ``deleted`` (P1's degrade deleted its sentence) or ``open``; and every revision
-    asked for it (accepted or not, with the reasons); the refused questions, those not carried into the attempt and
-    the gate."""
+    rejected revisions answered it), ``deleted`` (P1's degrade deleted its sentence) or ``open``; when ``rejected``,
+    ``rejected_reasons`` (the last rejected revision's, after those of the revision it repaired when it is a repair);
+    and every revision asked for it (accepted or not, with the reasons and ``repair_of``); the refused questions, those
+    not carried into the attempt and the gate."""
     attempt = attempt if attempt is not None else shown_attempt(ps, REVISE)
     if attempt is None:
         return {"attempt": None, "questions": [], "refused": [], "dropped": [], "back_edge": None, "gate": None}
@@ -691,10 +692,15 @@ def revise_view(ps: ProjectStore, attempt: int | None = None) -> dict:
                 outcome, note = answered[-1]["how"], answered[-1]["note"]
             else:
                 outcome, note = ("rejected" if any(r["accepted"] is False for r in revisions) else "open"), None
+            rejected = [r for r in revisions if r["accepted"] is False]
+            shown = rejected[-1:]
+            if shown and shown[0]["repair_of"]:  # a repair's reasons alone may hide why its revision was rejected
+                shown = [r for r in rejected if r["task"] == shown[0]["repair_of"]] + shown
+            why = list(dict.fromkeys(x for r in shown for x in r["reasons"])) if outcome == "rejected" else []
             questions.append({"id": q["id"], "round": qn["round"], "section": q["section"],
                               "sentence_index": q.get("sentence_index"), "sentence": q.get("sentence"),
                               "text": q["text"], "priority": q["priority"], "carried_from": q.get("carried_from"),
-                              "outcome": outcome, "note": note, "revisions": revisions})
+                              "outcome": outcome, "note": note, "rejected_reasons": why, "revisions": revisions})
     back = [n for n in notes if n["kind"] == "back_edge"]
     return {"attempt": attempt, "questions": questions,
             "refused": [q for n in notes if n["kind"] == "questions" for q in n.get("refused") or []],

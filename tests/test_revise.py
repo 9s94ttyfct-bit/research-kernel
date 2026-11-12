@@ -311,6 +311,23 @@ def test_no_repair_when_the_budget_must_cover_the_rounds_other_revisions(env):
     assert not again.calls and len(revise_notes(ps, 1, kind="no_repair")) == 1
 
 
+def test_a_failed_repair_shows_why_its_revision_was_rejected_too(env):
+    """The view (and the Workbench and ``rk revise show`` from it) gives a rejected question the reasons of the
+    revision a failed repair was of, not only the repair's own (here: of another section)."""
+    from rk.production.tools import revise_view
+
+    _, ps, _ = env
+    _drafted(env)
+    save_settings(load_settings().model_copy(update={"revise_max_rounds": 1}))
+    elsewhere = lambda inputs: {"section": "conclusion", "repairs": []}
+    ex = _exec([ask(("introduction", 2))], [revision(add="An unmarked sentence here.")], [elsewhere])
+    assert _done(ReviseWorker().run(_ctx(env, ex)))
+    (q,) = revise_view(ps, 1)["questions"]
+    assert q["outcome"] == "rejected" and [r["repair_of"] is not None for r in q["revisions"]] == [False, True]
+    assert any("no source marker" in r for r in q["rejected_reasons"]), q["rejected_reasons"]
+    assert q["rejected_reasons"][-1] == "the repair is of section 'conclusion', not 'introduction'"
+
+
 def test_rounds_stop_at_k_or_without_priority1_questions(env):
     _, ps, _ = env
     _drafted(env)

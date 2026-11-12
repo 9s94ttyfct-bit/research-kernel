@@ -534,6 +534,7 @@ def test_drafts_page_shows_sentence_verdicts_and_the_revise_panel_as_text(page, 
     for t in ("Why <b>this</b> age group?", "clarified", "Rejected", "priority 1"):
         assert panel.get_by_text(t, exact=False).count() >= 1, t
     assert panel.locator("b").count() == 0
+    assert panel.locator(".check.bad").get_by_text("no source marker", exact=False).count() >= 1
     # the refused questions (with why) and those not carried into the attempt (with the reason), as text
     refused = panel.locator(".refused li")
     assert refused.count() == 1 and "appendix" in refused.inner_text()

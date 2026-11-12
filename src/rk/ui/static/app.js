@@ -1583,15 +1583,14 @@ function revisePanel(rv) {
       el("p", { class: "hint" }, `The reader's questions of attempt ${rv.attempt} and how each was handled. ${gate}`),
       rv.questions.length ? el("ol", { class: "questions" }, rv.questions.map((q) => {
         const [cls, word] = OUTCOMES[q.outcome] || ["neutral", label(q.outcome)];
-        const rejected = q.revisions.filter((r) => r.accepted === false);
         return el("li", { "data-question": q.id },
           el("div", { class: "badges" }, el("span", { class: `badge ${cls}` }, word), el("span", { class: "badge neutral" }, `priority ${q.priority}`),
             el("span", { class: "hint" }, `${q.section}, round ${q.round}`)),
           el("p", { class: "question" }, q.text),
           q.sentence ? el("blockquote", { class: "note" }, q.sentence) : null,
           q.note ? el("p", { class: "hint" }, `The Writer's note: ${q.note}`) : null,
-          q.outcome === "rejected" && rejected.length ? [el("p", { class: "hint" }, "The revision answering it was not accepted:"),
-            el("ul", { class: "check bad" }, rejected.at(-1).reasons.map((r) => el("li", {}, r)))] : null);
+          q.outcome === "rejected" && q.rejected_reasons.length ? [el("p", { class: "hint" }, "The revision answering it was not accepted:"),
+            el("ul", { class: "check bad" }, q.rejected_reasons.map((r) => el("li", {}, r)))] : null);
       })) : el("p", { class: "empty" }, "The reader asked no question."),
       rv.refused.length ? [el("h3", {}, "Refused questions"), el("ul", { class: "refused" }, rv.refused.map((q) => el("li", {},
         el("span", { class: "hint" }, `${q.section}, priority ${q.priority}: `), q.text || "(empty)", el("div", { class: "hint" }, `Refused: ${q.why}`))))] : null,
