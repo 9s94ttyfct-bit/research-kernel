@@ -4,7 +4,7 @@
 
 **Goal:** Let a P1 (autonomous) protocol converge under the two-judge vote: the kernel answers what only it knows, catches mechanical faults before a vote, and the judges' points become a tracked ledger every redraft must answer and every later vote must close.
 
-**Architecture:** Three layers in `rk.production.protocol`. (1) Kernel-owned facts: PRISMA-P admin items, the language exclusion and a "search execution" block are written by the kernel, and the judges get a rules sheet. (2) New deterministic checks run inside the attempt (no `protocol->protocol` edge spent). (3) A point ledger derived from events: the protocol vote's judges return structured points; the Ideator and Scout answer each open point; the next vote sees points, answers and a diff, and each judge closes its own points. The vote's decision rule (every admitted judge approves) is unchanged.
+**Architecture:** Three layers in `rk.production.protocol`. (1) Kernel-owned facts: PRISMA-P admin items, the language exclusion and a "search execution" block are written by the kernel, and the judges get a rules sheet. (2) New deterministic checks run inside the attempt (no `protocol->protocol` edge spent). (3) A point ledger derived from events: the protocol vote's judges return structured points; the Ideator and Scout answer each open point; the next vote sees points, answers and a diff, and each judge closes its own points. The vote's decision is still unanimous `approve` of every admitted judge; one policy change is deliberate (see Global Constraints): judges are told that only blocking points require `revise`, and the kernel overrides an `approve` that carries an open blocking point of that judge to `revise`.
 
 **Tech Stack:** Python 3.11, pydantic v2, SQLite event store (`ProjectStore.apply`, projections), pytest with `tests/production_fakes.py`.
 
@@ -14,7 +14,10 @@
 
 - Every change is TDD: the failing test first, seen failing, then the code. Tests follow the repo style (`tests/test_protocol*.py`, `tests/production_fakes.py`); no tests of wording or wiring only.
 - P2 keeps working unchanged in what it asks of you: the human `protocol_approval` sees the same rendered protocol plus the new kernel-written parts.
-- No new rule for the vote's decision (both admitted judges must answer `approve`), no change to the edge limit (`EDGE_LIMIT`) or to `protocol_tries`.
+- The vote's decision stays unanimous (every admitted judge's effective choice is `approve`); no change to the edge limit (`EDGE_LIMIT`) or to `protocol_tries`.
+- **Deliberate policy change (the diagnosis's 2d), protocol vote only:** judges mark each point blocking or advisory and are told to answer `approve` when none of their own blocking points is open, so a protocol can freeze with advisory points recorded (they stay in the ledger, in the event log). The kernel never loosens a judge's choice; it only tightens it (approve + own open blocking point → effective `revise`). Rationale: the diagnosis found no vote approved (gpt-6-luna approved 0 of 51) and rules alone cover at most 68.5 % of points. Validated by the step-3 reruns; if it freezes protocols with real faults, revert the prompt sentence, not the ledger.
+- Point answers and judge points are event metadata (`protocol.added` `tried.answers`, `vote.decided` opinions), never part of `Protocol`/`body`: `protocol_hash` and the frozen protocol must not change because of them.
+- `vote()` stays shared: the structured judge output is opt-in (`output=`) and used by the protocol vote only.
 - Kernel-written text never claims what the kernel does not do. It must match `rk.production.search` / `search_screen` behaviour (verbatim query per source, dedup, cap after dedup) — read that code before writing the text.
 - Commit identity: `9s94ttyfct-bit <273716724+9s94ttyfct-bit@users.noreply.github.com>`. No `git stash`. Edits via the edit tool.
 - Docstrings: prose describing behaviour, with a calibration note naming the diagnosis where a rule came from ("Calibration (P1 protocol diagnosis 2026-11-12): …").
