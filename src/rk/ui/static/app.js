@@ -546,8 +546,8 @@ async function protocolCard(c, answer) {
     : k === "pool_model" ? POOL_MODELS[v] ?? String(v) : k === "pi_df" ? PI_DF[v] ?? String(v)
     : k === "min_studies" ? minStudies(v)
     : k === "outcomes" ? v.map(outcome).join("; ") : Array.isArray(v) ? v.join(", ") : String(v));
-  // the pool options and outcomes are the meta-analysis's: shown only for that method
-  const POOL_KEYS = new Set(["pool_model", "hksj", "pi_df", "min_studies", "outcomes"]);
+  // the pool options are the meta-analysis's: shown only for that method; the outcomes for every plan
+  const POOL_KEYS = new Set(["pool_model", "hksj", "pi_df", "min_studies"]);
   const isMeta = (b.synthesis_plan || {}).method === "meta_analysis";
   const plan = Object.entries(b.synthesis_plan || {})
     .filter(([k, v]) => v !== null && v !== undefined && !(Array.isArray(v) && v.length === 0)

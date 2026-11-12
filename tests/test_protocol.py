@@ -222,12 +222,12 @@ def test_meta_analysis_draft_without_typed_fields_fails_the_gate_and_is_redrafte
     assert "- hksj: never (Wald intervals)" in text
     assert ("- outcomes: stroke (events_treatment = stroke_events_treatment, n_treatment = stroke_n_treatment, "
             "events_control = stroke_events_control, n_control = stroke_n_control)") in text
-    # the pool options are shown only for a meta-analysis
+    # the pool options are shown only for a meta-analysis; the outcomes for every plan
     narrative = store.frozen_protocol(ps) | {"body": a_protocol(synthesis_plan=SynthesisPlan(
         method="narrative_swim", hksj=False, outcomes=[stroke])).model_dump(mode="json")}
     text = "\n".join(render_protocol(ps, narrative))
-    assert "- method: narrative_swim" in text
-    assert not any(f"- {k}:" in text for k in ("hksj", "pi_df", "pool_model", "outcomes"))
+    assert "- method: narrative_swim" in text and "- outcomes: stroke (events_treatment" in text
+    assert not any(f"- {k}:" in text for k in ("hksj", "pi_df", "pool_model", "min_studies"))
 
 
 def test_meta_analysis_plan_is_for_a_systematic_review_only():

@@ -23,6 +23,7 @@ from rk.production.protocol import (
     check_protocol,
     check_strategy,
     dropped_prisma_p,
+    render_protocol,
     with_kernel_facts,
 )
 from tests.discovery_fakes import FakeSources, ScriptedExecutor
@@ -84,6 +85,15 @@ def test_placeholder_text_fails():
     forged = with_kernel_facts(sr_body(prisma_p=with_items(registration="to be completed by the researcher")),
                                "systematic_review")
     assert forged.prisma_p["registration"] == KERNEL_PRISMA_P["registration"] and sr(forged) == []
+
+
+def test_reported_or_recorded_is_a_placeholder_only_as_a_deferral():
+    for ordinary in ("Outcomes to be reported: stroke, then bleeding.", "Events to be recorded per arm."):
+        assert sr(sr_body(prisma_p=with_items(outcomes_prioritisation=ordinary))) == [], ordinary
+    for deferral in ("Funding sources to be reported later.", "To be recorded.",
+                     "Deviations to be recorded at a later stage."):
+        (failure,) = sr(sr_body(prisma_p=with_items(data_management=deferral)))
+        assert "prisma_p.data_management" in failure and "placeholder" in failure, deferral
 
 
 # ---- R1b: the extended PRISMA-P items ----
@@ -189,8 +199,8 @@ def _draft(**prisma) -> dict:
             "prisma_p": prisma}
 
 
-def _strategy(queries=QUERIES) -> dict:
-    return {"queries": list(queries), "sources": ["openalex", "europepmc"], "date_from": 2000, "date_to": None}
+def _strategy(queries=QUERIES, sources=("openalex", "europepmc")) -> dict:
+    return {"queries": list(queries), "sources": list(sources), "date_from": 2000, "date_to": None}
 
 
 def _votes(*choices: str) -> dict:
@@ -210,6 +220,9 @@ def test_redraft_may_not_drop_prisma_p_items():
     assert dropped_prisma_p(None, without) == []
     assert dropped_prisma_p({"prisma_p": None}, without) == []
     assert dropped_prisma_p({"prisma_p": {"funding": "x"}}, without) == []
+    # an item that held a placeholder may go: the placeholder message tells the Ideator to drop or rewrite it
+    assert dropped_prisma_p({"prisma_p": {"funding": "to be completed by the researcher"}},
+                            a_protocol(prisma_p={"rationale": "y"})) == []
 
 
 @pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
@@ -255,3 +268,33 @@ def test_p1_does_not_vote_above_the_cap(env):
     else:  # P2: you may raise the cap, so your approval opens on the best version
         assert out.status == "waiting_human"
         assert get_checkpoint(ps, out.checkpoint_id)["options"]["protocol_id"] == best["id"]
+
+
+def test_a_narrowing_try_must_keep_the_sources_the_prisma_p_texts_name(env):
+    """The draft's PRISMA-P text names arXiv: a narrowing that drops it fails R5, and the Scout is told (before and
+    in the failed try's reason) to keep every source the PRISMA-P texts name, not the Ideator's fix."""
+    k, _, _ = env
+    cfg = k.settings()
+    cfg.protocol_narrow_tries = 2
+    save_settings(cfg)
+    named = _draft(information_sources="We search OpenAlex, Europe PMC and arXiv.")
+    with_arxiv = ["openalex", "europepmc", "arxiv"]
+    ex = ScriptedExecutor({("ideator", "ProtocolDraftOut"): [named],
+                           ("scout", "SearchStrategyOut"): [_strategy(sources=with_arxiv),
+                                                            _strategy(SOMEWHAT),  # drops arXiv
+                                                            _strategy(SOMEWHAT, sources=with_arxiv)]})
+    ProtocolWorker().run(_ctx(env, ex, sources=FakeSources({}, record_counts=COUNTS)))
+    first, second = [c["inputs"] for c in ex.calls if c["role"] == "scout"][1:]
+    assert first["narrowing"]["keep_sources"] == with_arxiv and "arxiv" in first["guidance"]
+    (dropped,) = second["narrowing"]["failed_tries"]
+    assert "arXiv" in dropped["why"] and "keep every source the PRISMA-P texts name" in dropped["why"]
+    assert "name only the strategy's sources" not in dropped["why"]  # the Ideator's remedy is not the Scout's
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_rendered_narrative_plan_shows_its_outcomes(env):
+    _, ps, _ = env
+    row = {"id": "prt_none", "version": 1, "body": sr_body().model_dump(mode="json")}
+    text = "\n".join(render_protocol(ps, row))
+    assert "- outcomes: stroke; major bleeding" in text
+    assert not any(f"- {k}:" in text for k in ("hksj", "pi_df", "pool_model", "min_studies"))

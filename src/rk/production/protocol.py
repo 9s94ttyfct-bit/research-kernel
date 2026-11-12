@@ -204,7 +204,8 @@ STRATEGY_TASK = (
     "for example with quoted phrases and AND between the concepts every record needs; restrict fields (title or "
     "abstract) only in a syntax every chosen source reads; keep every eligibility criterion covered. A strategy that "
     "repeats one already tried or does not lower the total below the best so far is a failed try (`failed_tries` "
-    "lists them). The kernel runs the searches; do not search yourself. Follow the guidance when there is any.")
+    "lists them). Keep every source in `keep_sources` (the PRISMA-P texts name them): narrow the queries, not those "
+    "sources. The kernel runs the searches; do not search yourself. Follow the guidance when there is any.")
 # what the judges are told the probe is
 PROBE_NOTE = ("advisory, an upper bound: the record counts of each query on each counted source within the strategy's "
               "publication years, summed, so duplicates across queries and sources count again; search_screen "
@@ -353,11 +354,15 @@ def _prisma_p_missing(body: Protocol) -> list[str]:
 
 
 # A text that defers to someone who completes it later: what the Ideator wrote for facts it could not know, which the
-# next vote rejected.
+# next vote rejected. "to be reported" and "to be recorded" are ordinary prose ("outcomes to be reported: stroke"), so
+# they count only as a deferral (followed by later, when, by the investigators, ...) or as the whole text.
 # Calibration (P1 protocol diagnosis 2026-11-12): rule R1c; prisma_p.placeholder points (the regex hits the judges
 # did not raise were real deferrals too).
 PLACEHOLDER = re.compile(
-    r"\bto be (?:completed|stated|declared|recorded|filled|reported|registered|determined)\b|\[\s*to be\b|\btbd\b"
+    r"\bto be (?:completed|stated|declared|filled|registered|determined)\b|\[\s*to be\b|\btbd\b"
+    r"|\bto be (?:reported|recorded)\b(?=\s+(?:later|at a later\b|in (?:a|the) (?:later|future)\b"
+    r"|by the (?:investigators?|researchers?|authors|team)\b|when\b|once\b|after\b|before\b|if\b))"
+    r"|^\W*to be (?:reported|recorded)\W*$"
     r"|\b(?:will|shall) be registered\b|\bbefore (?:the protocol is )?freez|\bby the researcher\b"
     r"|\bthe researcher (?:must|will)\b|\bleft blank\b|\bwhen assigned\b|\bonce issued\b|\bmust be re-?run\b"
     r"|\bbefore the search is final\b|\bwritten in the full protocol\b", re.IGNORECASE)
@@ -366,7 +371,8 @@ PLACEHOLDER = re.compile(
 def _placeholders(body: Protocol) -> list[str]:
     """One failure per Ideator text (``_free_texts``) holding a placeholder (``PLACEHOLDER``), naming it."""
     return [f"{name} holds a placeholder ({m.group(0)!r}): write what the review does, not what someone is to "
-            "complete later; registration, amendments, support and competing interests are written by the kernel"
+            "complete later, or leave out an item the review does not need; registration, amendments, support and "
+            "competing interests are written by the kernel"
             for name, text in _free_texts(body) if (m := PLACEHOLDER.search(text))]
 
 
@@ -386,19 +392,37 @@ NEGATED = re.compile(r"\b(?:not|no|never|none|without|neither|nor|cannot)\b|n't"
 CLAUSE_END = re.compile(r"[.;!?](?:\s|$)|\n")
 
 
+def _claims(text: str) -> list[str]:
+    """The clauses of a text that do not negate what they mention (``NEGATED``)."""
+    return [c for c in CLAUSE_END.split(text) if not NEGATED.search(c)]
+
+
+def _named_sources(text: str) -> list[str]:
+    """The search sources (``SOURCE_NAMES`` keys) a text names in a clause that does not negate them."""
+    claims = _claims(text)
+    return [s for s, (_, words) in SOURCE_NAMES.items() if any(re.search(words, c, re.IGNORECASE) for c in claims)]
+
+
+def _prisma_p_sources(body: Protocol) -> list[str]:
+    """The search sources the Ideator's PRISMA-P texts name (``_named_sources``): a narrowing keeps them."""
+    return list(dict.fromkeys(s for text in _own_prisma_p(body.prisma_p).values() for s in _named_sources(text)))
+
+
+def _sources_outside(body: Protocol) -> list[str]:
+    """One failure per source an Ideator PRISMA-P text names that the search strategy does not list."""
+    sources = _unique(body.search_strategy.sources)
+    return [f"prisma_p.{key} names {SOURCE_NAMES[s][0]}, which is not a source of the search strategy "
+            f"({', '.join(sources)}): name only the strategy's sources, or say the source is not searched"
+            for key, text in _own_prisma_p(body.prisma_p).items() for s in _named_sources(text) if s not in sources]
+
+
 def _prisma_p_against_strategy(body: Protocol) -> list[str]:
     """What the Ideator's PRISMA-P texts say of the search that the strategy does not do: a source named outside the
-    strategy's sources, or a search the kernel does not run (``UNRUN_SEARCHES``). A clause that negates its mention
-    (``NEGATED``) says the review does not do it, and passes."""
-    sources = _unique(body.search_strategy.sources)
-    out = []
+    strategy's sources (``_sources_outside``), or a search the kernel does not run (``UNRUN_SEARCHES``). A clause
+    that negates its mention (``NEGATED``) says the review does not do it, and passes."""
+    out = _sources_outside(body)
     for key, text in _own_prisma_p(body.prisma_p).items():
-        claims = [c for c in CLAUSE_END.split(text) if not NEGATED.search(c)]
-        named = [name for s, (name, words) in SOURCE_NAMES.items() if s not in sources
-                 and any(re.search(words, c, re.IGNORECASE) for c in claims)]
-        out += [f"prisma_p.{key} names {name}, which is not a source of the search strategy ({', '.join(sources)}): "
-                "name only the strategy's sources, or say the source is not searched" for name in named]
-        promised = list(dict.fromkeys(m.group(0) for c in claims for m in UNRUN_SEARCHES.finditer(c)))
+        promised = list(dict.fromkeys(m.group(0) for c in _claims(text) for m in UNRUN_SEARCHES.finditer(c)))
         if promised:
             out.append(f"prisma_p.{key} promises {', '.join(map(repr, promised))}, which the kernel does not run (it "
                        "searches only the strategy's sources: no grey literature, trial registries, reference lists, "
@@ -426,7 +450,8 @@ def _diagnostic_accuracy(body: Protocol, plan: SynthesisPlan) -> str | None:
 
 def dropped_prisma_p(previous: dict | None, body: Protocol) -> list[str]:
     """One failure per PRISMA-P item of ``previous`` (a protocol body, the draft a redraft revises) that ``body`` no
-    longer has, quoting the dropped text; the kernel's items are not the Ideator's to keep.
+    longer has, quoting the dropped text; the kernel's items are not the Ideator's to keep, and an item that held a
+    placeholder (``PLACEHOLDER``) may go, as the placeholder's failure allows.
 
     Calibration (P1 protocol diagnosis 2026-11-12): rule R8; six redrafts dropped items the next vote asked for
     again."""
@@ -434,7 +459,7 @@ def dropped_prisma_p(previous: dict | None, body: Protocol) -> list[str]:
     return [f"PRISMA-P item {k!r} of the previous draft is dropped: keep every PRISMA-P item of the previous draft, "
             f"revised as the guidance asks (its text was: {v!r})"
             for k, v in _own_prisma_p((previous or {}).get("prisma_p")).items()
-            if (v or "").strip() and not (now.get(k) or "").strip()]
+            if (v or "").strip() and not PLACEHOLDER.search(v) and not (now.get(k) or "").strip()]
 
 
 def check_protocol(body: Protocol, paper_type: str) -> list[str]:
@@ -655,7 +680,8 @@ def _field_line(f: dict) -> str:
 
 
 HKSJ_WORDS = {"auto": "auto (the Cochrane Handbook rule)", True: "always", False: "never (Wald intervals)"}
-POOL_KEYS = frozenset({"pool_model", "hksj", "pi_df", "min_studies", "outcomes"})  # shown only for a meta-analysis
+# shown only for a meta-analysis; the outcomes are shown for every plan (a systematic review names them for any method)
+POOL_KEYS = frozenset({"pool_model", "hksj", "pi_df", "min_studies"})
 
 
 def _outcome_names(plan: SynthesisPlan) -> list[str]:
@@ -723,8 +749,8 @@ def _outcome_text(o: dict) -> str:
 
 def plan_value(key: str, value, method: str | None = None) -> str | None:
     """A synthesis plan value as a review shows it (``None``: not shown): ``hksj`` and ``min_studies`` in words, the
-    outcomes with their fields, lists joined; the meta-analysis fields (``POOL_KEYS``) only when ``method`` is
-    ``meta_analysis``."""
+    outcomes with their fields (for every method), lists joined; the meta-analysis fields (``POOL_KEYS``) only when
+    ``method`` is ``meta_analysis``."""
     if key in POOL_KEYS and method != "meta_analysis":
         return None
     if key == "hksj":
@@ -894,11 +920,26 @@ def _last_draft(tries: list[dict]) -> int | None:
     return max((i for i, t in enumerate(tries) if t["kind"] == "draft"), default=None)
 
 
+def _scout_failures(tried: dict) -> list[str]:
+    """A narrowing try's failures as the Scout answers them: a source the PRISMA-P texts name that its strategy
+    dropped fails ``_sources_outside`` with the Ideator's remedy (name only the strategy's sources); the Scout is told
+    instead to keep that source."""
+    body = Protocol.model_validate(tried["body"])
+    named = _prisma_p_sources(body)
+    dropped = [s for s in named if s not in _unique(body.search_strategy.sources)]
+    if not dropped:
+        return _failed(tried)
+    ideators = set(_sources_outside(body))
+    keep = (f"the strategy drops {', '.join(SOURCE_NAMES[s][0] for s in dropped)}, which the PRISMA-P texts name: "
+            f"keep every source the PRISMA-P texts name ({', '.join(named)})")
+    return [keep, *(f for f in _failed(tried) if f not in ideators)]
+
+
 def _narrowed(ps: ProjectStore, chain: list[dict]) -> tuple[dict, list[dict]]:
     """The best version of a sound draft try and its narrowing tries (``chain``, the draft try first), with its
     ``probe``: the latest try that lowered the probe total below every version before it. And the failed narrowing
-    tries, each ``{version, total, why}``: a repeated strategy, one that fails the checks or has no count, or a total
-    not below the best so far."""
+    tries, each ``{version, total, why}``: a repeated strategy, one that fails the checks (as the Scout answers them,
+    ``_scout_failures``) or has no count, or a total not below the best so far."""
     best = {**chain[0], "probe": probe_of(ps, chain[0]["id"])}
     failed = []
     for i, t in enumerate(chain[1:], 1):
@@ -909,7 +950,7 @@ def _narrowed(ps: ProjectStore, chain: list[dict]) -> tuple[dict, list[dict]]:
         if same is not None:
             why = f"the same strategy as version {same['version']}"
         elif _failed(t):
-            why = "it fails the checks: " + "; ".join(_failed(t))
+            why = "it fails the checks: " + "; ".join(_scout_failures(t))
         elif total is None:
             why = "no source gave a record count"
         elif low is not None and total >= low:
@@ -1103,18 +1144,20 @@ class ProtocolWorker:
     def _narrow(ctx: StageContext, context: dict, best: dict, failed: list[dict],
                 paper_type: str) -> StageOutcome | None:
         """One narrowing try: the Scout, given the best version so far (``previous_draft``, with its probe) and
-        ``narrowing`` (the cap, that version's total and per-query, per-source counts, the failed tries), answers with
-        a strategy, stored with that version's draft as the next version. An outcome when the Scout gave nothing,
-        else ``None``."""
+        ``narrowing`` (the cap, that version's total and per-query, per-source counts, the failed tries, and the
+        sources the PRISMA-P texts name, ``keep_sources``, which it keeps), answers with a strategy, stored with that
+        version's draft as the next version. An outcome when the Scout gave nothing, else ``None``."""
         probe, cap = best["probe"], best["body"]["record_cap"]
+        keep = _prisma_p_sources(Protocol.model_validate(best["body"]))
         inputs = {**context, "eligibility": best["body"]["eligibility"],
                   "previous_draft": {"version": best["version"], "body": best["body"], "record_probe": probe},
                   "narrowing": {"record_cap": cap, "version": best["version"], "total": probe["total"],
-                                "counts": probe["counts"], "failed_tries": failed},
+                                "counts": probe["counts"], "failed_tries": failed, "keep_sources": keep},
                   "guidance": _with_guidance(ctx.guidance, (
                       f"The record-cap probe of version {best['version']} counts {probe['total']} records (an upper "
                       f"bound), above the record cap {cap}: narrow its search strategy to fewer records (see "
-                      f"narrowing)."))}
+                      f"narrowing)." + (f" Keep every source the PRISMA-P texts name ({', '.join(keep)})."
+                                        if keep else "")))}
         s = ctx.executor.run("scout", STRATEGY_TASK, inputs, SearchStrategyOut, stage=ctx.stage, attempt=ctx.attempt,
                              tools=[])
         if not s.ok or s.output is None:

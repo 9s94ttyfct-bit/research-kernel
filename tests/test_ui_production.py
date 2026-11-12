@@ -75,7 +75,7 @@ DRAFT = {"eligibility": {"include": [{"id": "I1", "text": "People over 80"}],
                                 "categories": ["rct", "cohort", "other"]},
                                {"name": "study_id", "description": "First author and year", "type": "text",
                                 "source": "record"}],
-         "synthesis_plan": {"method": "narrative_swim", "hksj": False, "outcomes": [{"name": "stroke"}]},
+         "synthesis_plan": {"method": "narrative_swim", "hksj": False, "outcomes": [{"name": "stroke or TIA"}]},
          "prisma_p": dict(SR_ITEMS)}
 STRATEGY = {"queries": ["aspirin stroke elderly", "antiplatelet therapy octogenarians", "stroke prevention over 80"],
             "sources": ["openalex", "europepmc"], "date_from": 2000, "date_to": None}
@@ -446,6 +446,7 @@ def test_protocol_card_answers_reach_the_worker(page, served):
     for text in ("aspirin stroke elderly", "People over 80", "Animal studies <script>", "Participants",
                  "narrative swim", "Two screeners, title/abstract then full text.", "Record-cap probe"):
         assert card.get_by_text(text, exact=False).count() >= 1, text
+    assert card.get_by_text("stroke or TIA", exact=True).count() == 1  # a narrative plan's outcomes are shown
     # the search execution block and the years written out, as the protocol's review states them
     body = store.protocol_row(ps, cp["options"]["protocol_id"])["body"]
     for line in (*search_execution_lines(body), publication_years(body["search_strategy"])):
