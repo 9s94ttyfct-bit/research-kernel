@@ -80,6 +80,10 @@ def test_negation_reaches_over_two_auxiliaries_or_adverbs():
                  "It is not the established cause."):
         assert hedge_level(text) == 2, text
     assert universal_terms("It has not been always safe.") == []
+    # "whether or not" negates no categorical word, and a universal after it stays unstated (any spacing)
+    for text in ("It is unclear whether or not all patients benefit.", "Whether or not all patients benefit is unknown.",
+                 "We asked whether\nor not every trial was blinded."):
+        assert universal_terms(text) == [] and hedge_level(text) == 2, text
     for text in ("Aspirin has been proven to prevent stroke.", "It was clearly established that X.",
                  "Not only was it proven, it was replicated.", "It was not tested, but it is established.",
                  "It has not yet been fully proven.",  # three words between: no longer the negator's scope

@@ -32,15 +32,16 @@ SYNONYMS: dict[str, frozenset[str]] = {u: frozenset({u}) for u in UNIVERSALS} | 
 _BETWEEN = (r"(?:\s+(?:been|be|being|yet|ever|always|fully|clearly|conclusively|definitively|firmly|entirely|completely"
             r"|a|an|the))")
 # Words that keep what follows from being stated: a negator or hedge right before it, or a "too … to", "insufficient
-# to" or "not … enough to" leading to it ("too few events to establish", "not large enough to prove"). "whether or
-# not" negates nothing ("whether or not the proven therapy was given").
+# to" or "not … enough to" leading to it ("too few events to establish", "not large enough to prove").
 _WORD = r"[\w'’-]+\s+"
-_QUALIFIERS = re.compile(r"(?:(?<!whether or )\bnot|\bnever|\bcannot|n['’]t|\balmost|\bnearly|\bvirtually|\bhardly"
-                         r"|\bpractically"
+_QUALIFIERS = re.compile(r"(?:\bnot|\bnever|\bcannot|n['’]t|\balmost|\bnearly|\bvirtually|\bhardly|\bpractically"
                          r"|\btoo\s+(?:" + _WORD + r"){1,3}to|\binsufficient\s+to"
                          r"|(?:\bnot|n['’]t)\s+(?!(?:only|just|merely|simply)\b)(?:" + _WORD + r"){0,3}enough\s+(?:"
                          + _WORD + r"){0,3}to)"
                          + _BETWEEN + r"{0,2}\s+$", re.IGNORECASE)
+# "whether or not" negates no categorical word ("whether or not the proven therapy was given"); a universal after it
+# stays unstated ("whether or not all patients benefit" claims nothing of all).
+_WHETHER = re.compile(r"\bwhether\s+or\s+not" + _BETWEEN + r"{0,2}\s+$", re.IGNORECASE)
 _AFTER = re.compile(_BETWEEN + r"{0,2}\s+", re.IGNORECASE)
 _IN_TOTAL = re.compile(r"\s*(?:[,.;:!?)]|$)")
 _UNIVERSAL = re.compile(r"\b(" + "|".join(UNIVERSALS) + r")\b", re.IGNORECASE)
@@ -75,7 +76,8 @@ def _negator(text: str, m: re.Match) -> bool:
 def _stated(text: str, m: re.Match) -> bool:
     """Whether the word matched by ``m`` in ``text`` is stated positively (see the module docstring)."""
     word, before, after = m[0].lower(), text[:m.start()], text[m.end():]
-    return not (_QUALIFIERS.search(before) or after.startswith(("-", "‐", "‑")) or _negator(text, m)
+    qualified = _QUALIFIERS.search(before) and not (word not in UNIVERSALS and _WHETHER.search(before))
+    return not (qualified or after.startswith(("-", "‐", "‑")) or _negator(text, m)
                 or (word == "every" and re.match(r"\s+other\b", after, re.IGNORECASE))
                 or (word == "all" and re.search(r"\bin\s+$", before, re.IGNORECASE) and _IN_TOTAL.match(after)))
 
