@@ -19,22 +19,27 @@ def test_pubmed_esummary(replay_http):
     assert it.creators[0].family == "Jergas"
 
 
-def test_pubmed_book_records_take_their_title_from_booktitle():
+def test_pubmed_bookshelf_records_are_books_and_chapters():
     """Calibration (critical3 audit, 2026-11-12): a PubMed book (an AHRQ report, PMID 42981454) has an empty ``title``
-    and its title in ``booktitle``; read as "(untitled)", V-REF failed the audit on a correct item. A chapter keeps its
-    own title, with the book as its venue."""
-    book = {"uid": "42981454", "title": "", "booktitle": "AI and ML Tools To (Semi-)Automate Evidence Synthesis.",
+    and its title in ``booktitle``; read as "(untitled)", V-REF failed the audit on a correct item. A chapter
+    (``doctype`` ``chapter``, as GeneReviews' PMID 20301312) keeps its own title and its own date (``docdate``: its
+    ``pubdate`` is the series'), with the book as its venue."""
+    book = {"uid": "42981454", "title": "", "booktitle": "AI and ML Tools To (Semi-)Automate Evidence Synthesis",
             "doctype": "book", "source": "", "fulljournalname": "",
-            "publishername": "Agency for Healthcare Research and Quality (US)", "pubdate": "2026 Aug",
+            "publishername": "Agency for Healthcare Research and Quality (US)", "pubdate": "2026 Aug", "docdate": "",
             "authors": [{"name": "Adam GP", "authtype": "Author"}], "articleids": []}
     it = pubmed.summary_to_item("42981454", book)
     assert (it.item_type, it.title, it.venue, it.year) == (
         "book", "AI and ML Tools To (Semi-)Automate Evidence Synthesis",
         "Agency for Healthcare Research and Quality (US)", 2026)
-    chapter = {**book, "title": "Results."}
-    it = pubmed.summary_to_item("42981454", chapter)
-    assert (it.item_type, it.title, it.venue) == (
-        "bookSection", "Results", "AI and ML Tools To (Semi-)Automate Evidence Synthesis.")
+    chapter = {"uid": "20301312", "doctype": "chapter", "title": "Loeys-Dietz Syndrome.", "booktitle": "GeneReviews(®)",
+               "source": "", "fulljournalname": "", "publishername": "University of Washington, Seattle",
+               "pubdate": "1993", "docdate": "2008 Feb 28 [updated 2024 Sep 12]",
+               "authors": [{"name": "Loeys BL", "authtype": "Author"}], "articleids": []}
+    it = pubmed.summary_to_item("20301312", chapter)
+    assert (it.item_type, it.title, it.venue, it.year) == ("bookSection", "Loeys-Dietz Syndrome", "GeneReviews(®)", 2008)
+    it = pubmed.summary_to_item("20301312", {**chapter, "booktitle": "GeneReviews."})
+    assert it.venue == "GeneReviews"
 
 
 def test_pubmed_search_pipeline(replay_http):

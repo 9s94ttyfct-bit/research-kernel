@@ -776,9 +776,11 @@ went on in place.
   title 11.2 (`mismatch`). V-REF `mismatch` is owned by the item's metadata, so the stage failed and so did the run.
 - **Model faults:** the theme-6 repair gave no repairs; theme-5 and theme-6 revisions came back empty, declining their
   questions as "not in this section" although the sentence was in their input.
-- **Fixed after the run:** a PubMed book takes its title from `booktitle` (item type `book`, the publisher as venue;
-  a chapter is a `bookSection` with the book as venue); V-REF of that item now passes (title score 100). The Writer's
-  questions give their sentence as `sentence_number` in the text it is given, counted from 1 like the failures.
+- **Fixed after the run:** a PubMed book takes its title from `booktitle` (item type `book`, the publisher as venue);
+  a Bookshelf chapter (`doctype` `chapter`) is a `bookSection` with the book as venue; both take their year from
+  `docdate` (a chapter's `pubdate` is its series'). V-REF of the AHRQ item now passes (title score 100). The Writer's
+  questions give their sentence as `sentence_number` in the text it is given, counted from 1 like the failures (a
+  sentence whose text occurs twice only at the reader's position).
 - Open: a new run (`rk run resume` replaces a failed run) goes on from revise, which passed, with audit attempt 2.
 
 ## P1 project: failed at protocol (the vote never approved it)

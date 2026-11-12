@@ -45,15 +45,18 @@ def _name(n: str) -> Creator:
 
 
 def summary_to_item(uid: str, s: dict) -> ItemIn:
-    """An esummary record as a library item. A book (``doctype`` ``book``: an NCBI Bookshelf report) has its title in
-    ``booktitle`` and an empty ``title``, and its publisher as the venue; a chapter has its own ``title`` and the book
-    as its venue."""
+    """An esummary record as a library item. An NCBI Bookshelf book (``doctype`` ``book``) has its title in
+    ``booktitle`` and an empty ``title``, and its publisher as the venue; a chapter (``doctype`` ``chapter``) has its
+    own ``title`` and the book as its venue. Both are dated by ``docdate`` (a chapter's ``pubdate`` is its series'),
+    else ``pubdate``."""
     ids = {a.get("idtype"): a.get("value") for a in s.get("articleids", [])}
-    year = re.match(r"(\d{4})", s.get("pubdate") or s.get("epubdate") or "")
-    title, book = s.get("title") or "", s.get("booktitle") or ""
-    if s.get("doctype") == "book":
-        item_type = "bookSection" if title and book else "book"
-        venue = book if title and book else s.get("publishername")
+    doctype, title, book = s.get("doctype"), s.get("title") or "", (s.get("booktitle") or "").rstrip(".")
+    dated = (s.get("docdate") or "") if doctype in ("book", "chapter") else ""
+    year = re.match(r"(\d{4})", dated or s.get("pubdate") or s.get("epubdate") or "")
+    if doctype == "chapter":
+        item_type, venue = "bookSection", book
+    elif doctype == "book":
+        item_type, venue = "book", s.get("publishername")
     else:
         item_type, venue = "journalArticle", s.get("fulljournalname") or s.get("source")
     return ItemIn(
