@@ -472,7 +472,8 @@ def writer_inputs(ps: ProjectStore, s: DraftInputs, spec: SectionSpec, prisma: s
     section and the sections, the marker grammar, the claims (ids, texts, statuses, evidence notes with whether each is
     a verified quote, and their balance facts: ``rk.verify.balance.balance_requirements``; a withdrawn claim is not
     offered, since it cannot be cited: the limitations list it), the objections a sentence may cite with ``[[obj:]]``
-    (``rk.verify.balance.citable_objections``: id, text, status, target and the source's id, title and year), the
+    (``rk.verify.balance.citable_objections``: id, text, status, target (none when it is a withdrawn claim:
+    ``_citable_only``) and the source's id, title and year), the
     artifacts with their reported values only (``rk.verify.cover.reported_values``), the protocol, the search events and
     the PRISMA event ``prisma``, a proposal's design and hypotheses, and the limitations. Calibration (critical3 final
     review): given no objection to cite, the Writer stated what an outside benchmark (a Skeptic objection's source)
@@ -521,7 +522,8 @@ def writer_inputs(ps: ProjectStore, s: DraftInputs, spec: SectionSpec, prisma: s
     inputs: dict = {"paper_type": s.paper_type, "audience": s.audience, "question": s.question,
                     "section": spec.model_dump(),
                     "sections": [{"id": x.id, "title": x.title} for x in s.sections],
-                    "markers": MARKER_GRAMMAR, "claims": claims, "objections": objections, "artifacts": arts,
+                    "markers": MARKER_GRAMMAR, "claims": claims, "objections": _citable_only(ps, objections),
+                    "artifacts": arts,
                     "protocol": ({"id": s.protocol["id"], "body": s.protocol["body"]} if s.protocol else None),
                     "events": events}
     if s.paper_type == PROPOSAL:
@@ -533,11 +535,11 @@ def writer_inputs(ps: ProjectStore, s: DraftInputs, spec: SectionSpec, prisma: s
     return inputs
 
 
-def _citable_only(ps: ProjectStore, limitations: dict) -> dict:
-    """The limitations as the Writer gets them: no id of a withdrawn claim anywhere (``claim_id``, ``narrowed_from``,
-    ``target_id``), since a withdrawn claim cannot be cited; the Writer states it as a limitation ([[inf]]) from its
-    text. Calibration (critical3, draft attempts 2, 5, 6 and 10): given the id, the Writer cited a withdrawn finding and
-    the sentence failed."""
+def _citable_only(ps: ProjectStore, limitations: dict | list) -> dict | list:
+    """The limitations (or the citable objections) as the Writer gets them: no id of a withdrawn claim anywhere
+    (``claim_id``, ``narrowed_from``, ``target_id``), since a withdrawn claim cannot be cited; the Writer states it as a
+    limitation ([[inf]]) from its text. Calibration (critical3, draft attempts 2, 5, 6 and 10): given the id, the
+    Writer cited a withdrawn finding and the sentence failed."""
     svc = ArgumentService(ps)
     gone: dict[str, bool] = {}
 

@@ -890,19 +890,24 @@ def test_writer_claims_carry_their_balance_requirements(env):
 def test_writer_gets_the_citable_objections_with_their_sources(env):
     """The Writer cites an objection's source through ``[[obj:]]`` (what an outside work says), so it is given the
     sourced objections of argue's passed attempt with their source's title and year; an unsourced one (no source to
-    cite) is not offered."""
+    cite) is not offered. Nor is the id of a withdrawn claim an objection targets (review: given it, a Writer cites
+    it and the sentence fails, as ``_citable_only`` says of the limitations)."""
     _, ps, lib = env
     _ready(env)
-    finding = synthesis_claims(ps, 1)[0]
+    finding, gone = synthesis_claims(ps, 1)[:2]
     source = lib.add_item(ItemIn(title="SESR-Eval", year=2024), added_by="agent", actor="tester").item_id
     cited = object_to(ps, finding, status="conceded", source_id=source)
     object_to(ps, finding, status="conceded")  # unsourced
+    on_gone = object_to(ps, gone, status="conceded", source_id=source)
+    ArgumentService(ps).withdraw_claim(gone, reason="its study was flagged", actor="tester")
     ex = _writer([writes()] * 12)
     DraftWorker().run(_ctx(env, ex))
     inputs = ex.of("writer", "SectionDraft")[0]["inputs"]
-    assert inputs["objections"] == [{"objection_id": cited, "text": "another trial found otherwise",
-                                     "status": "conceded", "target_id": finding,
-                                     "source": {"item_id": source, "title": "SESR-Eval", "year": 2024}}]
+    src = {"item_id": source, "title": "SESR-Eval", "year": 2024}
+    assert inputs["objections"] == [
+        {"objection_id": cited, "text": "another trial found otherwise", "status": "conceded", "target_id": finding,
+         "source": src},
+        {"objection_id": on_gone, "text": "another trial found otherwise", "status": "conceded", "source": src}]
     assert "[[obj:" in inputs["markers"]
     prompt = build_system_prompt("writer", SectionDraft)
     assert "[[obj:obj_…]]" in prompt and "never a claim that does not say it" in prompt

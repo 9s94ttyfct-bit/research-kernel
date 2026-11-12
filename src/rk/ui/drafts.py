@@ -2,7 +2,7 @@
 no draft, and a file whose sha256 changed is refused) rendered to HTML with every source marker (``[[kind:id]]``,
 spec §9.1 V-COVER; ``rk.production.manuscript.source_markers``, the verifier's markers: none inside a code span or a
 code block) turned into a hover card that names its target and links to the evidence (an objection, ``[[obj:]]``:
-its text and answer, and the source item it cites).
+its text and answer status, and the source item it cites).
 
 Raw HTML in a draft is escaped (markdown-it with ``html=False``); markers are swapped for placeholders before rendering
 and for ``<span class="mk mk-<kind>">`` elements after it, so no draft text can inject markup."""

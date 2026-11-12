@@ -322,11 +322,10 @@ def to_pandoc_markdown(ps: ProjectStore, sections: list[tuple[SectionSpec, str]]
     """The manuscript ``sections`` (each spec with its markdown, in order) as one pandoc markdown document for
     ``target`` (see the module docstring; no front matter: the metadata is the kernel's, ``metadata``), its
     bibliography as CSL JSON items (keyed by item id, in order of first citation) and ``refmap``: ``claims`` (claim
-    id → its citation keys), ``objections`` (objection id → its source's key), ``figures`` / ``tables`` (artifact id
-    → its cross-reference id), ``keys`` (every citation key), ``raw`` (the kernel's raw LaTeX figure blocks,
-    ``latex`` only) and ``sections`` (the section ids, in order: the kernel's titles). ``ValueError`` names a marker
-    without its artifact or objection source, or a section holding raw
-    output."""
+    id → its citation keys), ``objections`` (objection id → its source's key, a one-key list), ``figures`` /
+    ``tables`` (artifact id → its cross-reference id), ``keys`` (every citation key), ``raw`` (the kernel's raw LaTeX
+    figure blocks, ``latex`` only) and ``sections`` (the section ids, in order: the kernel's titles). ``ValueError``
+    names a marker without its artifact or objection source, or a section holding raw output."""
     if target not in TARGETS:
         raise ValueError(f"unknown export target {target!r}; expected one of {', '.join(TARGETS)}")
     paper = _Paper(ps, sections, target)
