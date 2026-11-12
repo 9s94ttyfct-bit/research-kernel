@@ -38,11 +38,20 @@ attempt 2, pulmonary attempt 2), and deepseek approved every last vote.
 
 ## Calibration (built on branch `p1-calib`)
 
-- **P1 earns another protocol round while it converges.** At the edge limit, P1 takes one more `protocol->protocol`
-  use when the last vote closed at least one live blocking point and left no more live blocking points open than the
-  vote before it; at most two such uses per run of the edge (the kernel's, recorded as `edge.allowed` with the
-  reason). On this rerun it would have given prostate, pulmonary and tfa another round and stopped fructose (no
-  blocking point closed) and ozone (more open than before).
-- **A mark's id is matched against the judge's own points ignoring separators** (`p1.judge.2.1` is `p1.judge_2.1`
-  when exactly one own point matches); an unmatched id is ignored and listed in the vote's record.
-- **An author answers only the points it owns**; answers to other points are dropped before they are stored.
+- **P1 earns another protocol round while it converges.** At the edge limit, before the degrade, the engine asks the
+  worker for another use (`another_use`; only the protocol worker has it). `ProtocolWorker.another_use` grants one
+  more `protocol->protocol` use when the attempt's vote closed at least one live blocking point (marked resolved by
+  its own judge) and left no more live blocking points open than were open before it in its cycle, and the kernel
+  has granted fewer than `KERNEL_EXTRA_ROUNDS` = 2 uses of that edge in the project (counted from the `edge.allowed`
+  events by kernel; your grants, and those recorded before this change without `by`, do not count). The engine
+  records the grant as `edge.allowed` (`by: kernel`, with the reason, e.g. "the vote closed 2 blocking points and
+  left 1 open (2 before): one more protocol round") before it takes the edge as an ordinary use; the grant raises the
+  edge's limit, so a step interrupted between the two takes the edge normally next time and is not granted again.
+  P2 is unchanged (`stage_blocked`, never a kernel grant). On this rerun it would have given prostate, pulmonary and
+  tfa another round and stopped fructose (no blocking point closed) and ozone (more open than before).
+- **A mark's id is matched against the judge's own points ignoring separators** (`marked_point`: `p1.judge.2.1` is
+  `p1.judge_2.1` when exactly one own point matches), in the ledger and when an approve is tightened; a mark matching
+  no point, or more than one, is ignored and listed (`unmatched_marks`, per vote); the vote keeps the mark as given.
+- **An author answers only the points it owns**: answers to a point of the ledger owned by the other author are
+  dropped before they are stored, in a draft try and in a narrowing (`_owned`); the unanswered-point check is
+  unchanged.

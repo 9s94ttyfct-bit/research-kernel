@@ -38,7 +38,19 @@ get the open points (``open_points``, each with its ``owner``: the Scout a searc
 instead of the vote's reasons as guidance (``_p1_guidance``), and answer each point routed to them (``PointAnswer``:
 changed with where, or rebutted with why) inside the attempt: one left unanswered is a failure of that role's try,
 retried without spending an edge. The answers are stored with the version's ``tried`` (a narrowing try merges the
-Scout's new answers in by point id), never in the protocol body. P2 has no ledger: your comment is the guidance.
+Scout's new answers in by point id), never in the protocol body; an author's answers to a point it does not own are
+dropped before they are stored (``_owned``). P2 has no ledger: your comment is the guidance.
+
+Calibration (P1 protocol rerun 2026-11-12, ``docs/eval/p1-protocol-rerun-2026-11-12.md``):
+
+- A judge's mark is on the point ``marked_point`` matches: its id when that is a point of the ledger, else the one
+  point of the judge's own whose id differs only in its separators (``p1.judge.2.1`` is ``p1.judge_2.1``). A mark
+  matching no point, or more than one, is ignored (it closes and tightens nothing) and listed (``unmatched_marks``);
+  the vote keeps it as given.
+- At the ``protocol->protocol`` limit P1 asks ``another_use`` before the degrade: while the protocol converges (the
+  attempt's vote closed at least one blocking point and left no more open than before it, ``another_round``) the
+  kernel allows one more use, recorded as ``edge.allowed`` by kernel with the reason, at most ``KERNEL_EXTRA_ROUNDS``
+  times (your grants do not count); otherwise P1 degrades, and fails, as before. P2 still opens ``stage_blocked``.
 
 Tries inside the attempt (Plan 5c Task 9 fix: in P1 every rerun spends a ``protocol->protocol`` edge use, and nothing
 else could narrow a search):

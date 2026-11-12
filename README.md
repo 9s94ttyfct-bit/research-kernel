@@ -192,9 +192,16 @@ frozen), `search_screen` (search, deduplication, title/abstract and full-text sc
   back in a `protocol_approval` checkpoint (a revise, like
   checks still failing after the tries, reruns the stage and uses one of its two reruns); in P1 a two-vendor vote
   approves or asks for a revision, and a version still above the record cap is not voted on. P1 judges answer with
-  numbered points (blocking or advisory) kept in a ledger; the next draft answers each open point (changed or
-  rebutted), only the judge that raised a point closes it, and an approve with an open blocking point of the
-  judge's own counts as revise. Approving freezes the protocol (`frozen_hash`, the sha256 of its canonical JSON);
+  numbered points (blocking or advisory) kept in a ledger; the next draft answers each open point it owns (changed
+  or rebutted; the Scout answers the search points, the Ideator the others, and an answer to another author's point
+  is dropped), only the judge that raised a point closes it (a mark whose id differs from one of the judge's own
+  points only in its separators, `p1.judge.2.1` for `p1.judge_2.1`, is that point; a mark that matches none is
+  ignored and listed), and an approve with an open blocking point of the judge's own counts as revise. At the
+  protocol's rerun limit a P1 protocol that still converges gets another round: when the last vote closed at least
+  one blocking point and left no more open than before it, the kernel allows one more `protocol->protocol` use
+  (recorded as `edge.allowed` by kernel, with the reason), at most twice per project; otherwise the P1 run fails at
+  the limit as before, and P2 still asks you. Approving freezes the protocol (`frozen_hash`, the sha256 of its
+  canonical JSON);
   only you set the record cap (default 3000), with the approval. A frozen protocol is never edited: a later frozen
   version records a deviation from it. For systematic and scoping reviews the freeze counts as preregistration
   (G-PREREG); critical reviews and proposals freeze for traceability and need only the question, search and
