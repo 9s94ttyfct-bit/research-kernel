@@ -2,24 +2,29 @@
 check reads the sentence's ``prose``: its rendered text with code spans blanked (a number, a strong word or a quote in
 a code span is not checked and does not count).
 
-- **V-COVER:** at least one source marker; each ``clm``/``run``/``fig``/``stat``/``plan`` marker names a target that
-  exists (a statistic is ``stt_``, a figure ``fig_``; a ``run`` is the frozen protocol or an event, in a Writer's
-  section a research operation's (``RESEARCH_EVENTS``; the kernel-written Disclosure cites any event it reports); a
-  ``plan`` a frozen design or a hypothesis that was not dropped) and, where it has a hash, still matches it (an
-  artifact's file, the frozen protocol's body, the frozen design's body, and the frozen design a hypothesis is
-  pre-registered in by its ``prereg_hash``). ``inf`` and ``ck`` take no target. ``[[…]]`` text that is no marker (e.g.
-  a bare id, ``[[clm_…]]``) fails the sentence, naming the form to write (``malformed_marker_problem``).
+- **V-COVER:** at least one source marker; each ``clm``/``run``/``fig``/``stat``/``plan``/``obj`` marker names a
+  target that exists (a statistic is ``stt_``, a figure ``fig_``; a ``run`` is the frozen protocol or an event, in a
+  Writer's section a research operation's (``RESEARCH_EVENTS``; the kernel-written Disclosure cites any event it
+  reports); a ``plan`` a frozen design or a hypothesis that was not dropped; an ``obj`` one of argue's passed attempt's
+  objections with a source in the library, ``rk.verify.balance.objection_problem``: it cites what that source, an
+  outside work, says) and, where it has a hash, still matches it (an artifact's file, the frozen protocol's body, the
+  frozen design's body, and the frozen design a hypothesis is pre-registered in by its ``prereg_hash``). ``inf`` and
+  ``ck`` take no target. ``[[…]]`` text that is no marker (e.g. a bare id, ``[[clm_…]]``) fails the sentence, naming
+  the form to write (``malformed_marker_problem``). Calibration (critical3 final review): without ``obj``, sentences
+  about the benchmark a Skeptic objection came from cited a claim that never mentions it, and were exported as
+  citations of included studies.
 - **V-NUM:** every number of the sentence is in a marker's target (``number_pool``): a claim's text and its evidence
-  notes, as written; an artifact's reported values (a pooled statistic's ``display`` values and ``k``, a map table's
-  counts), an event's whitelisted fields (``EVENT_NUMBERS``) and the protocol's stored values, exactly or rounded as
-  the sentence writes them; a protocol's, design's or hypothesis's text (e.g. an eligibility age). ``[[inf]]`` and
-  ``[[ck]]`` cover no number.
-- **V-HEDGE:** the sentence is no stronger than the strongest claim it cites; an ``[[inf]]`` sentence is worded
-  tentatively (level ≤ 1: "[[inf]] 转为推断性措辞"). Quoted text that V-QUOTE checks is the source's wording, not the
-  sentence's, and is left out of the measure.
-- **V-QUOTE:** in a sentence that cites a claim or the protocol, text in quotation marks (“…”, "…", “…", „…“, «…»,
-  ‘…’, '…'; an apostrophe is no quotation mark) and a block quote's whole text are (a word-bounded part of) a verified
-  quote note of a claim the sentence cites or a text of a protocol it cites (e.g. a search string).
+  notes, as written; an objection's text; an artifact's reported values (a pooled statistic's ``display`` values and
+  ``k``, a map table's counts), an event's whitelisted fields (``EVENT_NUMBERS``) and the protocol's stored values,
+  exactly or rounded as the sentence writes them; a protocol's, design's or hypothesis's text (e.g. an eligibility
+  age). ``[[inf]]`` and ``[[ck]]`` cover no number.
+- **V-HEDGE:** the sentence is no stronger than the strongest claim or objection it cites (their texts); an
+  ``[[inf]]`` sentence is worded tentatively (level ≤ 1: "[[inf]] 转为推断性措辞"). Quoted text that V-QUOTE checks is
+  the source's wording, not the sentence's, and is left out of the measure.
+- **V-QUOTE:** in a sentence that cites a claim, an objection or the protocol, text in quotation marks (“…”, "…", “…",
+  „…“, «…», ‘…’, '…'; an apostrophe is no quotation mark) and a block quote's whole text are (a word-bounded part of) a
+  verified quote note of a claim the sentence cites, the text of an objection it cites or a text of a protocol it
+  cites (e.g. a search string).
 - **G-SUPPORT:** every cited claim passes the claim gate (``rk.verify.support.claim_problems``: supported, never by
   vote; V-HEDGE; V-STATS for a ``stat_result``; no open or conceded priority-1 objection); a withdrawn claim is never
   cited.
@@ -27,7 +32,7 @@ a code span is not checked and does not count).
   proposal. A section with a markdown table or a table caption fails (``section_problems``); so does a Writer's
   section (any but the kernel-written ``KERNEL_WRITTEN``) with a heading, a reference definition or a footnote.
 - **Research-operation sentences:** a Writer's sentence whose only source markers are ``run``/``plan`` (no claim,
-  figure or statistic) stands only in a section that describes the research operations
+  objection, figure or statistic) stands only in a section that describes the research operations
   (``rk.production.sections.describes_operations``: the Abstract, Methods, Results and Limitations of a review, a
   critical review's Introduction, a proposal's Hypotheses, Proposed Methods, Expected Outcomes and Risks), and there
   it is held to V-HEDGE's plain level
@@ -49,11 +54,13 @@ from pydantic import BaseModel
 from rk.argument import ArgumentService
 from rk.canon import canonical_json, sha256_hex
 from rk.production.artifacts import artifact
+from rk.production.common import entity_row
 from rk.production.manuscript import Marker, Sentence, parse_section, section_problems
 from rk.production.sections import KERNEL_WRITTEN, describes_operations
 from rk.production.store import design, protocol_hash, protocol_row
 from rk.store.project import ProjectStore
 from rk.text.layer import normalize_query
+from rk.verify.balance import objection_problem
 from rk.verify.hedge import hedge_level
 from rk.verify.numbers import NumberPool, extract_numbers, numeric_leaves
 from rk.verify.quote import find_verbatim
@@ -63,7 +70,10 @@ CK_MAX_SHARE = 0.05
 INF_MAX_LEVEL = 1
 _MARKER_TEXT = re.compile(r"\[\[[^\]]*\]\]")
 # the marker kind that cites an id of each prefix (a Writer that writes the bare id, ``[[clm_…]]``, is told the form)
-_KIND_OF_PREFIX = {"clm": "clm", "evt": "run", "prt": "run", "fig": "fig", "stt": "stat", "dsg": "plan", "hyp": "plan"}
+_KIND_OF_PREFIX = {"clm": "clm", "evt": "run", "prt": "run", "fig": "fig", "stt": "stat", "dsg": "plan", "hyp": "plan",
+                   "obj": "obj"}
+# the marker kinds that state what a source says (a sentence citing one is no research-operation sentence)
+STATEMENT_KINDS = frozenset({"clm", "obj", "fig", "stat"})
 
 
 def malformed_marker_problem(raw: str) -> str:
@@ -73,7 +83,8 @@ def malformed_marker_problem(raw: str) -> str:
     if (kind := _KIND_OF_PREFIX.get(prefix)) is not None and "_" in inner and ":" not in inner:
         fix = f"write [[{kind}:{inner}]] (the kind, a colon, then the id as given)"
     else:
-        fix = "write [[<kind>:<id>]] with a kind of the marker grammar (clm, run, fig, stat, plan) or [[inf]] / [[ck]]"
+        fix = ("write [[<kind>:<id>]] with a kind of the marker grammar (clm, run, fig, stat, plan, obj) or [[inf]] / "
+               "[[ck]]")
     return f"{raw} is not a source marker and cites nothing: {fix}"
 
 
@@ -145,6 +156,13 @@ def _event(ps: ProjectStore, evt_id: str) -> tuple[str, dict] | None:
     return (r["type"], json.loads(r["payload"])) if r else None
 
 
+def _objection(ps: ProjectStore, oid: str) -> dict | None:
+    try:
+        return entity_row(ps, "objections", oid)
+    except KeyError:
+        return None
+
+
 def _hypothesis(ps: ProjectStore, hyp_id: str) -> dict | None:
     r = ps.db.execute("SELECT * FROM hypotheses WHERE id=?", (hyp_id,)).fetchone()
     return dict(r) if r else None
@@ -202,6 +220,8 @@ def _target_problem(ps: ProjectStore, m: Marker, paper_type: str, kernel_written
         return f"claim {m.target} fails the claim gate: " + "; ".join(p.line for p in problems) if problems else None
     if m.kind in ("stat", "fig"):
         return _artifact_problem(ps, m)
+    if m.kind == "obj":
+        return objection_problem(ps, m.target)
     if m.kind == "run":
         if m.target.startswith("prt_"):
             p = protocol_row(ps, m.target)
@@ -231,9 +251,10 @@ def _target_problem(ps: ProjectStore, m: Marker, paper_type: str, kernel_written
 def target_state(ps: ProjectStore, m: Marker, *, paper_type: str) -> str:
     """A digest of everything the sentence rules read about the marker's target: whether it exists and still matches
     its hash, a claim's row with its evidence, notes and objections and its claim gate (``claim_problems``), an
-    artifact's row and its file's sha256, an event, a protocol, a design, a hypothesis with the frozen designs of its
-    ``prereg_hash``. Equal digests mean a sentence citing it verifies alike; any change of the target's stored state
-    (a timestamp too) changes it, so a kept verdict errs towards verifying again."""
+    objection's row and whether it may be cited (``objection_problem``: argue's passed attempt, its source in the
+    library), an artifact's row and its file's sha256, an event, a protocol, a design, a hypothesis with the frozen
+    designs of its ``prereg_hash``. Equal digests mean a sentence citing it verifies alike; any change of the target's
+    stored state (a timestamp too) changes it, so a kept verdict errs towards verifying again."""
     t, data = m.target, None
     if t and m.kind == "clm":
         c = _claim(ps, t)
@@ -243,6 +264,9 @@ def target_state(ps: ProjectStore, m: Marker, *, paper_type: str) -> str:
         if a is not None:
             path = ps.root / a["path"] if a.get("path") else None
             data = {"artifact": a, "file": sha256_hex(path.read_bytes()) if path and path.is_file() else None}
+    elif t and m.kind == "obj":
+        o = _objection(ps, t)
+        data = o and {"objection": o, "problem": objection_problem(ps, t)}
     elif t and m.kind == "run":
         data = protocol_row(ps, t) if t.startswith("prt_") else _event(ps, t)
     elif t and m.kind == "plan" and t.startswith("dsg_"):
@@ -313,6 +337,8 @@ def number_pool(ps: ProjectStore, markers: list[Marker]) -> NumberPool:
         if m.kind == "clm" and (c := _claim(ps, m.target)) is not None:
             texts = [c["text"]] + [n["text"] for e in c["evidence"] for n in e["notes"] if n]
             pool.nums += [n for t in texts for n in extract_numbers(t)]
+        elif m.kind == "obj" and (o := _objection(ps, m.target)) is not None:
+            pool.nums += extract_numbers(o["text"])
         elif m.kind in ("stat", "fig") and (a := artifact(ps, m.target)) is not None:
             pool.values += numeric_leaves(reported_values(a["values"]))
         elif m.kind == "run" and m.target.startswith("prt_") and (p := protocol_row(ps, m.target)) is not None:
@@ -337,13 +363,15 @@ def _strings(obj) -> list[str]:
 
 
 def _quote_sources(ps: ProjectStore, markers: list[Marker]) -> list[str]:
-    """The normalized texts a quotation in the sentence may come from: the verified quote notes of the claims it cites
-    and the texts of the protocols it cites."""
+    """The normalized texts a quotation in the sentence may come from: the verified quote notes of the claims it cites,
+    the texts of the objections it cites and the texts of the protocols it cites."""
     out = []
     for m in markers:
         if m.kind == "clm" and m.target and (c := _claim(ps, m.target)) is not None:
             out += [normalize_query(n["text"]) for e in c["evidence"] for n in e["notes"]
                     if n and n["kind"] == "quote" and (n.get("verified") or {}).get("quote", {}).get("ok")]
+        elif m.kind == "obj" and m.target and (o := _objection(ps, m.target)) is not None:
+            out.append(normalize_query(o["text"]))
         elif m.kind == "run" and m.target and m.target.startswith("prt_") and \
                 (p := protocol_row(ps, m.target)) is not None:
             out += [normalize_query(s) for s in _strings(p["body"])]
@@ -371,11 +399,11 @@ def verify_sentence(ps: ProjectStore, s: Sentence, *, paper_type: str, kernel_wr
         if (why := _target_problem(ps, m, paper_type, kernel_written)) is not None:
             problems.append(why)
     kinds = {m.kind for m in s.markers}
-    run_only = not kernel_written and bool(kinds & {"run", "plan"}) and not kinds & {"clm", "fig", "stat"}
+    run_only = not kernel_written and bool(kinds & {"run", "plan"}) and not kinds & STATEMENT_KINDS
     if run_only and not operations:
-        problems.append("a statement here needs a claim, figure or statistic, not only a research-operation marker "
-                        "(a sentence citing only [[run:]]/[[plan:]] belongs in a section that describes the research "
-                        "operations, such as Methods)")
+        problems.append("a statement here needs a claim, objection, figure or statistic, not only a research-operation "
+                        "marker (a sentence citing only [[run:]]/[[plan:]] belongs in a section that describes the "
+                        "research operations, such as Methods)")
     prose = _MARKER_TEXT.sub(lambda x: " " * len(x.group(0)), s.prose)
     nums = extract_numbers(s.prose)
     if "ck" in kinds and nums:
@@ -383,21 +411,24 @@ def verify_sentence(ps: ProjectStore, s: Sentence, *, paper_type: str, kernel_wr
     pool = number_pool(ps, s.markers)
     problems += [f"the number {n.text} is not in any marker's target" for n in nums if not pool.covers(n)]
     measured = prose
-    if any(m.kind == "clm" or (m.kind == "run" and (m.target or "").startswith("prt_")) for m in s.markers):
+    if any(m.kind in ("clm", "obj") or (m.kind == "run" and (m.target or "").startswith("prt_")) for m in s.markers):
         sources = _quote_sources(ps, s.markers)
         for a, b, quoted in _quotations(s, prose):
             wanted = normalize_query(quoted)
             if wanted and not any(find_verbatim(wanted, t) >= 0 for t in sources):
                 what = "the block quote" if s.quoted else "the quoted text"
                 problems.append(f"{what} “{quoted.strip()}” is not a verified quote note of a claim the sentence "
-                                "cites, nor a text of a protocol it cites")
+                                "cites, nor the text of an objection or a text of a protocol it cites")
             measured = measured[:a] + " " * (b - a) + measured[b:]
     level = hedge_level(measured) if re.search(r"\w", measured) else 0  # all quoted: no wording of its own
     if "inf" in kinds and level > INF_MAX_LEVEL:
         problems.append("an inference ([[inf]]) must be worded tentatively (may, suggest, likely …)")
-    cited = [c for m in s.markers if m.kind == "clm" and m.target and (c := _claim(ps, m.target)) is not None]
-    if cited and level > max(hedge_level(c["text"]) for c in cited):
-        problems.append("the sentence is stronger than the claims it cites (V-HEDGE)")
+    claims = [c["text"] for m in s.markers if m.kind == "clm" and m.target and (c := _claim(ps, m.target)) is not None]
+    objections = [o["text"] for m in s.markers
+                  if m.kind == "obj" and m.target and (o := _objection(ps, m.target)) is not None]
+    if (claims or objections) and level > max(hedge_level(t) for t in claims + objections):
+        what = " and ".join(w for w, got in (("claims", claims), ("objections", objections)) if got)
+        problems.append(f"the sentence is stronger than the {what} it cites (V-HEDGE)")
     if run_only and level > OPERATION_MAX_LEVEL:
         problems.append("the sentence cites no claim, only research-operation markers, and is stated categorically "
                         "(V-HEDGE)")

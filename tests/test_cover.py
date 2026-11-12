@@ -462,8 +462,8 @@ def test_a_writer_sentence_citing_no_claim_states_nothing_categorically(env):
     def problems(section: str, text: str) -> list[str]:
         return verify_section(ps, section, text, paper_type="systematic_review").sentences[0].problems
 
-    assert any("needs a claim, figure or statistic" in p for p in problems("discussion", probe))
-    assert any("needs a claim, figure or statistic" in p for p in problems("discussion", plain))
+    assert any("needs a claim, objection, figure or statistic" in p for p in problems("discussion", probe))
+    assert any("needs a claim, objection, figure or statistic" in p for p in problems("discussion", plain))
     assert problems("methods", probe) == [
         "the sentence cites no claim, only research-operation markers, and is stated categorically (V-HEDGE)"]
     assert problems("methods", plain) == [] and problems("results", plain) == [] and problems("abstract", plain) == []

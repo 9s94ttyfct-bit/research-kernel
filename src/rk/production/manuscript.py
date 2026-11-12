@@ -2,7 +2,8 @@
 
 Marker grammar (one grammar for the whole kernel; the Workbench preview imports it): ``[[clm:clm_…]]``,
 ``[[run:evt_…]]`` / ``[[run:prt_…]]``, ``[[fig:fig_…]]`` / ``[[stat:stt_…]]``, ``[[plan:dsg_…]]`` /
-``[[plan:hyp_…]]``, ``[[inf]]`` and ``[[ck]]``; a sentence may carry several. A marker is the literal grammar in the
+``[[plan:hyp_…]]``, ``[[obj:obj_…]]`` (an objection of the argument: what its source says), ``[[inf]]`` and
+``[[ck]]``; a sentence may carry several. A marker is the literal grammar in the
 source markdown (``source_markers``), outside code spans and code blocks, not escaped by a backslash, and only where
 the reader sees it: its whole source is rendered text of a prose paragraph (link text counts; a link's destination or
 title, an autolink, an image's alt text, a heading, a table and a reference definition do not, and a marker there is a
@@ -48,8 +49,8 @@ from rk.store.project import ProjectStore
 from rk.store.projections import projection
 from rk.store.query import query_rows
 
-MarkerKind = Literal["clm", "run", "fig", "stat", "plan", "inf", "ck"]
-MARKER = re.compile(r"\[\[(clm|run|fig|stat|plan|inf|ck)(?::([A-Za-z0-9_]+))?\]\]")
+MarkerKind = Literal["clm", "run", "fig", "stat", "plan", "obj", "inf", "ck"]
+MARKER = re.compile(r"\[\[(clm|run|fig|stat|plan|obj|inf|ck)(?::([A-Za-z0-9_]+))?\]\]")
 _BRACKETED = re.compile(r"\[\[[^\[\]\n]*\]\]")  # anything written like a marker; a MARKER or not
 SECTION_ID = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 DRAFTS_DIR = "artifacts/drafts"

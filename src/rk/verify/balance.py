@@ -14,11 +14,14 @@ section, for every claim the section cites (a ``[[clm:]]`` marker):
   answer to it) is cited in the section after the claim's first citation. An objection whose response claim was
   withdrawn since (``unanswered``) fails: nothing the section could cite answers it any more.
 
-The accepted gap: a conceded or rejected objection, sourced or not, asks for nothing, as V-COVER has no marker for an
-objection or a source, so no sentence could cite it (a conceded priority-1 objection already fails its claim's
-G-SUPPORT until the claim is narrowed or withdrawn). The conceded sourced ones (``conceded_sourced``) go to the Writer,
-who qualifies the claim, and to the audit's disclosure. Only the given section's sentences count: a counterpart in
-another section balances nothing here. Without a passed argue attempt nothing can be checked: one problem says so.
+Conceded and rejected objections ask for nothing. A sourced objection of the attempt is citable as what its source
+says (``[[obj:]]``, ``objection_problem``: V-COVER, and the Writer is given ``citable_objections``), but V-BALANCE
+does not require it: a conceded priority-1 objection already fails its claim's G-SUPPORT until the claim is narrowed or
+withdrawn, and the conceded sourced ones (``conceded_sourced``) go to the Writer, who qualifies the claim, and to the
+audit's disclosure. Calibration (critical3 final review): with no marker for an objection, sentences about the
+benchmark a Skeptic objection came from cited a claim that never mentions it, and were exported as citations of
+included studies. Only the given section's sentences count: a counterpart in another section balances nothing here.
+Without a passed argue attempt nothing can be checked: one problem says so.
 
 Nothing here calls a model."""
 
@@ -54,7 +57,7 @@ class BalanceRequirements:
     contested_by: list[str]  # the live counterparts of its conflicts
     answered_by: list[dict]  # {objection_id, response_claim_id}: responded, on it or its evidence, response live
     unanswered: list[dict]  # {objection_id, response_claim_id}: responded by a claim withdrawn since
-    conceded_sourced: list[dict]  # {objection_id, text, source_id}: conceded, with a source (the accepted gap)
+    conceded_sourced: list[dict]  # {objection_id, text, source_id}: conceded, with a source (citable as [[obj:]])
     targets: dict[str, str] = field(default_factory=dict)  # objection id -> its target (the claim or an evidence)
 
 
@@ -147,3 +150,33 @@ def _to(r: BalanceRequirements, cid: str, oid: str) -> str:
     """What an objection on ``cid`` is on, for a problem: ``it`` or ``its evidence <id>``."""
     target = r.targets[oid]
     return "it" if target == cid else f"its evidence {target}"
+
+
+def objection_problem(ps: ProjectStore, oid: str, *, facts: Argued | None = None) -> str | None:
+    """Why ``[[obj:<oid>]]`` cites nothing (V-COVER), else ``None``: the objection must exist, be one of argue's passed
+    attempt's objections (``argument_objection_ids``; whatever its answer: the marker states what its source says, and
+    the answer bears on the claim, which V-BALANCE and G-SUPPORT read) and name a source (``source_id``) that is a
+    library item. ``facts`` when the caller already read them (``argued``)."""
+    try:
+        o = entity_row(ps, "objections", oid)
+    except KeyError:
+        return f"no objection {oid}"
+    try:
+        facts = facts if facts is not None else argued(ps)
+    except ValueError:
+        return f"objection {oid} cannot be cited: {NOT_ARGUED}"
+    if oid not in {x["id"] for x in facts.objections}:
+        return f"objection {oid} is not one of the objections of argue's passed attempt {facts.attempt}"
+    if not (sid := o.get("source_id")):
+        return (f"objection {oid} has no source, so it cannot be cited: [[obj:]] states what an objection's source "
+                "says; an unsourced objection is stated from the claims that answer it, or as [[inf]]")
+    if ps.db.execute("SELECT 1 FROM items WHERE id=?", (sid,)).fetchone() is None:
+        return f"objection {oid} names the source {sid}, which is not in the library"
+    return None
+
+
+def citable_objections(ps: ProjectStore, *, facts: Argued | None = None) -> list[dict]:
+    """The objections of argue's passed attempt a sentence may cite (``objection_problem`` is ``None``), in the
+    attempt's order; ``ValueError`` when argue has not passed."""
+    facts = facts if facts is not None else argued(ps)
+    return [o for o in facts.objections if objection_problem(ps, o["id"], facts=facts) is None]
