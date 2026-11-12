@@ -10,6 +10,8 @@ and packs a reproducible package. No role task, no model.
    - ``[[clm:x]]`` → ``[@key1; @key2]``: the distinct items behind claim x (``rk.production.audit.cited_items``: its
      evidence notes' items and the studies pooled into its artifacts); the key is the item id, the ``id`` that
      ``rk.library.formats.to_csl`` gives the item;
+   - ``[[obj:x]]`` → ``[@key]``: the source of objection x (an outside work, ``cited_items`` again), in the same
+     citation as the claims beside it, and in the bibliography like a claim's items;
    - ``[[stat:]]``/``[[fig:]]`` → ``@tbl:<id>`` / ``@fig:<id>``: a forest plot is a figure, a pool or an evidence map
      a table. Each is emitted once, at the end of Results (where the paper type has no Results: of the section that
      cites it first). ``docx`` shows the stored SVG; ``latex`` the TikZ picture ``rk.production.figures.forest_tikz``
@@ -199,6 +201,7 @@ class _Paper:
         self.ref = ref
         self.keys: list[str] = []
         self.claims: dict[str, list[str]] = {}
+        self.objections: dict[str, list[str]] = {}
         self.xrefs: dict[str, str] = {}  # artifact id -> "fig:<id>" / "tbl:<id>"
         self.placed: dict[str, list[str]] = {}  # section id -> the artifacts emitted at its end
         self.raw: list[str] = []  # the kernel's raw LaTeX blocks (its figures): the only raw output allowed
@@ -212,6 +215,14 @@ class _Paper:
         if cid not in self.claims:
             self.claims[cid] = [self._key(i) for i in cited_items(self.ps, [cid])]
         return self.claims[cid]
+
+    def _objection(self, oid: str, section: str) -> list[str]:
+        if oid not in self.objections:
+            items = list(cited_items(self.ps, [], objection_ids=[oid]))
+            if not items:
+                raise ValueError(f"[[obj:{oid}]] in section {section} is no objection with a source in the library")
+            self.objections[oid] = [self._key(i) for i in items]
+        return self.objections[oid]
 
     def _xref(self, aid: str, kind: str, section: str) -> str:
         if aid not in self.xrefs:
@@ -239,6 +250,8 @@ class _Paper:
             for m in g:
                 if m.kind == "clm":
                     cites += [k for k in self._claim(m.target) if k not in cites]
+                elif m.kind == "obj":
+                    cites += [k for k in self._objection(m.target, spec.id) if k not in cites]
                 elif m.kind in ("stat", "fig"):
                     if (x := "@" + self._xref(m.target, m.kind, spec.id)) not in refs:
                         refs.append(x)
@@ -309,9 +322,10 @@ def to_pandoc_markdown(ps: ProjectStore, sections: list[tuple[SectionSpec, str]]
     """The manuscript ``sections`` (each spec with its markdown, in order) as one pandoc markdown document for
     ``target`` (see the module docstring; no front matter: the metadata is the kernel's, ``metadata``), its
     bibliography as CSL JSON items (keyed by item id, in order of first citation) and ``refmap``: ``claims`` (claim
-    id → its citation keys), ``figures`` / ``tables`` (artifact id → its cross-reference id), ``keys`` (every
-    citation key), ``raw`` (the kernel's raw LaTeX figure blocks, ``latex`` only) and ``sections`` (the section ids,
-    in order: the kernel's titles). ``ValueError`` names a marker without its artifact or a section holding raw
+    id → its citation keys), ``objections`` (objection id → its source's key), ``figures`` / ``tables`` (artifact id
+    → its cross-reference id), ``keys`` (every citation key), ``raw`` (the kernel's raw LaTeX figure blocks,
+    ``latex`` only) and ``sections`` (the section ids, in order: the kernel's titles). ``ValueError`` names a marker
+    without its artifact or objection source, or a section holding raw
     output."""
     if target not in TARGETS:
         raise ValueError(f"unknown export target {target!r}; expected one of {', '.join(TARGETS)}")
@@ -325,7 +339,7 @@ def to_pandoc_markdown(ps: ProjectStore, sections: list[tuple[SectionSpec, str]]
         out += [paper.block(aid) for aid in paper.placed.get(spec.id, [])]
     markdown = "\n\n".join(out) + "\n"
     items = [paper.lib.get(k) for k in paper.keys]
-    refmap = {"claims": paper.claims,
+    refmap = {"claims": paper.claims, "objections": paper.objections,
               "figures": {a: x for a, x in paper.xrefs.items() if x.startswith("fig:")},
               "tables": {a: x for a, x in paper.xrefs.items() if x.startswith("tbl:")},
               "keys": list(paper.keys), "raw": list(paper.raw), "sections": [spec.id for spec, _ in sections]}

@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from rk.argument import ArgumentService, ObjectionIn
+from rk.library.models import Creator, ItemIn
 from rk.orchestrator.engine import default_workers
 from rk.orchestrator.graph import BACK_EDGES
 from rk.orchestrator.state import record_attempt
@@ -225,6 +227,32 @@ def test_markers_convert_to_citations_and_cross_references(env):
                                                      sections[2][1]), sections[3]], target="docx")
     at, end = md.index("{#theme-1}"), md.index("# Discussion {#discussion}")
     assert at < md.index(f"{{#tbl:{stt}}}") < end and at < md.index(f"{{#fig:{fig}}}") < end
+
+
+def test_an_objection_marker_cites_its_source(env):
+    """``[[obj:]]`` states what an objection's source (an outside work) says: it renders as a citation of that item,
+    which is in the bibliography, not of the included studies behind any claim."""
+    _, ps, lib = env
+    _ready(env)
+    f1 = synthesis_claims(ps, 1)[0]
+    keys = list(cited_items(ps, [f1]))
+    source = lib.add_item(ItemIn(title="SESR-Eval", year=2024, creators=[Creator(family="Ng", given="A")]),
+                          added_by="agent", actor="tester").item_id
+    svc = ArgumentService(ps)
+    oid = svc.add_objection(ObjectionIn(target_id=f1, category="counterexample", priority=2, source_id=source,
+                                        text="SESR-Eval found lower accuracy."), actor="tester", actor_kind="kernel")
+    sections = [(_spec("introduction", "Introduction"),
+                 f"SESR-Eval found lower accuracy [[obj:{oid}]]. Both views stand [[clm:{f1}]] [[obj:{oid}]].\n")]
+    md, csl, refmap = to_pandoc_markdown(ps, sections, target="docx")
+    assert f"SESR-Eval found lower accuracy [@{source}]." in md
+    assert "Both views stand [" + "; ".join(f"@{k}" for k in [*keys, source]) + "]." in md
+    assert [c["id"] for c in csl] == [source, *keys] and source in refmap["keys"]
+    assert refmap["objections"] == {oid: [source]}
+    unsourced = svc.add_objection(ObjectionIn(target_id=f1, category="problem", priority=2, text="Too small."),
+                                  actor="tester", actor_kind="kernel")
+    with pytest.raises(ValueError, match=f"{unsourced}.* is no objection with a source in the library"):
+        to_pandoc_markdown(ps, [(_spec("introduction", "Introduction"), f"It is small [[obj:{unsourced}]].\n")],
+                           target="docx")
 
 
 def test_latex_and_docx_targets_carry_only_their_own_figure(env):
