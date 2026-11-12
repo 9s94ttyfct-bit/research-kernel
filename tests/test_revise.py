@@ -280,6 +280,10 @@ def test_a_rejected_revision_is_repaired_once_and_its_answers_count(env):
     (call,) = ex.of("writer", "RevisionRepair")
     assert call["inputs"]["revise"]["markdown"] == rejected["markdown"]
     assert any(r.startswith(f"sentence {fixed['n']} ") and "1234" in r for r in call["inputs"]["revise"]["failures"])
+    # the question numbers its sentence as the failures do (from 1), not by the reader's index (critical3: a repair
+    # of "sentence 4" was given as sentence 3, the question's index, and ignored)
+    (q,) = call["inputs"]["revise"]["questions"]
+    assert q["sentence_number"] == 1 and "sentence_index" not in q
     assert _written(ex) == ["introduction"]
     versions = draft_versions(ps, "introduction")
     assert [(v["stage"], v["round"]) for v in versions] == [("draft", 0), ("revise", 1)]

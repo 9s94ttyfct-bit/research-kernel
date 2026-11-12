@@ -642,10 +642,18 @@ class ReviseWorker:
     @staticmethod
     def _writer_inputs(ctx: StageContext, s: _Inputs, spec: SectionSpec, prisma: str | None, version: int, md: str,
                        questions: list[dict]) -> dict:
+        """The Writer's inputs on ``md``: each question's sentence by its ``sentence_number`` in ``md`` (from 1, as
+        ``revise.failures`` numbers them; ``None`` when the question is on the section or its sentence is not in
+        ``md``). Calibration (critical3, revise attempt 2): with the reader's index (from 0) beside failures numbered
+        from 1, a repair of sentence 4 was given as sentence 3 and ignored."""
         ps = ctx.ps
+        numbers: dict[str, int] = {}
+        for x in parse_section(md):
+            numbers.setdefault(x.text, x.index + 1)
         inputs = writer_inputs(ps, s.draft, spec, prisma)
         inputs["revise"] = {"version": version, "markdown": md, "questions": [
-            {"id": q["id"], "priority": q["priority"], "text": q["text"], "sentence_index": q["sentence_index"],
+            {"id": q["id"], "priority": q["priority"], "text": q["text"],
+             "sentence_number": numbers.get(q["sentence"]) if q.get("sentence") else None,
              "sentence": q.get("sentence"), "round": q["round"], "earlier_answer": q["earlier_answer"]}
             for q in questions]}
         inputs["other_sections"] = [

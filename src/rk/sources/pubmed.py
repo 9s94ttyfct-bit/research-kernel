@@ -45,14 +45,23 @@ def _name(n: str) -> Creator:
 
 
 def summary_to_item(uid: str, s: dict) -> ItemIn:
+    """An esummary record as a library item. A book (``doctype`` ``book``: an NCBI Bookshelf report) has its title in
+    ``booktitle`` and an empty ``title``, and its publisher as the venue; a chapter has its own ``title`` and the book
+    as its venue."""
     ids = {a.get("idtype"): a.get("value") for a in s.get("articleids", [])}
     year = re.match(r"(\d{4})", s.get("pubdate") or s.get("epubdate") or "")
+    title, book = s.get("title") or "", s.get("booktitle") or ""
+    if s.get("doctype") == "book":
+        item_type = "bookSection" if title and book else "book"
+        venue = book if title and book else s.get("publishername")
+    else:
+        item_type, venue = "journalArticle", s.get("fulljournalname") or s.get("source")
     return ItemIn(
-        item_type="journalArticle",
-        title=(s.get("title") or "(untitled)").rstrip("."),
+        item_type=item_type,
+        title=(title or book or "(untitled)").rstrip("."),
         creators=[_name(a["name"]) for a in s.get("authors", []) if a.get("authtype", "Author") == "Author" and a.get("name")],
         year=int(year.group(1)) if year else None,
-        venue=s.get("fulljournalname") or s.get("source"),
+        venue=venue or None,
         ids=Ids(doi=ids.get("doi"), pmid=uid, pmcid=ids.get("pmc") or ids.get("pmcid")).normalized(),
         discovered_via="search",
         language=_language(s.get("lang")),
