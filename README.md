@@ -315,6 +315,8 @@ After argue (and design, for a research proposal), four stages turn the argument
 
   Every sentence ends with source markers:
   - `[[clm:clm_…]]`: a supported claim;
+  - `[[obj:obj_…]]`: what the source of one of the argument's objections says (an outside work, such as a benchmark
+    a Skeptic objection came from); it is exported as a citation of that source, which G-REF checks;
   - `[[run:evt_…]]` or `[[run:prt_…]]`: what the kernel ran (a search, the PRISMA counts, the frozen protocol);
   - `[[fig:…]]`, `[[stat:…]]`: a figure or statistic;
   - `[[plan:…]]`: the frozen design or a hypothesis (proposals only);
@@ -322,7 +324,8 @@ After argue (and design, for a research proposal), four stages turn the argument
   - `[[ck]]`: common knowledge, at most 1 sentence in 20.
 
   The kernel verifies every sentence. V-COVER checks the markers; V-NUM checks that every number is in a cited
-  target, the protocol's own numbers included; V-HEDGE checks that a sentence is no stronger than the claims it cites.
+  target, the protocol's own numbers included; V-HEDGE checks that a sentence is no stronger than the claims and
+  objections it cites.
   A `[[…]]` that is not a marker fails its sentence and names the form to write. A failing section is retried, and a
   draft rerun keeps the sections that passed. When a section needs a claim the argument lacks, draft goes back to
   argue once; after that, a later request is refused and the gap is disclosed as a limitation. In P2 you decide first
