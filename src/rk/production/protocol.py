@@ -5,15 +5,16 @@ items of a systematic or scoping review, ``KERNEL_PRISMA_P``: registration, amen
 interests, and the language exclusion ``E-lang``; the rendered protocol adds the search execution,
 ``search_execution_lines``, with the publication years written out), stores it as the
 next version, checks it (``check_strategy``, ``check_protocol``), sizes the strategy (the record-cap probe:
-``sources.count`` per query on each counted source of the strategy within its publication years, summed and stored
-as ``protocol.probed``) and then:
+``sources.count`` per query on each counted source of the strategy within its publication years, summed and their
+largest kept, stored as ``protocol.probed``) and then:
 
 - P2 (``collab``) opens ``protocol_approval`` (hard human; every section rendered, ``options.protocol_id`` and
   ``options.version`` name the protocol);
 - P1 (``auto``) asks the two-vendor ``vote`` (``conservative="revise"``, ``generator_vendors`` = the Ideator's and the
-  Scout's): ``approve`` of every admitted judge freezes the protocol, else the stage reruns. A version whose probe is
-  still above the record cap is not voted on: only you may raise the cap, so P1 reruns with the cap as its reason and
-  spends no judge round on a search ``search_screen`` would stop.
+  Scout's): ``approve`` of every admitted judge freezes the protocol, else the stage reruns. A version whose probe
+  shows it above the record cap (its lower bound, the largest single count, is above the cap) is not voted on: only
+  you may raise the cap, so P1 reruns with the bounds and the cap as its reason and spends no judge round on a search
+  ``search_screen`` would stop.
 
 The judges' point ledger (P1; calibration: P1 protocol diagnosis 2026-11-12, §5.3 and §7). Each judge answers with
 points (``ProtocolVoteOut``: section, fault, change, blocking or advisory) and marks its own earlier open points
@@ -52,6 +53,21 @@ Calibration (P1 protocol rerun 2026-11-12, ``docs/eval/p1-protocol-rerun-2026-11
   kernel allows one more use, recorded as ``edge.allowed`` by kernel with the reason, at most ``KERNEL_EXTRA_ROUNDS``
   times (your grants do not count); otherwise P1 degrades, and fails, as before. P2 still opens ``stage_blocked``.
 
+Calibration 2 (P1 protocol rerun 2, 2026-11-12, ``docs/eval/p1-protocol-rerun-2-2026-11-12.md``):
+
+- The probe gives two bounds: ``total`` (the counts summed, an upper bound) and ``lower`` (the largest single count of
+  one query on one source, a lower bound; ``_lower``, computed from the counts for a probe stored without it). P1
+  skips the vote only when ``lower`` is above the cap (``_over_cap``); between the bounds the version is voted on, the
+  judges seeing both bounds, and search_screen's deduplicated count holds the cap (above it,
+  ``search_screen->protocol``). The narrowing is unchanged: it narrows while ``total`` is above the cap.
+- A judge that answers approve and leaves some of its own open blocking points unmarked (``_unmarked``) is asked once
+  more in the same vote, on its own driver, to mark exactly those (``marks_follow_up``, ``MARKS_TASK``,
+  ``PointMarksOut``). Its marks on them join the opinion's ``resolved`` (marks on other ids are ignored) and the
+  opinion records them as ``repaired``; the tightening then applies as before, so a point still unmarked or marked
+  unresolved keeps the approve from counting. A failed follow-up leaves the opinion as it was; the follow-up is
+  recorded with the vote, so a resumed attempt reuses it and asks nothing again. Points close only by their own
+  judge's explicit mark.
+
 Tries inside the attempt (Plan 5c Task 9 fix: in P1 every rerun spends a ``protocol->protocol`` edge use, and nothing
 else could narrow a search):
 
@@ -72,19 +88,20 @@ else could narrow a search):
    draft kept, the strategy replaced), probed in turn. An answer that does not lower the total below the best so far
    (a repeated strategy, which takes the earlier probe and is not counted again, one that fails the checks or has no
    count, or a higher total) is a failed try. Narrowing stops when the best total is within the cap or the tries run
-   out; the best version (the lowest total) then goes to your approval, its probe shown, or in P1 to the vote when
-   its total is within the cap (else the stage reruns, with the cap as its reason).
+   out; the best version (the lowest total) then goes to your approval, its probe shown, or in P1 to the vote unless
+   its probe's lower bound is above the cap (then the stage reruns, with the bounds and the cap as its reason).
 
 Every try is a version (append-only), recorded with how it was drafted (``protocol.added`` ``tried``: its kind, the
 vendors of its Ideator and Scout, its failures and its answers to the open points). An interrupted attempt runs again
 in place (``resumes_in_place``): it goes on from the attempt's versions and probes, asks nothing it already has, takes
 the vote already recorded and the approval already opened.
 
-The probe is advisory to you: it is shown to you and to the judges, with the cap, as an upper bound, and fails no
-check; in P1 a total above the cap keeps the version from the vote. Each count runs inside the per-item boundary (a
+The probe is advisory to you: it is shown to you and to the judges, with the cap, as two bounds, and fails no check;
+in P1 a lower bound above the cap keeps the version from the vote. Each count runs inside the per-item boundary (a
 source error or an exhausted source API budget leaves that count ``None`` with its ``error``), so the probe never
-fails or interrupts the stage. It is an upper bound (duplicates across queries and sources count again) and leaves out
-the sources without a count; the record cap is enforced by ``search_screen`` on the deduplicated records.
+fails or interrupts the stage. Its total is an upper bound (duplicates across queries and sources count again), its
+largest single count a lower bound, and it leaves out the sources without a count; the record cap is enforced by
+``search_screen`` on the deduplicated records.
 
 A rerun after an unfrozen draft (a revision asked by you or by the vote, failed checks) gives both roles the version
 the earlier attempt offered (the best of its narrowing), else its last version, as ``previous_draft`` (its body and
@@ -109,8 +126,8 @@ G-PREREG input; only the systematic and scoping reviews count the freeze as prer
 (``counts_as_preregistration``), the others freeze for traceability only.
 
 Budget per attempt (protocol is an open stage, 40 role tasks per run session): at most ``protocol_tries`` ideator and
-scout tasks each, plus ``protocol_narrow_tries`` scout tasks (9 with the defaults 3 and 3), and 2 judge tasks in P1,
-which do not count against the budget.
+scout tasks each, plus ``protocol_narrow_tries`` scout tasks (9 with the defaults 3 and 3), and in P1 2 judge tasks,
+plus at most one marks follow-up per judge, which do not count against the budget.
 
 Gate: a frozen protocol in the latest attempt that passes ``check_protocol`` and has a deviation from the frozen
 version before it, if any. A P1 degrade fails: P1 never freezes a protocol the vote did not approve."""

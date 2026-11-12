@@ -179,7 +179,8 @@ frozen), `search_screen` (search, deduplication, title/abstract and full-text sc
   other; Europe PMC and OpenAlex also match full texts, so their hit counts are much higher than PubMed's. The kernel
   checks the draft (its free texts may not claim novelty, the same rule as for topics and RQs) and sizes it: the
   record-cap probe counts each query on each source that reports counts (OpenAlex, Europe PMC, PubMed) within the strategy's publication years. The probe
-  is advisory and an upper bound (duplicates count again). A draft that fails the checks is drafted again within the
+  is advisory and gives two bounds on the records: the sum of the counts (an upper bound: duplicates count again) and
+  the largest single count (a lower bound). A draft that fails the checks is drafted again within the
   attempt (up to `protocol_tries`, default 3, versions; only the role whose part failed is asked), and a probe above
   the record cap sends the strategy back to the Scout to narrow, with the counts (up to `protocol_narrow_tries`,
   default 3, tries; a strategy that does not lower the total is a failed try); the version with the lowest total goes
@@ -191,12 +192,18 @@ frozen), `search_screen` (search, deduplication, title/abstract and full-text sc
   drops a PRISMA-P item no open point and no revise comment of yours asked to remove. In P2 you approve, revise or go
   back in a `protocol_approval` checkpoint (a revise, like
   checks still failing after the tries, reruns the stage and uses one of its two reruns); in P1 a two-vendor vote
-  approves or asks for a revision, and a version still above the record cap is not voted on. P1 judges answer with
+  approves or asks for a revision, and a version whose probe shows it above the record cap (its largest single count
+  is above the cap) is not voted on; between the bounds it is voted on, the judges see both bounds, and
+  search_screen's deduplicated count holds the cap. P1 judges answer with
   numbered points (blocking or advisory) kept in a ledger; the next draft answers each open point it owns (changed
   or rebutted; the Scout answers the search points, the Ideator the others, and an answer to another author's point
   is dropped), only the judge that raised a point closes it (a mark whose id differs from one of the judge's own
   points only in its separators, `p1.judge.2.1` for `p1.judge_2.1`, is that point; a mark that matches none is
-  ignored and listed), and an approve with an open blocking point of the judge's own counts as revise. At the
+  ignored and listed), and an approve with an open blocking point of the judge's own counts as revise. A judge that
+  approves and leaves some of its own open blocking points unmarked is asked once more, in the same vote, to mark
+  exactly those (resolved or not, with why); its marks then apply as any other (the opinion records them as
+  `repaired`), a point it leaves unmarked or marks unresolved still counts as open, and a resumed vote asks nothing
+  again. At the
   protocol's rerun limit a P1 protocol that still converges gets another round: when the last vote closed at least
   one blocking point and left no more open than before it, the kernel allows one more `protocol->protocol` use
   (recorded as `edge.allowed` by kernel, with the reason), at most twice per project; otherwise the P1 run fails at

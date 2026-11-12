@@ -47,11 +47,16 @@ The kernel's extra rounds were used where the rule allows (fructose, ozone); nei
 
 ## Calibration 2 (branch `p1-calib2`)
 
-- **P1 skips the vote only when the probe shows the cap is exceeded:** the largest single query-on-source count is
-  above the cap. Between the bounds the version is voted on; the judges see both bounds; search_screen's deduplicated
-  count stays the hard cap (above it, `search_screen->protocol`). The cap itself is unchanged and only the researcher
-  sets it.
+- **P1 skips the vote only when the probe shows the cap is exceeded:** the probe stores `lower`, the largest single
+  query-on-source count (a probe stored before has it computed from its counts), and P1 reruns without a vote only
+  when `lower` is above the cap, with `lower`, the total and the cap in the reason. Between the bounds the version is
+  voted on; the judges' probe input and the rendered probe state both bounds and that search_screen's deduplicated
+  count is the cap that holds (above it, `search_screen->protocol`). The narrowing is unchanged (it narrows while the
+  total is above the cap), as are P2 and the cap itself, which only the researcher sets.
 - **A judge that approves and leaves some of its own live blocking points unmarked is asked once more, in the same
-  vote, to mark exactly those points** (resolved or not, with why). Its marks then apply as usual; a point still
-  unmarked or marked `resolved: false`, and a new blocking point, tighten the approve as before. Points close only by
-  their judge's explicit mark.
+  vote and on its own driver, to mark exactly those points** (resolved or not, with why; `MARKS_TASK`, answered as
+  `PointMarksOut`). Its marks on those points join its opinion's `resolved` (marks on other ids are ignored) and the
+  opinion records them as `repaired`; they then apply as usual: a point still unmarked or marked `resolved: false`,
+  and a new blocking point, tighten the approve as before. A failed follow-up leaves the opinion as it was. The
+  follow-up is recorded with the vote, so a resumed vote reuses it and never asks again. Points close only by their
+  judge's explicit mark; other votes (screening, final review, audit, argue, design, synthesis) never ask.
