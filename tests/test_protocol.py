@@ -31,6 +31,7 @@ from rk.production.protocol import (
     protocol_prereg_ok,
     render_protocol,
 )
+from rk.store.events import NewEvent
 from rk.store.projections import rebuild
 from rk.workspace import Kernel
 from tests.discovery_fakes import FakeSources, FakeWorker, ScriptedExecutor
@@ -615,7 +616,7 @@ def test_record_cap_probe_is_advisory(env):
                                                              for s in ("openalex", "europepmc")]
     (row,) = store.protocols(ps, 1)
     probe = probe_of(ps, row["id"])
-    assert (probe["total"], probe["uncounted"]) == (2500, ["arxiv"])
+    assert (probe["total"], probe["lower"], probe["uncounted"]) == (2500, 1500, ["arxiv"])
     assert {"query": QUERIES[1], "source": "openalex", "count": None} in probe["counts"]  # no count: recorded, not 0
     assert w.gate(ps, 1).ok
     (judged, _) = [c for c in ex.calls if c["schema"] == "ProtocolVoteOut"]
@@ -639,7 +640,7 @@ SOMEWHAT = ["aspirin stroke elderly trial", QUERIES[1], QUERIES[2]]
 COUNTS = {(QUERIES[0], "openalex"): 2500, (QUERIES[0], "europepmc"): 1500,  # 4000: over the cap 3000
           (NARROW[0], "openalex"): 900, (NARROW[0], "europepmc"): 600,  # 1500
           ("aspirin", "openalex"): 40000, ("aspirin", "europepmc"): 10000,  # WIDER: 54000
-          (SOMEWHAT[0], "openalex"): 2000, (SOMEWHAT[0], "europepmc"): 1500}  # 3500
+          (SOMEWHAT[0], "openalex"): 3200, (SOMEWHAT[0], "europepmc"): 300}  # 3500, at least 3200: over the cap
 
 
 def _counted(sources: FakeSources) -> list[str]:
@@ -672,13 +673,15 @@ def test_an_over_cap_probe_has_the_scout_narrow_and_the_narrower_strategy_goes_t
 
 
 def test_narrowing_that_does_not_lower_the_total_fails_and_p1_reruns_above_the_cap(env):
-    """The tries run out with the best total still above the cap: P1 spends no judge round on it (P2 asks you, who
-    may raise the cap: ``test_protocol_checks``) and reruns with the cap as its reason."""
+    """The tries run out with the best version's largest single count (a lower bound) still above the cap: P1 spends
+    no judge round on it (P2 asks you, who may raise the cap: ``test_protocol_checks``) and reruns with the cap and
+    both bounds as its reason."""
     _, ps, _ = env
     sources = FakeSources({}, record_counts=COUNTS)
     ex = _executor([_draft()], [_strategy(), _strategy(), _strategy(queries=WIDER), _strategy(queries=SOMEWHAT)])
     out = ProtocolWorker().run(_ctx(env, ex, sources=sources))
-    assert out.status == "rerun" and "3500 records" in out.reason and "record cap 3000" in out.reason
+    assert out.status == "rerun" and "at least 3200 records" in out.reason and "3500" in out.reason
+    assert "record cap 3000" in out.reason
     assert [c["role"] for c in ex.calls] == ["ideator"] + ["scout"] * 4  # no judge task
     rows = store.protocols(ps, 1)
     assert [probe_of(ps, r["id"])["total"] for r in rows] == [4000, 4000, 54000, 3500]
@@ -694,8 +697,8 @@ def test_narrowing_that_does_not_lower_the_total_fails_and_p1_reruns_above_the_c
 
 
 def test_a_rerun_revises_the_best_version_not_a_failed_later_try(env):
-    """The best try is still above the cap when the narrowing runs out, so P1 reruns without a vote; a later, failed
-    narrowing try is newer. The next attempt revises the best try, with its probe."""
+    """The best try is still above the cap (its lower bound) when the narrowing runs out, so P1 reruns without a vote;
+    a later, failed narrowing try is newer. The next attempt revises the best try, with its probe."""
     _, ps, _ = env
     sources = FakeSources({}, record_counts=COUNTS)
     ex = _executor([_draft(), _draft()],
@@ -749,6 +752,26 @@ def test_an_interrupted_narrowing_resumes_in_place_from_its_versions_and_probes(
     assert len(_counted(sources)) == 12 and len(votes_on(ps, "protocol", v3["id"])) == 1
 
 
+def test_a_probe_stored_without_its_lower_bound_gets_it_from_its_counts(env):
+    """A probe recorded before the lower bound existed has none stored: it is computed from the probe's counts, so a
+    resumed attempt decides on it like on a new probe (here: the largest count, 3500, is above the cap)."""
+    k, ps, _ = env
+    _settings(k, protocol_narrow_tries=0)
+    first = Crashing({("ideator", "ProtocolDraftOut"): [_draft()], ("scout", "SearchStrategyOut"): [_strategy()]},
+                     "judge", 1)
+    w = ProtocolWorker()
+    with pytest.raises(RuntimeError, match="crashed"):
+        w.run(_ctx(env, first))
+    (row,) = store.protocols(ps, 1)
+    old = {"counts": [{"query": QUERIES[0], "source": "openalex", "count": 3500},
+                      {"query": QUERIES[1], "source": "openalex", "count": 600},
+                      {"query": QUERIES[2], "source": "openalex", "count": None}], "uncounted": [], "total": 4100}
+    ps.apply(NewEvent(type="protocol.probed", entity_id=row["id"], actor_kind="kernel", actor="tester", payload=old))
+    assert probe_of(ps, row["id"]) == {**old, "lower": 3500}
+    out = w.run(_ctx(env, ScriptedExecutor({})))  # resumed in place: no judge is asked
+    assert out.status == "rerun" and "at least 3500 records" in out.reason and "4100" in out.reason
+    assert "at least 3500" in "\n".join(render_protocol(ps, row))
+    assert probe_of(ps, "prt_missing") is None
 
 
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
@@ -827,7 +850,8 @@ def test_p2_raises_the_record_cap_on_approval(env):
     out = w.run(_ctx(env, ex, sources=_big(2500, 1500)))
     cp = get_checkpoint(ps, out.checkpoint_id)
     for text in ("Record-cap probe (advisory): 4000 records", f"{QUERIES[1]!r} on openalex: no count",
-                 "4000 records, above the record cap 3000", "search_screen stops above the cap"):
+                 "at least 2500 records", "4000 records, is above the record cap 3000",
+                 "search_screen stops above the cap"):
         assert text in cp["prompt"], text
     for bad in (True, "5000", 0):
         cid = list_checkpoints(ps, "open")[0]["id"]

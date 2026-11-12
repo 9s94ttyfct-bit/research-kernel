@@ -1,6 +1,7 @@
 """The protocol's in-attempt checks (P1 protocol diagnosis 2026-11-12, rules R1b/c, R2, R5-R8): what the judges kept
 raising that a rule finds in the body, so a try fails in the attempt with a message naming the fix instead of spending
-a judge round, and P1 never votes on a protocol whose probe is still above the record cap."""
+a judge round, and P1 never votes on a protocol whose probe shows it above the record cap (its lower bound; P1 protocol
+rerun 2, 2026-11-12)."""
 
 from __future__ import annotations
 
@@ -247,15 +248,18 @@ def test_a_redraft_that_drops_an_item_is_drafted_again_in_the_attempt(env):
     assert store.frozen_protocol(ps)["id"] == second["id"]
 
 
-# ---- R2: P1 does not vote above the cap ----
+# ---- R2: P1 does not vote above the cap (calibration: the probe's lower bound decides, P1 protocol rerun 2) ----
 SOMEWHAT = ["aspirin stroke elderly trial", *QUERIES[1:]]
 COUNTS = {(QUERIES[0], "openalex"): 2500, (QUERIES[0], "europepmc"): 1500,  # 4000: over the cap 3000
-          (SOMEWHAT[0], "openalex"): 2000, (SOMEWHAT[0], "europepmc"): 1500}  # 3500: still over
+          (SOMEWHAT[0], "openalex"): 3200, (SOMEWHAT[0], "europepmc"): 300}  # 3500, at least 3200: still over
+BETWEEN = {**COUNTS, (SOMEWHAT[0], "openalex"): 2000, (SOMEWHAT[0], "europepmc"): 1500}  # 3500, at least 2000
 
 
 @pytest.mark.parametrize("env", [{"production_mode": "auto"}, {"production_mode": "collab"}], indirect=True,
                          ids=["P1", "P2"])
 def test_p1_does_not_vote_above_the_cap(env):
+    """The best version's largest single count (3200) is above the cap: the search finds more distinct records than
+    the cap whatever the duplicates, so P1 spends no judge round on it."""
     k, ps, _ = env
     cfg = k.settings()
     cfg.protocol_narrow_tries = 1
@@ -268,11 +272,42 @@ def test_p1_does_not_vote_above_the_cap(env):
     assert [c["role"] for c in ex.calls] == ["ideator", "scout", "scout"]  # no judge task in either mode
     if intake_of(ps).production_mode == "auto":  # P1: the attempt reruns with the cap failure as its reason
         assert out.status == "rerun"
-        assert "3500" in out.reason and "3000" in out.reason and "narrow" in out.reason
+        assert "at least 3200 records" in out.reason and "3500" in out.reason and "record cap 3000" in out.reason
+        assert "narrow" in out.reason
         assert votes_on(ps, "protocol", best["id"]) == [] and store.frozen_protocol(ps) is None
     else:  # P2: you may raise the cap, so your approval opens on the best version
         assert out.status == "waiting_human"
         assert get_checkpoint(ps, out.checkpoint_id)["options"]["protocol_id"] == best["id"]
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "auto"}, {"production_mode": "collab"}], indirect=True,
+                         ids=["P1", "P2"])
+def test_a_version_between_the_bounds_goes_to_the_vote(env):
+    """The narrowing runs out with the total (3500, an upper bound) above the cap and the largest single count (2000,
+    a lower bound) within it: the probe does not show the cap exceeded, so P1 votes on the version, the judges seeing
+    both bounds; P2 opens your approval as before."""
+    k, ps, _ = env
+    cfg = k.settings()
+    cfg.protocol_narrow_tries = 1
+    save_settings(cfg)
+    ex = ScriptedExecutor({("ideator", "ProtocolDraftOut"): [_draft()],
+                           ("scout", "SearchStrategyOut"): [_strategy(), _strategy(SOMEWHAT)],
+                           **_votes("approve")})
+    out = ProtocolWorker().run(_ctx(env, ex, sources=FakeSources({}, record_counts=BETWEEN)))
+    _, best = store.protocols(ps, 1)
+    if intake_of(ps).production_mode == "collab":
+        assert out.status == "waiting_human" and [c["role"] for c in ex.calls] == ["ideator", "scout", "scout"]
+        cp = get_checkpoint(ps, out.checkpoint_id)
+        assert cp["options"]["protocol_id"] == best["id"]
+        assert "3500 records" in cp["prompt"] and "at least 2000" in cp["prompt"]
+        return
+    assert out.status == "done" and store.frozen_protocol(ps)["id"] == best["id"]
+    (judged, _) = [c for c in ex.calls if c["schema"] == "ProtocolVoteOut"]
+    seen = judged["inputs"]["subject"]["record_probe"]
+    assert (seen["total"], seen["lower"], seen["record_cap"]) == (3500, 2000, 3000)
+    assert "upper bound" in seen["note"] and "lower bound" in seen["note"] and "deduplicated" in seen["note"]
+    shown = judged["inputs"]["subject"]["protocol"]
+    assert "at least 2000" in shown and "deduplicated" in shown
 
 
 def test_a_narrowing_try_must_keep_the_sources_the_prisma_p_texts_name(env):
