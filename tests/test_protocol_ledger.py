@@ -445,7 +445,6 @@ def test_any_open_ideator_point_may_ask_to_remove_an_item():
     assert "'certainty_of_evidence'" in failure
 
 
-
 # ---- calibration 1 (P1 protocol rerun 2026-11-12) ----
 def test_a_mark_id_is_matched_ignoring_separators(env):
     """judge_2 marks its point p1.judge_2.1 as p1.judge.2.1: the mark closes it and the approve stands; the vote keeps

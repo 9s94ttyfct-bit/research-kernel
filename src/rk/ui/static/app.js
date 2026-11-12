@@ -1403,7 +1403,7 @@ pages.progress = async (root) => {
       redrawKeeping(graphBox, () => fill(graphBox,
         el("p", { class: "hint" }, g.paper_type ? `Paper type: ${words(g.paper_type)}. ` : "No paper type yet. ", "Stages marked “Not yet available” come in a later version."),
         el("ol", { class: "stages", "aria-label": "Stages" }, g.graph.map(stageChip)),
-        el("p", { class: "hint" }, `Back-edges and reruns used (each up to ${g.edge_limit} times, plus any you allow): `,
+        el("p", { class: "hint" }, `Back-edges and reruns used (each up to ${g.edge_limit} times, plus any you allow, or the kernel allows a converging P1 protocol): `,
           used.length ? used.map((e) => `${words(e.from)} ${e.from === e.to ? "reruns" : `→ ${words(e.to)}`} ${e.count} of ${e.limit + e.allowed}`).join(" · ") : "none")));
     }
     const runNow = JSON.stringify([g.intake, g.discovery_mode, g.runs_available, g.run, g.run_active, g.requested]);
