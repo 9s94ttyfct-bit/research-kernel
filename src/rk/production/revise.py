@@ -353,7 +353,7 @@ def _same_text(a: str, b: str) -> bool:
     """Whether two section texts say the same in the same paragraphs: spacing within and around paragraphs aside
     (review of the unchanged rule: a dropped trailing newline or extra blank lines made a no-op count as a change),
     a paragraph split or merged is a change (re-review: comparing the words alone hid one)."""
-    paragraphs = lambda md: [p.split() for p in re.split(r"\n[ \t]*\n", md.strip())]
+    paragraphs = lambda md: [p.split() for p in re.split(r"\n\s*\n", md.strip()) if p.strip()]  # \s: CRLF too
     return paragraphs(a) == paragraphs(b)
 
 
@@ -423,7 +423,7 @@ def _review_request(ps: ProjectStore, attempt: int) -> str | None:
 # researcher's first point there; only point 1 may start there, so "Note: 2. …" or a judge's reason opening "2." is
 # part of a point). A point: numbered there ("(N)", "N." or "N)"); else numbered anywhere ("(N)" after a full stop,
 # colon, semicolon or comma, not a reference such as "Equations (1) and (2)", or the forms above); else a bullet ("-",
-# "*", "•") there, indented like the first at a line start (a nested bullet stays in its point).
+# "*", "•") there, indented like the shallowest at a line start (a nested bullet stays in its point).
 _LEAD = r"(?:(?m:^)(?P<indent>[ \t]*)|(?<=:)(?P<colon>[ \t]+))"
 _AT_LINE = re.compile(rf"{_LEAD}(?:\((\d{{1,2}})\)|(\d{{1,2}})[.)])(?=\s)")
 _NUMBERED = re.compile(rf"(?:(?<=[.:;,])\s+|(?m:^)[ \t]*)\((\d{{1,2}})\)(?=\s)|{_LEAD}(\d{{1,2}})[.)](?=\s)")
@@ -443,13 +443,13 @@ def _numbered(pattern: re.Pattern, text: str) -> list[int]:
 
 def _bullets(text: str) -> list[int]:
     """Where the bulleted points start: the first bullet (at a line start or after a colon) and every line-start
-    bullet indented like the first line-start one (the comment is stripped, so a first bullet after the colon tells
-    nothing of the list's indent)."""
+    bullet indented like the shallowest line-start one (the comment is stripped, so a first bullet after the colon
+    tells nothing of the list's indent; a first item's sub-bullet stays in it)."""
     found: list[tuple[int, str | None]] = []
     for m in _BULLET.finditer(text):
         if m["colon"] is None or not found:
             found.append((m.start(), m["indent"]))
-    indent = next((i for _, i in found if i is not None), None)
+    indent = min((i for _, i in found if i is not None), key=len, default=None)
     return [a for a, i in found if i is None or i == indent]
 
 

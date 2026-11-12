@@ -715,6 +715,9 @@ def test_a_final_review_request_splits_into_its_points():
     assert request_points(f"{p2} - a\n- b\n- c") == [f"{p2} - a", f"{p2} - b", f"{p2} - c"]
     # the comment is stripped, so an indented list's first bullet follows the colon unindented
     assert request_points(f"{p2} - a\n  - b\n  - c") == [f"{p2} - a", f"{p2} - b", f"{p2} - c"]
+    # the list's indent is its shallowest bullet's: a first item's sub-bullet stays in it
+    assert request_points(f"{p2} - a\n  - a1\n- b\n- c") == [f"{p2} - a - a1", f"{p2} - b", f"{p2} - c"]
+    assert request_points(f"{p2} - a\n    - a1\n  - b\n  - c") == [f"{p2} - a - a1", f"{p2} - b", f"{p2} - c"]
     # only point 1 may follow a colon: a later "N." after a colon is part of a point
     assert request_points(f"{p2} 1. Fix X.\nNote: 2. is optional.\n2. Fix Y.") == [
         f"{p2} 1. Fix X. Note: 2. is optional.", f"{p2} 2. Fix Y."]
@@ -763,6 +766,8 @@ def test_a_revision_that_only_moves_paragraph_breaks_is_a_change():
     from rk.production.revise import _same_text
 
     assert _same_text("A. B.\n\nC.\n", "A.  B.\n\n\nC.")
+    assert _same_text("A. B.\n\nC.\n", "A. B.\n\n\n\nC.")  # an even run of blank lines leaves no empty paragraph
+    assert _same_text("A. B.\n\nC.\n", "A. B.\r\n\r\nC.\r\n")
     assert not _same_text("A. B.\n\nC.\n", "A.\n\nB.\n\nC.\n")
     assert not _same_text("A. B.\n", "A. C.\n")
 
