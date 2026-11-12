@@ -729,6 +729,30 @@ named no response texts.
   afresh. The Writer's limitations carry no id of a withdrawn claim.
 - Open: the run is parked in draft with 8 of 9 sections passing.
 
+### critical3, run session 4 (2026-11-11): draft passed; revise paused on the budget
+
+A serve on abc604e (the draft repairs above). Run session 4 resumed draft and went on into revise.
+
+| Stage, attempts | Role tasks | Outcome |
+|---|---|---|
+| draft 11 | Writer: one repair task, for gaps-agenda | passed |
+| revise 1 | SimReader 3, Writer 20 (3 rounds) | gate failed: priority-1 question `a1r3q3` (theme-2) unresolved |
+| revise 2 | SimReader 1, Writer 7 | `paused_budget` at 20:10:24 UTC (31 of 40 tasks used) |
+
+- **draft:** the gaps-agenda repair replaced sentences 1, 4, 5 and 7 only, and cited no withdrawn claim.
+- **revise:** attempt 1 asked 59 questions, 11 of them priority 1. The next round of attempt 2 needed one SimReader
+  task and one Writer task per revisable section, more than was left, and a priority-1 question was open, so the run
+  paused rather than skip it. Open priority-1 questions: `a1r3q3` (theme-2) and `a2r1q11` (gaps-agenda).
+- **One sentence lost whole revisions.** The theme-2 and gaps-agenda revisions were rejected three times each for a
+  single `[[inf]]` sentence not worded tentatively; each rejection dropped the whole revision, with the change that
+  answered its priority-1 question.
+- **Model faults:** the theme-5 Writer returned empty markdown three times although its input held the section's
+  text; some answers said `revised` for a revision whose text was unchanged.
+- **Fixed after the run** (the researcher's choice): a revision rejected on single sentences only gets one repair
+  task: the Writer replaces the failing sentences, the kernel puts them into the rejected revision (every other
+  sentence word for word) and decides again; accepted, it is stored and its answers count. A repair costs one Writer
+  task of the round's budget and is asked only while the budget covers it and the round's remaining revisions.
+
 ## P1 project: failed at protocol (the vote never approved it)
 
 Home `rk-plan5c-p1`, intake `probiotics for preventing antibiotic-associated diarrhoea in children`, systematic
