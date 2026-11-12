@@ -559,8 +559,10 @@ async function protocolCard(c, answer) {
     earlier ? el("p", { class: "notice" }, `Version ${earlier.version} is frozen: approving this one records a deviation from it.`) : null,
     el("h4", {}, "Research question"), el("p", { class: "rq-sentence" }, b.question),
     el("h4", {}, "Search strategy"),
-    facts([["Sources", ss.sources.join(", ")], ["Publication years", `${ss.date_from ?? "any year"} to ${ss.date_to ?? "now"}`], ["Languages", ss.languages.join(", ")]]),
+    facts([["Sources", ss.sources.join(", ")], ["Publication years", d.publication_years], ["Languages", ss.languages.join(", ")]]),
     el("ul", { class: "queries", "aria-label": "Queries" }, ss.queries.map((q) => el("li", {}, el("code", {}, q)))),
+    // how the kernel runs the search: its facts, as the protocol's text states them
+    d.search_execution_lines.map((line) => el("p", { class: "hint" }, line)),
     el("h4", {}, "Record cap"), el("p", {}, `${b.record_cap} records after deduplication.`),
     d.probe_lines.map((line) => el("p", { class: "hint" }, line)),
     el("h4", {}, "Eligibility"),

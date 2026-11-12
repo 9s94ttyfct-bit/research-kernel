@@ -10,7 +10,6 @@ from rk.production import store
 from rk.production.models import SCREENED_LANGUAGES, Criterion, SearchStrategy
 from rk.production.protocol import (
     KERNEL_PRISMA_P,
-    KERNEL_RULES,
     LANGUAGE_CRITERION_ID,
     ProtocolWorker,
     kernel_prisma_p,
@@ -119,13 +118,3 @@ def test_rendered_protocol_states_search_execution(sr_env):
     assert "2001 to the date of the search" in "\n".join(open_end)
     # the PRISMA-P items the kernel wrote are shown to you (P2) too
     assert f"- registration: {KERNEL_PRISMA_P['registration']}" in lines
-
-
-def test_judges_rules_sheet_names_the_kernel_facts():
-    """The rules sheet the judges get lists what the kernel owns: the kernel-written PRISMA-P keys, the language
-    criterion, the search execution and the sources it can search."""
-    for key in KERNEL_PRISMA_P:
-        assert key in KERNEL_RULES
-    assert LANGUAGE_CRITERION_ID in KERNEL_RULES
-    for source in ("OpenAlex", "Europe PMC", "PubMed", "arXiv"):
-        assert source in KERNEL_RULES

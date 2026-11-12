@@ -206,7 +206,8 @@ KERNEL_RULES = (
     "trial registries or grey literature, no reference-list or citation searching, no hand-searching and no contact "
     "with authors.\n"
     "3. Queries. Each query is sent verbatim to the search API of each listed source (arXiv receives it as "
-    "all:<query>); the kernel does not translate a query into a source's own syntax (no MeSH or field-tag mapping). "
+    "all:<query>); the kernel adds no MeSH terms or field tags and does not rewrite a query into a source's own syntax "
+    "(PubMed applies its own automatic term mapping). "
     "OpenAlex rejects wildcards (* and ?) and ~, so the protocol's checks fail a query with them on OpenAlex.\n"
     "4. Years. The publication years are applied as each source's own publication-year filter (arXiv: its "
     "submission date); an open start is the earliest record a source indexes, an open end the date of the search.\n"
@@ -580,9 +581,9 @@ def probe_lines(probe: dict | None, cap: int) -> list[str]:
     return lines
 
 
-def _years(ss: dict) -> str:
-    """The strategy's publication years written out: an open start is the earliest indexed record, an open end the
-    date of the search."""
+def publication_years(ss: dict) -> str:
+    """The strategy's publication years written out, as the protocol's review and your approval card show them: an
+    open start is the earliest indexed record, an open end the date of the search."""
     start = ss["date_from"] if ss.get("date_from") is not None else "the earliest indexed record"
     end = ss["date_to"] if ss.get("date_to") is not None else "the date of the search"
     return f"{start} to {end}"
@@ -600,11 +601,12 @@ def search_execution_lines(body: dict) -> list[str]:
     n_q, n_s = len(ss["queries"]), len(ss["sources"])
     return [
         "Search execution (written by the kernel: how search_screen runs this strategy after the freeze):",
-        (f"- publication years: {_years(ss)} (inclusive), applied as each source's own publication-year filter "
-         "(arXiv: its submission date)."),
+        (f"- publication years: {publication_years(ss)} (inclusive), applied as each source's own publication-year "
+         "filter (arXiv: its submission date)."),
         (f"- each query is sent verbatim, as written above, to the search API of each listed source ({n_q} queries x "
-         f"{n_s} sources = {n_q * n_s} searches; arXiv receives it as all:<query>); the kernel does not translate a "
-         "query into a source's own syntax (no MeSH or field-tag mapping)."),
+         f"{n_s} sources = {n_q * n_s} searches; arXiv receives it as all:<query>); the kernel adds no MeSH terms or "
+         "field tags and does not rewrite a query into a source's own syntax (PubMed applies its own automatic term "
+         "mapping)."),
         ("- every page a source returns is logged in the project's search log with its time (the search date), "
          "source, query, publication years, offset and the records it returned. Each source and query is paged to its "
          "last result; a search a source cannot finish (e.g. its paging limit) is logged as incomplete with its "
@@ -629,7 +631,8 @@ def render_protocol(ps: ProjectStore, row: dict) -> list[str]:
                else "freezing it is for traceability only, not preregistration")
     ss = b["search_strategy"]
     lines = [f"Protocol version {row['version']} ({paper_type}; {purpose}).", "", f"Research question: {b['question']}",
-             "", "Search strategy:", f"- sources: {', '.join(ss['sources'])}", f"- publication years: {_years(ss)}",
+             "", "Search strategy:", f"- sources: {', '.join(ss['sources'])}",
+             f"- publication years: {publication_years(ss)}",
              f"- languages: {', '.join(ss['languages'])}", "- queries:"]
     lines += [f"  - {q}" for q in ss["queries"]]
     lines += ["", *search_execution_lines(b)]

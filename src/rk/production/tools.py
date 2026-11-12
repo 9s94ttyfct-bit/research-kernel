@@ -70,7 +70,9 @@ from rk.production.protocol import (
     probe_lines,
     probe_of,
     protocol_prereg_ok,
+    publication_years,
     render_protocol,
+    search_execution_lines,
 )
 from rk.production.revise import STAGE as REVISE
 from rk.production.revise import revise_notes, settled_answers, withheld_questions
@@ -486,8 +488,9 @@ def design_view(ps: ProjectStore, attempt: int | None = None) -> dict:
 
 
 def protocol_view(ps: ProjectStore, protocol_id: str | None = None) -> dict:
-    """The protocol ``protocol_id`` (default: the version in force, else the latest), its probe and rendering, and
-    every version and deviation."""
+    """The protocol ``protocol_id`` (default: the version in force, else the latest), its probe and rendering (with
+    the parts a card shows as the rendering states them: the probe lines, the publication years written out and the
+    kernel's search execution block), and every version and deviation."""
     in_force = frozen_protocol(ps)
     if protocol_id:
         row = protocol_row(ps, protocol_id)
@@ -502,6 +505,8 @@ def protocol_view(ps: ProjectStore, protocol_id: str | None = None) -> dict:
             "preregistration": bool(paper_type) and counts_as_preregistration(paper_type),
             "prereg_ok": protocol_prereg_ok(ps), "probe": probe,
             "probe_lines": probe_lines(probe, row["body"]["record_cap"]) if row else [],
+            "publication_years": publication_years(row["body"]["search_strategy"]) if row else "",
+            "search_execution_lines": search_execution_lines(row["body"]) if row else [],
             "text": "\n".join(render_protocol(ps, row)) if row else "",
             "versions": query_rows(ps, "SELECT id, version, attempt, status, frozen_hash, frozen_at FROM protocols "
                                        "ORDER BY version, rowid", ()),

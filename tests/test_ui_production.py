@@ -31,6 +31,7 @@ from rk.orchestrator.state import (
 )
 from rk.production import store
 from rk.production.extraction import ReadExtractWorker, usable_evidence
+from rk.production.protocol import publication_years, search_execution_lines
 from rk.production.screening import SearchScreenWorker
 from rk.roles.policy import ROLES, TOOL_ROLES, lead_closed_after_discovery, role_tools
 from rk.server.app import create_app
@@ -310,6 +311,12 @@ def test_protocol_tool_and_route(api):
     assert (got["protocol"]["id"], got["protocol"]["status"], got["in_force"]) == (pid, "draft", None)
     assert got["preregistration"] is True and got["paper_type"] == "systematic_review"
     assert "Record-cap probe: not run." in got["probe_lines"] and "Research question:" in got["text"]
+    # the search execution block and the years written out, for the card, as the protocol's text states them
+    body = got["protocol"]["body"]
+    assert got["search_execution_lines"] == search_execution_lines(body)
+    assert got["publication_years"] == publication_years(body["search_strategy"])
+    assert all(line in got["text"].splitlines() for line in got["search_execution_lines"])
+    assert f"- publication years: {got['publication_years']}" in got["text"].splitlines()
     store.freeze_protocol(api.ps, pid, actor="tester")
     p2 = store.add_protocol(api.ps, 2, a_protocol(record_cap=5000), version=2, actor="tester")
     got = api.reg.call("rk_protocol_get", {"project": "demo"}, _cli())
@@ -437,6 +444,10 @@ def test_protocol_card_answers_reach_the_worker(page, served):
     for text in ("aspirin stroke elderly", "People over 80", "Animal studies <script>", "Participants",
                  "narrative swim", "Two screeners, title/abstract then full text.", "Record-cap probe"):
         assert card.get_by_text(text, exact=False).count() >= 1, text
+    # the search execution block and the years written out, as the protocol's review states them
+    body = store.protocol_row(ps, cp["options"]["protocol_id"])["body"]
+    for line in (*search_execution_lines(body), publication_years(body["search_strategy"])):
+        assert card.get_by_text(line, exact=True).count() == 1, line
     assert card.get_by_text("Wald intervals", exact=False).count() == 0  # pool options: a meta-analysis's only
     assert card.locator("script").count() == 0  # the protocol's text is shown as text
     card.get_by_label("What should change in the protocol").fill("Add PubMed and narrow to trials.")
