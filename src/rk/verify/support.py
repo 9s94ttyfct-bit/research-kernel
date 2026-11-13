@@ -10,6 +10,11 @@ A judge is valid when it ran and its vendor is admitted (``rk.verify.judge.run_j
 that is neither the claim author's nor another judge's); a failed or skipped judge does not count. V-NUM runs
 alongside: a number in the claim that its evidence does not contain keeps the claim from "supported".
 
+The judges read the claim's verified passages grouped by study, each group headed by the study's label, title, year,
+design and arms (``evidence_document``); the passages, the label rule and V-NUM are unchanged. Calibration (synthesis
+across studies, 2026-11-13): given bare passages the judges could not count the studies a finding rests on, nor tell
+which arm a passage is about.
+
 A ``stat_result`` claim (kernel-written from its artifacts) gets no judges: it is supported when V-STATS passes on
 every artifact it reports and V-NUM finds each of its numbers among those artifacts' values, else unsupported.
 
@@ -85,6 +90,38 @@ def evidence_texts(claim: dict) -> list[str]:
     return [text for _, text in _evidence_notes(claim).values()]
 
 
+def _heading(who: dict, n: int, k: int) -> str:
+    """A study group's heading in the judges' evidence document (``evidence_document``)."""
+    out = f"Study {n} of {k}: {who['label']}"
+    if who["title"] and who["title"] != who["label"]:
+        out += f': "{who["title"]}"'
+    if who["year"]:
+        out += f" ({who['year']})"
+    if who["design"]:
+        out += f"; design {who['design']}"
+    return out + "".join(f"; {f} {v}" for f, v in who["arms"].items())
+
+
+def evidence_document(ps, claim: dict) -> str:
+    """The evidence the V-SUPPORT judges read: the claim's verified passages (``evidence_texts``, unchanged), grouped
+    by study in the order the evidence first cites each, every group headed by the study's identity
+    (``rk.production.synthesis.study_identities``): "Study 1 of 2: <label>: "<title>" (<year>); design <design>;
+    <arm field> <value>; ...". V-NUM still checks the passages only.
+
+    Calibration (synthesis across studies, 2026-11-13): given bare passages, the judges could not count the studies a
+    finding rests on nor tell which arm a passage is about (76 of 106 non-supported opinions on cross-study findings
+    turned on breadth; "the evidence text never names the groups")."""
+    # synthesis imports this module
+    from rk.production.synthesis import study_identities
+
+    by_study: dict[str, list[str]] = {}
+    for item, text in _evidence_notes(claim).values():
+        by_study.setdefault(item, []).append(text)
+    who = study_identities(ps, list(by_study))
+    return "\n\n".join(f"{_heading(who[item], n, len(by_study))}\n" + "\n\n".join(texts)
+                       for n, (item, texts) in enumerate(by_study.items(), 1))
+
+
 def verify_support(kernel, registry, ps, claim_id: str, *, actor: str,
                    judge_drivers: list[DriverSpec] | None = None, judge_providers: dict | None = None,
                    min_judges: int | None = None, checkpoint: bool = True,
@@ -108,7 +145,7 @@ def verify_support(kernel, registry, ps, claim_id: str, *, actor: str,
     if not texts:
         result = SupportResult(verdict="uncertain", min_judges=k, reason="no_evidence")
     else:
-        doc = "\n\n".join(texts)
+        doc = evidence_document(ps, claim)
         opinions = run_judges(kernel, registry, project=_slug(ps), claim_text=claim["text"], evidence_text=doc,
                               generator_vendor=claim.get("generator_vendor"), drivers=judge_drivers,
                               providers=judge_providers, run=run, exclude_vendors=exclude_vendors)

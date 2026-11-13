@@ -29,8 +29,12 @@ JudgeRunner = Callable[..., TaskResult]  # run_task's keyword interface without 
 INSTRUCTIONS = (
     "Decide whether the evidence supports the claim, using only the evidence text. Labels: supported (the evidence "
     "states or directly entails the claim), partial (the claim is broader, stronger or more specific than the "
-    "evidence), unsupported (the evidence does not address it), contradicted (the evidence says the opposite). In "
-    "quoted_spans copy, character for character, the evidence sentences or clauses your label rests on."
+    "evidence), unsupported (the evidence does not address it), contradicted (the evidence says the opposite). When "
+    "the evidence is grouped by study, each group opens with a heading line the kernel wrote from the study's record "
+    "and its extraction (its label, title, year, design and, where extracted, its arms or groups), followed by that "
+    "study's passages: use the headings to tell which study and which arm a passage is about and how many studies "
+    "the passages come from. In quoted_spans copy, character for character, the evidence sentences or clauses your "
+    "label rests on."
 )
 
 

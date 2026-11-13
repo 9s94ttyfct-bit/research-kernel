@@ -157,7 +157,7 @@ from rk.production.synthesis import (
     revisable,
     revise_lines,
     revise_problem,
-    study_label,
+    study_identities,
     synthesis_claims,
 )
 from rk.production.vote import vote
@@ -409,13 +409,6 @@ def _with_requests(ps: ProjectStore, attempt: int, reason: str) -> str:
     """``reason`` with the attempt's synthesis requests appended (when there are any)."""
     requests = synthesis_requests(ps, attempt)
     return f"{reason}; the Arguer asked synthesize for: {_requests_text(requests)}" if requests else reason
-
-
-def _design_fields(protocol: Protocol) -> list[str]:
-    """The extraction fields that name a study's design (``design``, ``study_design``, ``*_design``; never e.g.
-    ``design_effect``), category fields first."""
-    named = [f for f in protocol.extraction_schema if f.name.lower() == "design" or f.name.lower().endswith("_design")]
-    return [f.name for f in sorted(named, key=lambda f: f.type != "category")]
 
 
 # ---- inputs ----
@@ -1598,17 +1591,13 @@ class ArgueWorker:
     @staticmethod
     def _synthesis_subject(ps: ProjectStore, s: _Inputs, requests: list[dict]) -> dict:
         """What the judges see of the requests: the requests, the findings argued on, the included studies (label and
-        design: the value of a ``_design_fields`` field, else ``None``), the extraction schema and the
-        protocol's eligibility and date window."""
+        design: ``study_identities``), the extraction schema and the protocol's eligibility and date window."""
         row = frozen_protocol(ps)
         protocol = Protocol.model_validate(row["body"]) if row else None
-        design = _design_fields(protocol) if protocol else []
         read = stage_row(ps, "read_extract")
-        studies = []
-        for u in usable_evidence(ps, read["passed_attempt"]) if read and read["passed_attempt"] else []:
-            values = [r["value"] for f in design for r in u["values"] if r["field"] == f and r["problem"] is None]
-            studies.append({"item_id": u["item_id"], "label": study_label(ps, u["item_id"]),
-                            "design": values[0] if values else None})
+        usable = usable_evidence(ps, read["passed_attempt"]) if read and read["passed_attempt"] else []
+        who = study_identities(ps, [u["item_id"] for u in usable])
+        studies = [{"item_id": i, "label": x["label"], "design": x["design"]} for i, x in who.items()]
         svc = ArgumentService(ps)
         return {
             "requests": requests,

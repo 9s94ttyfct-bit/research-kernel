@@ -439,6 +439,50 @@ def study_label(ps: ProjectStore, item_id: str) -> str:
     return it.get("title") or item_id
 
 
+def design_fields(protocol: Protocol) -> list[str]:
+    """The extraction fields that name a study's design (``design``, ``study_design``, ``*_design``; never e.g.
+    ``design_effect``), category fields first."""
+    named = [f for f in protocol.extraction_schema if f.name.lower() == "design" or f.name.lower().endswith("_design")]
+    return [f.name for f in sorted(named, key=lambda f: f.type != "category")]
+
+
+# the words of an extraction field's name that make it a description of a study's arms or groups (``arm_fields``)
+ARM_WORDS = frozenset({"arm", "arms", "intervention", "interventions", "comparator", "comparators", "comparison",
+                       "control", "controls", "exposure", "exposures", "treatment", "treatments"})
+
+
+def arm_fields(protocol: Protocol) -> list[str]:
+    """The extraction fields that describe a study's arms or groups: a text or category field with one of
+    ``ARM_WORDS`` as a word of its name (``intervention``, ``control_group``, ``comparator_arm``), never a number field
+    such as ``mean_control``. The schema marks no field as an arm, so the names are the source."""
+    return [f.name for f in protocol.extraction_schema
+            if f.type != "number" and ARM_WORDS & set(f.name.lower().split("_"))]
+
+
+def study_identities(ps: ProjectStore, item_ids: list[str]) -> dict[str, dict]:
+    """item id -> what identifies the study to a reader of its passages: ``label`` (``study_label``), ``title``,
+    ``year`` and, from read_extract's passed attempt under the frozen protocol, ``design`` (the first usable value of a
+    ``design_fields`` field, else ``None``) and ``arms`` (each ``arm_fields`` field it has a usable value for -> the
+    value, two values joined by "; "; ``not_reported`` is no value). A study outside that attempt, or a project without
+    one, has no design and no arms."""
+    row = frozen_protocol(ps)
+    protocol = Protocol.model_validate(row["body"]) if row else None
+    design, arms = (design_fields(protocol), arm_fields(protocol)) if protocol else ([], [])
+    read = stage_row(ps, "read_extract")
+    usable = ({u["item_id"]: u for u in usable_evidence(ps, read["passed_attempt"])}
+              if (design or arms) and read and read["passed_attempt"] else {})
+    out = {}
+    for i in dict.fromkeys(item_ids):
+        it = _item(ps, i)
+        rows = [r for r in _usable_rows(usable[i]) if r["value"] not in (None, NOT_REPORTED)] if i in usable else []
+        found = [r["value"] for f in design for r in rows if r["field"] == f]
+        out[i] = {"label": study_label(ps, i), "title": it.get("title"), "year": it.get("year"),
+                  "design": found[0] if found else None,
+                  "arms": {f: "; ".join(str(r["value"]) for r in rows if r["field"] == f)
+                           for f in arms if any(r["field"] == f for r in rows)}}
+    return out
+
+
 def _usable_rows(study: dict) -> list[dict]:
     return [r for r in study["values"] if r["problem"] is None]
 
