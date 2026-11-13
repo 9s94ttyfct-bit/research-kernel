@@ -1089,10 +1089,10 @@ def test_subset_plan_gets_every_computable_study(env):
     stt = next(a for a in artifacts(ps, "synthesize", 1) if a["kind"] == "stt")
     assert stt["values"]["display"]["k"] == 3  # the uncomputable study is not added
     assert _analysis_deviations(ps) == []
-    # the voters see the studies the kernel added, and that the planner did not assess them for comparability
+    # the voters see the studies the kernel added, and why it added them
     subject = next(c for c in ex.calls if c["schema"] == "VoteOut")["inputs"]["subject"]
     assert subject["added_by_kernel"] == ["Rosenthal 1952"] and subject["left_out"] == []
-    assert "not assessed for comparability" in subject["note"]
+    assert "same outcome and comparison" in subject["note"]
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
 
 
