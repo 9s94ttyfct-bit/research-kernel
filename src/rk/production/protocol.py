@@ -77,6 +77,13 @@ each source (``SEARCHED_IN``); the Scout (``STRATEGY_TASK``) builds each query f
 group of synonyms, only concepts every eligible record names in its title or abstract, and narrows by tightening a
 concept or dropping the broadest query, never by adding a concept.
 
+Calibration (search and screening, 2026-11-12, ``docs/eval/search-screen-2026-11-12.md``): the Scout's queries
+together find every record that may meet the eligibility criteria, and screening applies the criteria, so a query need
+not express each of them. An outcome is ANDed only when it is the subject of the question, and then with its broader
+names; a class concept lists its common members; a context such as the diet is not ANDed unless a criterion requires
+it; narrowing keeps the population or condition and the intervention or exposure concepts (``STRATEGY_TASK``, the
+P1 over-cap rerun reason).
+
 Calibration 3 (P1 protocol rerun 4, 2026-11-12, ``docs/eval/p1-protocol-rerun-4-2026-11-12.md``):
 
 - The kernel writes the PRISMA-P title and contributors of a systematic or scoping review (``kernel_prisma_p``,
@@ -302,22 +309,31 @@ DRAFT_TASK = (
 # Calibration (search scope, 2026-11-12): strategies written for the full-text search and narrowed to fit the cap lost
 # recall when searched in titles and abstracts (a long unquoted query found no Europe PMC record); the Scout builds
 # each query from concepts every eligible record names in its title or abstract, and narrows by tightening a concept.
+# Calibration (search and screening, 2026-11-12): the queries find what the criteria may admit (an outcome ANDed only
+# when it is the question's subject, a class with its members, no context ANDed); narrowing keeps the population and
+# the intervention concepts.
 STRATEGY_TASK = (
-    "Write the search strategy for the protocol: at least 3 English search queries that together cover the research "
-    "question and the eligibility criteria, at least 2 sources taken from `available_sources` exactly as given, and "
+    "Write the search strategy for the protocol: at least 3 English search queries that together find every record "
+    "that may meet the eligibility criteria (screening applies the criteria, so a query need not express each of "
+    "them), at least 2 sources taken from `available_sources` exactly as given, and "
     "the publication-year range (date_from, date_to; null for an open end). The kernel searches OpenAlex and Europe "
     "PMC in titles and abstracts (OpenAlex also in the keywords it tags works with), so build each query as a few "
     "concepts joined by AND, each concept an OR group of its synonyms and spelling variants, the singular and the "
     "plural of a quoted phrase included (\"trans fatty acid\" OR \"trans fatty acids\": Europe PMC does not stem "
     "phrases), and AND only the concepts every eligible record names in its title or abstract (the population or "
-    "condition, the intervention or exposure, and the study design only when the eligibility requires it); no bare "
-    "unquoted string of many words, and no field tags. When a previous draft is given (with the record counts of its "
+    "condition, the intervention or exposure, and the study design only when the eligibility requires it). An outcome "
+    "or measure is a concept to AND only when it is the subject of the question; then its OR group includes its "
+    "broader names too, since a record reports a measure under its general name (\"blood pressure\" OR hypertension "
+    "for a systolic-pressure outcome). A concept that names a class (a drug class, a food group, a family of "
+    "methods) lists the common members a record may name instead of the class (statin OR statins OR atorvastatin OR "
+    "simvastatin OR rosuvastatin). A context such as the diet, the vehicle or the setting is not ANDed unless an "
+    "eligibility criterion requires it. No bare unquoted string of many words, and no field tags. When a previous draft is given (with the record counts of its "
     "queries), revise its strategy: change only what the guidance asks for. When `narrowing` is given, the record-cap "
     "probe of the previous draft's strategy (`total`: the record counts of each query on each counted source within "
     "its years, summed, an upper bound since duplicates count again) is above `record_cap`: return a narrower "
     "strategy with fewer records. Tighten a concept (a quoted phrase for a loose synonym, keeping its singular and "
     "plural) or drop the broadest query (`counts` shows which); never add a concept a relevant record may not name in "
-    "its title or abstract; keep every eligibility criterion covered. A strategy that repeats one already tried or "
+    "its title or abstract; keep the population or condition and the intervention or exposure concepts. A strategy that repeats one already tried or "
     "does not lower the total below the best so far is a failed try (`failed_tries` lists them). Keep every source in "
     "`keep_sources` (the PRISMA-P texts name them): narrow the queries, not those sources. The kernel runs the "
     "searches; do not search yourself. Follow the guidance when there is any. When `open_points` is given (the "
@@ -1597,8 +1613,8 @@ def _over_cap_reason(best: dict, tries: int) -> str:
             f"the record cap {cap}, after {tries} narrowing tries, and P1 does not vote on a protocol the probe shows "
             "above the cap: narrow the search strategy to fewer records (tighten a concept, keeping the singular and "
             "plural of a quoted phrase, or drop the broadest query, which the probe's counts show; never add a "
-            "concept a relevant record may not name in its title or abstract) and keep every eligibility criterion "
-            "covered")
+            "concept a relevant record may not name in its title or abstract) and keep the population or condition "
+            "and the intervention or exposure concepts")
 
 
 def _revise_reason(res: VoteResult) -> str:
