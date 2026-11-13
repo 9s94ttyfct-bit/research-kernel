@@ -16,7 +16,7 @@ from rk.canon import canonical_json
 from rk.ids import new_id
 from rk.library.models import Item
 from rk.library.service import Library, fts_append
-from rk.net.http import HttpError
+from rk.net.http import HttpClient, HttpError
 from rk.sources import arxiv, europepmc, openalex, pubmed
 from rk.sources.identifiers import Identifier
 from rk.sources.resolver import SourceContext
@@ -88,7 +88,30 @@ def _looks_pdf(body: bytes, ctype: str) -> bool:
     return body[:5] == b"%PDF-" or "pdf" in ctype
 
 
+def _html_snapshot(ps: ProjectStore, http: HttpClient, item_id: str, url: str, actor: str, *,
+                   min_chars: int = 500) -> FulltextResult | None:
+    """The page at ``url`` as the item's text layer (kind ``html``) when it is HTML with more than ``min_chars``
+    characters of text, else ``None``; an HTTP error is ``None`` too."""
+    try:
+        res = http.get(url)
+    except HttpError:
+        return None
+    if res.status != 200 or "html" not in res.content_type:
+        return None
+    layer = html_to_layer(res.body.decode("utf-8", "replace"), "")
+    if len(layer.pages[0].text) <= min_chars:
+        return None
+    return _record_snapshot(ps, item_id, res.body, layer, "html", url, actor)
+
+
 def fetch_fulltext(ps: ProjectStore, lib: Library, ctx: SourceContext, item_id: str, *, actor: str) -> FulltextResult | None:
+    """The open-access API channels, in order: an item without a PMCID looks it up (by DOI in OpenAlex, else by PMID
+    in Europe PMC: ``europepmc.by_pmid``), then by PMCID Europe PMC's full-text XML (JATS), PMC's BioC and PMC's
+    article page, then arXiv's HTML, then the item's open-access PDF URLs. ``None`` when none has the text.
+
+    Calibration (full-text screening, 2026-11-13, docs/eval/ft-screening-2026-11-13.md): the 36 abstract-only records
+    with a PMCID across the srrepro9 projects were free PMC articles outside PMC's open-access subset, for which
+    Europe PMC's full-text XML answers 500 and BioC "No result"; PMC's article page shows their text."""
     item = lib.get(item_id)
     http = ctx.http
     if not item.ids.pmcid and item.ids.doi:
@@ -98,6 +121,14 @@ def fetch_fulltext(ps: ProjectStore, lib: Library, ctx: SourceContext, item_id: 
             oa = None
         if oa:
             lib.add_item(oa.item, added_by="agent", actor=actor)
+            item = lib.get(item_id)
+    if not item.ids.pmcid and item.ids.pmid:
+        try:
+            med = europepmc.by_pmid(http, item.ids.pmid)
+        except HttpError:
+            med = None
+        if med is not None and med.ids.pmcid:
+            lib.add_item(med, added_by="agent", actor=actor)
             item = lib.get(item_id)
     if item.ids.pmcid:
         try:
@@ -118,16 +149,10 @@ def fetch_fulltext(ps: ProjectStore, lib: Library, ctx: SourceContext, item_id: 
             layer = bioc_to_layer(doc, "")
             if layer.pages[0].text.strip():
                 return _record_snapshot(ps, item.id, raw, layer, "bioc", f"{pubmed.BIOC}/{item.ids.pmcid}/unicode", actor)
-    if item.ids.arxiv:
-        url = arxiv.html_url(item.ids.arxiv)
-        try:
-            res = http.get(url)
-        except HttpError:
-            res = None
-        if res is not None and res.status == 200 and "html" in res.content_type:
-            layer = html_to_layer(res.body.decode("utf-8", "replace"), "")
-            if len(layer.pages[0].text) > 500:
-                return _record_snapshot(ps, item.id, res.body, layer, "html", url, actor)
+        if (page := _html_snapshot(ps, http, item.id, pubmed.pmc_article_url(item.ids.pmcid), actor)) is not None:
+            return page
+    if item.ids.arxiv and (page := _html_snapshot(ps, http, item.id, arxiv.html_url(item.ids.arxiv), actor)):
+        return page
     for url in item.oa_urls:
         try:
             res = http.get(url, ttl_s=0)

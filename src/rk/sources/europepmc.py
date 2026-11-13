@@ -1,4 +1,4 @@
-"""Europe PMC adapter: search and open-access full-text XML.
+"""Europe PMC adapter: search, open-access full-text XML, and a MEDLINE record by PMID (``by_pmid``).
 
 Calibration (search scope, 2026-11-12): searches and counts match a query in titles and abstracts (``TITLE_ABS:( … )``),
 not also in open-access full text as a bare query does; a systematic review searches titles and abstracts
@@ -165,6 +165,19 @@ def abstracts(http: HttpClient, dois: list[str]) -> dict[str, str]:
             if d is not None and d not in out and (text := plain_text(r.get("abstractText"))):
                 out[d] = text
     return out
+
+
+def by_pmid(http: HttpClient, pmid: str) -> ItemIn | None:
+    """The MEDLINE record of ``pmid`` (``EXT_ID:… AND SRC:MED``, the core result, which carries its PMCID when the work
+    is in PMC), or ``None`` when Europe PMC has none. An HTTP error raises (``HttpClient.get_json``). Calibration
+    (full-text screening, 2026-11-13): an item with a PMID and no PMCID looks its PMCID up here before its full text
+    is sought."""
+    if not pmid.isdigit():
+        return None
+    data, _ = http.get_json(f"{BASE}/search", {"query": f"EXT_ID:{pmid} AND SRC:MED", "format": "json",
+                                               "resultType": "core", "pageSize": 1})
+    rows = ((data or {}).get("resultList") or {}).get("result", [])
+    return result_to_item(rows[0]) if rows and str(rows[0].get("pmid")) == pmid else None
 
 
 def fulltext_xml(http: HttpClient, pmcid: str) -> bytes | None:
