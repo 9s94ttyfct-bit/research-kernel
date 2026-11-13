@@ -24,15 +24,20 @@ rules), V-PRISMA and the gate.
      include, so both unclear or the same direction is no difference; ``switches_to_dual``), every remaining record
      is screened by both screeners. The sample, its differences and the switch are noted (``scoping_sample``);
    - critical review and research proposal: single; the screener's reason is the selection reason.
-5. Records go to a screener in batches of ``BATCH`` (title, abstract, year, venue, language). Every decision is a
-   ``screening.decided``. A decision on a record that is not in the batch, or a second one on a record, is ignored and
-   noted (``stray_decision``); so is a decision without the reason its selection needs (``unreasoned``: for the
-   PRISMA types an exclusion with a blank reason, at full text unless it names its criterion; for the others any
-   decision with a blank reason), noted ``unreasoned_decision``. The records a batch's output leaves out (a failed
-   task leaves out all of them) go to that screener once more, in new batches (a reasonless one with ``asked_again``
-   saying why); a record still undecided is noted (``missing_decision``) and gets the record's ``problem``, and counts
-   as ``unclear`` in single screening (so it goes to the full text, or is included at full text; the final's reason
-   states that rule and is its selection reason) and as a disagreement in dual screening.
+5. Calibration (search and screening, 2026-11-12): before title/abstract screening, once per attempt, a record whose
+   item has no abstract gets the one a source has (``fill_abstracts``): by PMID from PubMed ``efetch``, else by DOI
+   from Europe PMC, written to the item as an ``item.merged`` naming the source. A failed lookup is added to the
+   record's ``problem`` (the per-item boundary), never fatal; the note ``abstracts_filled`` says what was sought,
+   filled by source and failed. Records go to a screener in batches of ``BATCH`` (title, abstract, year, venue,
+   language). Every decision is a ``screening.decided``. A decision on a record that is not in the batch, or a second
+   one on a record, is ignored and noted (``stray_decision``); so is a decision without the reason its selection
+   needs (``unreasoned``: for the PRISMA types an exclusion with a blank reason, at full text unless it names its
+   criterion; for the others any decision with a blank reason), noted ``unreasoned_decision``. The records a batch's
+   output leaves out (a failed task leaves out all of them) go to that screener once more, in new batches (a
+   reasonless one with ``asked_again`` saying why); a record still undecided is noted (``missing_decision``) and gets
+   the record's ``problem``, and counts as ``unclear`` in single screening (so it goes to the full text, or is
+   included at full text; the final's reason states that rule and is its selection reason) and as a disagreement in
+   dual screening.
 6. The final decision of a record (``screening.final``):
    - dual: both yes, or yes and unclear: include (``agreement``); both no: exclude (``agreement``); otherwise
      (yes and no, both unclear, no and unclear, a missing decision): a disagreement;
@@ -92,6 +97,7 @@ from rk.checkpoints import (
 )
 from rk.discovery.boundary import per_item
 from rk.discovery.models import Intake
+from rk.discovery.sources import ABSTRACT_SOURCES
 from rk.discovery.store import intake_of
 from rk.fulltext import latest_snapshot
 from rk.library.service import Library
@@ -128,6 +134,7 @@ from rk.production.store import (
     voted_out,
 )
 from rk.production.vote import vote
+from rk.sources import europepmc, pubmed
 from rk.store.project import ProjectStore
 from rk.verify.prisma import check_prisma, check_selection_reasons, flow, prisma_counts
 
@@ -268,6 +275,51 @@ def record_input(lib: Library, rec: dict) -> dict:
     if note := language_note(rec["language"]):
         out["language_note"] = note
     return out
+
+
+def _lookup_id(lib: Library, item_id: str, source: str) -> str | None:
+    ids = lib.get(item_id).ids
+    return ids.pmid if source == "pubmed" else ids.doi
+
+
+LOOKUP_BATCH = {"pubmed": pubmed.EFETCH_BATCH, "europepmc": europepmc.DOI_BATCH}  # ids per abstract lookup
+
+
+def fill_abstracts(ctx: StageContext, recs: list[dict]) -> None:
+    """Give the records of ``recs`` whose item has no abstract the one a source has, before title/abstract screening:
+    by PMID from PubMed, then the rest by DOI from Europe PMC (``ABSTRACT_SOURCES``), ``LOOKUP_BATCH`` ids a lookup.
+    Each abstract found goes to its item (``Library.fill_abstract``, naming the source). A lookup runs inside the
+    per-item boundary: its failure is added to the problem of each record it asked for, never fatal. Once per attempt:
+    the note ``abstracts_filled`` (the records ``sought``, those ``filled`` by source, and those ``failed``: a lookup
+    failed and they are still without an abstract) marks it done, so the phase run again fetches nothing twice."""
+    if screening_notes(ctx.ps, ctx.attempt, kind="abstracts_filled", phase=TITLE_ABSTRACT):
+        return
+    lib = ctx.lib
+    sought = [r for r in recs if not (lib.get(r["item_id"]).abstract or "").strip()]
+    left = list(sought)
+    filled: dict[str, list[str]] = {s: [] for s in ABSTRACT_SOURCES}
+    failed: set[str] = set()
+
+    def lookup(source: str, ids: list[str]) -> dict[str, str]:
+        return ctx.sources.abstracts(source, ids)
+
+    for source in ABSTRACT_SOURCES:
+        ask = [(r, ident) for r in left if (ident := _lookup_id(lib, r["item_id"], source))]
+        for i in range(0, len(ask), LOOKUP_BATCH[source]):
+            chunk = ask[i:i + LOOKUP_BATCH[source]]
+            got, err = per_item(f"abstract lookup in {source}", lambda s=source, c=chunk: lookup(s, [x for _, x in c]))
+            for r, ident in chunk:
+                if err:
+                    failed.add(r["id"])
+                    _add_problem(ctx, r["id"], err)
+                elif (text := (got or {}).get(ident)) and lib.fill_abstract(r["item_id"], text, source=source,
+                                                                           actor=ctx.actor):
+                    filled[source].append(r["id"])
+        done = set(filled[source])
+        left = [r for r in left if r["id"] not in done]
+    still = {r["id"] for r in left}
+    _note(ctx, TITLE_ABSTRACT, "abstracts_filled", sought=[r["id"] for r in sought], filled=filled,
+          failed=[r["id"] for r in sought if r["id"] in failed and r["id"] in still])
 
 
 # ---- full text ----
@@ -709,6 +761,7 @@ class SearchScreenWorker:
                 set_final(ps, rid, ctx.attempt, phase, "no", "rule", "language", actor=ctx.actor)
         eligible = [r for r in record_ids if r not in language]
         recs = {r["id"]: r for r in deduplicated(ps, ctx.attempt)}
+        fill_abstracts(ctx, [recs[rid] for rid in eligible])
         inputs = {rid: record_input(ctx.lib, recs[rid]) for rid in eligible}
         # the work of the interrupted attempts right before this one (rk.production.resume), by record of this one
         by_item = carried_screening(ps, ctx.stage, ctx.attempt, protocol_hash, phase)

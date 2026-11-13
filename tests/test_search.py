@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 from urllib.parse import parse_qs, urlsplit
@@ -30,7 +31,7 @@ from rk.production.search import (
     run_strategy,
     search_counts,
 )
-from rk.sources import arxiv, pubmed, resolver
+from rk.sources import arxiv, europepmc, pubmed, resolver
 from rk.sources.identifiers import Identifier
 from rk.sources.resolver import SourceContext, check_limits
 from rk.store import db as db_mod
@@ -581,6 +582,25 @@ def test_pubmed_abstracts_body_that_is_no_article_set_is_a_bad_body(tmp_path):
     http, _ = _client(tmp_path, lambda req: httpx.Response(200, content=b"<html>busy</html>"))
     with pytest.raises(BadBody):
         pubmed.abstracts(http, ["11"])
+    http.close()
+
+
+def test_europepmc_abstracts_by_doi_batch_their_dois_with_or(tmp_path):
+    def respond(req):
+        dois = re.findall(r'DOI:"([^"]+)"', _params(req)["query"])
+        rows = [{"doi": d.upper(), "abstractText": f"Abstract of {d}."} for d in dois if not d.endswith("none")]
+        rows.append({"doi": "10.1000/unasked", "abstractText": "Not one of ours."})
+        return httpx.Response(200, json={"hitCount": len(rows), "resultList": {"result": rows}})
+
+    http, seen = _client(tmp_path, respond)
+    dois = [f"10.1000/d{n}" for n in range(30)] + ["10.1000/none"]
+    got = europepmc.abstracts(http, dois)
+    assert got == {f"10.1000/d{n}": f"Abstract of 10.1000/d{n}." for n in range(30)}  # by the DOI asked for
+    assert [len(re.findall("DOI:", _params(r)["query"])) for r in seen] == [25, 6]
+    first = _params(seen[0])
+    assert first["query"].startswith('DOI:"10.1000/d0" OR DOI:"10.1000/d1" OR ')
+    assert (first["resultType"], first["format"]) == ("core", "json") and int(first["pageSize"]) >= 25
+    assert europepmc.abstracts(http, []) == {} and len(seen) == 2
     http.close()
 
 

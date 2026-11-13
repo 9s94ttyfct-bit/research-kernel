@@ -720,3 +720,90 @@ def test_rate_capped_search_screen_with_merged_hits_stores_no_record_twice(env):
     assert latest_attempt(ps, "search_screen") == 1
     assert _record_count(ps) == stored and search_counts(ps, 1) == counts
     assert SearchScreenWorker().gate(ps, 1).ok
+
+
+# ---- calibration (search and screening, 2026-11-12): missing abstracts are fetched before title/abstract screening
+def _bare(title: str, i: int, **ids) -> ItemIn:
+    return ItemIn(title=title, year=2010 + i, venue="Age Ageing", abstract=None, ids=Ids(**ids))
+
+
+def _screened(ex, title: str) -> dict:
+    return next(r for c in ex.of("screener_a") for r in c["inputs"]["records"] if r["title"] == title)
+
+
+def test_missing_abstracts_are_fetched_by_pmid_then_by_doi(env):  # critical_review, P1
+    _, ps, lib = env
+    _freeze(ps)
+    works = [_bare("Aspirin pmid [yes/-]", 1, pmid="111", doi="10.1000/p1"),
+             _bare("Aspirin doi only [yes/-]", 2, doi="10.1000/d2"),
+             _bare("Aspirin pmid without one [yes/-]", 3, pmid="333", doi="10.1000/p3"),
+             _bare("Aspirin no identifier [yes/-]", 4), _work("Aspirin has one [yes/-]", 5)]
+    src = FakeSources({"aspirin": works}, abstracts={
+        ("pubmed", "111"): "BACKGROUND: from PubMed.", ("europepmc", "10.1000/d2"): "From Europe PMC.",
+        ("europepmc", "10.1000/p3"): "From Europe PMC by DOI.", ("europepmc", "10.1000/p1"): "Not asked."})
+    ex = Screeners()
+    out = SearchScreenWorker().run(_ctx(env, ex, src))
+
+    assert out.status == "done"
+    assert _screened(ex, "Aspirin pmid [yes/-]")["abstract"] == "BACKGROUND: from PubMed."
+    assert _screened(ex, "Aspirin doi only [yes/-]")["abstract"] == "From Europe PMC."
+    assert _screened(ex, "Aspirin pmid without one [yes/-]")["abstract"] == "From Europe PMC by DOI."
+    assert _screened(ex, "Aspirin no identifier [yes/-]")["abstract"] == ""
+    asked = [c for c in src.calls if c[0] == "abstracts"]
+    assert asked == [("abstracts", "pubmed", ("111", "333")), ("abstracts", "europepmc", ("10.1000/d2", "10.1000/p3"))]
+    t = {v: k for k, v in _titles(env).items()}
+    (note,) = screening_notes(ps, 1, kind="abstracts_filled")
+    assert note["phase"] == TA
+    assert sorted(note["sought"]) == sorted(t[x] for x in ("Aspirin pmid [yes/-]", "Aspirin doi only [yes/-]",
+                                                          "Aspirin pmid without one [yes/-]",
+                                                          "Aspirin no identifier [yes/-]"))
+    assert note["filled"] == {"pubmed": [t["Aspirin pmid [yes/-]"]],
+                              "europepmc": [t["Aspirin doi only [yes/-]"], t["Aspirin pmid without one [yes/-]"]]}
+    assert note["failed"] == []
+    # each abstract is an item.merged naming its source
+    merged = [e.payload for e in ps.log.iter() if e.type == "item.merged" and "source" in e.payload]
+    assert sorted((p["source"], p["abstract"]) for p in merged) == [
+        ("europepmc", "From Europe PMC by DOI."), ("europepmc", "From Europe PMC."),
+        ("pubmed", "BACKGROUND: from PubMed.")]
+    item = {r["id"]: r["item_id"] for r in store.records(ps, 1)}
+    assert lib.get(item[t["Aspirin pmid [yes/-]"]]).abstract == "BACKGROUND: from PubMed."
+
+    # run again in the attempt: the note is found, nothing is fetched twice
+    n = len(src.calls)
+    SearchScreenWorker().run(_ctx(env, Screeners(), src))
+    assert not [c for c in src.calls[n:] if c[0] == "abstracts"]
+    assert len(screening_notes(ps, 1, kind="abstracts_filled")) == 1
+
+
+def test_failed_abstract_lookup_is_the_records_problem_and_screening_goes_on(env):  # critical_review, P1
+    _, ps, _ = env
+    _freeze(ps)
+    works = [_bare("Aspirin pmid [yes/-]", 1, pmid="111"), _bare("Aspirin both ids [yes/-]", 2, pmid="222",
+                                                                 doi="10.1000/b2")]
+    src = FakeSources({"aspirin": works}, abstracts={("europepmc", "10.1000/b2"): "From Europe PMC."},
+                      abstract_failures=frozenset({"pubmed"}))
+    ex = Screeners()
+    out = SearchScreenWorker().run(_ctx(env, ex, src))
+
+    assert out.status == "done"
+    t = {v: k for k, v in _titles(env).items()}
+    assert _screened(ex, "Aspirin pmid [yes/-]")["abstract"] == ""
+    assert _screened(ex, "Aspirin both ids [yes/-]")["abstract"] == "From Europe PMC."  # the DOI after PubMed failed
+    problem = store.record_row(ps, t["Aspirin pmid [yes/-]"])["problem"]
+    assert "abstract lookup in pubmed failed (HttpError" in problem
+    (note,) = screening_notes(ps, 1, kind="abstracts_filled")
+    assert note["failed"] == [t["Aspirin pmid [yes/-]"]]
+    assert note["filled"] == {"pubmed": [], "europepmc": [t["Aspirin both ids [yes/-]"]]}
+
+
+def test_a_resumed_attempt_checks_the_records_still_without_an_abstract(env):  # critical_review, P1
+    _, ps, _ = env
+    _freeze(ps)
+    works = [_bare("Aspirin found [yes/-]", 1, pmid="111"), _bare("Aspirin not found [yes/-]", 2, pmid="222")]
+    src = FakeSources({"aspirin": works}, abstracts={("pubmed", "111"): "From PubMed."})
+    capped = CappedAt("screener_a", 1)
+    with pytest.raises(RateCapped):
+        SearchScreenWorker().run(_ctx(env, capped, src))  # attempt 1 is interrupted (no stage.ran)
+    n = len(src.calls)
+    SearchScreenWorker().run(_ctx(env, Screeners(), src, attempt=2))
+    assert [c for c in src.calls[n:] if c[0] == "abstracts"] == [("abstracts", "pubmed", ("222",))]

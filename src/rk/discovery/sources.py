@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 HITS_COLLECTION = "Search hits"
 CITED_BY_LIMIT = 25  # citing works per cited_by lookup (one OpenAlex page)
 COUNTED_SOURCES = ("openalex", "europepmc", "pubmed")  # the sources ``count`` can size a query on
+ABSTRACT_SOURCES = ("pubmed", "europepmc")  # the sources ``abstracts`` looks abstracts up in, by PMID and by DOI
 
 
 class DiscoverySources(Protocol):
@@ -43,6 +44,11 @@ class DiscoverySources(Protocol):
         """How many works ``query`` matches on ``source`` (one of ``COUNTED_SOURCES``; another raises
         ``ValueError``), published in the years ``date_from``..``date_to`` (inclusive; None: open) when given;
         ``None`` when the source gave no count."""
+        ...
+
+    def abstracts(self, source: str, ids: list[str]) -> dict[str, str]:
+        """The abstracts ``source`` (one of ``ABSTRACT_SOURCES``; another raises ``ValueError``) has for ``ids``
+        (PMIDs for ``pubmed``, DOIs for ``europepmc``), by id as given; an id without one is left out."""
         ...
 
     def verify(self, item_id: str) -> str: ...
@@ -99,6 +105,15 @@ class KernelSources:
         if source == "pubmed":
             return pubmed.count(ctx.http, query, date_from=date_from, date_to=date_to)
         raise ValueError(f"no record count for source {source!r}; counted: {', '.join(COUNTED_SOURCES)}")
+
+    def abstracts(self, source: str, ids: list[str]) -> dict[str, str]:
+        """PubMed ``efetch`` abstracts by PMID, or Europe PMC abstracts by DOI."""
+        http = self.kernel.ctx().http
+        if source == "pubmed":
+            return pubmed.abstracts(http, ids)
+        if source == "europepmc":
+            return europepmc.abstracts(http, ids)
+        raise ValueError(f"no abstract lookup in source {source!r}; looked up in: {', '.join(ABSTRACT_SOURCES)}")
 
     def verify(self, item_id: str) -> str:
         """V-REF and V-RETRACT for the item (recorded, and written to the item); returns its ``ref_status``."""

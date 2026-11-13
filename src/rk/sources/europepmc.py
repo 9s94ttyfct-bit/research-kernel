@@ -2,7 +2,11 @@
 
 Calibration (search scope, 2026-11-12): searches and counts match a query in titles and abstracts (``TITLE_ABS:( … )``),
 not also in open-access full text as a bare query does; a systematic review searches titles and abstracts
-(docs/eval/search-scope-2026-11-12.md)."""
+(docs/eval/search-scope-2026-11-12.md).
+
+Calibration (search and screening, 2026-11-12): ``abstracts`` looks up the abstracts of works by DOI (``DOI:"…"``,
+``DOI_BATCH`` DOIs joined with OR a request, the core result), for the records still without one before title/abstract
+screening."""
 
 from __future__ import annotations
 
@@ -10,8 +14,10 @@ import re
 
 from rk.library.models import Creator, Ids, ItemIn
 from rk.net.http import HttpClient
+from rk.sources.identifiers import normalize_doi
 
 BASE = "https://www.ebi.ac.uk/europepmc/webservices/rest"
+DOI_BATCH = 25  # DOIs a lookup ORs together
 
 
 def _kind(r: dict) -> tuple[str, str | None]:
@@ -122,6 +128,26 @@ def count(http: HttpClient, query: str, *, date_from: int | None = None, date_to
                                                "resultType": "idlist", "pageSize": 1})
     n = (data or {}).get("hitCount")
     return int(n) if isinstance(n, int | str) and str(n).isdigit() else None
+
+
+def abstracts(http: HttpClient, dois: list[str]) -> dict[str, str]:
+    """The abstracts of the works with these DOIs, by the DOI as given: ``DOI_BATCH`` DOIs a request, joined with OR
+    (``resultType`` core, which carries ``abstractText``). A DOI without a record or an abstract is left out; when
+    several records have the DOI, the first with an abstract counts. An HTTP error raises (``HttpClient.get_json``)."""
+    out: dict[str, str] = {}
+    wanted = {d: normalize_doi(d) for d in dois if '"' not in d}
+    asked = [d for d, n in wanted.items() if n]
+    for i in range(0, len(asked), DOI_BATCH):
+        chunk = asked[i:i + DOI_BATCH]
+        by_norm = {wanted[d]: d for d in chunk}
+        data, _ = http.get_json(f"{BASE}/search", {"query": " OR ".join(f'DOI:"{d}"' for d in chunk),
+                                                   "format": "json", "resultType": "core",
+                                                   "pageSize": 4 * DOI_BATCH})
+        for r in ((data or {}).get("resultList") or {}).get("result", []):
+            d = by_norm.get(normalize_doi(r.get("doi")) or "")
+            if d is not None and d not in out and (text := (r.get("abstractText") or "").strip()):
+                out[d] = text
+    return out
 
 
 def fulltext_xml(http: HttpClient, pmcid: str) -> bytes | None:
