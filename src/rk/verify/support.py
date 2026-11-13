@@ -151,7 +151,8 @@ def verify_support(kernel, registry, ps, claim_id: str, *, actor: str,
                               providers=judge_providers, run=run, exclude_vendors=exclude_vendors,
                               span_text="\n\n".join(texts))  # the headings are the kernel's, not evidence
         verdict = combine(opinions, min_judges=k)
-        nums = check_numbers(claim["text"], texts)
+        nums = check_numbers(claim["text"], texts,  # a count of the cited studies is grounded by the citations
+                             counts={len({item for item, _ in _evidence_notes(claim).values()})})
         if verdict == "supported" and not nums.ok:
             verdict = "uncertain"
         result = SupportResult(verdict=verdict, opinions=opinions, numbers_ok=nums.ok,

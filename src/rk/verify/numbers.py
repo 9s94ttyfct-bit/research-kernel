@@ -12,7 +12,7 @@ and "41%" matches 41.3, but "1" does not match 0.62. Artifact values carry no un
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 
 from pydantic import BaseModel
 
@@ -132,9 +132,13 @@ def matches_value(n: Num, value: float) -> bool:
     return 0 < step <= abs(value) and abs(value - n.value) <= step / 2 * (1 + 1e-9) + 1e-12 * abs(value)
 
 
-def check_numbers(claim_text: str, evidence_texts: list[str]) -> NumResult:
+def check_numbers(claim_text: str, evidence_texts: list[str], *, counts: Collection[int] = ()) -> NumResult:
+    """Every number in ``claim_text`` must be in ``evidence_texts``, or be one of ``counts`` written without a unit:
+    V-SUPPORT passes the claim's count of distinct cited studies, so "in 3 of the cited studies" is grounded by the
+    evidence's three studies (synthesis across studies, 2026-11-13, fix round 1)."""
     pool = [n for t in evidence_texts for n in extract_numbers(t)]
-    ungrounded = [n for n in extract_numbers(claim_text) if not any(same_number(n, e) for e in pool)]
+    ungrounded = [n for n in extract_numbers(claim_text) if not any(same_number(n, e) for e in pool)
+                  and not (n.unit is None and n.value in counts)]
     return NumResult(ok=not ungrounded, ungrounded=ungrounded)
 
 
