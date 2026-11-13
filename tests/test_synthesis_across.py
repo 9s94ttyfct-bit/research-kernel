@@ -163,6 +163,7 @@ def test_the_judges_see_each_passage_under_its_study(env, labels, verdict):
     assert row["verdict"] == verdict
     assert "grouped by study" in INSTRUCTIONS
     _topic_free(INSTRUCTIONS)
+    _topic_free((Path(rk.__file__).parent / "roles" / "judge.md").read_text())
 
 
 @pytest.mark.parametrize("env", [{"paper_type": "critical_review"}], indirect=True)
@@ -270,6 +271,7 @@ def test_the_synthesis_request_vote_sees_how_many_studies_have_values(env):
         "fields": {"design": 2, "intervention": 1, "control": 0},
         "outcomes": [{"outcome": "arms", "fields": ["intervention", "control"], "studies": 0}]}
     assert "usable_values" in SYNTHESIS_QUESTION
+    _topic_free(SYNTHESIS_QUESTION)
 
 
 # ---- Task 4: kernel direction counts for systematic reviews ----
@@ -523,3 +525,4 @@ def test_the_protocol_maps_a_field_pair_for_every_outcome():
     ideator = (Path(rk.__file__).parent / "roles" / "ideator.md").read_text()
     assert '"intervention"' in ideator
     _topic_free(IDEATOR_TASK)
+    _topic_free(ideator)

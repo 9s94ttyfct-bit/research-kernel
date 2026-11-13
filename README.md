@@ -325,15 +325,18 @@ reopened: a back-edge to it fails the run, in P1 and P2.
   narrative synthesis, and every fallback is an analysis deviation from the frozen protocol and a limitation. A study
   of a group missing a value its effect measure needs sends synthesize back to read_extract once (per study and field
   set, per protocol version), and read_extract reads only that study again. A scoping review gets an evidence map.
-  A systematic review, whatever its method, maps every outcome to a field pair (`intervention` and `comparator`
-  fields; a meta-analysis outcome's means or arm risks), and the kernel counts per outcome the studies whose values
-  are higher, lower or the same with the intervention: vote counting by direction of effect (SWiM), a `stat_result`
-  claim checked by V-STATS and V-NUM, never a pooled estimate or a significance test. The Arguer writes a finding
-  about several studies citing every study it counts (or worded for the studies it cites) and puts statements about
-  the evidence itself (sparse, not pooled, heterogeneous) in its scope limits; past 400 notes it is given an equal
-  share of each study's notes, every study still listed with its values.
+  In a systematic review, whatever its method, an outcome may map a field pair (`intervention` and `comparator`
+  fields; a meta-analysis outcome's means or arm risks), and the Ideator is told to map one for each outcome. For each
+  outcome with a pair, the kernel counts the studies whose values are higher, lower or the same with the
+  intervention: vote counting by direction of effect (SWiM), a `stat_result` claim checked by V-STATS and V-NUM,
+  never a pooled estimate or a significance test, and a table in the exported paper. An outcome without a pair gets
+  no count. A study whose values are not two numbers is left out of the count with the reason (a limitation). The
+  Arguer writes a finding about several studies citing every study it counts (or worded for the studies it cites) and
+  puts statements about the evidence itself (sparse, not pooled, heterogeneous) in its scope limits; past 400 notes it
+  is given an equal share of each study's notes, every study still listed with its values.
   Each finding is a claim with its evidence, checked by V-SUPPORT (its judges read the passages grouped by study, each
-  headed by the study's label, title, year, design and arms), V-NUM and V-HEDGE; every claim that fails the
+  headed by the study's label, title, year, design and arms; what they quote must come from the passages, not the
+  headings), V-NUM (which also accepts a count of the studies the claim cites) and V-HEDGE; every claim that fails the
   claim gate goes to you in `uncertain_support` (P2): withdraw it, or call it supported when the judges were its only
   problem. Both synthesize cards also offer "Back to read_extract", naming the studies to read again. A new synthesize
   attempt (a rerun or argue→synthesize) keeps, word for word with its evidence, every finding of the attempt before
@@ -341,9 +344,10 @@ reopened: a back-edge to it fails the run, in P1 and P2.
   findings are verified again as new claims. To change or drop a kept finding, tick it under "Findings to write
   again" on synthesize's rerun or argue's "Back to synthesize" (`"revise": [finding ids]`): the next attempt gives it
   to the Arguer to write again as your comment says. Nothing else releases one, and P1 keeps them all.
-- **Argue.** The Arguer states the main claim, its reasons and the warrant of each reason; the Skeptic (another
-  vendor) raises objections, tests every warrant and names conflicts between supported claims, round after round,
-  until no new objection of priority 1 or 2 arrives. The Arguer answers each objection (a new claim, a concession or
+- **Argue.** The Arguer states the main claim (a new claim, or a supported synthesis finding reused by id), its
+  reasons and the warrant of each reason; the Skeptic (another vendor) raises objections, tests every warrant and
+  names conflicts between supported claims, round after round, until no new objection of priority 1 or 2 arrives. The
+  Arguer answers each objection (a new claim, a concession or
   an invalid-objection reason). A conflict goes to you in `evidence_conflict` (P1: a vote); a claim with a conceded
   priority-1 objection or a failed check is narrowed or withdrawn, a conceded priority-1 objection on a reason link
   drops the link instead, and the limitations list the withdrawn and narrowed claims, the conceded objections and the
