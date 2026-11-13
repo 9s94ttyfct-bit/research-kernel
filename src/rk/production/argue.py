@@ -3,6 +3,11 @@ the structural input of V-BALANCE; Plan 5b Task 5): the Arguer builds an argumen
 synthesize's passed attempt (``synthesis_claims``, nothing else), the Skeptic attacks it, round after round; the kernel
 stores and verifies everything and gates on what it stored.
 
+Calibration (synthesis across studies, 2026-11-13): the findings include the kernel's ``stat_result`` claims, pooled
+results and, for a systematic review, the counts of studies by direction of effect per outcome; the Arguer reuses them
+by id (``DRAFT_TASK``), never restating their numbers, and a claim about several studies cites every study it counts
+or is worded for the studies it cites.
+
 One round:
 
 1. **Arguer** (``ArgumentDraft``): in round 1 the main claim with its evidence, the reasons (a new claim with its

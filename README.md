@@ -314,6 +314,9 @@ reopened: a back-edge to it fails the run, in P1 and P2.
   computes every number. A systematic review whose frozen protocol pre-specifies a meta-analysis (typed: effect
   measure RR, OR, RD, MD or SMD, `pool_model` REML, DL or FE, HKSJ, prediction-interval df, and each outcome mapped to
   its extraction fields) gets a pooling plan; you approve each comparable group in `pooling_approval` (P1: a vote).
+  With a random-effects model (REML or DL) the planner and the P1 vote are told that differences in dose, route,
+  population, duration or setting are heterogeneity the model and its pre-specified subgroup and sensitivity analyses
+  address, not grounds for not pooling (`docs/eval/synthesis-2026-11-13.md`).
   The kernel pools it with `rk.stats` (by default REML, and HKSJ when τ² > 0 and k > 2, as in the Cochrane Handbook
   6.5.1), draws the forest plot and writes the `stat_result` claim itself; V-STATS recomputes each from its
   extraction rows. Pooling stays off until `rk eval stats --write-config` has validated the current `rk.stats`
@@ -322,7 +325,15 @@ reopened: a back-edge to it fails the run, in P1 and P2.
   narrative synthesis, and every fallback is an analysis deviation from the frozen protocol and a limitation. A study
   of a group missing a value its effect measure needs sends synthesize back to read_extract once (per study and field
   set, per protocol version), and read_extract reads only that study again. A scoping review gets an evidence map.
-  Each finding is a claim with its evidence, checked by V-SUPPORT, V-NUM and V-HEDGE; every claim that fails the
+  A systematic review, whatever its method, maps every outcome to a field pair (`intervention` and `comparator`
+  fields; a meta-analysis outcome's means or arm risks), and the kernel counts per outcome the studies whose values
+  are higher, lower or the same with the intervention: vote counting by direction of effect (SWiM), a `stat_result`
+  claim checked by V-STATS and V-NUM, never a pooled estimate or a significance test. The Arguer writes a finding
+  about several studies citing every study it counts (or worded for the studies it cites) and puts statements about
+  the evidence itself (sparse, not pooled, heterogeneous) in its scope limits; past 400 notes it is given an equal
+  share of each study's notes, every study still listed with its values.
+  Each finding is a claim with its evidence, checked by V-SUPPORT (its judges read the passages grouped by study, each
+  headed by the study's label, title, year, design and arms), V-NUM and V-HEDGE; every claim that fails the
   claim gate goes to you in `uncertain_support` (P2): withdraw it, or call it supported when the judges were its only
   problem. Both synthesize cards also offer "Back to read_extract", naming the studies to read again. A new synthesize
   attempt (a rerun or argue→synthesize) keeps, word for word with its evidence, every finding of the attempt before
@@ -336,10 +347,13 @@ reopened: a back-edge to it fails the run, in P1 and P2.
   an invalid-objection reason). A conflict goes to you in `evidence_conflict` (P1: a vote); a claim with a conceded
   priority-1 objection or a failed check is narrowed or withdrawn, a conceded priority-1 objection on a reason link
   drops the link instead, and the limitations list the withdrawn and narrowed claims, the conceded objections and the
-  dropped links.
+  dropped links. The kernel's `stat_result` findings (pooled results, direction counts) are reused by id, never
+  restated; a claim may say how many of the studies it cites it rests on.
   At the end you say in `uncertain_support` whether the main claim answers the frozen RQ (P1: the judges; when they
-  say it does not, argue goes back to question, or to synthesize when the question is fixed), and you withdraw or
-  support each claim (the findings included) that fails the argument's gate. When every finding is withdrawn, argue
+  say it does not, argue goes back to question, or to synthesize when the question is fixed, with the Arguer's
+  synthesis requests as guidance), and you withdraw or support each claim (the findings included) that fails the
+  argument's gate. Before that, P1 judges decide whether the Arguer's synthesis requests go back to synthesize, shown
+  how many included studies have usable values for each field and outcome. When every finding is withdrawn, argue
   goes back to synthesize.
 - **Design (research proposals).** The Ideator ties hypotheses (each with what would falsify it) to design items and
   measurements and states its feasibility claims; the kernel checks the links both ways, verifies the feasibility
