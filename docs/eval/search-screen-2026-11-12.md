@@ -79,7 +79,11 @@ Single screening already sends an unclear record to the full text. At title/abst
 ## 4. Full-text exclusions of included studies (srrepro8 ozone, srrepro7 tfa)
 
 Every review-included study of these two entries that reached the full text was excluded there. The causes differ:
-- **ozone: screener misreadings.** The frozen criteria already admitted these studies: I1 admits ozone, alone or combined with H2O2, compared with H2O2 alone, and I2/E3 admit data from which ΔE can be computed. The exclusions misread them: an E1 exclusion that misread the comparator, and exclusions of studies that report L\*a\*b\* values before and after treatment, from which ΔE can be computed. The protocol did not cause them.
+- **ozone: mostly screener misreadings, and one exclusion the protocol's time point explains.** I1 admits ozone, alone or combined with H2O2, compared with H2O2 alone; I2/E3 require ΔE at the immediate post-bleaching time point, or data from which it can be computed. Per study, from the screeners' reasons:
+  - two trials (ozone alone versus H2O2; one reports ΔE immediately after bleaching) were excluded by screener_b on E1, which misreads the comparator I1 admits;
+  - one trial reports L\*a\*b\* values before and 24 hours after bleaching, so ΔE at the protocol's immediate time point cannot be computed. Its exclusion follows the frozen criteria, whose time point is narrower than the published review's (which included the trial).
+
+  Time points can be legitimate eligibility boundaries; this one came from the Ideator and the judges, not from the review.
 - **tfa: a reporting-form restriction in the eligibility.** I2/E3 admit only total TFA as % of total fatty acids and exclude individual isomers. A study that measures trans fatty acids but reports them in another form is excluded, while the published review included it. How a study reports an outcome is a matter for extraction and synthesis (conversion, or narrative synthesis when it cannot be pooled), not for eligibility.
 
 ## Decision
