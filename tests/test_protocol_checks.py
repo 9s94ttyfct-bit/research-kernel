@@ -68,7 +68,7 @@ def with_items(**items) -> dict[str, str]:
 def test_a_sound_systematic_review_passes_with_or_without_the_kernel_facts():
     assert set(NEW_ITEMS) <= set(PRISMA_P_TEXT)
     assert sr(sr_body()) == []
-    assert sr(with_kernel_facts(sr_body(), "systematic_review")) == []  # kernel text is not the Ideator's
+    assert sr(with_kernel_facts(sr_body(), "systematic_review", "auto")) == []  # kernel text is not the Ideator's
 
 
 # ---- R1c: placeholders ----
@@ -84,7 +84,7 @@ def test_placeholder_text_fails():
     assert sr(sr_body(prisma_p=with_items(selection_process="Studies will be screened by two screeners."))) == []
     # the kernel's own text (registration, the language exclusion) is not checked as the Ideator's
     forged = with_kernel_facts(sr_body(prisma_p=with_items(registration="to be completed by the researcher")),
-                               "systematic_review")
+                               "systematic_review", "auto")
     assert forged.prisma_p["registration"] == KERNEL_PRISMA_P["registration"] and sr(forged) == []
 
 

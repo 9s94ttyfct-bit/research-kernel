@@ -227,6 +227,23 @@ KERNEL_PRISMA_P = {
     "competing_interests": ("No competing interests are recorded in this project (not verified beyond the project's "
                             "records)."),
 }
+# The identification (title) and contributors items, written by the kernel too (``kernel_prisma_p``): the title from
+# the frozen question, the contributors from who drafts the protocol and who freezes it in the production mode (P1, the
+# judges; P2, the researcher). Like the others they state only what the project's records establish: no author,
+# affiliation or contact is invented.
+# Calibration (P1 protocol rerun 4, 2026-11-12): ozone-bleaching, both judges blocked three votes on a protocol with no
+# title identifying it as a systematic review and no contributor list; the Ideator cannot know either.
+KERNEL_TITLE = "Protocol for {review}: {question}"
+_DRAFTED = ("Drafted by the research kernel's agent roles (the Ideator wrote the eligibility, extraction and synthesis; "
+            "the Scout wrote the search strategy). ")
+_NO_CONTACT = " No corresponding author or contact address is recorded in this project."
+KERNEL_CONTRIBUTORS = {
+    "auto": (f"{_DRAFTED}It is frozen only when the kernel's two judge roles, of different vendors, approve it; no "
+             f"human author is recorded in this project.{_NO_CONTACT}"),
+    "collab": f"{_DRAFTED}It is frozen only when the researcher running the project approves it.{_NO_CONTACT}",
+}
+# Every PRISMA-P item the kernel writes, in the order it writes them.
+KERNEL_PRISMA_P_KEYS = ("title", "contributors", *KERNEL_PRISMA_P)
 # the exclusion criterion of the record languages search_screen excludes by rule (rule R3)
 LANGUAGE_CRITERION_ID = "E-lang"
 LANGUAGE_NAMES = {"en": "English"}
@@ -252,8 +269,8 @@ DRAFT_TASK = (
     "whatever its synthesis method (a plan other than a meta-analysis maps no fields) and has an extraction field "
     "identifying each study (e.g. study_id: first author and year, source record). The statistics module has no "
     "diagnostic-accuracy measure: a question about sensitivity, specificity or AUC gets a narrative synthesis that "
-    "states this limitation, not a meta-analysis. The kernel writes, from the project's records, the "
-    "PRISMA-P items registration, amendments, support and competing_interests (systematic and scoping reviews) and "
+    "states this limitation, not a meta-analysis. The kernel writes, from the project's records, the PRISMA-P items "
+    f"{', '.join(KERNEL_PRISMA_P_KEYS)} (systematic and scoping reviews) and "
     f"the exclusion criterion {LANGUAGE_CRITERION_ID} (records in a language outside `languages` are excluded by a "
     "kernel rule before screening): do not write them; write the other eligibility criteria and PRISMA-P items to "
     "agree with them (no criterion admits another language). Write every text as what the review does, never a "
@@ -341,10 +358,10 @@ SEARCHED_IN = {
 KERNEL_RULES = (
     "Rules of the kernel that runs this review. They hold whatever the protocol says: the protocol's authors cannot "
     "change them, so do not ask them to.\n"
-    "1. Kernel-written text. The PRISMA-P items registration, amendments, support and competing_interests (systematic "
-    f"and scoping reviews), the exclusion criterion {LANGUAGE_CRITERION_ID} and the search execution block are "
-    "written by the kernel from the project's records. The protocol is drafted by the kernel's agent roles, which "
-    "know no fact outside the project's records (an external registration, funding, interests).\n"
+    f"1. Kernel-written text. The PRISMA-P items {', '.join(KERNEL_PRISMA_P_KEYS)} (systematic and scoping reviews), "
+    f"the exclusion criterion {LANGUAGE_CRITERION_ID} and the search execution block are written by the kernel from "
+    "the project's records. The protocol is drafted by the kernel's agent roles, which know no fact outside the "
+    "project's records (an external registration, funding, interests, a human author or a contact address).\n"
     "2. Sources. The search runs only on the sources in the search strategy, taken from the kernel's search sources: "
     "OpenAlex, Europe PMC, PubMed, arXiv and, when its API key is set, Semantic Scholar. The kernel has no search of "
     "trial registries or grey literature, no reference-list or citation searching, no hand-searching and no contact "
@@ -384,7 +401,7 @@ class ProtocolDraftOut(BaseModel):
     extraction_schema: list[ExtractionField] = []
     synthesis_plan: SynthesisPlan | None = None
     prisma_p: dict[str, str] = {}  # PRISMA-P item -> text (systematic review: the PRISMA_P_TEXT items; the kernel
-    # writes the KERNEL_PRISMA_P items itself, ``with_kernel_facts``)
+    # writes the KERNEL_PRISMA_P_KEYS items itself, ``with_kernel_facts``)
     answers: list[PointAnswer] = []  # one per open point routed to the Ideator (P1)
 
 
@@ -785,7 +802,7 @@ def check_strategy(strategy: SearchStrategy, available: list[str]) -> list[str]:
 
 
 def _free_texts(body: Protocol) -> list[tuple[str, str]]:
-    """Every text of the protocol the Ideator wrote, by name: the kernel's PRISMA-P items (``KERNEL_PRISMA_P``) and
+    """Every text of the protocol the Ideator wrote, by name: the kernel's PRISMA-P items (``KERNEL_PRISMA_P_KEYS``) and
     its language exclusion (``LANGUAGE_CRITERION_ID``) are left out, so no text check holds the kernel's text against
     the Ideator."""
     out = [(f"eligibility.{side}.{c.id}", c.text) for side in ("include", "exclude")
@@ -800,8 +817,8 @@ def _free_texts(body: Protocol) -> list[tuple[str, str]]:
 
 
 def _own_prisma_p(items: dict[str, str] | None) -> dict[str, str]:
-    """The PRISMA-P items the Ideator writes: every item but the kernel's (``KERNEL_PRISMA_P``)."""
-    return {k: v for k, v in (items or {}).items() if k not in KERNEL_PRISMA_P}
+    """The PRISMA-P items the Ideator writes: every item but the kernel's (``KERNEL_PRISMA_P_KEYS``)."""
+    return {k: v for k, v in (items or {}).items() if k not in KERNEL_PRISMA_P_KEYS}
 
 
 def _prisma_p_missing(body: Protocol) -> list[str]:
@@ -1026,10 +1043,19 @@ def counts_as_preregistration(paper_type: str) -> bool:
 
 
 # ---- the kernel's facts ----
-def kernel_prisma_p(paper_type: str) -> dict[str, str]:
-    """The PRISMA-P items the kernel writes for the paper type (``KERNEL_PRISMA_P``): a systematic or scoping review
-    (whose freeze counts as preregistration) gets them, the other types none."""
-    return dict(KERNEL_PRISMA_P) if counts_as_preregistration(paper_type) else {}
+def kernel_prisma_p(paper_type: str, question: str, mode: str) -> dict[str, str]:
+    """The PRISMA-P items the kernel writes for the paper type (``KERNEL_PRISMA_P_KEYS``): a systematic or scoping
+    review (whose freeze counts as preregistration) gets them, the other types none. The title names the review type
+    and ``question`` (the frozen research question); the contributors say who froze it in the production ``mode``
+    (``auto``, P1: the judges; ``collab``, P2: the researcher).
+
+    Calibration (P1 protocol rerun 4, 2026-11-12): the title and contributors items (PRISMA-P items 1 and 3), which
+    the judges asked the Ideator for and it cannot know."""
+    if not counts_as_preregistration(paper_type):
+        return {}
+    review = "a scoping review" if paper_type == "scoping_review" else "a systematic review"
+    return {"title": KERNEL_TITLE.format(review=review, question=question),
+            "contributors": KERNEL_CONTRIBUTORS[mode], **KERNEL_PRISMA_P}
 
 
 def _language_names(codes: list[str]) -> str:
@@ -1043,22 +1069,22 @@ def _language_criterion(languages: list[str]) -> Criterion:
         "language is screened. Written by the kernel."))
 
 
-def with_kernel_facts(body: Protocol, paper_type: str) -> Protocol:
-    """The protocol with the facts only the kernel writes: the PRISMA-P items of ``kernel_prisma_p`` replace any the
-    Ideator wrote under those keys (dropped for a type that gets none; ``prisma_p`` is ``None`` when nothing is
-    left), and the exclusion criterion ``LANGUAGE_CRITERION_ID`` naming the strategy's screened languages is the last
-    exclude criterion, once (a criterion of that id the Ideator wrote, on either side, is replaced). Applied again it
-    changes nothing.
+def with_kernel_facts(body: Protocol, paper_type: str, mode: str) -> Protocol:
+    """The protocol with the facts only the kernel writes: the PRISMA-P items of ``kernel_prisma_p`` (for the
+    production ``mode``, the title naming the question as ``body`` stores it) replace any the Ideator wrote under
+    those keys (dropped for a type that gets none; ``prisma_p`` is ``None`` when nothing is left), and the exclusion
+    criterion ``LANGUAGE_CRITERION_ID`` naming the strategy's screened languages is the last exclude criterion, once (a
+    criterion of that id the Ideator wrote, on either side, is replaced). Applied again it changes nothing.
 
     Calibration (P1 protocol diagnosis 2026-11-12): rules R1a and R3. The Ideator cannot know registration, funding or
     competing interests and wrote placeholders the next vote rejected; the language rule is the kernel's, and drafts
-    contradicted it."""
-    own = {k: v for k, v in (body.prisma_p or {}).items() if k not in KERNEL_PRISMA_P}
+    contradicted it. Calibration (P1 protocol rerun 4, 2026-11-12): the title and contributors too."""
+    own = _own_prisma_p(body.prisma_p)
     elig = body.eligibility
     include = [c for c in elig.include if c.id.strip() != LANGUAGE_CRITERION_ID]
     exclude = [c for c in elig.exclude if c.id.strip() != LANGUAGE_CRITERION_ID]
     exclude.append(_language_criterion(body.search_strategy.languages))
-    return body.model_copy(update={"prisma_p": {**own, **kernel_prisma_p(paper_type)} or None,
+    return body.model_copy(update={"prisma_p": {**own, **kernel_prisma_p(paper_type, body.question, mode)} or None,
                                    "eligibility": Eligibility(include=include, exclude=exclude)})
 
 
@@ -1341,17 +1367,20 @@ def search_execution_lines(body: dict) -> list[str]:
 
 
 def render_protocol(ps: ProjectStore, row: dict) -> list[str]:
-    """Every section of the protocol ``row``, for its review."""
+    """Every section of the protocol ``row``, for its review, opening with its title when it has one (the kernel's,
+    ``kernel_prisma_p``: a systematic or scoping review)."""
     b = row["body"]
     intake = intake_of(ps)
     paper_type = intake.paper_type if intake is not None else "?"
     purpose = ("freezing it counts as preregistration (G-PREREG)" if counts_as_preregistration(paper_type)
                else "freezing it is for traceability only, not preregistration")
     ss = b["search_strategy"]
-    lines = [f"Protocol version {row['version']} ({paper_type}; {purpose}).", "", f"Research question: {b['question']}",
-             "", "Search strategy:", f"- sources: {', '.join(ss['sources'])}",
-             f"- publication years: {publication_years(ss)}",
-             f"- languages: {', '.join(ss['languages'])}", "- queries:"]
+    title = (b["prisma_p"] or {}).get("title")
+    lines = [title, ""] if title else []
+    lines += [f"Protocol version {row['version']} ({paper_type}; {purpose}).", "",
+              f"Research question: {b['question']}", "", "Search strategy:", f"- sources: {', '.join(ss['sources'])}",
+              f"- publication years: {publication_years(ss)}",
+              f"- languages: {', '.join(ss['languages'])}", "- queries:"]
     lines += [f"  - {q}" for q in ss["queries"]]
     lines += ["", *search_execution_lines(b)]
     lines += ["", f"Record cap: {b['record_cap']} records.", *probe_lines(probe_of(ps, row["id"]), b["record_cap"])]
@@ -1602,7 +1631,7 @@ class ProtocolWorker:
                 if last is not None and sum(t["kind"] == "draft" for t in tries) >= settings.protocol_tries:
                     return StageOutcome("rerun", reason="; ".join(_failed(tries[last])))
                 out = self._draft(ctx, context, tries[last] if last is not None else None, question,
-                                  intake.paper_type)
+                                  intake.paper_type, intake.production_mode)
                 if out is not None:
                     return out
                 continue
@@ -1623,8 +1652,8 @@ class ProtocolWorker:
         return self._vote(ctx, best["id"], set(best["vendors"].values()))
 
     @staticmethod
-    def _draft(ctx: StageContext, context: dict, last: dict | None, question: str,
-               paper_type: str) -> StageOutcome | None:
+    def _draft(ctx: StageContext, context: dict, last: dict | None, question: str, paper_type: str,
+               mode: str) -> StageOutcome | None:
         """One draft try, stored as the next version with its try: the Ideator's draft and the Scout's strategy, or,
         after a failed try (``last``), only the part that failed asked again, with that version as ``previous_draft``
         and its failures as guidance. A PRISMA-P item of a draft the try revises (the attempt's ``previous_draft`` or
@@ -1670,7 +1699,7 @@ class ProtocolWorker:
         else:
             strategy = last["body"]["search_strategy"]
         body = with_kernel_facts(Protocol.model_validate({**part, "question": question, "search_strategy": strategy,
-                                                          "record_cap": _current_cap(ps)}), paper_type)
+                                                          "record_cap": _current_cap(ps)}), paper_type, mode)
         failures = _failures(body, paper_type, ctx.sources.sources())
         revised = [d["body"] for d in (context.get("previous_draft"), last) if d is not None]
         failures["draft"] += list(dict.fromkeys(f for b in revised for f in dropped_prisma_p(

@@ -1,5 +1,6 @@
-"""The protocol facts only the kernel knows (P1 protocol diagnosis 2026-11-12, rules R1a, R3, R4): the admin PRISMA-P
-items of a systematic or scoping review, the language exclusion and the search execution are written by the kernel,
+"""The protocol facts only the kernel knows (P1 protocol diagnosis 2026-11-12, rules R1a, R3, R4; P1 protocol rerun 4,
+2026-11-12): the PRISMA-P items of a systematic or scoping review only the project's records establish (the title,
+the contributors and the admin items), the language exclusion and the search execution are written by the kernel,
 never by the Ideator, so no vote asks the authors for what they cannot know."""
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from rk.production import store
 from rk.production.models import SCREENED_LANGUAGES, Criterion, SearchStrategy
 from rk.production.protocol import (
     KERNEL_PRISMA_P,
+    KERNEL_PRISMA_P_KEYS,
     KERNEL_RULES,
     LANGUAGE_CRITERION_ID,
     ProtocolWorker,
@@ -32,6 +34,7 @@ SR_ITEMS = {"rationale": "Guidelines stop at 80.", "objectives": "Estimate benef
             "data_management": "Records and extracted values are kept with their quotes.",
             "outcomes_prioritisation": "Stroke first, then major bleeding."}
 PLACEHOLDER = "to be completed by the researcher"
+QUESTION = a_protocol().question
 
 
 @pytest.fixture
@@ -65,7 +68,7 @@ def test_search_execution_names_the_fields_each_chosen_source_searches(sr_env):
     _, ps, _ = sr_env
     for sources in (["openalex", "pubmed"], ["europepmc", "arxiv"], ["s2", "openalex", "europepmc"]):
         body = with_kernel_facts(a_protocol(search_strategy=SearchStrategy(
-            sources=sources, queries=["aspirin AND stroke", "antiplatelet AND elderly"])), "systematic_review")
+            sources=sources, queries=["aspirin AND stroke", "antiplatelet AND elderly"])), "systematic_review", "auto")
         row = {"id": "prt_none", "version": 1, "body": body.model_dump(mode="json")}
         block = search_execution_lines(row["body"])
         assert "\n".join(render_protocol(ps, row)).count("\n".join(block)) == 1
@@ -89,16 +92,21 @@ def test_kernel_writes_admin_prisma_p_items(sr_env):
     """The Ideator's placeholder for a fact it cannot know is replaced by the kernel's text in every stored version;
     its own PRISMA-P items are kept. A review type whose freeze is no preregistration gets no kernel PRISMA-P keys, and
     an Ideator-written one is dropped."""
-    assert kernel_prisma_p("systematic_review") == KERNEL_PRISMA_P == kernel_prisma_p("scoping_review")
+    review = kernel_prisma_p("systematic_review", QUESTION, "auto")
+    assert {k: review[k] for k in KERNEL_PRISMA_P} == KERNEL_PRISMA_P
+    assert set(kernel_prisma_p("scoping_review", QUESTION, "collab")) == set(review) == set(KERNEL_PRISMA_P_KEYS)
     assert set(KERNEL_PRISMA_P) == {"registration", "amendments", "support", "competing_interests"}
-    assert kernel_prisma_p("critical_review") == {} == kernel_prisma_p("research_proposal")
+    assert kernel_prisma_p("critical_review", QUESTION, "auto") == {} == kernel_prisma_p("research_proposal",
+                                                                                         QUESTION, "collab")
 
-    body = with_kernel_facts(a_protocol(prisma_p={**SR_ITEMS, "registration": PLACEHOLDER}), "systematic_review")
-    assert body.prisma_p == {**SR_ITEMS, **KERNEL_PRISMA_P}
+    body = with_kernel_facts(a_protocol(prisma_p={**SR_ITEMS, "registration": PLACEHOLDER}), "systematic_review",
+                             "auto")
+    assert body.prisma_p == {**SR_ITEMS, **review}
     light = with_kernel_facts(a_protocol(prisma_p={"registration": PLACEHOLDER, "support": "none"}),
-                              "critical_review")
+                              "critical_review", "auto")
     assert light.prisma_p is None
-    kept = with_kernel_facts(a_protocol(prisma_p={"rationale": "R.", "competing_interests": "x"}), "critical_review")
+    kept = with_kernel_facts(a_protocol(prisma_p={"rationale": "R.", "competing_interests": "x"}), "critical_review",
+                             "auto")
     assert kept.prisma_p == {"rationale": "R."}
 
     # the worker stores the kernel facts with the draft: the version the vote sees carries them
@@ -119,17 +127,79 @@ def test_kernel_writes_admin_prisma_p_items(sr_env):
     ctx = production_ctx(k, ps, lib, ex, stage="protocol", attempt=1, sources=FakeSources({}))
     assert ProtocolWorker().run(ctx).status == "done"
     (v1,) = store.protocols(ps, 1)
-    assert v1["body"]["prisma_p"] == {**SR_ITEMS, **KERNEL_PRISMA_P}
+    assert v1["body"]["prisma_p"] == {**SR_ITEMS, **kernel_prisma_p("systematic_review", v1["body"]["question"],
+                                                                     "auto")}
     assert [c["id"] for c in v1["body"]["eligibility"]["exclude"]] == ["E1", LANGUAGE_CRITERION_ID]
     judged = next(c for c in ex.calls if c["schema"] == "ProtocolVoteOut")
     assert KERNEL_PRISMA_P["registration"] in judged["inputs"]["subject"]["protocol"]  # the rendered protocol
 
 
+def test_kernel_writes_the_title_and_contributors_of_a_review(sr_env):
+    """Calibration (P1 protocol rerun 4, 2026-11-12): both judges blocked ozone-bleaching for three votes on a protocol
+    with no title identifying it as a systematic review and no contributor list, which the Ideator cannot know. The
+    kernel writes both for a systematic or scoping review from the project's records: the title from the frozen
+    question as the body stores it, the contributors from who drafts the protocol and who freezes it (the judges in P1,
+    the researcher in P2), with no invented author or contact. They replace the Ideator's, and the rendered protocol
+    opens with the title."""
+    own = {**SR_ITEMS, "title": "Aspirin after 80: a review", "contributors": "A. Author (a@example.org)"}
+    p1 = with_kernel_facts(a_protocol(prisma_p=own), "systematic_review", "auto")
+    title = p1.prisma_p["title"]
+    assert QUESTION in title and "systematic review" in title and "Aspirin after 80" not in title
+    assert {k: p1.prisma_p[k] for k in SR_ITEMS} == SR_ITEMS
+    scoping = with_kernel_facts(a_protocol(), "scoping_review", "auto").prisma_p["title"]
+    assert QUESTION in scoping and "scoping review" in scoping and "systematic" not in scoping
+    asked = with_kernel_facts(a_protocol(question="Does ozone bleach teeth?"), "systematic_review", "auto")
+    assert asked.prisma_p["title"].endswith(": Does ozone bleach teeth?")
+
+    p2 = with_kernel_facts(a_protocol(prisma_p=own), "systematic_review", "collab")
+    auto, collab = p1.prisma_p["contributors"], p2.prisma_p["contributors"]
+    assert auto != collab and "A. Author" not in auto + collab and "@" not in auto + collab
+    assert "judge" in auto and "judge" not in collab and "researcher" in collab
+    assert all("Ideator" in c and "Scout" in c and "contact" in c for c in (auto, collab))
+    assert p2.prisma_p["title"] == title  # only the contributors depend on the production mode
+
+    assert with_kernel_facts(p1, "systematic_review", "auto") == p1  # applied twice changes nothing
+    light = with_kernel_facts(a_protocol(prisma_p={"rationale": "R.", "title": "T", "contributors": "C"}),
+                              "critical_review", "auto")
+    assert light.prisma_p == {"rationale": "R."}
+
+    _, ps, _ = sr_env
+    lines = render_protocol(ps, {"id": "prt_none", "version": 1, "body": p1.model_dump(mode="json")})
+    assert lines[0] == title and lines[2].startswith("Protocol version 1")
+    light_lines = render_protocol(ps, {"id": "prt_none", "version": 1, "body": light.model_dump(mode="json")})
+    assert light_lines[0].startswith("Protocol version 1")
+    (rule,) = [line for line in KERNEL_RULES.splitlines() if line.startswith("1. ")]
+    assert all(k in rule for k in KERNEL_PRISMA_P_KEYS)  # the judges' rules sheet names them as the kernel's
+
+
+def test_p2_draft_gets_the_contributors_of_your_approval(tmp_home, replay_http):
+    """In P2 the stored draft says you freeze it, not the judges."""
+    k, ps, lib, _ = make_frozen_project(tmp_home, replay_http, paper_type="systematic_review",
+                                        production_mode="collab")
+    try:
+        draft = {"eligibility": {"include": [{"id": "I1", "text": "People over 80"}], "exclude": []},
+                 "extraction_schema": [{"name": "study_id", "description": "First author and year", "type": "text",
+                                        "source": "record"}],
+                 "synthesis_plan": {"method": "narrative_swim", "outcomes": [{"name": "stroke"}]},
+                 "prisma_p": SR_ITEMS}
+        strategy = {"queries": ["aspirin stroke elderly", "aspirin primary prevention octogenarians",
+                                "antiplatelet stroke over 80"], "sources": ["openalex", "europepmc"],
+                    "date_from": 2000, "date_to": None}
+        ex = ScriptedExecutor({("ideator", "ProtocolDraftOut"): [draft], ("scout", "SearchStrategyOut"): [strategy]})
+        ctx = production_ctx(k, ps, lib, ex, stage="protocol", attempt=1, sources=FakeSources({}))
+        assert ProtocolWorker().run(ctx).status == "waiting_human"
+        (v1,) = store.protocols(ps, 1)
+        assert v1["body"]["prisma_p"]["contributors"] == kernel_prisma_p(
+            "systematic_review", v1["body"]["question"], "collab")["contributors"]
+    finally:
+        k.close()
+
+
 def test_language_exclusion_is_appended_once():
     """The ``E-lang`` exclusion names the screened languages and is the kernel's: applied twice it is there once, and
     an Ideator-written criterion of that id is replaced by the kernel's text."""
-    once = with_kernel_facts(a_protocol(), "critical_review")
-    twice = with_kernel_facts(once, "critical_review")
+    once = with_kernel_facts(a_protocol(), "critical_review", "auto")
+    twice = with_kernel_facts(once, "critical_review", "auto")
     assert _exclude_ids(once) == _exclude_ids(twice) == ["E1", LANGUAGE_CRITERION_ID]
     assert twice == once
     (lang,) = [c for c in twice.eligibility.exclude if c.id == LANGUAGE_CRITERION_ID]
@@ -137,7 +207,7 @@ def test_language_exclusion_is_appended_once():
 
     forged = a_protocol()
     forged.eligibility.exclude.append(Criterion(id=LANGUAGE_CRITERION_ID, text="Any language is admitted"))
-    fixed = with_kernel_facts(forged, "systematic_review")
+    fixed = with_kernel_facts(forged, "systematic_review", "auto")
     assert [c for c in fixed.eligibility.exclude if c.id == LANGUAGE_CRITERION_ID] == [lang]
     assert fixed.eligibility.include == a_protocol().eligibility.include
 
@@ -149,7 +219,7 @@ def test_rendered_protocol_states_search_execution(sr_env):
     _, ps, _ = sr_env
     body = with_kernel_facts(a_protocol(search_strategy=SearchStrategy(
         sources=["openalex", "pubmed"], queries=["aspirin stroke elderly", "antiplatelet over 80"], date_from=None,
-        date_to=2020)), "systematic_review")
+        date_to=2020)), "systematic_review", "auto")
     row = {"id": "prt_none", "version": 1, "body": body.model_dump(mode="json")}
     lines = render_protocol(ps, row)
     block = search_execution_lines(row["body"])
