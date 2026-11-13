@@ -63,9 +63,10 @@ rules), V-PRISMA and the gate.
    (``rk.production.resume``), in both phases: the screener decisions of the interrupted attempts right before it,
    under the same frozen protocol, are carried over by library item (``carried_from``) instead of asked again, and so
    is the vote or human final of a disagreement when it was made on exactly the carried decisions
-   (``Carried.settled``: every screener's decision carried, none made after it); a rerun of an attempt that ran to
-   completion screens afresh. At full text a decision is carried only when it was made on the same kind of text (a
-   full text, or the abstract alone). Within one attempt a phase is resumable too: in P2 the full-text phase runs
+   (``Carried.settled``: every screener's decision carried, none made after it), written before the rules decide, so
+   it stays as it was made even where the rules have changed since (both unclear at title/abstract); a rerun of an
+   attempt that ran to completion screens afresh. At full text a decision is carried only when it was made on the
+   same kind of text (a full text, or the abstract alone). Within one attempt a phase is resumable too: in P2 the full-text phase runs
    while an answer is applied, and an interruption there (a rate cap, a budget, a crash) applies the answer again in
    the same attempt. A phase run again keeps the attempt's own screener decisions and finals, screens only the
    records that have neither a final nor a checkpoint, and opens checkpoints only for the disagreements none holds
@@ -870,15 +871,16 @@ class SearchScreenWorker:
                       disagreements=disagree,
                       measure="differences on included-or-not (unclear and a missing decision count as include)",
                       switched=switched)
-        disagreements = []
-        for rid in _finalize(ctx, phase, eligible, dual, a, b, settled):
-            c = carried.get(rid)
+        # a vote's or your final carried over on exactly the carried decisions stays as it was made, before the rules
+        # (which may have changed since: both unclear at title/abstract) decide the record again
+        for rid in eligible:
+            c = carried.get(rid) if rid not in settled else None
             done = c.settled(SCREENERS) if c is not None else None
-            if done is not None and done["decided_by"] in ("vote", "human"):  # settled on exactly these decisions
+            if done is not None and done["decided_by"] in ("vote", "human"):
                 set_final(ps, rid, ctx.attempt, phase, done["include"], done["decided_by"], done["reason"],
                           actor=ctx.actor, carried_from=done["carried_from"])
-            else:
-                disagreements.append(rid)
+                settled.add(rid)
+        disagreements = _finalize(ctx, phase, eligible, dual, a, b, settled)
         if intake.production_mode == "collab":
             chunks = [disagreements[i:i + BATCH] for i in range(0, len(disagreements), BATCH)]
             for i, ids in enumerate(chunks):  # numbered after the checkpoints the attempt already opened

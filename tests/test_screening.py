@@ -900,3 +900,31 @@ def test_screeners_are_told_to_apply_criteria_as_written_not_the_reporting_form(
     assert {c["inputs"]["phase"] for c in calls} == {TA, FT}
     for c in calls:
         assert screening.CRITERIA_AS_WRITTEN in c["instructions"]
+
+
+@pytest.mark.parametrize("env", [SR_P2], indirect=True)
+def test_a_carried_human_or_vote_final_on_a_both_unclear_pair_stands(env):
+    """A final an interrupted attempt made on exactly the carried decisions (a human's or a vote's, e.g. before
+    both-unclear went to the full text) stays as it was made: the new rule does not decide the pair again."""
+    _, ps, _ = env
+    _freeze(ps)
+    works = [_work("Aspirin H [unclear/unclear]", 1), _work("Aspirin V [unclear/unclear]", 2),
+             _work("Aspirin Y [yes/yes]", 3)]
+    src = FakeSources({"aspirin": works})
+    with pytest.raises(RateCapped):  # screener_a's second call, the first at full text: attempt 1 is interrupted
+        SearchScreenWorker().run(_ctx(env, CappedAt("screener_a", 2), src))
+    t = {v: k for k, v in _titles(env).items()}
+    # the finals an older attempt made on these pairs (a human's and a vote's exclusion)
+    store.set_final(ps, t["Aspirin H [unclear/unclear]"], 1, TA, "no", "human", "you decided: exclude", actor="r",
+                    actor_kind="human")
+    store.set_final(ps, t["Aspirin V [unclear/unclear]"], 1, TA, "no", "vote", "screeners disagreed; P1 conservative",
+                    actor="k")
+
+    out = SearchScreenWorker().run(_ctx(env, Screeners(), src, attempt=2))
+    assert out.status == "done"
+    t2 = _titles(env, 2)
+    got = {t2[f["record_id"]]: (f["include"], f["decided_by"], f["carried_from"]) for f in store.finals(ps, 2, phase=TA)}
+    assert got["Aspirin H [unclear/unclear]"] == ("no", "human", 1)
+    assert got["Aspirin V [unclear/unclear]"] == ("no", "vote", 1)
+    assert got["Aspirin Y [yes/yes]"][:2] == ("yes", "agreement")
+    assert len(store.finals(ps, 2, phase=TA)) == 3  # one final each: the rule wrote none over the carried ones
