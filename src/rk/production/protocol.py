@@ -81,10 +81,12 @@ Calibration 3 (P1 protocol rerun 4, 2026-11-12, ``docs/eval/p1-protocol-rerun-4-
 
 - The kernel writes the PRISMA-P title and contributors of a systematic or scoping review (``kernel_prisma_p``,
   ``with_kernel_facts`` with the production mode): the title names the review type and the frozen question as the body
-  stores it; the contributors say the kernel's agent roles drafted the protocol and who freezes it (P1: the two judges
-  of different vendors; P2: the researcher), and that no human author, corresponding author or contact address is
-  recorded. Like the admin items they replace the Ideator's, are not checked as its text, change nothing applied
-  again, and are named in the rules sheet as the kernel's.
+  stores it; the contributors say the kernel's agent roles drafted the protocol and who freezes it (P1: every judge
+  role the vote admits, at least two of different vendors; P2: the researcher), and that no human author,
+  corresponding author or contact address is recorded. Like the admin items they replace the Ideator's, are not
+  checked as its text, change nothing applied again, and are named in the rules sheet as the kernel's. A best version
+  whose kernel items are another production mode's (drafted before you changed the mode and the attempt resumed in
+  place) is approved or voted on as a copy with the current mode's (``_in_mode``).
 - A judge votes on its own points (``VOTE_QUESTION``): it still sees every open point, each with its owning judge in
   ``role``, but answers revise only for a blocking point of its own, still open or new, never because another judge's
   point is open (while a blocking one is open, that judge's own vote keeps the protocol from freezing).
@@ -250,8 +252,9 @@ _DRAFTED = ("Drafted by the research kernel's agent roles (the Ideator wrote the
             "the Scout wrote the search strategy). ")
 _NO_CONTACT = " No corresponding author or contact address is recorded in this project."
 KERNEL_CONTRIBUTORS = {
-    "auto": (f"{_DRAFTED}It is frozen only when the kernel's two judge roles, of different vendors, approve it; no "
-             f"human author is recorded in this project.{_NO_CONTACT}"),
+    "auto": (f"{_DRAFTED}It is frozen only when every judge role the vote admits approves it (at least two, of "
+             "different vendors, none the Ideator's or the Scout's); no human author is recorded in this project."
+             f"{_NO_CONTACT}"),
     "collab": f"{_DRAFTED}It is frozen only when the researcher running the project approves it.{_NO_CONTACT}",
 }
 # Every PRISMA-P item the kernel writes, in the order it writes them.
@@ -864,8 +867,8 @@ PLACEHOLDER = re.compile(
 def _placeholders(body: Protocol) -> list[str]:
     """One failure per Ideator text (``_free_texts``) holding a placeholder (``PLACEHOLDER``), naming it."""
     return [f"{name} holds a placeholder ({m.group(0)!r}): write what the review does, not what someone is to "
-            "complete later, or leave out an item the review does not need; registration, amendments, support and "
-            "competing interests are written by the kernel"
+            "complete later, or leave out an item the review does not need; the PRISMA-P items "
+            f"{', '.join(KERNEL_PRISMA_P_KEYS)} are written by the kernel"
             for name, text in _free_texts(body) if (m := PLACEHOLDER.search(text))]
 
 
@@ -1663,6 +1666,7 @@ class ProtocolWorker:
             out = self._narrow(ctx, context, best, failed, intake.paper_type)
             if out is not None:
                 return out
+        best = self._in_mode(ctx, best, intake.paper_type, intake.production_mode)
         if intake.production_mode == "collab":
             cid = opened_for_attempt(ps, KIND, ctx.stage, ctx.attempt) or _open(ctx, best["id"])
             return StageOutcome("waiting_human", checkpoint_id=cid, reason="the protocol awaits your approval")
@@ -1842,6 +1846,29 @@ class ProtocolWorker:
                                                           or cap < 1):
             return f"record_cap must be a whole number of records, at least 1 (got {cap!r})"
         return ""
+
+    @staticmethod
+    def _in_mode(ctx: StageContext, best: dict, paper_type: str, mode: str) -> dict:
+        """The version to approve or vote on: ``best``, or, when its kernel PRISMA-P items are not those of the
+        production ``mode`` (it was drafted before you changed the mode and the attempt resumed in place), a copy with
+        the mode's (``with_kernel_facts``), added once with ``best``'s probe (its tries' vendors are kept for the vote).
+
+        Calibration 3 fix round 1 (P1 protocol rerun 4, 2026-11-12): a version drafted in one mode could be approved
+        in the other, carrying the other mode's contributors."""
+        items = best["body"]["prisma_p"] or {}
+        if all(items.get(k) == v for k, v in kernel_prisma_p(paper_type, best["body"]["question"], mode).items()):
+            return best
+        body = with_kernel_facts(Protocol.model_validate(best["body"]), paper_type, mode).model_dump(mode="json")
+        with ctx.ps.lock:
+            done = next((p for p in protocols(ctx.ps, ctx.attempt)
+                         if p["version"] > best["version"] and p["body"] == body), None)
+            if done is not None:
+                return {**best, "id": done["id"], "version": done["version"], "body": body}
+            version = _next_version(ctx.ps)
+            pid = add_protocol(ctx.ps, ctx.attempt, Protocol.model_validate(body), version=version, actor=ctx.actor,
+                               actor_kind="kernel")
+            _record_probe(ctx.ps, pid, best["probe"], actor=ctx.actor)
+        return {**best, "id": pid, "version": version, "body": body}
 
     @staticmethod
     def _with_cap(ctx: StageContext, row: dict, cap: int | None, by: str) -> str:

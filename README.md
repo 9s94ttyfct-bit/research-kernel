@@ -193,7 +193,9 @@ frozen), `search_screen` (search, deduplication, title/abstract and full-text sc
   is above the cap when the best version's is within it); the version with the lowest total goes
   on. The kernel writes what only it knows: for a systematic or scoping review the PRISMA-P title (the review type
   and the frozen question; the rendered protocol opens with it), the contributors (drafted by the kernel's agent
-  roles, frozen by the two judges in P1 or by you in P2; no human author or contact address is recorded) and the
+  roles, frozen in P1 only when every judge role the vote admits approves it, in P2 by you; no human author or
+  contact address is recorded; a version drafted before you change the production mode goes to the vote or your
+  approval as a copy with the current mode's text) and the
   administrative items (registration, amendments, support, competing interests), the language exclusion `E-lang` and the search execution (publication years written out,
   each query sent as written to each source and the fields each source searches); the checks also reject
   placeholders, a missing PRISMA-P item of a systematic review, prose naming sources or searches the strategy does not have, missing outcomes or study

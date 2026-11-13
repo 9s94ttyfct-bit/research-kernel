@@ -9,6 +9,9 @@ import re
 
 import pytest
 
+from rk.checkpoints import get_checkpoint
+from rk.discovery.models import Intake
+from rk.discovery.store import record_intake
 from rk.production import store
 from rk.production.models import SCREENED_LANGUAGES, Criterion, SearchStrategy
 from rk.production.protocol import (
@@ -22,7 +25,7 @@ from rk.production.protocol import (
     search_execution_lines,
     with_kernel_facts,
 )
-from tests.discovery_fakes import FakeSources, ScriptedExecutor
+from tests.discovery_fakes import DEFAULT_INTAKE, FakeSources, ScriptedExecutor
 from tests.production_fakes import a_protocol, make_frozen_project, production_ctx
 
 SR_ITEMS = {"rationale": "Guidelines stop at 80.", "objectives": "Estimate benefit and harm.",
@@ -154,7 +157,7 @@ def test_kernel_writes_the_title_and_contributors_of_a_review(sr_env):
     p2 = with_kernel_facts(a_protocol(prisma_p=own), "systematic_review", "collab")
     auto, collab = p1.prisma_p["contributors"], p2.prisma_p["contributors"]
     assert auto != collab and "A. Author" not in auto + collab and "@" not in auto + collab
-    assert "judge" in auto and "judge" not in collab and "researcher" in collab
+    assert "judge" in auto and "at least two" in auto and "judge" not in collab and "researcher" in collab
     assert all("Ideator" in c and "Scout" in c and "contact" in c for c in (auto, collab))
     assert p2.prisma_p["title"] == title  # only the contributors depend on the production mode
 
@@ -172,25 +175,56 @@ def test_kernel_writes_the_title_and_contributors_of_a_review(sr_env):
     assert all(k in rule for k in KERNEL_PRISMA_P_KEYS)  # the judges' rules sheet names them as the kernel's
 
 
+SR_DRAFT = {"eligibility": {"include": [{"id": "I1", "text": "People over 80"}], "exclude": []},
+            "extraction_schema": [{"name": "study_id", "description": "First author and year", "type": "text",
+                                   "source": "record"}],
+            "synthesis_plan": {"method": "narrative_swim", "outcomes": [{"name": "stroke"}]},
+            "prisma_p": SR_ITEMS}
+SR_STRATEGY = {"queries": ["aspirin stroke elderly", "aspirin primary prevention octogenarians",
+                           "antiplatelet stroke over 80"], "sources": ["openalex", "europepmc"],
+               "date_from": 2000, "date_to": None}
+
+
 def test_p2_draft_gets_the_contributors_of_your_approval(tmp_home, replay_http):
     """In P2 the stored draft says you freeze it, not the judges."""
     k, ps, lib, _ = make_frozen_project(tmp_home, replay_http, paper_type="systematic_review",
                                         production_mode="collab")
     try:
-        draft = {"eligibility": {"include": [{"id": "I1", "text": "People over 80"}], "exclude": []},
-                 "extraction_schema": [{"name": "study_id", "description": "First author and year", "type": "text",
-                                        "source": "record"}],
-                 "synthesis_plan": {"method": "narrative_swim", "outcomes": [{"name": "stroke"}]},
-                 "prisma_p": SR_ITEMS}
-        strategy = {"queries": ["aspirin stroke elderly", "aspirin primary prevention octogenarians",
-                                "antiplatelet stroke over 80"], "sources": ["openalex", "europepmc"],
-                    "date_from": 2000, "date_to": None}
-        ex = ScriptedExecutor({("ideator", "ProtocolDraftOut"): [draft], ("scout", "SearchStrategyOut"): [strategy]})
+        ex = ScriptedExecutor({("ideator", "ProtocolDraftOut"): [SR_DRAFT],
+                               ("scout", "SearchStrategyOut"): [SR_STRATEGY]})
         ctx = production_ctx(k, ps, lib, ex, stage="protocol", attempt=1, sources=FakeSources({}))
         assert ProtocolWorker().run(ctx).status == "waiting_human"
         (v1,) = store.protocols(ps, 1)
         assert v1["body"]["prisma_p"]["contributors"] == kernel_prisma_p(
             "systematic_review", v1["body"]["question"], "collab")["contributors"]
+    finally:
+        k.close()
+
+
+def test_a_version_drafted_in_p1_goes_to_your_approval_with_the_p2_contributors(tmp_home, replay_http):
+    """A version drafted under P1 that reaches your approval after you switched the project to P2 (the attempt resumed
+    in place) is opened as a copy whose kernel items are P2's, added once; the draft itself is unchanged."""
+    k, ps, lib, _ = make_frozen_project(tmp_home, replay_http, paper_type="systematic_review")
+    try:
+        revise = {"choice": "revise", "reason": "not yet"}
+        ex = ScriptedExecutor({("ideator", "ProtocolDraftOut"): [SR_DRAFT],
+                               ("scout", "SearchStrategyOut"): [SR_STRATEGY],
+                               ("judge", "ProtocolVoteOut"): [revise], ("judge_2", "ProtocolVoteOut"): [revise]})
+        ctx = production_ctx(k, ps, lib, ex, stage="protocol", attempt=1, sources=FakeSources({}))
+        assert ProtocolWorker().run(ctx).status == "rerun"
+        record_intake(ps, Intake(**{**DEFAULT_INTAKE, "paper_type": "systematic_review",
+                                    "production_mode": "collab"}), actor="tester", actor_kind="human")
+        first = ProtocolWorker().run(ctx)
+        assert first.status == "waiting_human"
+        drafted, opened = store.protocols(ps, 1)
+        question = drafted["body"]["question"]
+        assert drafted["body"]["prisma_p"] == {**SR_ITEMS, **kernel_prisma_p("systematic_review", question, "auto")}
+        assert opened["body"]["prisma_p"] == {**SR_ITEMS, **kernel_prisma_p("systematic_review", question, "collab")}
+        assert {**opened["body"], "prisma_p": None} == {**drafted["body"], "prisma_p": None}
+        assert opened["version"] == drafted["version"] + 1
+        assert get_checkpoint(ps, first.checkpoint_id)["options"]["protocol_id"] == opened["id"]
+        again = ProtocolWorker().run(ctx)  # resumed again: nothing added, the same approval
+        assert again.checkpoint_id == first.checkpoint_id and len(store.protocols(ps, 1)) == 2
     finally:
         k.close()
 

@@ -16,6 +16,9 @@ figures below were taken from it before that, and no later stage has a result fr
 | ozone-bleaching | failed at the edge limit | 4 | 1 | 0 | 4 → 2 → 1 → 1 |
 | tfa-heated-oils | failed at the edge limit | 5 | 2 | 0 | 2 → 2 → 2 → 1 → 1 |
 
+Counted from attempt reasons mentioning the probe, which also matches judges' revise reasons that quote it; the
+counts may be too high and cannot be rechecked (the home was lost).
+
 Three of six protocols froze (one in each of the two earlier reruns). Prostate froze in the round the kernel granted.
 57 of the 72 points were resolved by the judge that raised them. No judge was asked for omitted marks.
 

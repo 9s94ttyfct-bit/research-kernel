@@ -10,20 +10,22 @@ eight minutes.
 
 | entry | protocol | attempts | kernel rounds | follow-ups | votes skipped for the cap | open blocking points after each vote |
 |---|---|---|---|---|---|---|
-| ai-pulmonary-hypertension | approved, frozen (later reopened, see below) | 5 | 2 | 1 | 2 | 3 → 1 → 1 → 0 |
+| ai-pulmonary-hypertension | approved, frozen (later reopened, see below) | 5 | 2 | 1 | 1 | 3 → 1 → 1 → 0 |
 | cade-colonoscopy | approved, frozen | 4 | 1 | 0 | 0 | 2 → 2 → 1 → 0 |
-| tfa-heated-oils | approved, frozen | 5 | 2 | 0 | 1 | 4 → 1 → 1 → 1 → 0 |
-| fructose-rats-sbp | failed at the edge limit | 4 | 1 | 0 | 3 | 3 → 3 → 1 → 1 |
+| tfa-heated-oils | approved, frozen | 5 | 2 | 0 | 0 | 4 → 1 → 1 → 1 → 0 |
+| fructose-rats-sbp | failed at the edge limit | 4 | 1 | 0 | 0 | 3 → 3 → 1 → 1 |
 | ozone-bleaching | failed at the edge limit | 3 | 0 | 0 | 0 | 4 → 2 → 2 |
-| ai-prostate-mri | failed at the edge limit | 3 | 0 | 0 | 1 | 5 → 1 → 2 |
+| ai-prostate-mri | failed at the edge limit | 3 | 0 | 0 | 0 | 5 → 1 → 2 |
+
+Votes skipped for the cap are counted from the protocol attempts whose reason starts "the record-cap probe of version".
 
 52 of the 68 points were resolved by the judge that raised them. The first judge follow-up for omitted marks ran
 (pulmonary).
 
-- **Ozone:** both judges blocked on one point for three votes: the PRISMA-P items have no title identifying the
-  protocol as a systematic review and no contributor list. The Ideator cannot know either and rebutted; no blocking
-  point closed in the last attempt, so the kernel granted no round.
-- **Fructose:** three of its four attempts were stopped by the record-cap probe before the vote.
+- **Ozone:** `judge_2` blocked on one point in all three votes (`p1.judge_2.3`), and `judge` blocked on the same
+  objection in attempts 2 and 3 through its reason-only point `p2.judge.1`: the PRISMA-P items have no title
+  identifying the protocol as a systematic review and no contributor list. The Ideator cannot know either and
+  rebutted; no blocking point closed in the last attempt, so the kernel granted no round.
 - **Prostate:** `judge` raised a new blocking extraction point in each vote.
 
 ## Search: the cap against recall
@@ -52,9 +54,11 @@ Built on `p1-calib3` (plan `docs/superpowers/plans/2026-11-12-p1-protocol-calibr
 - **Title and contributors are the kernel's** (the ozone block, PRISMA-P items 1 and 3). For a systematic or scoping
   review the kernel writes the PRISMA-P `title` ("Protocol for a systematic review: <the frozen question>", or "a
   scoping review") and `contributors`: the kernel's agent roles drafted it (the Ideator the eligibility, extraction and
-  synthesis, the Scout the search strategy); in P1 it is frozen only when the two judge roles, of different vendors,
-  approve it and no human author is recorded, in P2 only when the researcher running the project approves it; no
-  corresponding author or contact address is recorded. Like registration, amendments, support and competing
+  synthesis, the Scout the search strategy); in P1 it is frozen only when every judge role the vote admits approves
+  it (at least two, of different vendors, none the Ideator's or the Scout's) and no human author is recorded, in P2
+  only when the researcher running the project approves it; no corresponding author or contact address is recorded.
+  A best version drafted before the production mode changed (the attempt resumed in place) goes to the vote or the
+  approval as a copy with the current mode's kernel items, added once. Like registration, amendments, support and competing
   interests, they replace whatever the Ideator wrote under those keys, are not checked as its text, change nothing
   when applied again, and are absent from a critical review or proposal. The rendered protocol (the judges' subject
   and your `protocol_approval`) opens with the title; the P2 card already shows every PRISMA-P item; the judges' rules
