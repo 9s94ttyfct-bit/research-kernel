@@ -118,8 +118,50 @@ def test_fulltext_excerpt_takes_abstract_methods_and_results():
     text, _ = fulltext_excerpt(long)
     assert len(text) <= FULLTEXT_CHARS and "Fewer strokes on aspirin." in text and "M" * 5000 in text
     # no sections: the whole text, cut
-    text, sections = fulltext_excerpt("Just prose. " * 1000)
+    text, sections = fulltext_excerpt("Just prose. " * 2000)
     assert sections == [] and text.startswith("Just prose.") and len(text) == FULLTEXT_CHARS
+
+
+# Calibration (full-text screening, 2026-11-13): a structured abstract's own sub-headings used up the results budget
+STRUCTURED = ("A trial in the oldest old\n\nAbstract\nBackground\nStrokes are common.\nMethods\nABSTRACT-METHODS "
+              "a randomised trial.\nResults\nABSTRACT-RESULTS fewer strokes.\nConclusions\nAspirin may help.\n\n"
+              "Keywords\naspirin; stroke\n\nIntroduction\nINTRO-TEXT Strokes are common.\n\nMethods\nBODY-METHODS "
+              "we randomised 400 people.\n\nResults\nBODY-RESULTS sensitivity 0.91 and specificity 0.80 per reader."
+              "\n\nDiscussion\nDISCUSSION-TEXT It may help.")
+
+
+def test_a_structured_abstracts_own_sub_headings_are_not_the_bodys_sections():
+    text, sections = fulltext_excerpt(STRUCTURED)
+    assert sections == ["abstract", "methods", "results"]
+    abstract, methods, results = text.split("\n\n")
+    assert abstract.startswith("Abstract\nBackground\n") and "ABSTRACT-RESULTS" in abstract
+    assert "Conclusions\nAspirin may help." in abstract and "BODY-" not in abstract
+    assert methods == "Methods\nBODY-METHODS we randomised 400 people."
+    assert results == "Results\nBODY-RESULTS sensitivity 0.91 and specificity 0.80 per reader."
+    assert "INTRO-TEXT" not in text and "DISCUSSION-TEXT" not in text and "aspirin; stroke" not in text
+    # numbered body headings end it too, without a closing sub-heading in the abstract
+    numbered = STRUCTURED.replace("Conclusions\nAspirin may help.\n\nKeywords\naspirin; stroke\n\nIntroduction",
+                                  "1. Introduction").replace("\nMethods\nBODY", "\n2. Methods\nBODY")
+    assert fulltext_excerpt(numbered)[0].split("\n\n")[1] == "Methods\nBODY-METHODS we randomised 400 people."
+    # an unstructured abstract ends at the body's first known heading, as before
+    plain = "Abstract\nWe randomised people.\n\nMethods\nBODY-METHODS a trial.\n\nResults\nBODY-RESULTS fewer."
+    assert fulltext_excerpt(plain) == (("Abstract\nWe randomised people.\n\nMethods\nBODY-METHODS a trial.\n\n"
+                                        "Results\nBODY-RESULTS fewer."), ["abstract", "methods", "results"])
+    # the disagreement checkpoint cuts the excerpt again: the abstract's sub-headings stay in the abstract there too
+    shown = fulltext_excerpt(text, 2400)[0]
+    assert shown.split("\n\n")[2] == "Results\nBODY-RESULTS sensitivity 0.91 and specificity 0.80 per reader."
+
+
+def test_the_results_get_the_largest_share_of_the_excerpt():
+    assert FULLTEXT_CHARS == 12000
+    long = f"Abstract\n{'q' * 20000}\n\nMethods\n{'w' * 20000}\n\nResults\n{'z' * 20000}"
+    text, _ = fulltext_excerpt(long)
+    a, m, r = (text.count(c) for c in "qwz")
+    assert len(text) <= FULLTEXT_CHARS and r > m > a and r >= 6400 and m >= 3400 and a >= 1900
+    # what a short section leaves goes to the others
+    short = f"Abstract\n{'q' * 300}\n\nMethods\n{'w' * 20000}\n\nResults\n{'z' * 20000}"
+    text, _ = fulltext_excerpt(short)
+    assert text.count("q") == 300 and len(text) >= FULLTEXT_CHARS - 40 and text.count("z") > 6500
 
 
 @pytest.mark.parametrize("env", [SR_P1], indirect=True)

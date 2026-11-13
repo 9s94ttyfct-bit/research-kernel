@@ -95,7 +95,11 @@ rules), V-PRISMA and the gate.
    screening at title/abstract stays dual; otherwise it draws a new 10% sample of the full-text records). A screener
    reads the full text's abstract, methods and results sections (``fulltext_excerpt``: found by their headings, cut
    to ``FULLTEXT_CHARS`` in all; the whole text's beginning when it has none of them), or the abstract of an
-   abstract-only record. Single screening includes ``unclear`` here too, as its reason says.
+   abstract-only record. Calibration (full-text screening, 2026-11-13): a structured abstract's own sub-headings
+   (Background, Methods, Results, Conclusions) stay in the abstract, so the body's methods and results are found
+   after it; ``FULLTEXT_CHARS`` is 12000 (from 6000: up to twice the input per full-text screening task), shared by
+   ``SHARES`` (abstract 2000, methods 3500, results 6500; what a shorter section leaves goes to the others). Single
+   screening includes ``unclear`` here too, as its reason says.
 11. The end (``_finish``): no included study sends the stage back to ``protocol`` ("no study met the criteria");
    else it is done, its reason the phases' counts and, for a systematic or scoping review, the PRISMA flow
    (``rk.verify.prisma``). The gate: every record has the final of each phase it reached, the full text of every
@@ -174,7 +178,7 @@ SAMPLE_PERCENT = 10  # the scoping review's dual sample, rounded up
 SWITCH_PERCENT = 10  # more differences on included-or-not than this share of the sample: dual for the rest
 ABSTRACT_SHOWN = 800  # characters of an abstract a disagreement checkpoint shows
 EXCERPT_SHOWN = 2400  # characters of a full-text excerpt a disagreement checkpoint shows, shared by its sections
-FULLTEXT_CHARS = 6000  # characters of a full text a full-text screener reads
+FULLTEXT_CHARS = 12000  # characters of a full text a full-text screener reads (shared by SHARES)
 NO_STUDY = "no study met the criteria"
 
 ScreeningMode = Literal["dual", "sampled", "single"]
@@ -425,6 +429,22 @@ _OTHER_HEADINGS = frozenset({
     "key words", "conflict of interest", "conflicts of interest", "competing interests", "declarations",
     "author contributions", "data availability", "supplementary material", "appendix", "abbreviations"})
 _NUMBERING = re.compile(r"^(?:\d+(?:\.\d+)*\.?|[ivx]+\.)\s+")
+# Calibration (full-text screening, 2026-11-13): a structured abstract's own sub-headings, which do not head the body's
+# sections (a structured abstract's "Methods" and "Results" had used up the results' room of the excerpt); a closing
+# one ends the abstract's sub-headings, and ``ABSTRACT_MAX`` characters of it end them too
+_ABSTRACT_SUBHEADINGS = {
+    "background": "background", "introduction": "introduction", "context": "background", "rationale": "background",
+    "importance": "background", "objective": "objective", "objectives": "objective", "aim": "objective",
+    "aims": "objective", "purpose": "objective", "design": "design", "setting": "setting", "settings": "setting",
+    "participants": "participants", "patients": "participants", "interventions": "interventions",
+    "measurements": "measurements", "main outcome measures": "measurements", "outcomes": "measurements",
+    "conclusion": "conclusion", "conclusions": "conclusion", "conclusions and relevance": "conclusion",
+    "interpretation": "conclusion", "significance": "conclusion", "discussion": "conclusion",
+}
+_CLOSING = frozenset({"conclusion"})
+ABSTRACT_MAX = 4000  # characters of a structured abstract after which a sub-heading heads the body
+# the excerpt's room by section (calibration, full-text screening, 2026-11-13): the results the largest
+SHARES = {"abstract": 2000, "methods": 3500, "results": 6500}
 
 
 def _heading(line: str) -> str | None:
@@ -436,29 +456,60 @@ def _heading(line: str) -> str | None:
     return "" if s in _OTHER_HEADINGS else None
 
 
+def _sub_heading(line: str) -> str | None:
+    """What ``line`` is as a structured abstract's sub-heading (never a numbered heading): ``methods``, ``results`` or
+    another of ``_ABSTRACT_SUBHEADINGS``, else ``None``."""
+    s = " ".join(line.split()).lower().rstrip(":.").strip()
+    if _NUMBERING.match(s):
+        return None
+    if _SECTION_HEADINGS.get(s) in ("methods", "results"):
+        return _SECTION_HEADINGS[s]
+    return _ABSTRACT_SUBHEADINGS.get(s)
+
+
 def fulltext_excerpt(text: str, limit: int = FULLTEXT_CHARS) -> tuple[str, list[str]]:
     """What full-text screening reads of a full text: its abstract, methods and results sections (each the lines
-    after its heading up to the next known heading; a section headed twice, e.g. in a structured abstract and the
-    body, is joined), each headed by its name, at most ``limit`` characters in all. Each section gets an equal share
-    of the room; what a shorter one leaves goes to the longer ones. Returns the excerpt and the sections found; with
-    none of them, the text's first ``limit`` characters and ``[]``."""
+    after its heading up to the next known heading; a section headed twice is joined), each headed by its name, at
+    most ``limit`` characters in all. A structured abstract (its first line a sub-heading) keeps its own sub-headings
+    (Background, Methods, Results, Conclusions, …) as its lines, so the body's Methods and Results are found after
+    it: it ends at a heading that is not a sub-heading, a numbered one, one it already had, any after its closing
+    sub-heading (Conclusions), an Introduction after its first line, or any once it holds ``ABSTRACT_MAX``
+    characters. The room is shared by ``SHARES`` (results the largest); what a shorter section leaves goes to the
+    others in proportion. Returns the excerpt and the sections found; with none of them, the text's first ``limit``
+    characters and ``[]``.
+
+    Calibration (full-text screening, 2026-11-13): ``FULLTEXT_CHARS`` went from 6000 to 12000, so a full-text
+    screening task reads up to twice the input per record (its cost)."""
     found: dict[str, list[str]] = {}
     current: str | None = None
+    seen: set[str] | None = None  # the sub-headings of the structured abstract being read
+    fresh = False  # an abstract heading was just read: its first line tells whether it is structured
+    size = 0  # characters of the structured abstract so far
     for line in re.split(r"[\n\f]", text):
+        if not line.strip():
+            continue
+        sub = _sub_heading(line) if current == "abstract" else None
+        if sub is not None and (fresh or (seen is not None and sub not in seen and not seen & _CLOSING
+                                          and sub != "introduction" and size <= ABSTRACT_MAX)):
+            seen, fresh = (seen or set()) | {sub}, False
+            found.setdefault("abstract", []).append(line.strip())
+            continue
         kind = _heading(line)
         if kind is not None:
-            current = kind or None
-        elif current is not None and line.strip():
+            current, fresh, seen, size = kind or None, kind == "abstract", None, 0
+        elif current is not None:
             found.setdefault(current, []).append(line.strip())
+            fresh, size = False, size + len(line.strip()) + 1
     names = [s for s in SECTIONS if s in found]
     if not names:
         return text.strip()[:limit], []
     bodies = {s: "\n".join(found[s]) for s in names}
     left = limit - sum(len(s) + 1 for s in names) - 2 * (len(names) - 1)  # the headings and the blank lines
+    weight = sum(SHARES[s] for s in names)
     cut: dict[str, str] = {}
-    for i, s in enumerate(sorted(names, key=lambda s: len(bodies[s]))):
-        cut[s] = bodies[s][:max(left, 0) // (len(names) - i)]
-        left -= len(cut[s])
+    for s in sorted(names, key=lambda s: len(bodies[s]) / SHARES[s]):  # the most under its share first
+        cut[s] = bodies[s][:max(left, 0) * SHARES[s] // weight]
+        left, weight = left - len(cut[s]), weight - SHARES[s]
     return "\n\n".join(f"{s.capitalize()}\n{cut[s]}" for s in names), names
 
 
