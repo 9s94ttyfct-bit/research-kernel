@@ -39,6 +39,9 @@ the first record of a library item is the one screened, and every later hit of t
 page, another source or another query, is a duplicate record (``dedup_of`` = the first record). So PRISMA's
 "identified" counts the hits of every source and query (a work found by two queries on one source is identified
 twice) and "duplicates removed" includes the cross-query duplicates: screened = identified - duplicates removed.
+Calibration (search and screening, 2026-11-12): the merge fills in what the item lacks from the later hit, its
+identifiers, open-access URLs, language and abstract (``Library.add_item``), so a work OpenAlex returned first without
+an abstract takes Europe PMC's; screening then looks up the abstracts still missing (``rk.production.screening``).
 
 A record's language is its item's language field (from OpenAlex, Europe PMC or PubMed; any source that has it fills
 it in for the item), else ``"unknown"``, which screening treats as English (``language_note``). A record in a known

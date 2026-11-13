@@ -175,7 +175,11 @@ frozen), `search_screen` (search, deduplication, title/abstract and full-text sc
   the synthesis plan and, for a systematic review, the PRISMA-P items, written to agree with the protocol's languages
   (English: records in another language are excluded by rule, so no criterion admits one); the Scout drafts the
   search strategy (at least 3 queries on at least 2 sources, years), each query a few concepts joined by AND, each
-  concept an OR group of its synonyms. Every query runs on every source of the strategy as written, so a field tag one
+  concept an OR group of its synonyms. The queries together find every record that may meet the eligibility criteria
+  (screening applies the criteria): an outcome is ANDed only when it is the subject of the question, and then with its
+  broader names; a concept naming a class lists its common members; a context such as the diet is not ANDed unless a
+  criterion requires it; narrowing keeps the population and the intervention concepts
+  (`docs/eval/search-screen-2026-11-12.md`). Every query runs on every source of the strategy as written, so a field tag one
   source understands (PubMed `[tiab]`, Europe PMC `TITLE_ABS:`) breaks the query on the other. The kernel picks the
   fields: OpenAlex is searched in titles, abstracts and the keywords it tags works with, Europe PMC in titles and
   abstracts, PubMed as given (its automatic term mapping applies), arXiv in all fields
@@ -228,13 +232,19 @@ frozen), `search_screen` (search, deduplication, title/abstract and full-text sc
   selection principles.
 - **Screening (search_screen).** The frozen search strategy runs and the records are deduplicated (above the record
   cap the stage goes back to protocol; so does a systematic or scoping review whose search a source could not
-  finish, while a critical review or proposal goes on and records it as a limitation). Records in other languages are
-  excluded ("language"). screener_a, and screener_b where dual screening applies (systematic reviews, the scoping
+  finish, while a critical review or proposal goes on and records it as a limitation). A later hit of a work already
+  in the library fills what the item lacks, its abstract included. Records in other languages are
+  excluded ("language"). Before title/abstract screening, once per attempt, a record still without an abstract gets
+  one from PubMed (`efetch`, by PMID) or else Europe PMC (by DOI); a failed lookup is the record's problem, never
+  fatal. screener_a, and screener_b where dual screening applies (systematic reviews, the scoping
   review's 10% sample), decide on titles and abstracts in batches of 25; a decision without the reason it needs is
   asked again. Dual screening needs two screeners of
   different vendors: a run that would reach search_screen without them is refused at start (`screeners_unusable`).
-  Disagreements go to you in `screening_disagreements` checkpoints of up to 25 records (P2) or to the two-vendor vote
-  (P1, which excludes when the judges disagree). The full text of every include is then sought (open-access
+  At title/abstract both screeners unclear sends the record to the full text. Other disagreements go to you in
+  `screening_disagreements` checkpoints of up to 25 records (P2) or to the two-vendor vote (P1): at title/abstract
+  the judges are asked whether the record may meet the criteria, and when they disagree it goes to the full text; at
+  full text the vote excludes when they disagree (`docs/eval/search-screen-2026-11-12.md`). The full text of every
+  include is then sought (open-access
   channels, then the browser); a record without one is assessed on its abstract, and the same screeners decide again
   on the full text's abstract, methods and results. V-PRISMA checks that the flow adds up and that every exclusion
   has a reason (systematic and scoping reviews); a critical review or proposal keeps the selection reason of every

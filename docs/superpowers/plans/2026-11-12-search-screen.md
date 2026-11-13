@@ -89,6 +89,22 @@
 - The module docstrings (see the global constraints).
 - The evidence doc's "Decision" section, if the implementation differs from it.
 
+## Task 8: eligibility criteria are not the outcome's reporting form
+
+Added by the controller after Tasks 1–6 (evidence: `docs/eval/search-screen-2026-11-12.md` section 4). Runs after Task 7.
+
+- **Files:**
+  - `src/rk/production/protocol.py`: `DRAFT_TASK`, the eligibility guidance, and the judges' rules sheet (what the judges check in the eligibility);
+  - `src/rk/roles/ideator.md`: the protocol bullets on eligibility;
+  - `src/rk/roles/judge.md` if it lists eligibility checks;
+  - `src/rk/production/screening.py`: `SCREEN_TASK` and `FULL_TEXT_TASK`.
+- **Protocol rule** (same meaning in every place): "Eligibility states the study design, the population, the intervention or exposure, the comparator and the outcomes measured (with a time window only when the question needs one). It does not require the statistic, unit or scale a study reports an outcome in, nor a particular aggregate of it; whether a reported form can be pooled is settled by extraction and synthesis (conversion, or narrative synthesis)."
+- **Screeners** (both phases):
+  - "Apply each criterion as written: a criterion that admits data from which an outcome can be computed is met by reported values that allow the computation, and a comparator or intervention the criterion lists is eligible."
+  - "Do not exclude a study that measures an eligible outcome because of the statistic, unit or scale it reports it in, unless a criterion explicitly requires that form."
+- **Judges:** they may raise a point when an eligibility criterion requires a reporting form. No deterministic check (it cannot be detected reliably).
+- **Tests:** one behavioural test that the built protocol draft task and the screener task carry the rule (the request an agent receives, not the constant). Update any test that pins the old text.
+
 ## After all tasks
 
 Review, then the full suite on the final commit, a path scan, a fast-forward of `main` and a push. Then a fresh home with the six entries again. Measure, per entry:

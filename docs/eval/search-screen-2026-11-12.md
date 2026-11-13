@@ -47,10 +47,13 @@ Screeners see a record's title, abstract and metadata. Many deduplicated records
 | ozone | 223 | 49 | OpenAlex only 28, all three 10, OpenAlex and PubMed 5, other 6 |
 | tfa | 550 | 125 | OpenAlex only 86, all three 21, OpenAlex and Europe PMC 12, other 6 |
 
+The last column counts records by the sources whose search log returned them, not by the identifiers stored on the item.
+
 There are three causes, read from the code:
 - **PubMed:** the source builds its items from `esummary`, which carries no abstract, so a PubMed-only record never has one.
 - **OpenAlex:** it has no abstract for many publishers' works.
 - **The library merge** (`Library.add_item` → `item.merged`) fills in a later hit's identifiers, open-access URLs and language, but never its abstract. A work OpenAlex returned first keeps no abstract even when Europe PMC returned it with one; that accounts for 68 fructose records, plus the Europe PMC rows above.
+  - Checked: of the 68 fructose records returned by both OpenAlex and Europe PMC without an abstract, Europe PMC's core result has an abstract for each of the first 20 looked up (by PMID, else DOI).
 
 **Effect on screening.** In srrepro8 cade, all 5 included studies the search found have no abstract. In every case both screeners said unclear, and the P1 vote excluded the record with its conservative option. In srrepro7, with a different hit order, 3 of the same 5 had abstracts and all 3 passed title/abstract. Of the 2 without an abstract, one passed (unclear and yes) and one was excluded the same way (both unclear, the conservative option).
 
@@ -73,12 +76,18 @@ Included studies lost this way:
 
 Single screening already sends an unclear record to the full text. At title/abstract, Cochrane practice excludes only the clearly ineligible, and the full text settles any uncertainty.
 
+## 4. Full-text exclusions of included studies (srrepro8 ozone, srrepro7 tfa)
+
+Every review-included study of these two entries that reached the full text was excluded there. The causes differ:
+- **ozone: screener misreadings.** The frozen criteria already admitted these studies: I1 admits ozone, alone or combined with H2O2, compared with H2O2 alone, and I2/E3 admit data from which ΔE can be computed. The exclusions misread them: an E1 exclusion that misread the comparator, and exclusions of studies that report L\*a\*b\* values before and after treatment, from which ΔE can be computed. The protocol did not cause them.
+- **tfa: a reporting-form restriction in the eligibility.** I2/E3 admit only total TFA as % of total fatty acids and exclude individual isomers. A study that measures trans fatty acids but reports them in another form is excluded, while the published review included it. How a study reports an outcome is a matter for extraction and synthesis (conversion, or narrative synthesis when it cannot be pooled), not for eligibility.
+
 ## Decision
 
-One calibration, three parts (plan `docs/superpowers/plans/2026-11-12-search-screen.md`):
+One calibration, four parts (plan `docs/superpowers/plans/2026-11-12-search-screen.md`):
 1. **Abstracts:**
    - the library merge fills a missing abstract from a later hit;
-   - before title/abstract screening, the kernel fetches the missing abstracts of the deduplicated records: by PMID from PubMed (`efetch`), by DOI from Europe PMC.
+   - before title/abstract screening, the kernel fetches the missing abstracts of the deduplicated records: by PMID from PubMed (`efetch`), by DOI from Europe PMC. As implemented, the records looked up are those going to title/abstract screening (a language exclusion is not screened), and a record PubMed has no abstract for, or whose PubMed lookup failed, is tried by DOI too.
 2. **Title/abstract screening:**
    - both unclear goes to the full text by rule;
    - a P1 vote on a disagreement has the conservative option "include" (the full text is screened again by both screeners) and asks whether the record may meet the criteria. Full text is unchanged.
@@ -88,3 +97,7 @@ One calibration, three parts (plan `docs/superpowers/plans/2026-11-12-search-scr
    - a class concept lists its common members;
    - a context such as the diet is not ANDed;
    - narrowing keeps the population and the intervention concepts.
+4. **Eligibility and the outcome's reporting form** (plan Task 8):
+   - eligibility states the study design, the population, the intervention or exposure, the comparator and the outcomes measured (with a time window only when the question needs one); it does not require the statistic, unit or scale a study reports an outcome in, nor a particular aggregate of it; whether a reported form can be pooled is settled by extraction and synthesis;
+   - screeners apply each criterion as written (data from which an outcome can be computed meets a criterion that admits it; a listed comparator or intervention is eligible) and do not exclude a study for the statistic, unit or scale it reports an eligible outcome in, unless a criterion explicitly requires that form;
+   - the judges may raise a point when a criterion requires a reporting form; there is no deterministic check, since it cannot be detected reliably.
