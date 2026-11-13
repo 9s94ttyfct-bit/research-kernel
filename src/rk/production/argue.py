@@ -48,7 +48,10 @@ An interrupted attempt (a rate cap, a budget or a crash) runs again in place: th
 is the open stage's per run session (§7.2): every task of the stage in the session counts, an earlier attempt's too,
 except a judge's (V-SUPPORT and the P1 votes: ``tasks_used``).
 
-Finally P1 asks the judges whether the main claim answers the frozen RQ (conservative: it does not, back to question);
+Finally P1 asks the judges whether the main claim answers the frozen RQ (conservative: it does not, back to question;
+in a project whose question is fixed, a reproduction's, back to synthesize while ``argue->synthesize`` has a use left,
+else the stage fails. Calibration (seeded reproduction, 2026-11-13): going back to question re-ran discovery on a
+question given by design);
 P2 asks you on the final ``uncertain_support`` checkpoint (``_review``): every claim of the argument and every in-scope
 finding that fails the claim gate (``supported`` or ``withdraw``; only ``withdraw`` past a problem other than its
 V-SUPPORT status: ``review_choices``), and every other claim but the main one whose withdrawal takes an unanswered
@@ -127,6 +130,7 @@ from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.orchestrator.graph import EDGE_LIMIT, STAGE_TASK_BUDGET, edge_name
 from rk.orchestrator.state import (
     edge_row,
+    fixed_stages,
     passed_attempt,
     record_degraded,
     run_row,
@@ -1620,7 +1624,12 @@ class ArgueWorker:
 
     def _rq_vote(self, ctx: StageContext, s: _Inputs) -> StageOutcome | None:
         """P1: the judges' vote on whether the main claim answers the frozen RQ (once per main claim); conservative:
-        it does not, and the stage goes back to question."""
+        it does not, and the stage goes back to question. In a project whose question is fixed (``fixed_stages``: a
+        reproduction's seed) it goes back to synthesize instead, the judges' reasons its guidance, while
+        ``argue->synthesize`` has a use left; with none left the stage fails.
+
+        Calibration (seeded reproduction, 2026-11-13): going back to question re-ran its novelty check on a question
+        given by design, which found published reviews (the reproduced one among them) and ended the runs at gaps."""
         ps = ctx.ps
         main = main_claim(ps, ctx.attempt)
         if main is None or _withdrawn(ps, main):
@@ -1641,9 +1650,16 @@ class ArgueWorker:
             last = _note(ps, ctx.attempt, "rq_check", actor=ctx.actor, main_claim_id=main, decision=res.decision,
                          by="vote", vote_id=res.id, reason=why, tasks=counter.n)
         if last["decision"] == NOT_ANSWERS:
-            return StageOutcome("back_edge", to="question", reason=(
-                f"the main claim does not answer the research question ({NOT_HUMAN}): "
-                f"{last['reason'] or 'no reason given'}"))
+            why = last["reason"] or "no reason given"
+            if "question" not in fixed_stages(ps):
+                return StageOutcome("back_edge", to="question", reason=(
+                    f"the main claim does not answer the research question ({NOT_HUMAN}): {why}"))
+            if (spent := _back_edge_spent(ps)) is not None:
+                return StageOutcome("failed", reason=(
+                    f"the main claim never answered the fixed research question; {spent['edge']} has no use left: "
+                    f"{why}"))
+            return self._back_to_synthesize(ctx, (
+                f"the main claim does not answer the fixed research question ({NOT_HUMAN}): {why}"))
         return None
 
     def _open_final(self, ctx: StageContext, s: _Inputs, *, replaces: str | None = None, why: str = "") -> str:

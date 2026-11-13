@@ -25,6 +25,7 @@ from rk.orchestrator.state import (
     latest_attempt,
     record_attempt,
     record_edge_taken,
+    record_fixed_stages,
     record_passed,
     record_ran,
     record_run_session,
@@ -619,6 +620,43 @@ def test_main_claim_not_answering_rq_goes_back_to_question(env):
     (check,) = argue_notes(ps, 1, kind="rq_check")
     assert check["decision"] == "does_not_answer" and check["by"] == "vote"
     assert any("research question" in f for f in w.gate(ps, 1).failures)
+
+
+SEED = "the reproduction seed (its question is the published review's)"
+
+
+def test_in_a_seeded_project_a_main_claim_not_answering_the_rq_goes_back_to_synthesize(env):
+    """Calibration (seeded reproduction, 2026-11-13): the question is fixed, so the P1 RQ vote's ``does_not_answer``
+    goes back to synthesize, with the judges' reasons as its guidance; a resumed attempt returns the same back-edge."""
+    _, ps, _ = env
+    _synthesize(env)
+    record_fixed_stages(ps, ["gaps", "topics", "question"], SEED, actor="tester")
+    w = ArgueWorker()
+    ex = _exec([draft()], [critique()], votes=_votes(["does_not_answer"], ["answers"]))
+    out = w.run(_ctx(env, ex))
+    assert (out.status, out.to) == ("back_edge", "synthesize")
+    (check,) = argue_notes(ps, 1, kind="rq_check")
+    assert check["decision"] == "does_not_answer" and check["reason"]
+    assert out.reason == ("the main claim does not answer the fixed research question (P1 vote, not reviewed by a "
+                          f"human): {check['reason']}")
+    (sent,) = argue_notes(ps, 1, kind="back_edge")
+    assert (sent["to"], sent["reason"]) == ("synthesize", out.reason)
+    again = w.run(_ctx(env, _exec()))
+    assert (again.status, again.to, again.reason) == ("back_edge", "synthesize", out.reason)
+
+
+def test_in_a_seeded_project_with_argue_to_synthesize_spent_the_stage_fails(env):
+    _, ps, _ = env
+    _synthesize(env)
+    record_fixed_stages(ps, ["question"], SEED, actor="tester")
+    record_edge_taken(ps, "argue->synthesize", EDGE_LIMIT, actor="tester")
+    out = ArgueWorker().run(_ctx(env, _exec([draft()], [critique()], votes=_votes(["does_not_answer"], ["answers"]))))
+    assert out.status == "failed"
+    (check,) = argue_notes(ps, 1, kind="rq_check")
+    assert out.reason == ("the main claim never answered the fixed research question; argue->synthesize has no use "
+                          f"left: {check['reason']}")
+    assert not argue_notes(ps, 1, kind="back_edge")
+
 
 
 NOT_ANSWERED = {"ok": False, "reason": "It is about trials, not timing."}
