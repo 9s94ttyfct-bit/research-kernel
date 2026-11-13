@@ -1,4 +1,5 @@
-"""Full-text acquisition: JATS -> BioC -> arXiv HTML -> OA PDF; snapshots and library attachments."""
+"""Full-text acquisition: JATS -> BioC -> PMC article page -> arXiv HTML -> OA PDF (``fetch_fulltext``); snapshots and
+library attachments."""
 
 from __future__ import annotations
 

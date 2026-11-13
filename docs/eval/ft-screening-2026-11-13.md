@@ -104,3 +104,42 @@ The pattern also shows in the reasons. Share of "no" decisions whose reason is w
    - Precision: in the prostate sample, 3 of 10 non-review disagreements are AI-assisted designs (S3, S5, S7), and similar records would enter. This changes the reproduced question, so it is a decision about fidelity, not a screening fix.
 
 Not addressed by any option: O0 and P0, where both screeners misread a criterion that plainly admits the study (ozone alone vs HP alone; the IVO subset with PI-RADS). They passed `CRITERIA_AS_WRITTEN` unaided. A comparator example in the criterion text, or a per-criterion yes/no checklist at full text, might catch them **[INF]**.
+
+## Decision (plan `docs/superpowers/plans/2026-11-13-ft-screening.md`)
+
+Done:
+
+1. **A "no" rests on text that shows the criterion fails (option 1, and 3c as a reason).** Both screeners, in both
+   phases, are told to decide "no" only when the text shows the record fails a criterion, naming it and pointing to
+   the words; a criterion the text shown does not mention is "unclear", and an exclusion criterion phrased as an
+   absence is met only when the text shows the absence (`NO_SHOWS_FAILURE`, in the task and the role prompts). The
+   full-text vote question now says to include a record when the text shown establishes every criterion, to exclude
+   it when the text shows it fails one, naming it, and, when the text leaves a criterion unsettled, to exclude it
+   saying which one; the judges mark that case `unsettled` (kept in the vote's opinions). The conservative option
+   stays "exclude" and the vote's unanimity rule is unchanged. A full-text vote exclusion of a both-unclear pair, or
+   one whose excluding judges all mark it unsettled, gets the reason "screeners disagreed; eligibility not
+   established from the text shown (abstract only / sections / whole text); not reviewed by a human". It is an
+   exclusion like any other; the stage's phase summary, the PRISMA flow (its own exclusion reason) and notes ("of
+   which N because eligibility was not established from the text shown") and the Writer's limitations (the PRISMA
+   notes) count it apart.
+2. **The excerpt keeps the results (option 3a).** A structured abstract's own sub-headings stay in the abstract, so
+   the body's Methods and Results are found after it (P4's case). `FULLTEXT_CHARS` is 12000 (from 6000), shared
+   abstract 2000, methods 3500, results 6500, what a shorter section leaves going to the others; a full-text
+   screening task reads up to twice the input per record.
+3. **Records with a PMCID get their full text (option 3b).** Cause, from the run home's records and its HTTP cache
+   (read only): every one of the 36 abstract-only records with a PMCID had it on the item long before retrieval, and
+   for every one Europe PMC's full-text XML answered a non-200 (500, an HTTP error the channel swallowed) and PMC's
+   BioC "No result can be found". They are free-to-read PMC articles outside PMC's open-access subset (checked for
+   P3 and P6: `isOpenAccess` N, in PMC), which neither open-access endpoint serves; the record's problem said only
+   "no full text". The PMCID channel now reads PMC's article page after the XML and BioC (its HTML as the text
+   layer), and an item with a PMID and no PMCID looks it up in Europe PMC before its full text is sought.
+
+Not done, and why:
+
+- **A majority rule for the full-text vote (option 2).** Every admitted judge agreeing, else the conservative option,
+  is the two-vendor principle of the vote; the D\* cases are addressed instead by what the judges are told and see.
+- **Widening the protocol (option 4).** It changes the reproduced question: a decision about fidelity, not a
+  screening fix.
+- **A real "awaiting classification" state for abstract-only records.** That is a non-final PRISMA state the kernel
+  does not have yet. Until it does, these records are exclusions whose reason says eligibility was not established
+  from the text shown, counted apart.

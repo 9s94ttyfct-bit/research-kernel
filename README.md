@@ -247,18 +247,26 @@ frozen), `search_screen` (search, deduplication, title/abstract and full-text sc
   one from PubMed (`efetch`, by PMID) or else Europe PMC (by DOI); a failed lookup is the record's problem, never
   fatal. screener_a, and screener_b where dual screening applies (systematic reviews, the scoping
   review's 10% sample), decide on titles and abstracts in batches of 25; a decision without the reason it needs is
-  asked again. Dual screening needs two screeners of
+  asked again. In both phases a screener decides "no" only when the text shows the record fails a criterion, naming
+  it and pointing to the words; a criterion the text shown says nothing about is "unclear" (an exclusion criterion
+  phrased as an absence is met only when the text shows the absence). Dual screening needs two screeners of
   different vendors: a run that would reach search_screen without them is refused at start (`screeners_unusable`).
   At title/abstract both screeners unclear sends the record to the full text. Other disagreements go to you in
   `screening_disagreements` checkpoints of up to 25 records (P2) or to the two-vendor vote (P1): at title/abstract
   the judges are asked whether the record may meet the criteria, and when they disagree it goes to the full text; at
-  full text the vote excludes when they disagree (`docs/eval/search-screen-2026-11-12.md`). The full text of every
-  include is then sought (open-access
-  channels, then the browser); a record without one is assessed on its abstract, and the same screeners decide again
-  on the full text's abstract, methods and results. V-PRISMA checks that the flow adds up and that every exclusion
-  has a reason (systematic and scoping reviews); a critical review or proposal keeps the selection reason of every
-  record instead. An attempt interrupted by an hourly cap is resumed: the next attempt reuses the decisions already
-  made under the same frozen protocol.
+  full text they include a record when the text shown establishes every criterion, exclude it when it shows one
+  fails, and otherwise exclude it marking the criterion unsettled, and the vote excludes when they disagree
+  (`docs/eval/search-screen-2026-11-12.md`). Such an exclusion, and a both-unclear pair's, says "eligibility not
+  established from the text shown (abstract only / sections / whole text)"; it is an exclusion like any other,
+  counted apart in the stage's summary, the PRISMA flow and notes, and the Writer's limitations
+  (`docs/eval/ft-screening-2026-11-13.md`). The full text of every include is then sought (open-access
+  channels: by PMCID Europe PMC's XML, PMC's BioC and PMC's article page, an item without a PMCID looking it up by
+  DOI or PMID first; then the browser); a record without one is assessed on its abstract, and the same screeners
+  decide again on up to 12000 characters of the full text's abstract, methods and results (results the largest
+  share; a structured abstract's own sub-headings stay in the abstract). V-PRISMA checks that the flow adds up and
+  that every exclusion has a reason (systematic and scoping reviews); a critical review or proposal keeps the
+  selection reason of every record instead. An attempt interrupted by an hourly cap is resumed: the next attempt
+  reuses the decisions already made under the same frozen protocol.
 - **Reading and extraction (read_extract).** For every study included at full text the retraction status is
   checked (V-RETRACT; a retracted or withdrawn study is flagged, not extracted, and listed for the limitations), then
   the reader extracts each protocol field with a quote the kernel verifies (V-QUOTE, against the full text, or the
