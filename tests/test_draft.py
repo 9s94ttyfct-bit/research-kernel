@@ -670,6 +670,18 @@ def test_the_writers_limitations_list_the_screening_notes(env):
             "eligibility was not established from the text shown") in screening
 
 
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_a_main_claim_reusing_a_finding_is_offered_once_as_the_main_claim(env):
+    """Synthesis across studies, fix round 1: argue's main claim may reuse a synthesis finding by id; the Writer is
+    offered it once, as the main claim."""
+    _, ps, _ = env
+    _ready(env)
+    s = draft_inputs(ps)
+    s = replace(s, main=s.findings[0])
+    claims = writer_inputs(ps, s, s.sections[0], None)["claims"]
+    assert [c["role"] for c in claims if c["claim_id"] == s.main] == ["main"]
+
+
 def test_draft_section_retries_setting_bounds_the_writer(env):
     _, ps, _ = env
     _ready(env)

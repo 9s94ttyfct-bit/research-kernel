@@ -60,11 +60,22 @@ class ExtractionField(BaseModel):
         return self
 
 
+# the generic field pair of a systematic review's outcome that no effect measure maps (``OutcomeSpec.fields``)
+PAIR_ROLES = ("intervention", "comparator")
+
+
 class OutcomeSpec(BaseModel):
-    """A pre-specified outcome of a meta-analysis: its ``name`` and the extraction fields its effect is computed from
-    (``fields``: each role of the effect measure, ``rk.stats.effects.MEASURES``, e.g. ``events_treatment``, to the
-    name of a number field of the extraction schema). A plain name (the shape before the mapping existed) loads as
-    an outcome without fields, which ``check_protocol`` refuses and synthesize does not pool."""
+    """A pre-specified outcome: its ``name`` and the extraction fields its numbers come from (``fields``: role -> the
+    name of a number field of the extraction schema). In a meta-analysis the roles are those of the effect measure
+    (``rk.stats.effects.MEASURES``, e.g. ``events_treatment``); in any other systematic review plan the pair
+    ``PAIR_ROLES`` (``intervention``: the intervention's or index test's value, ``comparator``: the comparator's), e.g.
+    a diagnostic-accuracy outcome's two arms. Synthesize counts the studies by the direction of the effect between the
+    pair (the means of an MD or SMD outcome, the risks of an RR, OR or RD one). A plain name (the shape before the
+    mapping existed) loads as an outcome without fields: ``check_protocol`` refuses it in a meta-analysis, synthesize
+    neither pools it nor counts its directions.
+
+    Calibration (synthesis across studies, 2026-11-13): the kernel computed no cross-study count for a systematic
+    review, although its extraction rows gave one for every evaluation topic."""
     name: str
     fields: dict[str, str] = {}
 

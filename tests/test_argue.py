@@ -65,7 +65,7 @@ from tests.production_fakes import (
     votes_on,
 )
 from tests.test_agent_loop import ScriptedBackend
-from tests.test_synthesis import DESIGN, CapOnce, Exec, _setup, assess
+from tests.test_synthesis import DESIGN, CapOnce, Exec, _setup, assess, first_passage
 
 F1 = "Aspirin was studied in a randomised trial of older people."
 F2 = "Aspirin was studied in a cohort of older people."
@@ -90,7 +90,7 @@ def env(tmp_home, replay_http, request):
 def _judge(uncertain=()):
     def out(inputs):
         label = "partial" if any(u in inputs["claim"] for u in uncertain) else "supported"
-        return {"label": label, "quoted_spans": [inputs["evidence"].split("\n\n")[0]]}
+        return {"label": label, "quoted_spans": [first_passage(inputs["evidence"])]}
     return out
 
 

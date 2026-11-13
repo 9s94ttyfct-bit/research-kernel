@@ -21,14 +21,20 @@ level in percent: the numbers a claim states), and for the figure ``labels``: ``
 least two computable studies (the figure draws no pooled row without them). ``values`` of
 ``rk.stats.plots:map_table`` (``stt``) and ``rk.verify.stats:map_markdown`` (``fig``, a Markdown table): ``{fields,
 item_ids, row_ids, extraction_attempt, table: map_table(...)}`` (every group study counts; a study without a usable
-row for a field is "not reported" there).
+row for a field is "not reported" there). ``values`` of ``rk.verify.stats:direction_counts`` (``DIRECTION``, ``stt``):
+``{outcome, field_map, item_ids, labels, row_ids, extraction_attempt, table: [{item_id, label, intervention,
+comparator, direction}], display: {k, higher, lower, same}}``: per study the two values ``study_direction`` compares
+(the pair ``PAIR_ROLES``, or each arm's risk, events / n) and their direction (``same``: exact equality); every study
+must have both. Calibration (synthesis across studies, 2026-11-13): vote counting by direction of effect (SWiM) for a
+systematic review's pre-specified outcomes, computed by the kernel and checked like a pool.
 
 A row with a ``problem`` (e.g. marked missing) gives no value, and two usable values for one field of a study are
 refused. Pass only the rows the analysis uses (for a pool: the measure's fields of the group's studies): every input
 row is checked.
 
 ``stat_claim_text`` writes a pool's ``stat_result`` claim from its ``display`` values and binds each printed number
-to its display key; V-NUM checks the claim number by number against those bindings.
+to its display key, ``direction_claim_text`` a direction count's; V-NUM checks the claim number by number against
+those bindings.
 
 ``check_stats`` re-reads the rows by id and compares their hashes (a changed or missing row is a mismatch, as is an
 artifact with no input row), requires ``code_version == STATS_VERSION`` and that the inputs' extraction attempt is the
@@ -44,6 +50,7 @@ import re
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 from typing import Literal
 
@@ -52,8 +59,16 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from rk.canon import canonical_json, sha256_hex
 from rk.orchestrator.state import shown_attempt
 from rk.production.artifacts import ArtifactIn, add_artifact, artifact
+from rk.production.models import PAIR_ROLES
 from rk.stats import STATS_VERSION
-from rk.stats.effects import LOG_SCALE, MEASURES, Effect, Uncomputable, compute
+from rk.stats.effects import (
+    BINARY_FIELDS,
+    LOG_SCALE,
+    MEASURES,
+    Effect,
+    Uncomputable,
+    compute,
+)
 from rk.stats.meta import pool
 from rk.stats.plots import forest_svg, map_table
 from rk.store.project import ProjectStore
@@ -64,6 +79,8 @@ from rk.verify.records import record_verification
 TOLERANCE = 1e-9
 READ_EXTRACT = "read_extract"
 POOL = "rk.stats.meta:pool"
+DIRECTION = "rk.verify.stats:direction_counts"
+DIRECTIONS = ("higher", "lower", "same")
 
 
 class PoolOptions(BaseModel):
@@ -212,11 +229,53 @@ def _map_table(rows: list[dict], *, fields: list, item_ids: list[str]) -> _Made:
     return _Made(made.values, map_markdown(made.values["table"]).encode("utf-8"), ".md")
 
 
+def _exact(data: dict, field: str) -> Fraction:
+    """A study's extracted value of ``field`` as an exact number (a JSON number or a numeric string, as written);
+    ``ValueError`` when it has none or it is not a number."""
+    v = data.get(field)
+    if v is None:
+        raise ValueError(f"no value for {field}")
+    written = None if isinstance(v, bool) or not isinstance(v, int | float | str) else str(v).strip()
+    try:
+        return Fraction(written or "")
+    except (ValueError, ZeroDivisionError):
+        raise ValueError(f"not a number: {field}") from None
+
+
+def study_direction(data: dict, field_map: dict[str, str]) -> tuple[str, float, float]:
+    """One study's direction of effect between the two values ``field_map`` (role -> extraction field) names, from
+    its values (field -> value): the pair ``PAIR_ROLES`` (``intervention`` against ``comparator``), or the binary
+    roles (the treatment arm's risk, events / n, against the control arm's). Returns ``higher``, ``lower`` or ``same``
+    (exact equality of the extracted values, the risks compared as fractions) and the two values compared.
+    ``ValueError``: a value missing or not a number, an arm without participants, or no field pair."""
+    if set(field_map) == set(BINARY_FIELDS):
+        def risk(events: str, n: str) -> Fraction:
+            if (size := _exact(data, field_map[n])) <= 0:
+                raise ValueError(f"no participants: {field_map[n]}")
+            return _exact(data, field_map[events]) / size
+        x, y = risk("events_treatment", "n_treatment"), risk("events_control", "n_control")
+    elif set(field_map) == set(PAIR_ROLES):
+        x, y = _exact(data, field_map["intervention"]), _exact(data, field_map["comparator"])
+    else:
+        raise ValueError(f"not a field pair: {', '.join(sorted(field_map))}")
+    return ("higher" if x > y else "lower" if x < y else "same"), float(x), float(y)
+
+
+def _direction(rows: list[dict], *, outcome: str, field_map: dict, item_ids: list[str], labels: dict) -> _Made:
+    table = []
+    for i, data in _studies(rows, list(item_ids)).items():
+        d, x, y = study_direction(data, field_map)
+        table.append({"item_id": i, "label": labels.get(i, i), "intervention": x, "comparator": y, "direction": d})
+    return _Made({"table": table,
+                  "display": {"k": len(table), **{d: sum(t["direction"] == d for t in table) for d in DIRECTIONS}}})
+
+
 CODE_PATHS: dict[str, _Code] = {
     POOL: _Code("stt", ("measure", "options", "item_ids"), _pool, ("field_map",)),
     "rk.stats.plots:forest_svg": _Code("fig", ("measure", "options", "item_ids", "labels"), _forest, ("field_map",)),
     "rk.stats.plots:map_table": _Code("stt", ("fields", "item_ids"), _map),
     "rk.verify.stats:map_markdown": _Code("fig", ("fields", "item_ids"), _map_table),
+    DIRECTION: _Code("stt", ("outcome", "field_map", "item_ids", "labels"), _direction),
 }
 
 
@@ -307,6 +366,17 @@ def make_map_table_artifact(ps: ProjectStore, rows: list[dict], fields: list[str
                  stage=stage, attempt=attempt, actor=actor, created_by_task=created_by_task)
 
 
+def make_direction_artifact(ps: ProjectStore, rows: list[dict], field_map: dict[str, str], *, outcome: str,
+                            item_ids: list[str], labels: dict[str, str], stage: str, attempt: int, actor: str,
+                            created_by_task: str | None = None) -> str:
+    """The direction-of-effect count of a pre-specified ``outcome`` over the studies ``item_ids`` (each with both
+    values: ``study_direction``) from their extraction ``rows`` of the pair's fields (``field_map``: role -> field;
+    ``labels``: item id -> study label); ``stt_``."""
+    return _make(ps, DIRECTION, rows, {"outcome": outcome, "field_map": dict(field_map), "item_ids": list(item_ids),
+                                       "labels": dict(labels)},
+                 stage=stage, attempt=attempt, actor=actor, created_by_task=created_by_task)
+
+
 # ---- the stat_result claim template ----
 def _fmt(v: float, places: int) -> str:
     """``v`` with at least ``places`` decimals, and enough that its last digit is no larger than ``|v|`` (so V-NUM
@@ -336,6 +406,39 @@ def stat_claim_text(a: dict) -> tuple[str, list[dict]]:
     nums = extract_numbers(text)
     if len(nums) != len(keys):
         raise RuntimeError(f"the template printed {len(nums)} numbers for {len(keys)} values: {text!r}")
+    return text, [{"artifact_id": a["id"], "key": k, "text": n.text} for k, n in zip(keys, nums, strict=True)]
+
+
+def pair_words(field_map: dict[str, str]) -> tuple[str, str]:
+    """The two compared values of a direction count as its claim names them: the pair's fields, or each arm's
+    events/n."""
+    if set(field_map) == set(BINARY_FIELDS):
+        return (f"{field_map['events_treatment']}/{field_map['n_treatment']}",
+                f"{field_map['events_control']}/{field_map['n_control']}")
+    return field_map["intervention"], field_map["comparator"]
+
+
+def direction_claim_text(a: dict) -> tuple[str, list[dict]]:
+    """The ``stat_result`` claim of a direction count artifact (``DIRECTION``): "Of the 3 studies with extracted values
+    for <outcome>, 1 report a higher value with <intervention> than with <comparator>, 1 a lower value and 1 the same
+    value (vote counting by direction of effect, not a pooled estimate; no test of significance).", and its number
+    bindings to the artifact's ``display`` (``k``, ``higher``, ``lower``, ``same``). ``RuntimeError`` when the outcome
+    or field names print a number of their own (V-NUM could not bind it)."""
+    if a["code_path"] != DIRECTION:
+        raise ValueError(f"direction_claim_text writes the claim of a direction count ({DIRECTION}), not of "
+                         f"{a['code_path']}")
+    v = a["values"]
+    d = v["display"]
+    first, second = pair_words(v["field_map"])
+    pieces: list[str | tuple[str]] = [
+        "Of the ", ("k",), f" studies with extracted values for {v['outcome']}, ", ("higher",),
+        f" report a higher value with {first} than with {second}, ", ("lower",), " a lower value and ", ("same",),
+        " the same value (vote counting by direction of effect, not a pooled estimate; no test of significance)."]
+    keys = [p[0] for p in pieces if isinstance(p, tuple)]
+    text = "".join(p if isinstance(p, str) else str(d[p[0]]) for p in pieces)
+    nums = extract_numbers(text)
+    if [n.text for n in nums] != [str(d[k]) for k in keys]:
+        raise RuntimeError(f"the outcome or field names print numbers of their own: {text!r}")
     return text, [{"artifact_id": a["id"], "key": k, "text": n.text} for k, n in zip(keys, nums, strict=True)]
 
 

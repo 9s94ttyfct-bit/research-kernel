@@ -494,7 +494,7 @@ def writer_inputs(ps: ProjectStore, s: DraftInputs, spec: SectionSpec, prisma: s
                 "conceded_sourced": bal.conceded_sourced}
 
     claims = ([claim(s.main, "main")] if s.main else []) + [claim(c, "argument") for c in s.argument] \
-        + [claim(c, "finding") for c in s.findings]
+        + [claim(c, "finding") for c in s.findings if c != s.main]  # a main claim may reuse a finding (argue)
     claims = [c for c in claims if c["status"] != "withdrawn"]  # never citable: only the limitations list them
     lib = Library(ps)
     objections = []

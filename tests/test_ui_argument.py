@@ -48,6 +48,7 @@ from rk.server.runtime import acquire_serve_lock, release
 from rk.tools.builtin import build_registry
 from rk.tools.registry import CallContext, PermissionDenied
 from rk.ui.auth import COOKIE, UiAuth
+from rk.verify.stats import DIRECTION, POOL
 from tests.discovery_fakes import FakeWorker
 from tests.production_fakes import make_frozen_project, production_ctx
 from tests.test_argue import (
@@ -225,7 +226,7 @@ def test_synthesis_tool_shows_artifacts_with_their_v_stats_verdict(api):
 def test_artifact_route_serves_only_project_artifacts(api):
     _seed_pooled(api.env)
     (fig,) = [a for a in artifacts(api.ps, "synthesize", 1) if a["kind"] == "fig"]
-    (stt,) = [a for a in artifacts(api.ps, "synthesize", 1) if a["kind"] == "stt"]
+    (stt,) = [a for a in artifacts(api.ps, "synthesize", 1) if a["code_path"] == POOL]  # not the direction count
     r = api.client.get(f"/ui/api/artifacts/demo/{fig['id']}")
     assert r.status_code == 200 and r.headers["content-type"] == "image/svg+xml"
     assert r.headers["x-content-type-options"] == "nosniff" and "sandbox" in r.headers["content-security-policy"]
@@ -433,7 +434,7 @@ def test_cli_5b_commands(serve_rk):
     _seed_pooled((k, ps2, lib2))
     r = run.invoke(app, ["synthesis", "show", "--project", "pooled"])
     assert r.exit_code == 0, r.output
-    (stt,) = [a for a in artifacts(ps2, "synthesize", 1) if a["kind"] == "stt"]
+    (stt,) = [a for a in artifacts(ps2, "synthesize", 1) if a["code_path"] == POOL]  # not the direction count
     assert "pool options: model DL, HKSJ auto, prediction interval df k-2" in r.output
     assert "group 0: tuberculosis (RR), 3 studies; pooled (stt_" in r.output
     assert f"{stt['id']} rk.stats.meta:pool: V-STATS pass" in r.output
@@ -533,11 +534,12 @@ def test_pooling_card_answers_reach_the_worker(page, served):
     submit.click()
     assert _answer_of(ps, cp["id"]) == {"decisions": {"0": "pool", "1": "no_pool"}}
     until(lambda: run_row(ps, run_id)["status"] == "done")
-    assert [a["kind"] for a in artifacts(ps, "synthesize", 1)] == ["stt", "fig"]
+    pools = [a for a in artifacts(ps, "synthesize", 1) if a["code_path"] != DIRECTION]  # the direction counts aside
+    assert [a["kind"] for a in pools] == ["stt", "fig"]
     assert [n["by"] for n in synthesis_notes(ps, 1, kind="decision")] == ["human", "human"]
     assert any("'adverse events' (RR) not approved by you" in d["reason"]
                for d in store.deviations(ps, kind="analysis"))
-    stt = artifacts(ps, "synthesize", 1)[0]
+    stt = pools[0]
     assert stt["values"]["item_ids"] == [ids[t] for t in ("Aronson", "Ferguson", "Rosenthal")]
     assert page.errors == []
 

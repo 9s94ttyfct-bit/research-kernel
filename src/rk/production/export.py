@@ -12,8 +12,9 @@ and packs a reproducible package. No role task, no model.
      ``rk.library.formats.to_csl`` gives the item;
    - ``[[obj:x]]`` → ``[@key]``: the source of objection x (an outside work, ``cited_items`` again), in the same
      citation as the claims beside it, and in the bibliography like a claim's items;
-   - ``[[stat:]]``/``[[fig:]]`` → ``@tbl:<id>`` / ``@fig:<id>``: a forest plot is a figure, a pool or an evidence map
-     a table. Each is emitted once, at the end of Results (where the paper type has no Results: of the section that
+   - ``[[stat:]]``/``[[fig:]]`` → ``@tbl:<id>`` / ``@fig:<id>``: a forest plot is a figure, a pool, an evidence map or
+     a direction count (each study's label, both values and the direction, then the counts) a table. Each is emitted
+     once, at the end of Results (where the paper type has no Results: of the section that
      cites it first). ``docx`` shows the stored SVG; ``latex`` the TikZ picture ``rk.production.figures.forest_tikz``
      draws from the same values, as a raw LaTeX block (no SVG converter is installed). A pool's table cites its
      studies;
@@ -97,7 +98,7 @@ from rk.production.store import extractions, frozen_protocol
 from rk.stats.meta import Pooled
 from rk.store.events import NewEvent
 from rk.store.project import ProjectStore
-from rk.verify.stats import POOL
+from rk.verify.stats import DIRECTION, POOL, pair_words
 
 STAGE = "export"
 EXPORT_DIR = "artifacts/export"
@@ -276,6 +277,8 @@ class _Paper:
             return self._pool_table(v, xref)
         if a["code_path"] in MAP_TABLES:
             return self._map_table(v, xref)
+        if a["code_path"] == DIRECTION:
+            return self._direction_table(v, xref)
         raise ValueError(f"artifact {aid} ({a['code_path']}) has no table or figure form")
 
     def _figure(self, aid: str, v: dict, xref: str) -> str:
@@ -314,6 +317,21 @@ class _Paper:
             lines += [f"| {_cell(pair)} | {_cell(f'{r} × {c}')} | {n} |"
                       for r, counts in cross["counts"].items() for c, n in counts.items()]
         caption = f"Evidence map of {t['n']} studies: the number of studies in each category."
+        return "\n".join(lines) + f"\n\n: {_md(caption)} {{#{xref}}}"
+
+    @staticmethod
+    def _direction_table(v: dict, xref: str) -> str:
+        """A direction count (``rk.verify.stats.DIRECTION``): each study's label, its two compared values and the
+        direction, then the counts. Rendered from the artifact alone, so a count whose claim could not be written
+        (``direction_claim_text``) exports as well. Calibration (synthesis across studies, 2026-11-13)."""
+        first, second = pair_words(v["field_map"])
+        lines = [f"| Study | {_cell(first)} | {_cell(second)} | Direction |", "|---|---|---|---|"]
+        lines += [f"| {_cell(t['label'])} | {t['intervention']:.4g} | {t['comparator']:.4g} | {t['direction']} |"
+                  for t in v["table"]]
+        d = v["display"]
+        lines.append(f"| {d['k']} studies | | | {d['higher']} higher, {d['lower']} lower, {d['same']} same |")
+        caption = (f"Direction of effect for {v['outcome']}: each study's {first} against its {second} (vote counting "
+                   "by direction of effect, not a pooled estimate; no test of significance).")
         return "\n".join(lines) + f"\n\n: {_md(caption)} {{#{xref}}}"
 
 

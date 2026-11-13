@@ -185,6 +185,28 @@ def test_ungrounded_number_blocks_supported(env):
     assert svc.get_claim(cid)["status"] == "uncertain"
 
 
+def test_a_count_of_the_cited_studies_is_grounded(env):
+    """Synthesis across studies, fix round 1: a cross-study claim may count the studies it cites ("in 3 of the cited
+    studies"); V-NUM accepts a number equal to the claim's count of distinct cited studies (its evidence notes'
+    distinct items), and only that count."""
+    k, reg, ps, svc, _ = env
+    _, lib = k.project("sp")
+    notes = [ps.db.execute("SELECT id FROM notes").fetchone()[0]]
+    for n in (2, 3):
+        iid = lib.add_item(ItemIn(title=f"Copper catalysts {n}", year=2021, creators=[Creator(family="Li")]),
+                           added_by="human", actor="t").item_id
+        attach_pdf(ps, lib, iid, DOCS / "two_pages.pdf", origin="user_upload", actor="t")
+        notes.append(add_note(ps, lib, NoteIn(source_id=iid, kind="quote", text=QUOTE, role_in_source="main"),
+                              actor="t").note_id)
+    text = "Copper catalysts for CO2 reduction were studied in 3 of the cited studies."
+    for cited, verdict in ((notes, "supported"), (notes[1:], "uncertain")):
+        cid = svc.add_claim(ClaimIn(text=text), generator_vendor="google", actor="a")
+        svc.link_evidence(EvidenceIn(claim_id=cid, note_ids=cited), actor="a")
+        r = verify_support(k, reg, ps, cid, actor="t", **judges((LUNA, "supported"), (DEEPSEEK, "supported")))
+        assert (r.verdict, r.numbers_ok, [n.text for n in r.ungrounded_numbers]) == (
+            ("supported", True, []) if verdict == "supported" else ("uncertain", False, ["3"]))
+
+
 def test_uncertain_creates_checkpoint_in_collab_and_no_evidence(env):
     k, reg, ps, svc, claim = env
     cid = svc.add_claim(ClaimIn(text="An orphan claim."), generator_vendor="google", actor="a")
