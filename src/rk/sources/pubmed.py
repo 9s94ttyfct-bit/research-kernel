@@ -1,4 +1,4 @@
-"""PubMed E-utilities and PMC BioC adapter, and the URL of a PMC article's page (``pmc_article_url``).
+"""PubMed E-utilities and PMC BioC adapter.
 
 Search builds its items from ``esummary``, which carries no abstract. Calibration (search and screening, 2026-11-12):
 ``abstracts`` fetches the abstracts of given PMIDs with ``efetch`` (XML, at most ``EFETCH_BATCH`` PMIDs a request);
@@ -16,14 +16,7 @@ from rk.sources.hits import Hits
 
 EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 BIOC = "https://www.ncbi.nlm.nih.gov/research/bionlp/RESTful/pmcoa.cgi/BioC_json"
-PMC_ARTICLES = "https://pmc.ncbi.nlm.nih.gov/articles"
 EFETCH_BATCH = 200
-
-
-def pmc_article_url(pmcid: str) -> str:
-    """The page of a PMC article, which shows the full text of every article PMC makes free to read, the ones outside
-    its open-access subset (no BioC document, no Europe PMC full-text XML) too."""
-    return f"{PMC_ARTICLES}/{pmcid}/"
 
 
 def _search_params(term: str, retmax: int, date_from: int | None, date_to: int | None) -> dict:

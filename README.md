@@ -260,8 +260,10 @@ frozen), `search_screen` (search, deduplication, title/abstract and full-text sc
   established from the text shown (abstract only / sections / whole text)"; it is an exclusion like any other,
   counted apart in the stage's summary, the PRISMA flow and notes, and the Writer's limitations
   (`docs/eval/ft-screening-2026-11-13.md`). The full text of every include is then sought (open-access
-  channels: by PMCID Europe PMC's XML, PMC's BioC and PMC's article page, an item without a PMCID looking it up by
-  DOI or PMID first; then the browser); a record without one is assessed on its abstract, and the same screeners
+  channels: by PMCID Europe PMC's XML and PMC's BioC, an item without a PMCID looking it up by DOI or PMID first;
+  then the browser). An article outside PMC's open-access subset is not fetched from PMC's web site, whose terms
+  forbid automated downloading: it stays abstract-only. A record without a full text is assessed on its abstract,
+  its problem naming each source tried and why it gave none, and the same screeners
   decide again on up to 12000 characters of the full text's abstract, methods and results (results the largest
   share; a structured abstract's own sub-headings stay in the abstract). V-PRISMA checks that the flow adds up and
   that every exclusion has a reason (systematic and scoping reviews); a critical review or proposal keeps the

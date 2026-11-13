@@ -265,7 +265,7 @@ class FakeSources:
         self.calls.append(("retraction", item_id))
         return self.retractions.get(self._title(item_id), RetractionInfo(status="none"))
 
-    def fulltext(self, item_id: str) -> bool:
+    def fulltext(self, item_id: str, why: list[str] | None = None) -> bool:
         title = self._title(item_id)
         if latest_snapshot(self.lib.ps, item_id) is not None:
             return True

@@ -89,8 +89,12 @@ rules), V-PRISMA and the gate.
    sought through ``sources.fulltext`` inside the per-item boundary (``rk.discovery.boundary.per_item``: a source,
    IO or parse failure is added to the record's ``problem``, never fatal). A record with a full text is
    ``retrieved``; without one but with an abstract it is ``abstract_only`` and assessed on its abstract; with neither
-   it is not retrieved and not screened. Every addition to ``problem`` is appended ("; "), never overwriting. The
-   retrieval is noted (``full_text_retrieval``: the records sought, retrieved, abstract only and not retrieved).
+   it is not retrieved and not screened. Calibration (full-text screening, 2026-11-13): a record without a full text
+   also gets, in its ``problem``, each source tried and why it gave none (``rk.fulltext.fetch_fulltext``), e.g. an
+   article outside PMC's open-access subset (Europe PMC's XML answers 500, BioC has no result), which is not fetched
+   from PMC's web site (its terms forbid automated downloading) and stays abstract-only. Every addition to
+   ``problem`` is appended ("; "), never overwriting. The retrieval is noted (``full_text_retrieval``: the records
+   sought, retrieved, abstract only and not retrieved).
 10. Full-text screening: the rules of 4-8 with phase ``full_text`` (a scoping review that switched to dual
    screening at title/abstract stays dual; otherwise it draws a new 10% sample of the full-text records). A screener
    reads the full text's abstract, methods and results sections (``fulltext_excerpt``: found by their headings, cut
@@ -547,13 +551,19 @@ def _add_problem(ctx: StageContext, rid: str, *whys: str) -> None:
 def _retrieve(ctx: StageContext, rec: dict) -> str:
     """Seek the full text of a title/abstract include through the per-item boundary and record what was found:
     ``"retrieved"``, ``"abstract_only"`` (no full text, an abstract) or ``"not_retrieved"`` (neither). A failed
-    lookup is added to the record's problem, as is the lack of a full text."""
+    lookup is added to the record's problem, as is the lack of a full text. Calibration (full-text screening,
+    2026-11-13): without a full text, the problem also names each source tried and why it gave none, one entry per
+    source (``rk.fulltext.fetch_fulltext``), so a record outside PMC's open-access subset says so."""
     iid = rec["item_id"]
-    got, err = per_item(f"full text of {iid}", lambda: ctx.sources.fulltext(iid) and latest_snapshot(ctx.ps, iid))
+    tried: list[str] = []
+    got, err = per_item(f"full text of {iid}",
+                        lambda: ctx.sources.fulltext(iid, why=tried) and latest_snapshot(ctx.ps, iid))
     has_text = bool(got) and bool(got[1].full_text().strip())
     whys = [err] if err else []
     if got and not has_text:
         whys.append(f"the full text of {iid} is empty")
+    if not has_text:
+        whys += tried
     if has_text:
         kind = "retrieved"
     elif (ctx.lib.get(iid).abstract or "").strip():

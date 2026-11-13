@@ -1,5 +1,5 @@
-"""Full-text acquisition: JATS -> BioC -> PMC article page -> arXiv HTML -> OA PDF (``fetch_fulltext``); snapshots and
-library attachments."""
+"""Full-text acquisition: JATS -> BioC -> arXiv HTML -> OA PDF (``fetch_fulltext``, which names each source that gave
+none); snapshots and library attachments."""
 
 from __future__ import annotations
 
@@ -89,36 +89,45 @@ def _looks_pdf(body: bytes, ctype: str) -> bool:
     return body[:5] == b"%PDF-" or "pdf" in ctype
 
 
-def _html_snapshot(ps: ProjectStore, http: HttpClient, item_id: str, url: str, actor: str, *,
-                   min_chars: int = 500) -> FulltextResult | None:
+def _html_snapshot(ps: ProjectStore, http: HttpClient, item_id: str, url: str, actor: str, source: str,
+                   why: list[str], *, min_chars: int = 500) -> FulltextResult | None:
     """The page at ``url`` as the item's text layer (kind ``html``) when it is HTML with more than ``min_chars``
-    characters of text, else ``None``; an HTTP error is ``None`` too."""
+    characters of text, else ``None`` with the reason added to ``why`` (named by ``source``)."""
     try:
         res = http.get(url)
-    except HttpError:
+    except HttpError as e:
+        why.append(f"{source}: HTTP {e.status}")
         return None
     if res.status != 200 or "html" not in res.content_type:
+        why.append(f"{source}: no page (HTTP {res.status}, {res.content_type or 'no content type'})")
         return None
     layer = html_to_layer(res.body.decode("utf-8", "replace"), "")
     if len(layer.pages[0].text) <= min_chars:
+        why.append(f"{source}: the page has no full text")
         return None
     return _record_snapshot(ps, item_id, res.body, layer, "html", url, actor)
 
 
-def fetch_fulltext(ps: ProjectStore, lib: Library, ctx: SourceContext, item_id: str, *, actor: str) -> FulltextResult | None:
+def fetch_fulltext(ps: ProjectStore, lib: Library, ctx: SourceContext, item_id: str, *, actor: str,
+                   why: list[str] | None = None) -> FulltextResult | None:
     """The open-access API channels, in order: an item without a PMCID looks it up (by DOI in OpenAlex, else by PMID
-    in Europe PMC: ``europepmc.by_pmid``), then by PMCID Europe PMC's full-text XML (JATS), PMC's BioC and PMC's
-    article page, then arXiv's HTML, then the item's open-access PDF URLs. ``None`` when none has the text.
+    in Europe PMC: ``europepmc.by_pmid``), then by PMCID Europe PMC's full-text XML (JATS) and PMC's BioC, then
+    arXiv's HTML, then the item's open-access PDF URLs. ``None`` when none has the text; each source tried and why it
+    gave none is then added to ``why`` (one line per source).
 
     Calibration (full-text screening, 2026-11-13, docs/eval/ft-screening-2026-11-13.md): the 36 abstract-only records
     with a PMCID across the srrepro9 projects were free PMC articles outside PMC's open-access subset, for which
-    Europe PMC's full-text XML answers 500 and BioC "No result"; PMC's article page shows their text."""
+    Europe PMC's full-text XML answers 500 and BioC "No result", and the reasons were dropped. Such an article is not
+    fetched from PMC's web site (PMC's terms forbid automated downloading of articles): it stays abstract-only, with
+    the reasons recorded."""
+    why = [] if why is None else why
     item = lib.get(item_id)
     http = ctx.http
     if not item.ids.pmcid and item.ids.doi:
         try:
             oa = openalex.get_work(http, Identifier(kind="doi", value=item.ids.doi), ctx.settings.openalex_key)
-        except HttpError:
+        except HttpError as e:
+            why.append(f"OpenAlex (PMCID by DOI): HTTP {e.status}")
             oa = None
         if oa:
             lib.add_item(oa.item, added_by="agent", actor=actor)
@@ -126,58 +135,81 @@ def fetch_fulltext(ps: ProjectStore, lib: Library, ctx: SourceContext, item_id: 
     if not item.ids.pmcid and item.ids.pmid:
         try:
             med = europepmc.by_pmid(http, item.ids.pmid)
-        except HttpError:
+        except HttpError as e:
+            why.append(f"Europe PMC (PMCID by PMID): HTTP {e.status}")
             med = None
         if med is not None and med.ids.pmcid:
             lib.add_item(med, added_by="agent", actor=actor)
             item = lib.get(item_id)
-    if item.ids.pmcid:
+    if not item.ids.pmcid:
+        why.append("PMC: no PMCID")
+    else:
         try:
             xml = europepmc.fulltext_xml(http, item.ids.pmcid)
-        except HttpError:
+        except HttpError as e:
+            outside = " (Europe PMC answers so for articles outside the open-access subset)" if e.status >= 500 else ""
+            why.append(f"Europe PMC full-text XML: HTTP {e.status}{outside}")
             xml = None
+        else:
+            if not xml:
+                why.append("Europe PMC full-text XML: none")
         if xml:
             layer = jats_to_layer(xml, "")
             if layer.pages[0].text.strip():
                 return _record_snapshot(ps, item.id, xml, layer, "jats",
                                         f"{europepmc.BASE}/{item.ids.pmcid}/fullTextXML", actor)
+            why.append("Europe PMC full-text XML: no text")
         try:
             doc = pubmed.bioc_json(http, item.ids.pmcid)
-        except HttpError:
+        except HttpError as e:
+            why.append(f"PMC BioC: HTTP {e.status}")
             doc = None
+        else:
+            if not doc:
+                why.append("PMC BioC: no result")
         if doc:
             raw = canonical_json(doc).encode()
             layer = bioc_to_layer(doc, "")
             if layer.pages[0].text.strip():
                 return _record_snapshot(ps, item.id, raw, layer, "bioc", f"{pubmed.BIOC}/{item.ids.pmcid}/unicode", actor)
-        if (page := _html_snapshot(ps, http, item.id, pubmed.pmc_article_url(item.ids.pmcid), actor)) is not None:
-            return page
-    if item.ids.arxiv and (page := _html_snapshot(ps, http, item.id, arxiv.html_url(item.ids.arxiv), actor)):
+            why.append("PMC BioC: no text")
+    if item.ids.arxiv and (page := _html_snapshot(ps, http, item.id, arxiv.html_url(item.ids.arxiv), actor,
+                                                  "arXiv HTML", why)):
         return page
     for url in item.oa_urls:
         try:
             res = http.get(url, ttl_s=0)
-        except HttpError:
+        except HttpError as e:
+            why.append(f"open-access URL {url}: HTTP {e.status}")
             continue
-        if res.status == 200 and _looks_pdf(res.body, res.content_type):
-            layer = extract_pdf(None, data=res.body)
-            if any(p.text.strip() for p in layer.pages):
-                result = _record_snapshot(ps, item.id, res.body, layer, "pdf", url, actor)
-                _attach(ps, item, res.body, "oa_api", actor, "agent")
-                return result
+        if res.status != 200 or not _looks_pdf(res.body, res.content_type):
+            why.append(f"open-access URL {url}: no PDF (HTTP {res.status})")
+            continue
+        layer = extract_pdf(None, data=res.body)
+        if any(p.text.strip() for p in layer.pages):
+            result = _record_snapshot(ps, item.id, res.body, layer, "pdf", url, actor)
+            _attach(ps, item, res.body, "oa_api", actor, "agent")
+            return result
+        why.append(f"open-access URL {url}: the PDF has no text")
+    if not item.oa_urls:
+        why.append("open-access PDF: no URL")
     return None
 
 
 def fulltext_with_fallback(kernel, ps: ProjectStore, lib: Library, item_id: str, *, call: CallContext, project: str,
-                           browser: Callable[[], BrowserService | None]) -> FulltextResult | None:
+                           browser: Callable[[], BrowserService | None],
+                           why: list[str] | None = None) -> FulltextResult | None:
     """The full-text channel chain (spec §11.1): the open-access API channels first, then the built-in browser (library
-    or publisher page) when it runs and ``fulltext_browser_fallback`` is on. ``None`` when no channel applies; browser
-    failures raise its ``ToolError``."""
-    r = fetch_fulltext(ps, lib, kernel.ctx(), item_id, actor=call.actor)
+    or publisher page) when it runs and ``fulltext_browser_fallback`` is on. ``None`` when no channel applies, each
+    source tried and why it gave nothing added to ``why`` (``fetch_fulltext``); browser failures raise its
+    ``ToolError``."""
+    why = [] if why is None else why
+    r = fetch_fulltext(ps, lib, kernel.ctx(), item_id, actor=call.actor, why=why)
     if r is not None or not kernel.settings().fulltext_browser_fallback:
         return r
     svc = browser()
     if svc is None or not svc.running:
+        why.append("built-in browser: not running")
         return None
     return svc.fetch_fulltext(call, project, item_id)
 

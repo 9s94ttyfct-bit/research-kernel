@@ -57,7 +57,7 @@ class DiscoverySources(Protocol):
 
     def retraction(self, item_id: str) -> RetractionInfo: ...
 
-    def fulltext(self, item_id: str) -> bool: ...
+    def fulltext(self, item_id: str, why: list[str] | None = None) -> bool: ...
 
     def add(self, identifier: str) -> str | None: ...
 
@@ -146,17 +146,20 @@ class KernelSources:
         resolved = resolver.resolve(self.kernel.ctx(), parse_identifier(ident)) if ident else None
         return retraction_status(resolved)
 
-    def fulltext(self, item_id: str) -> bool:
+    def fulltext(self, item_id: str, why: list[str] | None = None) -> bool:
         """Whether the item has a text layer: an existing one, else the open-access API channels, else the built-in
-        browser when it runs and the browser fallback is on."""
+        browser when it runs and the browser fallback is on. Without one, each source tried and why it gave none is
+        added to ``why`` (``rk.fulltext.fulltext_with_fallback``)."""
         ps, lib = self._lib()
         if latest_snapshot(ps, item_id) is not None:
             return True
+        why = [] if why is None else why
         call = CallContext(role="kernel", actor=self.actor, project=self.project)
         try:
             got = fulltext_with_fallback(self.kernel, ps, lib, item_id, call=call, project=self.project,
-                                         browser=self._browser)
-        except ToolError:  # the browser got no PDF, or the page needs you (a login_wait checkpoint is open)
+                                         browser=self._browser, why=why)
+        except ToolError as e:  # the browser got no PDF, or the page needs you (a login_wait checkpoint is open)
+            why.append(f"built-in browser: {e}")
             return False
         return got is not None
 

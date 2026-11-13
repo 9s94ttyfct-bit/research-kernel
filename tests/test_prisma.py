@@ -10,6 +10,7 @@ import pytest
 from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
 from rk.discovery.executor import RateCapped
 from rk.discovery.store import SearchNote, log_search
+from rk.fulltext import fetch_fulltext
 from rk.library.models import Ids, ItemIn
 from rk.net.http import HttpError
 from rk.orchestrator.state import record_ran
@@ -32,6 +33,7 @@ from tests.production_fakes import (
     make_frozen_project,
     production_ctx,
 )
+from tests.test_fulltext import XML_500, pmc_sources
 
 TA, FT = "title_abstract", "full_text"
 SCOPING_P1 = {"paper_type": "scoping_review", "production_mode": "auto"}
@@ -57,10 +59,10 @@ class Sources(FakeSources):
         super().__init__(items, **kw)
         self.failing = set(failing)
 
-    def fulltext(self, item_id: str) -> bool:
+    def fulltext(self, item_id: str, why: list[str] | None = None) -> bool:
         if self._title(item_id) in self.failing:
             raise HttpError(503, "https://fulltext.example/x")
-        return super().fulltext(item_id)
+        return super().fulltext(item_id, why)
 
 
 def _work(title: str, i: int, *, abstract: bool = True, language: str | None = None) -> ItemIn:
@@ -223,6 +225,38 @@ def test_conservative_include_at_title_abstract_is_no_exclusion(env):
     assert (p.screened, p.excluded_ta, p.sought, p.included) == (2, 1, 1, 1)
     assert p.excluded_disagreement == {TA: 0, FT: 0}
     assert check_prisma(p) == [] and "excluded by the P1 vote" not in " ".join(prisma_notes(p))
+
+
+class OpenAccessSources(FakeSources):
+    """``FakeSources`` whose full text comes from the open-access channels (``fetch_fulltext``) over ``ctx``."""
+
+    def __init__(self, items, *, ctx, **kw):
+        super().__init__(items, **kw)
+        self.ctx = ctx
+
+    def fulltext(self, item_id: str, why: list[str] | None = None) -> bool:
+        return fetch_fulltext(self.lib.ps, self.lib, self.ctx, item_id, actor="t", why=why) is not None
+
+
+@pytest.mark.parametrize("env", [SR_P1], indirect=True)
+def test_a_record_left_abstract_only_names_each_source_tried_in_its_problem(env, tmp_path):
+    """Calibration (full-text screening, 2026-11-13): Europe PMC's full-text XML answers 500 and BioC has no result
+    (an article outside PMC's open-access subset): the record is assessed on its abstract and its problem names both
+    sources and why, one entry each."""
+    _, ps, lib = env
+    _freeze(ps)
+    works = [w.model_copy(update={"ids": Ids(pmcid=p)})
+             for w, p in ((_work("Aspirin outside [yes/yes]", 1), "PMC1234567"),
+                          (_work("Aspirin open [yes/yes]", 2), "PMC7654321"))]
+    src = OpenAccessSources({"aspirin": works}, lib=lib, ctx=pmc_sources(tmp_path, []))
+    assert SearchScreenWorker().run(_ctx(env, Screeners(), src)).status == "done"
+    rid = _ids(env)
+    outside = store.record_row(ps, rid["Aspirin outside [yes/yes]"])
+    assert (outside["retrieved"], outside["abstract_only"]) == (0, 1)
+    assert outside["problem"] == (f"{XML_500}; PMC BioC: no result; open-access PDF: no URL; "
+                                  "no full text: assessed on the abstract")
+    opened = store.record_row(ps, rid["Aspirin open [yes/yes]"])
+    assert (opened["retrieved"], opened["problem"]) == (1, None)
 
 
 @pytest.mark.parametrize("env", [SR_P1], indirect=True)

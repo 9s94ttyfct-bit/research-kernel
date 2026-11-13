@@ -126,13 +126,17 @@ Done:
    the body's Methods and Results are found after it (P4's case). `FULLTEXT_CHARS` is 12000 (from 6000), shared
    abstract 2000, methods 3500, results 6500, what a shorter section leaves going to the others; a full-text
    screening task reads up to twice the input per record.
-3. **Records with a PMCID get their full text (option 3b).** Cause, from the run home's records and its HTTP cache
-   (read only): every one of the 36 abstract-only records with a PMCID had it on the item long before retrieval, and
-   for every one Europe PMC's full-text XML answered a non-200 (500, an HTTP error the channel swallowed) and PMC's
-   BioC "No result can be found". They are free-to-read PMC articles outside PMC's open-access subset (checked for
-   P3 and P6: `isOpenAccess` N, in PMC), which neither open-access endpoint serves; the record's problem said only
-   "no full text". The PMCID channel now reads PMC's article page after the XML and BioC (its HTML as the text
-   layer), and an item with a PMID and no PMCID looks it up in Europe PMC before its full text is sought.
+3. **Why records with a PMCID had no full text (option 3b): the cause recorded, not fetched.** Cause, from the run
+   home's records and its HTTP cache (read only): every one of the 36 abstract-only records with a PMCID had it on
+   the item long before retrieval, and for every one Europe PMC's full-text XML answered a non-200 (500, an HTTP
+   error the channel swallowed) and PMC's BioC "No result can be found". They are free-to-read PMC articles outside
+   PMC's open-access subset (checked for P3 and P6: `isOpenAccess` N, in PMC), which neither open-access endpoint
+   serves; the record's problem said only "no full text". Such articles are not fetched from PMC's web site: PMC's
+   copyright notice forbids systematic or automated downloading of articles from it. They stay abstract-only (P3 and
+   P6 included), and the record's problem now names each source tried and why it gave none (e.g. "Europe PMC
+   full-text XML: HTTP 500 (…outside the open-access subset); PMC BioC: no result"). An item with a PMID and no
+   PMCID now looks it up in Europe PMC's REST API before its full text is sought, so an open-access PMC article is
+   no longer missed for lack of a PMCID.
 
 Not done, and why:
 
