@@ -109,14 +109,16 @@ def test_dual_screening_agreement_rules(env):
     by_pair = {t[t.rindex("[") + 1:-1]: v for t, v in f.items() if t.startswith("Aspirin study")}
     assert {p: v[:2] for p, v in by_pair.items()} == {
         "yes/yes": ("yes", "agreement"), "yes/unclear": ("yes", "agreement"), "unclear/yes": ("yes", "agreement"),
-        "no/no": ("no", "agreement")}
+        "no/no": ("no", "agreement"), "unclear/unclear": ("yes", "agreement")}
+    assert by_pair["unclear/unclear"][2] == ("both screeners unclear at title/abstract: the full text decides; "
+                                             "screener_a: unclear (E1): screener_a read it; "
+                                             "screener_b: unclear (E1): screener_b read it")
     assert f["Aspirine chez le sujet âgé [yes/yes]"] == ("no", "rule", "language")  # never screened
     (cp,) = list_checkpoints(ps, "open")
     t = _titles(env)
     assert cp["kind"] == "screening_disagreements" and cp["id"] == out.checkpoint_id
     assert cp["options"]["phase"] == TA and cp["options"]["attempt"] == 1
-    assert sorted(t[r][t[r].rindex("[") + 1:-1] for r in cp["options"]["record_ids"]) == [
-        "no/unclear", "unclear/unclear", "yes/no"]
+    assert sorted(t[r][t[r].rindex("[") + 1:-1] for r in cp["options"]["record_ids"]) == ["no/unclear", "yes/no"]
 
     for role in ("screener_a", "screener_b"):
         (call,) = ex.of(role)  # one batch each, both screeners, the French record left out
@@ -477,12 +479,13 @@ def test_scoping_sample_of_unclear_pairs_does_not_switch(env):
     _freeze(ps)
     ex = Screeners()
     SearchScreenWorker().run(_ctx(env, ex, FakeSources({"aspirin": _works("unclear/unclear", n=20)})))
-    (note,) = screening_notes(ps, 1, kind="scoping_sample")
+    (note,) = screening_notes(ps, 1, kind="scoping_sample", phase=TA)
     assert (len(note["sample"]), note["disagreements"], note["switched"]) == (2, 0, False)
     assert "unclear" in note["measure"]
     assert _sizes(ex, "screener_b") == [2]  # single screening for the rest
-    (cp,) = list_checkpoints(ps, "open")  # the dual sample's unclear pairs are still disagreements to settle
-    assert cp["options"]["record_ids"] == note["sample"]
+    assert not list_checkpoints(ps, "open")  # both unclear at title/abstract: the full text decides
+    assert {f["record_id"]: f["decided_by"] for f in store.finals(ps, 1, phase=TA) if f["record_id"] in note["sample"]
+            } == dict.fromkeys(note["sample"], "agreement")
 
 
 @pytest.mark.parametrize("env", [SR_P1], indirect=True)
@@ -807,3 +810,30 @@ def test_a_resumed_attempt_checks_the_records_still_without_an_abstract(env):  #
     n = len(src.calls)
     SearchScreenWorker().run(_ctx(env, Screeners(), src, attempt=2))
     assert [c for c in src.calls[n:] if c[0] == "abstracts"] == [("abstracts", "pubmed", ("222",))]
+
+
+# ---- calibration (search and screening, 2026-11-12): both unclear at title/abstract goes to the full text
+def test_dual_rule_both_unclear_by_phase():
+    assert screening.dual_rule("unclear", "unclear", TA) == "yes"
+    assert screening.dual_rule("unclear", "unclear", FT) is None
+    for a, b in (("unclear", None), (None, "unclear"), ("unclear", "no"), ("yes", "no")):
+        assert screening.dual_rule(a, b, TA) is None and screening.dual_rule(a, b, FT) is None
+    assert [screening.dual_rule(a, b, FT) for a, b in (("yes", "unclear"), ("no", "no"))] == ["yes", "no"]
+
+
+@pytest.mark.parametrize("env", [SR_P1], indirect=True)
+def test_both_unclear_at_title_abstract_reaches_the_full_text(env):
+    _, ps, _ = env
+    _freeze(ps)
+    works = [_work("Aspirin unsure [unclear/unclear]", 1), _work("Aspirin half [unclear/-]", 2)]
+    ex = Screeners(votes={"Aspirin half [unclear/-]": ("exclude", "exclude")})
+    out = SearchScreenWorker().run(_ctx(env, ex, FakeSources({"aspirin": works})))
+
+    assert out.status == "done"
+    f = _finals(env)
+    assert f["Aspirin unsure [unclear/unclear]"][:2] == ("yes", "agreement")
+    assert f["Aspirin half [unclear/-]"][:2] == ("no", "vote")  # unclear and a missing decision: a disagreement
+    t = {v: k for k, v in _titles(env).items()}
+    assert store.retrieval_note(ps, 1)["sought"] == [t["Aspirin unsure [unclear/unclear]"]]
+    assert [r["title"] for c in ex.of("screener_a", FT) for r in c["inputs"]["records"]] == [
+        "Aspirin unsure [unclear/unclear]"]

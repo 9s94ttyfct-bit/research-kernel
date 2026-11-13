@@ -39,8 +39,10 @@ rules), V-PRISMA and the gate.
    included at full text; the final's reason states that rule and is its selection reason) and as a disagreement in
    dual screening.
 6. The final decision of a record (``screening.final``):
-   - dual: both yes, or yes and unclear: include (``agreement``); both no: exclude (``agreement``); otherwise
-     (yes and no, both unclear, no and unclear, a missing decision): a disagreement;
+   - dual: both yes, or yes and unclear: include (``agreement``); both no: exclude (``agreement``); at
+     title/abstract both unclear: include, to the full text (``agreement``, reason ``BOTH_UNCLEAR`` then the two
+     decisions; calibration, search and screening, 2026-11-12); otherwise (yes and no, no and unclear, a missing
+     decision, and at full text both unclear): a disagreement;
    - single: yes, or unclear (to the full text, as its reason says): include; no: exclude (``single``).
 7. Disagreements:
    - P2: ``screening_disagreements`` checkpoints (the same kind in both phases, the phase in the options) of at most
@@ -250,11 +252,17 @@ def switches_to_dual(disagreements: int, sampled: int) -> bool:
     return sampled > 0 and disagreements * 100 > SWITCH_PERCENT * sampled
 
 
-def dual_rule(a: str | None, b: str | None) -> Include | None:
-    """The final of a dual-screened record from its two decisions (``None``: missing): ``"yes"``, ``"no"``, or
-    ``None`` for a disagreement."""
+BOTH_UNCLEAR = "both screeners unclear at title/abstract: the full text decides"
+
+
+def dual_rule(a: str | None, b: str | None, phase: str) -> Include | None:
+    """The final of a dual-screened record in ``phase`` from its two decisions (``None``: missing): ``"yes"``,
+    ``"no"``, or ``None`` for a disagreement. Calibration (search and screening, 2026-11-12): at title/abstract both
+    ``unclear`` is ``"yes"`` (``BOTH_UNCLEAR``: the full text decides); at full text it is a disagreement."""
     pair = {a, b}
     if "yes" in pair and pair <= {"yes", "unclear"}:
+        return "yes"
+    if phase == TITLE_ABSTRACT and a == b == "unclear":
         return "yes"
     if pair == {"no"}:
         return "no"
@@ -523,12 +531,14 @@ def _finalize(ctx: StageContext, phase: str, rids: list[str], dual: set[str], a:
             continue
         da, db = a.get(rid), b.get(rid)
         if rid in dual:
-            inc = dual_rule(_include(a, rid), _include(b, rid))
+            inc = dual_rule(_include(a, rid), _include(b, rid), phase)
             if inc is None:
                 disagreements.append(rid)
                 continue
+            said = f"{_say('screener_a', da)}; {_say('screener_b', db)}"
+            both_unclear = _include(a, rid) == _include(b, rid) == "unclear"
             set_final(ctx.ps, rid, ctx.attempt, phase, inc, "agreement",
-                      f"{_say('screener_a', da)}; {_say('screener_b', db)}", actor=ctx.actor)
+                      f"{BOTH_UNCLEAR}; {said}" if both_unclear else said, actor=ctx.actor)
             continue
         # single screening: unclear (and a missing decision, as unclear) includes, at title/abstract to the full text
         then = "so it goes to the full text" if phase == TITLE_ABSTRACT else "so it is included (single screening)"
