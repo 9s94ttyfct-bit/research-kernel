@@ -31,6 +31,7 @@ DEFAULT_INTERVAL = 1.0
 SECRET_PARAMS = frozenset({"api_key", "key", "apikey", "token"})
 MAX_RETRIES = 4
 MAX_RETRY_WAIT_S = 60.0  # a 429 asking for longer raises BudgetExhausted (the run pauses) instead of sleeping
+HOST_WAIT = "host-wait:"  # budgets key prefix: a host's long 429 wait (``HttpClient._check_host_wait``)
 
 
 class HttpError(Exception):
@@ -153,6 +154,15 @@ class HttpClient:
                 (budget_key, remaining, self._wall() + reset),
             )
 
+    def _check_host_wait(self, host: str) -> None:
+        """A host whose 429 asked for longer than a request waits (``MAX_RETRY_WAIT_S``) is not asked again before
+        then: ``BudgetExhausted`` at once, so each later request to it (e.g. another record's open-access URL on the
+        same repository) costs no request. Review of oa-host-429, 2026-11-13."""
+        with self._lock:
+            r = self._db.execute("SELECT reset_at FROM budgets WHERE key=?", (HOST_WAIT + host,)).fetchone()
+        if r and r[0] > self._wall():
+            raise BudgetExhausted(host, r[0])
+
     def budget(self, budget_key: str) -> dict | None:
         with self._lock:
             r = self._db.execute("SELECT remaining, reset_at FROM budgets WHERE key=?", (budget_key,)).fetchone()
@@ -184,6 +194,8 @@ class HttpClient:
             return hit
         self._check_budget(budget_key)
         host = urlsplit(url).hostname or ""
+        if budget_key is None:
+            self._check_host_wait(host)
         host_lock = self._host_locks.setdefault(host, threading.Lock())
         public_url = url + ("?" + urlencode(_public_params(params)) if _public_params(params) else "")
         attempt = 0
@@ -211,7 +223,12 @@ class HttpClient:
                         pass
                 if delay > MAX_RETRY_WAIT_S:  # never sleep for hours inside a request
                     if status == 429:  # a rate limit that long is a spent budget: the run pauses (resume after it)
-                        raise BudgetExhausted(budget_key or host, self._wall() + delay)
+                        reset_at = self._wall() + delay
+                        if budget_key is None:  # the host is not asked again before then (``_check_host_wait``)
+                            with self._lock:
+                                self._db.execute("INSERT OR REPLACE INTO budgets(key, remaining, reset_at) "
+                                                 "VALUES (?,?,?)", (HOST_WAIT + host, 0, reset_at))
+                        raise BudgetExhausted(budget_key or host, reset_at)
                     delay = MAX_RETRY_WAIT_S  # a server error stays transient: retried, then an HttpError
                 self._sleep(delay)
                 attempt += 1

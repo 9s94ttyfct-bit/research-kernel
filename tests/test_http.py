@@ -127,10 +127,30 @@ def test_a_429_that_spends_the_budget_or_asks_for_a_long_wait_raises_instead_of_
     assert ei.value.budget_key == "api.crossref.org" and max(clock.slept, default=0) < 60
     # a server error with a long Retry-After is no budget: retried with capped waits, then the transient HttpError
     clock.slept.clear()
-    respx.get("https://api.crossref.org/works/down").mock(return_value=httpx.Response(503, headers={"Retry-After": "3600"}))
-    with pytest.raises(HttpError) as ei:
-        client.get("https://api.crossref.org/works/down")
+    respx.get("https://api.semanticscholar.org/down").mock(return_value=httpx.Response(503, headers={"Retry-After": "3600"}))
+    with pytest.raises(HttpError) as ei:  # another host: api.crossref.org is now waited out (_check_host_wait)
+        client.get("https://api.semanticscholar.org/down")
     assert ei.value.status == 503 and clock.slept and max(clock.slept) == 60.0
+
+
+@respx.mock
+def test_a_host_that_asked_for_a_long_wait_is_not_asked_again_before_it(client, clock):
+    """Review of oa-host-429: a host whose 429 asked for longer than a request waits (no budget key) is remembered until
+    its reset: later requests to it raise at once without a request, so each later record's URL on that host does not
+    knock again; after the reset it is asked again. Another host is unaffected."""
+    first = respx.get("https://repo.example.org/a.pdf").mock(
+        return_value=httpx.Response(429, headers={"Retry-After": "3600"}))
+    with pytest.raises(BudgetExhausted):
+        client.get("https://repo.example.org/a.pdf", ttl_s=0)
+    later = respx.get("https://repo.example.org/b.pdf").mock(return_value=httpx.Response(200, content=b"%PDF-"))
+    with pytest.raises(BudgetExhausted) as ei:
+        client.get("https://repo.example.org/b.pdf", ttl_s=0)
+    assert later.call_count == 0 and ei.value.budget_key == "repo.example.org"
+    assert first.call_count == 1 and ei.value.reset_at == pytest.approx(1000.0 + 3600, abs=5)
+    respx.get("https://example.org/c.pdf").mock(return_value=httpx.Response(200, content=b"%PDF-"))
+    assert client.get("https://example.org/c.pdf", ttl_s=0).status == 200
+    clock.t += 3700
+    assert client.get("https://repo.example.org/b.pdf", ttl_s=0).status == 200 and later.call_count == 1
 
 
 @respx.mock

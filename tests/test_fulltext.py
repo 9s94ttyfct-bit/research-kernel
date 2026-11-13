@@ -100,7 +100,7 @@ def test_a_rate_limited_open_access_host_skips_that_url_and_the_run_goes_on(ps, 
     pdf = (DOCS / "two_pages.pdf").read_bytes()
 
     def handler(req):
-        if req.url.host == "repo.example.org":
+        if req.url.host in ("repo.example.org", "arxiv.org"):
             return httpx.Response(429, headers={"retry-after": "3600"})
         return httpx.Response(200, content=pdf, headers={"content-type": "application/pdf"})
 
@@ -115,6 +115,11 @@ def test_a_rate_limited_open_access_host_skips_that_url_and_the_run_goes_on(ps, 
     why: list[str] = []
     assert fetch_fulltext(ps, lib, ctx, only, actor="t", why=why) is None
     assert why[-1].startswith("open-access URL https://repo.example.org/b.pdf: rate-limited (HTTP 429) until ")
+    paper = lib.add_item(ItemIn(title="Tin catalysts", year=2023, ids=Ids(arxiv="2404.10774"),
+                                oa_urls=["https://example.org/paper.pdf"]), added_by="agent", actor="t").item_id
+    why = []
+    assert fetch_fulltext(ps, lib, ctx, paper, actor="t", why=why).kind == "pdf"  # the arXiv page waits; the PDF serves
+    assert why[-1].startswith("arXiv HTML: rate-limited (HTTP 429) until ")
 
 
 # Calibration (full-text screening, 2026-11-13): the records with a PMCID that ended abstract-only were free PMC articles
