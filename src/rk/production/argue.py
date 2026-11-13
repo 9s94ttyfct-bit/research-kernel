@@ -1623,44 +1623,48 @@ class ArgueWorker:
         }
 
     def _rq_vote(self, ctx: StageContext, s: _Inputs) -> StageOutcome | None:
-        """P1: the judges' vote on whether the main claim answers the frozen RQ (once per main claim); conservative:
-        it does not, and the stage goes back to question. In a project whose question is fixed (``fixed_stages``: a
-        reproduction's seed) it goes back to synthesize instead, the judges' reasons its guidance, while
-        ``argue->synthesize`` has a use left; with none left the stage fails.
+        """P1: the end check's RQ vote (``_rq_check``); conservative: the main claim does not answer, and the stage
+        goes back to question. In a project whose question is fixed (``fixed_stages``: a reproduction's seed) it goes
+        back to synthesize instead, the judges' reasons its guidance, while ``argue->synthesize`` has a use left; with
+        none left the stage fails.
 
         Calibration (seeded reproduction, 2026-11-13): going back to question re-ran its novelty check on a question
         given by design, which found published reviews (the reproduced one among them) and ended the runs at gaps."""
+        last = self._rq_check(ctx, s)
+        if last is None or last["decision"] != NOT_ANSWERS:
+            return None
+        why = last["reason"] or "no reason given"
+        if "question" not in fixed_stages(ctx.ps):
+            return StageOutcome("back_edge", to="question", reason=(
+                f"the main claim does not answer the research question ({NOT_HUMAN}): {why}"))
+        if (spent := _back_edge_spent(ctx.ps)) is not None:
+            return StageOutcome("failed", reason=(
+                f"the main claim never answered the fixed research question; {spent['edge']} has no use left: {why}"))
+        return self._back_to_synthesize(ctx, (
+            f"the main claim does not answer the fixed research question ({NOT_HUMAN}): {why}"))
+
+    def _rq_check(self, ctx: StageContext, s: _Inputs) -> dict | None:
+        """P1: the judges' vote on whether the main claim answers the frozen RQ, once per main claim (the
+        ``rq_check`` note, reused); ``None`` without a main claim. Notes nothing else: the end check (``_rq_vote``)
+        and the degrade act on the decision each in its own way."""
         ps = ctx.ps
         main = main_claim(ps, ctx.attempt)
         if main is None or _withdrawn(ps, main):
             return None
         checks = [n for n in argue_notes(ps, ctx.attempt, kind="rq_check") if n["main_claim_id"] == main]
         if checks:
-            last = checks[-1]
-        else:
-            cctx, counter = _counted(ctx)
-            c = _claim(ps, main)
-            first = argue_notes(ps, ctx.attempt, kind="draft")[0]
-            res = vote(cctx, "argue_rq", f"{STAGE}:{ctx.attempt}:{main}", RQ_QUESTION, [ANSWERS, NOT_ANSWERS],
-                       NOT_ANSWERS, {"research_question": s.question, "rq": s.rq_body, "main_claim": c["text"],
-                                     "scope_limits": c.get("scope_limits") or [],
-                                     "arguer_self_check": first.get("answers_rq")},
-                       generator_vendors={c.get("generator_vendor")}, reuse=True)
-            why = res.reason or "; ".join(f"{o['role']}: {o['reason']}" for o in res.opinions if o["reason"])
-            last = _note(ps, ctx.attempt, "rq_check", actor=ctx.actor, main_claim_id=main, decision=res.decision,
-                         by="vote", vote_id=res.id, reason=why, tasks=counter.n)
-        if last["decision"] == NOT_ANSWERS:
-            why = last["reason"] or "no reason given"
-            if "question" not in fixed_stages(ps):
-                return StageOutcome("back_edge", to="question", reason=(
-                    f"the main claim does not answer the research question ({NOT_HUMAN}): {why}"))
-            if (spent := _back_edge_spent(ps)) is not None:
-                return StageOutcome("failed", reason=(
-                    f"the main claim never answered the fixed research question; {spent['edge']} has no use left: "
-                    f"{why}"))
-            return self._back_to_synthesize(ctx, (
-                f"the main claim does not answer the fixed research question ({NOT_HUMAN}): {why}"))
-        return None
+            return checks[-1]
+        cctx, counter = _counted(ctx)
+        c = _claim(ps, main)
+        first = argue_notes(ps, ctx.attempt, kind="draft")[0]
+        res = vote(cctx, "argue_rq", f"{STAGE}:{ctx.attempt}:{main}", RQ_QUESTION, [ANSWERS, NOT_ANSWERS],
+                   NOT_ANSWERS, {"research_question": s.question, "rq": s.rq_body, "main_claim": c["text"],
+                                 "scope_limits": c.get("scope_limits") or [],
+                                 "arguer_self_check": first.get("answers_rq")},
+                   generator_vendors={c.get("generator_vendor")}, reuse=True)
+        why = res.reason or "; ".join(f"{o['role']}: {o['reason']}" for o in res.opinions if o["reason"])
+        return _note(ps, ctx.attempt, "rq_check", actor=ctx.actor, main_claim_id=main, decision=res.decision,
+                     by="vote", vote_id=res.id, reason=why, tasks=counter.n)
 
     def _open_final(self, ctx: StageContext, s: _Inputs, *, replaces: str | None = None, why: str = "") -> str:
         ps = ctx.ps
@@ -2201,9 +2205,10 @@ class ArgueWorker:
             done.append(f"objection {oid} conceded")
         main = main_claim(ps, attempt)
         if main != main_before and main is not None and not _withdrawn(ps, main):
-            out = self._rq_vote(ctx, s)
+            check = self._rq_check(ctx, s)
             done.append(f"the narrowed main claim {main} " + ("does not answer the research question"
-                                                               if out is not None else "answers the research question"))
+                                                               if check is not None and check["decision"] == NOT_ANSWERS
+                                                               else "answers the research question"))
         what = "; ".join(done) or "nothing to narrow, withdraw, drop or concede"
         reconcile_withdrawn_pools(ctx, s.synth_attempt)
         record_degraded(ps, stage=ctx.stage, attempt=attempt, removed=removed,

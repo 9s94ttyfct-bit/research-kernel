@@ -1981,6 +1981,37 @@ def test_degrade_keeps_a_dropped_link_out_of_the_narrowed_main_claim(env, skepti
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
 
 
+def test_degrade_in_a_seeded_project_notes_no_back_edge_for_a_narrowed_main_claim(env):
+    """Fix round 1 (seeded-fixed): the degrade checks a narrowed main claim against the RQ only. In a project whose
+    question is fixed, a ``does_not_answer`` vote notes the check and the degrade's reason, but no ``back_edge``: the
+    degrade takes no edge, and a resumed attempt would otherwise return one the engine never took."""
+    _, ps, _ = env
+    _synthesize(env)
+    record_fixed_stages(ps, ["question"], SEED, actor="tester")
+
+    def recheck(inputs):
+        return {"still_holds": [],
+                "warrant_tests": [{"edge_id": w["edge_id"], "tests": verdicts()} for w in inputs["untested_warrants"]]}
+
+    ex = _exec([draft(), responses(), responses()],
+               [critique(objections=[_on_link(1, "The trial does not bear on the claim."),
+                                     _o("main", 1, "It says nothing of people over 90.")]), critique()],
+               narrowed=[{"text": "Aspirin was studied in some older people.", "kind": "fact"}], rechecks=[recheck],
+               votes=_votes(["answers", "does_not_answer"], ["answers", "answers"]))
+    w = ArgueWorker()
+    ctx = _ctx(env, ex)
+    assert w.run(ctx).status == "done"
+    main = main_claim(ps, 1)
+    out = w.degrade(ctx, w.gate(ps, 1).failures)
+    assert out.status == "done", out.reason
+    new = main_claim(ps, 1)
+    assert new != main and "does not answer the research question" in out.reason
+    assert [(n["main_claim_id"], n["decision"]) for n in argue_notes(ps, 1, kind="rq_check")] == [
+        (main, "answers"), (new, "does_not_answer")]
+    assert not argue_notes(ps, 1, kind="back_edge")
+
+
+
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
 def test_conceded_priority1_objection_on_a_reason_link_drops_it_in_p2(env):
     """I6 on links (P2): once the conceded link objection dropped the link, your final review lists nothing and the
