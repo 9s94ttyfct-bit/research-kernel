@@ -191,8 +191,10 @@ frozen), `search_screen` (search, deduplication, title/abstract and full-text sc
   the record cap sends the strategy back to the Scout to narrow, with the counts (up to `protocol_narrow_tries`,
   default 3, tries; a strategy that does not lower the total is a failed try, and so is one whose largest single count
   is above the cap when the best version's is within it); the version with the lowest total goes
-  on. The kernel writes what only it knows: the administrative PRISMA-P items (registration, amendments, support,
-  competing interests), the language exclusion `E-lang` and the search execution (publication years written out,
+  on. The kernel writes what only it knows: for a systematic or scoping review the PRISMA-P title (the review type
+  and the frozen question; the rendered protocol opens with it), the contributors (drafted by the kernel's agent
+  roles, frozen by the two judges in P1 or by you in P2; no human author or contact address is recorded) and the
+  administrative items (registration, amendments, support, competing interests), the language exclusion `E-lang` and the search execution (publication years written out,
   each query sent as written to each source and the fields each source searches); the checks also reject
   placeholders, a missing PRISMA-P item of a systematic review, prose naming sources or searches the strategy does not have, missing outcomes or study
   identifier field, a meta-analysis of diagnostic accuracy, unbalanced or AND/OR-mixed queries, and a redraft that
@@ -206,7 +208,9 @@ frozen), `search_screen` (search, deduplication, title/abstract and full-text sc
   or rebutted; the Scout answers the search points, the Ideator the others, and an answer to another author's point
   is dropped), only the judge that raised a point closes it (a mark whose id differs from one of the judge's own
   points only in its separators, `p1.judge.2.1` for `p1.judge_2.1`, is that point; a mark that matches none is
-  ignored and listed), and an approve with an open blocking point of the judge's own counts as revise. A judge that
+  ignored and listed), and an approve with an open blocking point of the judge's own counts as revise. Each judge
+  sees every open point with the judge that owns it and votes on its own: it answers revise only for a blocking
+  point of its own, never because another judge's point is open (that judge's vote already holds it). A judge that
   approves and leaves some of its own open blocking points unmarked is asked once more, in the same vote, to mark
   exactly those (resolved or not, with why); its marks then apply as any other (the opinion records them as
   `repaired`), a point it leaves unmarked or marks unresolved still counts as open, and a resumed vote asks nothing

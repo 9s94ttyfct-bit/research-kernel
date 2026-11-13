@@ -1,11 +1,11 @@
 """The protocol stage: the Ideator drafts the review protocol (eligibility, extraction schema, synthesis plan and, for a
 systematic review, the PRISMA-P items) for the frozen RQ, the Scout its search strategy; the kernel builds the
-``Protocol`` (the question is the frozen RQ's) with the facts only it knows (``with_kernel_facts``: the admin PRISMA-P
-items of a systematic or scoping review, ``KERNEL_PRISMA_P``: registration, amendments, support and competing
-interests, and the language exclusion ``E-lang``; the rendered protocol adds the search execution,
+``Protocol`` (the question is the frozen RQ's) with the facts only it knows (``with_kernel_facts``: the PRISMA-P items
+of a systematic or scoping review only the project's records establish, ``kernel_prisma_p``: the title, the
+contributors and the admin items of ``KERNEL_PRISMA_P``, registration, amendments, support and competing interests, and
+the language exclusion ``E-lang``; the rendered protocol opens with the title and adds the search execution,
 ``search_execution_lines``, with the publication years written out and the fields each source searches), stores it as
-the
-next version, checks it (``check_strategy``, ``check_protocol``), sizes the strategy (the record-cap probe:
+the next version, checks it (``check_strategy``, ``check_protocol``), sizes the strategy (the record-cap probe:
 ``sources.count`` per query on each counted source of the strategy within its publication years, summed and their
 largest kept, stored as ``protocol.probed``) and then:
 
@@ -76,6 +76,18 @@ every search, record-cap probe and year count. The search execution and the judg
 each source (``SEARCHED_IN``); the Scout (``STRATEGY_TASK``) builds each query from concepts joined by AND, each an OR
 group of synonyms, only concepts every eligible record names in its title or abstract, and narrows by tightening a
 concept or dropping the broadest query, never by adding a concept.
+
+Calibration 3 (P1 protocol rerun 4, 2026-11-12, ``docs/eval/p1-protocol-rerun-4-2026-11-12.md``):
+
+- The kernel writes the PRISMA-P title and contributors of a systematic or scoping review (``kernel_prisma_p``,
+  ``with_kernel_facts`` with the production mode): the title names the review type and the frozen question as the body
+  stores it; the contributors say the kernel's agent roles drafted the protocol and who freezes it (P1: the two judges
+  of different vendors; P2: the researcher), and that no human author, corresponding author or contact address is
+  recorded. Like the admin items they replace the Ideator's, are not checked as its text, change nothing applied
+  again, and are named in the rules sheet as the kernel's.
+- A judge votes on its own points (``VOTE_QUESTION``): it still sees every open point, each with its owning judge in
+  ``role``, but answers revise only for a blocking point of its own, still open or new, never because another judge's
+  point is open (while a blocking one is open, that judge's own vote keeps the protocol from freezing).
 
 Tries inside the attempt (Plan 5c Task 9 fix: in P1 every rerun spends a ``protocol->protocol`` edge use, and nothing
 else could narrow a search):

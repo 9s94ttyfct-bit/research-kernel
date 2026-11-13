@@ -47,4 +47,23 @@ without a second judge's revise.
 
 ## Calibration 3 (branch `p1-calib3`)
 
-To be written when it is built.
+Built on `p1-calib3` (plan `docs/superpowers/plans/2026-11-12-p1-protocol-calibration-3.md`, Tasks 1–3):
+
+- **Title and contributors are the kernel's** (the ozone block, PRISMA-P items 1 and 3). For a systematic or scoping
+  review the kernel writes the PRISMA-P `title` ("Protocol for a systematic review: <the frozen question>", or "a
+  scoping review") and `contributors`: the kernel's agent roles drafted it (the Ideator the eligibility, extraction and
+  synthesis, the Scout the search strategy); in P1 it is frozen only when the two judge roles, of different vendors,
+  approve it and no human author is recorded, in P2 only when the researcher running the project approves it; no
+  corresponding author or contact address is recorded. Like registration, amendments, support and competing
+  interests, they replace whatever the Ideator wrote under those keys, are not checked as its text, change nothing
+  when applied again, and are absent from a critical review or proposal. The rendered protocol (the judges' subject
+  and your `protocol_approval`) opens with the title; the P2 card already shows every PRISMA-P item; the judges' rules
+  sheet and the Ideator's task name both as kernel-written.
+- **A judge votes on its own points** (the fructose block). The vote question and the judge's role text say that
+  `open_points` lists every judge's open points, each with its owning judge in `role` (its own are those whose `role`
+  is its `you`); another judge's points are theirs to mark and close, and while a blocking one is open that judge's
+  own vote keeps the protocol from freezing, so a judge answers revise only for a blocking point of its own, still
+  open or new, never because another judge's point is open. This is prompt wording; a test pins the inputs it relies
+  on (each judge sees both judges' open points with their owners).
+
+Not yet measured: a rerun on this branch.
