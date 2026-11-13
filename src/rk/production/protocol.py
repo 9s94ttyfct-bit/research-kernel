@@ -275,21 +275,23 @@ STRATEGY_TASK = (
     "question and the eligibility criteria, at least 2 sources taken from `available_sources` exactly as given, and "
     "the publication-year range (date_from, date_to; null for an open end). The kernel searches OpenAlex and Europe "
     "PMC in titles and abstracts (OpenAlex also in the keywords it tags works with), so build each query as a few "
-    "concepts joined by AND, each concept an OR group of its synonyms and spelling variants (a phrase in quotes), and "
-    "AND only the concepts every eligible record names in its title or abstract (the population or condition, the "
-    "intervention or exposure, and the study design only when the eligibility requires it); no bare unquoted string "
-    "of many words, and no field tags. When a previous draft is given (with the record counts of its queries), revise "
-    "its strategy: change only what the guidance asks for. When `narrowing` is given, the record-cap probe of the "
-    "previous draft's strategy (`total`: the record counts of each query on each counted source within its years, "
-    "summed, an upper bound since duplicates count again) is above `record_cap`: return a narrower strategy with "
-    "fewer records. Tighten a concept (a quoted phrase for a loose synonym) or drop the broadest query (`counts` shows "
-    "which); never add a concept a relevant record may not name in its title or abstract; keep every eligibility "
-    "criterion covered. A strategy that repeats one already tried or does not lower the total below the best so far is a failed try (`failed_tries` "
-    "lists them). Keep every source in `keep_sources` (the PRISMA-P texts name them): narrow the queries, not those "
-    "sources. The kernel runs the searches; do not search yourself. Follow the guidance when there is any. When "
-    "`open_points` is given (the judges' open points), answer in `answers` every point whose `owner` is scout (the "
-    "search points), by its `id`: how changed, with where the strategy changes it in note, or how rebutted, with why "
-    "it stays in note; a strategy that leaves one of them unanswered is sent back to you.")
+    "concepts joined by AND, each concept an OR group of its synonyms and spelling variants, the singular and the "
+    "plural of a quoted phrase included (\"trans fatty acid\" OR \"trans fatty acids\": Europe PMC does not stem "
+    "phrases), and AND only the concepts every eligible record names in its title or abstract (the population or "
+    "condition, the intervention or exposure, and the study design only when the eligibility requires it); no bare "
+    "unquoted string of many words, and no field tags. When a previous draft is given (with the record counts of its "
+    "queries), revise its strategy: change only what the guidance asks for. When `narrowing` is given, the record-cap "
+    "probe of the previous draft's strategy (`total`: the record counts of each query on each counted source within "
+    "its years, summed, an upper bound since duplicates count again) is above `record_cap`: return a narrower "
+    "strategy with fewer records. Tighten a concept (a quoted phrase for a loose synonym, keeping its singular and "
+    "plural) or drop the broadest query (`counts` shows which); never add a concept a relevant record may not name in "
+    "its title or abstract; keep every eligibility criterion covered. A strategy that repeats one already tried or "
+    "does not lower the total below the best so far is a failed try (`failed_tries` lists them). Keep every source in "
+    "`keep_sources` (the PRISMA-P texts name them): narrow the queries, not those sources. The kernel runs the "
+    "searches; do not search yourself. Follow the guidance when there is any. When `open_points` is given (the "
+    "judges' open points), answer in `answers` every point whose `owner` is scout (the search points), by its `id`: "
+    "how changed, with where the strategy changes it in note, or how rebutted, with why it stays in note; a strategy "
+    "that leaves one of them unanswered is sent back to you.")
 # what the judges are told the probe is
 # Calibration (P1 protocol rerun 2, 2026-11-12): both bounds; the deduplicated count is the cap that holds.
 PROBE_NOTE = ("advisory, two bounds on the records the search finds: `total`, an upper bound (the record counts of "
@@ -349,7 +351,8 @@ KERNEL_RULES = (
     "with authors.\n"
     "3. Queries. Each query is sent as written to the search API of each listed source and searched there in these "
     f"fields: {'; '.join(SEARCHED_IN.values())}. The kernel adds no MeSH terms and does not rewrite a query into a "
-    "source's own syntax; a query needs no field tags to be searched in titles and abstracts. "
+    "source's own syntax; a query needs no field tags to be searched in titles and abstracts on OpenAlex and Europe "
+    "PMC. "
     "OpenAlex rejects wildcards (* and ?) and ~, so the protocol's checks fail a query with them on OpenAlex.\n"
     "4. Years. The publication years are applied as each source's own publication-year filter (arXiv: its "
     "submission date); an open start is the earliest record a source indexes, an open end the date of the search.\n"
@@ -1313,14 +1316,15 @@ def search_execution_lines(body: dict) -> list[str]:
     sources, OpenAlex's and Europe PMC's titles and abstracts instead of their full texts."""
     ss, cap = body["search_strategy"], body["record_cap"]
     n_q, n_s = len(ss["queries"]), len(ss["sources"])
+    # a stored try may name a source the kernel does not search (the checks reject it): shown, not a crash
+    fields = "; ".join(SEARCHED_IN.get(s, f"{s}: not a source the kernel searches") for s in ss["sources"])
     return [
         "Search execution (written by the kernel: how search_screen runs this strategy after the freeze):",
         (f"- publication years: {publication_years(ss)} (inclusive), applied as each source's own publication-year "
          f"filter{' (arXiv: its submission date)' if 'arxiv' in ss['sources'] else ''}."),
         (f"- each query is sent as written above to the search API of each listed source ({n_q} queries x {n_s} "
-         f"sources = {n_q * n_s} searches) and searched there in these fields: "
-         f"{'; '.join(SEARCHED_IN[s] for s in ss['sources'])}. The kernel adds no MeSH terms and does not rewrite a "
-         "query into a source's own syntax."),
+         f"sources = {n_q * n_s} searches) and searched there in these fields: {fields}. The kernel adds no MeSH "
+         "terms and does not rewrite a query into a source's own syntax."),
         ("- every page a source returns is logged in the project's search log with its time (the search date), "
          "source, query, publication years, offset and the records it returned. Each source and query is paged to its "
          "last result; a search a source cannot finish (e.g. its paging limit) is logged as incomplete with its "
@@ -1540,9 +1544,10 @@ def _over_cap_reason(best: dict, tries: int) -> str:
     return (f"the record-cap probe of version {best['version']} shows nearly always at least {probe['lower']} records "
             f"(its largest single query-on-source count; {probe['total']} summed, an upper bound), above "
             f"the record cap {cap}, after {tries} narrowing tries, and P1 does not vote on a protocol the probe shows "
-            "above the cap: narrow the search strategy to fewer records (tighten a concept or drop the broadest "
-            "query, which the probe's counts show; never add a concept a relevant record may not name in its title "
-            "or abstract) and keep every eligibility criterion covered")
+            "above the cap: narrow the search strategy to fewer records (tighten a concept, keeping the singular and "
+            "plural of a quoted phrase, or drop the broadest query, which the probe's counts show; never add a "
+            "concept a relevant record may not name in its title or abstract) and keep every eligibility criterion "
+            "covered")
 
 
 def _revise_reason(res: VoteResult) -> str:

@@ -39,9 +39,9 @@ Included studies found by the two sources together (of those with a DOI):
 | **total (86)** | **81** | **80** | **79** | **77** |
 
 Searching OpenAlex in titles, abstracts and keywords and Europe PMC in titles and abstracts finds 79 of the 81
-included studies the full-text search finds (two lost: one tfa study, one prostate study), with 10 to 25 times fewer
-records on each source. With the full-text search the same queries are far above the 3000-record cap on both sources
-for four of the six reviews; scoped, none is.
+included studies the full-text search finds (two lost: one tfa study, one prostate study), with about 6 to 32 times
+fewer records on each source (mostly 12 to 26). With the full-text search the same queries are far above the
+3000-record cap on both sources for four of the six reviews; scoped, none is.
 
 ### The strategies the runs froze
 
@@ -54,9 +54,15 @@ any source found:
 | cade-colonoscopy (6) | 5 | 4 |
 | tfa-heated-oils (33) | 5 | 3 |
 
-Two things follow. These strategies lose recall when moved to titles and abstracts: their long unquoted queries find
-almost nothing there (`deep learning colonoscopy adenoma detection rate randomized controlled`: 601 OpenAlex records
-in full text, 6 in titles, abstracts and keywords; 268 in Europe PMC, 0 with `TITLE_ABS:`). And their recall is poor
+Two things follow. These strategies lose recall when moved to titles and abstracts, for two reasons. cade's long
+unquoted queries find almost nothing there (`deep learning colonoscopy adenoma detection rate randomized controlled`:
+601 OpenAlex records in full text, 6 in titles, abstracts and keywords; 268 in Europe PMC, 0 with `TITLE_ABS:`).
+tfa's four frozen queries already are AND-of-OR groups with quoted phrases, yet Europe PMC with `TITLE_ABS:` returns
+0 for all four (31, 26, 75 and 5 in full text). Europe PMC does not stem quoted phrases (measured, no years:
+`TITLE_ABS:"trans fatty acid"` 1074 records, `TITLE_ABS:"trans fatty acids"` 2679, the two OR'd 3286;
+`TITLE_ABS:("trans fatty acid" AND frying)` 50, `TITLE_ABS:("trans fatty acids" AND frying)` 112), so the singular
+phrase the queries use misses the titles and abstracts that say "acids"; their other concepts may also contribute to
+the zeros (not measured one by one). And their recall is poor
 in either scope (tfa: 5 of 33), far below the selection query's 28 of 33: narrowing a strategy until its full-text
 count fits the cap cuts the included studies out. The change is therefore tested by its effect on the runs: the next
 rerun reports each entry's recall against the 0.85 target, and its frozen strategies are measured in both scopes

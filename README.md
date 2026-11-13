@@ -179,8 +179,11 @@ frozen), `search_screen` (search, deduplication, title/abstract and full-text sc
   source understands (PubMed `[tiab]`, Europe PMC `TITLE_ABS:`) breaks the query on the other. The kernel picks the
   fields: OpenAlex is searched in titles, abstracts and the keywords it tags works with, Europe PMC in titles and
   abstracts, PubMed as given (its automatic term mapping applies), arXiv in all fields
-  (`docs/eval/search-scope-2026-11-12.md`: 79 of the 81 included studies the full-text search found, with 10 to 25
-  times fewer records). The kernel checks the draft (its free texts may not claim novelty, the same rule as for topics and RQs) and sizes it: the
+  (`docs/eval/search-scope-2026-11-12.md`: the reproduction set's selection queries find 79 of the 81 included
+  studies the full-text search found, with about 6 to 32 times fewer records, mostly 12 to 26; strategies written for
+  the full-text search lost included studies when scoped, cade 5 to 4 of 6 and tfa 5 to 3 of 33, so the next rerun
+  measures recall). The kernel checks the draft (its free texts may not claim novelty, the same rule as for topics
+  and RQs) and sizes it: the
   record-cap probe counts each query on each source that reports counts (OpenAlex, Europe PMC, PubMed) within the strategy's publication years. The probe
   is advisory and gives two bounds on the records: the sum of the counts (an upper bound: duplicates count again) and
   the largest single count (nearly always a lower bound). A draft that fails the checks is drafted again within the

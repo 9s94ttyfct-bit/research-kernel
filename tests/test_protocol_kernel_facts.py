@@ -75,6 +75,12 @@ def test_search_execution_names_the_fields_each_chosen_source_searches(sr_env):
                 assert re.search(FIELDS[s], fields), (s, fields)
             else:
                 assert name not in fields, (s, fields)
+    # a stored try may name a source the kernel does not search: shown as such, never a crash of the protocol's view
+    stray = {**row["body"], "search_strategy": {**row["body"]["search_strategy"], "sources": ["openalex", "scopus",
+                                                                                               "Europe PMC"]}}
+    (fields,) = [line for line in search_execution_lines(stray) if "fields" in line]
+    assert re.search(FIELDS["openalex"], fields) and "scopus: not a source the kernel searches" in fields
+    assert "Europe PMC: not a source the kernel searches" in fields
     assert all(re.search(pattern, KERNEL_RULES) for pattern in FIELDS.values())
     assert "adds no MeSH terms or field tags" not in KERNEL_RULES  # Europe PMC's query goes inside TITLE_ABS
 
