@@ -492,6 +492,34 @@ def test_the_main_claim_may_reuse_the_direction_count(env):
     assert "`main_claim_id`" in (Path(rk.__file__).parent / "roles" / "arguer.md").read_text()
 
 
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_a_main_claim_id_that_is_no_supported_finding_is_refused(env):
+    """Re-review of fix round 1: ``main_claim_id`` is the only door to reusing a claim as the main claim, so a finding
+    of the synthesis that is not supported (here uncertain) is refused in both rounds, and argue reruns with the reason
+    rather than making an unverified claim the main claim."""
+    k, ps, lib = env
+    _setup(env, RESPONSES, schema=PAIRED, plan=SWIM_PLAN)
+    ex = _Exec({("arguer", "AssessmentOut"): [assess()],
+                ("arguer", "NarrativeSynthesis"): [ta._synth_narrative([ta.F1, ta.F2])], **ta._judges()})
+    record_attempt(ps, "synthesize", 1, run_id=None, guidance="", requested=None, actor="tester")
+    assert SynthesizeWorker().run(production_ctx(k, ps, lib, ex, stage="synthesize")).status == "done"
+    record_ran(ps, "synthesize", 1, "done", "", actor="tester")
+    record_passed(ps, "synthesize", 1, actor="tester")
+    _, counted = _direction(ps)
+    finding = next(c for c in synthesis_claims(ps, 1) if c != counted["id"])
+    ArgumentService(ps).set_claim_status(finding, "uncertain", verification_id=None, actor="tester")
+
+    def reusing(inputs):
+        return {"main_claim_id": finding, "answers_rq": ta.SELF_CHECK,
+                "reasons": [{"ref": "r1", "claim": ta.claim(inputs, ta.REASON, "rct"), "supports": "main",
+                             "warrant": ta.WARRANT}]}
+
+    out = ArgueWorker().run(ta._ctx(env, ta._exec([reusing, reusing], [ta.critique()])))
+    assert out.status == "rerun"
+    assert f"{finding} is not a supported claim of the synthesis" in out.reason and "(asked twice)" in out.reason
+    assert main_claim(ps, 1) is None
+
+
 def test_the_protocol_maps_a_field_pair_for_every_outcome():
     """The Ideator is told to map every outcome; the check refuses a pair naming a field the schema lacks."""
     other = ExtractionField(name="n_other", description="Participants, comparator", type="number")
