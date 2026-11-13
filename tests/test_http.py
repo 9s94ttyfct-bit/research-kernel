@@ -2,7 +2,7 @@ import httpx
 import pytest
 import respx
 
-from rk.net.http import BudgetExhausted, HttpClient, HttpError
+from rk.net.http import BudgetExhausted, HttpClient, HttpError, RedirectLoop
 
 
 class Clock:
@@ -151,6 +151,18 @@ def test_a_host_that_asked_for_a_long_wait_is_not_asked_again_before_it(client, 
     assert client.get("https://example.org/c.pdf", ttl_s=0).status == 200
     clock.t += 3700
     assert client.get("https://repo.example.org/b.pdf", ttl_s=0).status == 200 and later.call_count == 1
+
+
+@respx.mock
+def test_a_redirect_loop_is_an_http_error_and_not_retried(client):
+    """srrepro10, 2026-11-13: an open-access URL redirected in a loop (a cookie or login wall) raised httpx's
+    TooManyRedirects, which no caller catches as an HttpError; it is one (``RedirectLoop``, not transient: no retry)."""
+    route = respx.get("https://repo.example.org/loop").mock(
+        return_value=httpx.Response(302, headers={"location": "https://repo.example.org/loop"}))
+    with pytest.raises(RedirectLoop) as ei:
+        client.get("https://repo.example.org/loop", ttl_s=0)
+    assert isinstance(ei.value, HttpError) and ei.value.why == "too many redirects"
+    assert route.call_count == 21  # httpx follows 20 redirects once; the client does not retry the loop
 
 
 @respx.mock
