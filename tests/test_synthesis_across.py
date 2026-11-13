@@ -19,7 +19,7 @@ from rk.orchestrator.state import (
     record_ran,
 )
 from rk.production import argue as argue_module
-from rk.production import synthesis
+from rk.production import store, synthesis
 from rk.production.argue import (
     SYNTHESIS_QUESTION,
     ArgueWorker,
@@ -383,6 +383,41 @@ def test_fewer_studies_than_the_minimum_count_nothing_and_say_so(env):
 
 
 @pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_studies_without_two_comparable_numbers_are_left_out_of_the_count_with_the_reason(env):
+    """Fix round 1: a value that is not a number, or two values for a field, leaves the study out of the count with
+    the reason (a limitation); "0.80" against 0.8 is the same value."""
+    _, ps, _ = env
+    ids = _setup(env, {"A": RESPONSES["A"], "C": {"design": "cohort", "response_new": "0.80", "response_standard": 0.8},
+                       "F": {"design": "rct", "response_new": "about a half", "response_standard": 0.5},
+                       "G": {"design": "rct", "response_new": 0.6, "response_standard": 0.5}},
+                 schema=PAIRED, plan=SWIM_PLAN)
+    row = next(r for r in store.extractions(ps, 1, item_id=ids["G"]) if r["field"] == "response_new")
+    store.add_extraction(ps, 1, ids["G"], "response_new", 0.4, row["note_id"], True, actor="tester")
+    assert SynthesizeWorker().run(_ctx(env, _exec())).status == "done"
+    note, claim = _direction(ps)
+    assert note["item_ids"] == [ids["A"], ids["C"]]
+    (a,) = [x for x in artifacts(ps, "synthesize", 1) if x["code_path"] == DIRECTION]
+    assert [t["direction"] for t in a["values"]["table"]] == ["higher", "same"]
+    assert claim["status"] == "supported"
+    assert synthesis_limitations(ps, 1)["directions"]["left_out"] == [
+        {"outcome": "response", "item_id": ids["F"], "reason": "not a number: response_new"},
+        {"outcome": "response", "item_id": ids["G"], "reason": "two values for response_new"}]
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_an_arm_without_participants_is_left_out_of_the_count(env):
+    _, ps, _ = env
+    trials = dict(list(BCG.items())[:3])
+    trials["Rosenthal"] = {**trials["Rosenthal"], "n_treatment": 0}
+    ids = _setup(env, trials, schema=BINARY, plan=META)
+    assert SynthesizeWorker().run(_ctx(env, _exec())).status == "done"
+    note, _ = _direction(ps)
+    assert note["item_ids"] == [ids["Aronson"], ids["Ferguson"]]
+    assert synthesis_limitations(ps, 1)["directions"]["left_out"] == [
+        {"outcome": "tuberculosis", "item_id": ids["Rosenthal"], "reason": "no participants: n_treatment"}]
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
 def test_argue_is_given_the_direction_count_as_a_kernel_finding(env):
     k, ps, lib = env
     _setup(env, RESPONSES, schema=PAIRED, plan=SWIM_PLAN)
@@ -471,6 +506,18 @@ def test_the_protocol_maps_a_field_pair_for_every_outcome():
                          "extraction schema")]
     assert sr(sr_body(extraction_schema=schema, synthesis_plan=plan({"intervention": "n", "comparator": "design"}))) \
         == ["synthesis_plan.outcomes: outcome 'stroke': comparator -> 'design' is not a number field"]
+    record = ExtractionField(name="n_record", description="Participants, from the record", type="number",
+                             source="record")
+    schema = [*schema, record]
+    for fields, problem in [
+        ({"intervention": "n", "comparator": "n_other", "control": "n"},
+         "maps 'control', not a role of the field pair (intervention, comparator)"),
+        ({"intervention": "n"}, "maps no field to comparator"),
+        ({"intervention": "n", "comparator": "n_record"},
+         ": comparator -> 'n_record' is a record field; an outcome's values come from the study's text"),
+        ({"intervention": "n", "comparator": "n"}, "maps one field to both intervention and comparator")]:
+        assert sr(sr_body(extraction_schema=schema, synthesis_plan=plan(fields))) == [
+            f"synthesis_plan.outcomes: outcome 'stroke'{'' if problem.startswith(':') else ' '}{problem}"]
     assert sr(sr_body()) == []  # outcomes without a pair are not refused
     assert '"intervention"' in IDEATOR_TASK and '"comparator"' in IDEATOR_TASK
     ideator = (Path(rk.__file__).parent / "roles" / "ideator.md").read_text()
