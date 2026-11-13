@@ -8,10 +8,11 @@ P1 systematic review whose research question is the review's question, frozen as
 discovery stages are recorded as passed, seeded, so a run starts at ``protocol``), with the review's search window in
 the topic the protocol's Ideator and Scout read. The seeded stages are fixed: no back-edge reopens them (the run fails
 instead), and a P1 RQ vote that finds the main claim not answering the RQ goes back to synthesize, not to question.
-Calibration (seeded reproduction, 2026-11-13): re-running discovery on a given question measures nothing, and it pulled
-the reproduced review into the library. The reproduced review is never named to the agents (its reference
-list would hand them the answer), nor is its main conclusion; ``score`` reports whether the project included it or
-rests its main claim on it (then the direction does not count) and, as information, whether it entered the library.
+Calibration (seeded reproduction, 2026-11-13): re-running discovery on a given question measures nothing, and its
+novelty check found the reproduced review itself (tfa). The reproduced review is never named to the agents (its
+reference list would hand them the answer), nor is its main conclusion; ``score`` reports whether the project included
+it or rests its main claim on it (then the direction does not count) and, as information, whether it entered the
+library.
 
 ``score`` compares the project with the review:
 

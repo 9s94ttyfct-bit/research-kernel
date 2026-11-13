@@ -66,6 +66,7 @@ rk eval litqa2 --limit 20           # LitQA2 multiple choice with the Kernel's o
 rk eval deepfact --limit 10         # DeepFact-Bench claims: gather evidence, then V-SUPPORT (evaluation only)
 rk eval reportbench --reports DIR   # citation precision/recall against ReportBench references
 rk eval stats [--write-config]      # reproduce published meta-analyses with rk.stats; --write-config enables pooling
+rk eval sr-repro [--entry ID]       # the systematic-review reproduction set: seed, run (in rk serve) and score
 rk support check --text passage.txt --sources src_… --driver codex_cli --gold gold.json
 ```
 
@@ -74,6 +75,14 @@ rk support check --text passage.txt --sources src_… --driver codex_cli --gold 
   `src/rk/eval/LICENSES.md`.
 - Evaluations run on a scratch kernel with chat-API drivers; the judges may also use the agentic CLIs, since they call
   no tools. `rk support check` runs inside `rk serve`, so it can use any driver.
+- The systematic-review reproduction set (`rk eval sr-repro`) reproduces six published reviews, each in a P1
+  project `srrepro-<id>` seeded with the review's question frozen as the RQ: intake, landscape, gaps, topics and
+  question are recorded as passed by the seed (discovery does not run) and fixed, so no back-edge or rerun reopens
+  them; one that would fails the run with "<stage> is fixed by the reproduction seed (its question is the published
+  review's)". When the P1 RQ vote finds the main claim does not answer the RQ, argue goes back to synthesize, not to
+  question, and fails once argue→synthesize has no use left (`docs/eval/seeded-fixed-2026-11-13.md`: going back to
+  question re-ran the novelty check on a given question, which found a published review of it, in tfa the reproduced
+  review itself, and the runs ended at gaps).
 
 ## Built-in browser and Workbench
 
@@ -288,7 +297,8 @@ A recorded run: `docs/demo/plan5a-evidence.md`.
 After read_extract, `synthesize` turns the extracted evidence into findings, `argue` builds and attacks an argument on
 them, and, for a research proposal, `design` ties falsifiable hypotheses to a method design. Their back-edges
 (synthesize→read_extract, argue→synthesize, argue→question, design→argue, design→question) follow the same limit of
-two uses per project.
+two uses per project. A stage a project fixed (a reproduction's seeded discovery stages, see Evaluation) is never
+reopened: a back-edge to it fails the run, in P1 and P2.
 
 - **Synthesize.** The Arguer scores every study on seven evidence criteria and drafts the synthesis; the kernel
   computes every number. A systematic review whose frozen protocol pre-specifies a meta-analysis (typed: effect
@@ -317,9 +327,10 @@ two uses per project.
   priority-1 objection or a failed check is narrowed or withdrawn, a conceded priority-1 objection on a reason link
   drops the link instead, and the limitations list the withdrawn and narrowed claims, the conceded objections and the
   dropped links.
-  At the end you say in `uncertain_support` whether the main claim answers the frozen RQ (P1: the judges), and you
-  withdraw or support each claim (the findings included) that fails the argument's gate. When every finding is
-  withdrawn, argue goes back to synthesize.
+  At the end you say in `uncertain_support` whether the main claim answers the frozen RQ (P1: the judges; when they
+  say it does not, argue goes back to question, or to synthesize when the question is fixed), and you withdraw or
+  support each claim (the findings included) that fails the argument's gate. When every finding is withdrawn, argue
+  goes back to synthesize.
 - **Design (research proposals).** The Ideator ties hypotheses (each with what would falsify it) to design items and
   measurements and states its feasibility claims; the kernel checks the links both ways, verifies the feasibility
   claims and asks for your `design_approval` (P1: a vote). The approved design is frozen and pre-registers the
