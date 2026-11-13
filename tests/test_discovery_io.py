@@ -216,6 +216,31 @@ def test_kernel_sources_year_counts_and_cited_by_after_year(tmp_home, tmp_path):
         k.close()
 
 
+def test_kernel_sources_abstracts_route_by_source(tmp_home, tmp_path):
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        if request.url.path.endswith("efetch.fcgi"):
+            return httpx.Response(200, content=(b"<PubmedArticleSet><PubmedArticle><MedlineCitation><PMID>11</PMID>"
+                                                b"<Article><Abstract><AbstractText>From PubMed.</AbstractText>"
+                                                b"</Abstract></Article></MedlineCitation></PubmedArticle>"
+                                                b"</PubmedArticleSet>"))
+        return httpx.Response(200, json={"resultList": {"result": [{"doi": "10.1000/e",
+                                                                    "abstractText": "From Europe PMC."}]}})
+
+    k = _mock_kernel(tmp_home, tmp_path, handler)
+    try:
+        src = KernelSources(k, "demo")
+        assert src.abstracts("pubmed", ["11"]) == {"11": "From PubMed."}
+        assert src.abstracts("europepmc", ["10.1000/e"]) == {"10.1000/e": "From Europe PMC."}
+        assert [p.rsplit("/", 1)[-1] for p in seen] == ["efetch.fcgi", "search"]
+        with pytest.raises(ValueError, match="no abstract lookup in source 'openalex'"):
+            src.abstracts("openalex", ["W1"])
+    finally:
+        k.close()
+
+
 def test_kernel_sources_search_after_year(tmp_home, tmp_path):
     seen: list[tuple[str, dict]] = []
 

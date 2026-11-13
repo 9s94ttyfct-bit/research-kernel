@@ -604,6 +604,17 @@ def test_europepmc_abstracts_by_doi_batch_their_dois_with_or(tmp_path):
     http.close()
 
 
+def test_europepmc_abstracts_are_plain_text(tmp_path):
+    html = "<h4>Background</h4><p>Rats <i>fed</i> salt &amp; water.</p>\n<h4>Results</h4>H<sub>2</sub>O rose."
+    plain = "Background Rats fed salt & water. Results H2O rose."
+    row = {"doi": "10.1000/h", "title": "T", "pubYear": "2010", "abstractText": html}
+    http, _ = _client(tmp_path, lambda req: httpx.Response(200, json={"resultList": {"result": [row]}}))
+    assert europepmc.abstracts(http, ["10.1000/h"]) == {"10.1000/h": plain}
+    assert europepmc.result_to_item(row).abstract == plain  # search results too
+    assert europepmc.result_to_item({**row, "abstractText": " <p> </p> "}).abstract is None
+    http.close()
+
+
 def _arxiv_feed(*entries: tuple[str | None, str | None], total: int | None = None) -> bytes:
     """An arXiv Atom feed of ``(arxiv id, title)`` entries; ``None`` leaves the element out (a malformed entry).
     ``total`` is its ``opensearch:totalResults``."""

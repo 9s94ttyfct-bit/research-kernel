@@ -6,10 +6,12 @@ not also in open-access full text as a bare query does; a systematic review sear
 
 Calibration (search and screening, 2026-11-12): ``abstracts`` looks up the abstracts of works by DOI (``DOI:"…"``,
 ``DOI_BATCH`` DOIs joined with OR a request, the core result), for the records still without one before title/abstract
-screening."""
+screening. Abstracts, from a search or a lookup, are kept as plain text (``plain_text``: Europe PMC marks them up
+in HTML)."""
 
 from __future__ import annotations
 
+import html
 import re
 
 from rk.library.models import Creator, Ids, ItemIn
@@ -42,6 +44,19 @@ def _kind(r: dict) -> tuple[str, str | None]:
     return "journalArticle", journal
 
 
+_BLOCK_TAG = re.compile(r"</?(?:h[1-6]|p|div|br|li|ul|ol|section|title)\b[^>]*>", re.IGNORECASE)
+_TAG = re.compile(r"<[^>]+>")
+
+
+def plain_text(text: str | None) -> str | None:
+    """Europe PMC's ``abstractText`` as plain text: block tags (headings, paragraphs) become spaces, inline tags
+    (``<i>``, ``<sub>``) go, entities are unescaped and whitespace is collapsed; ``None`` when nothing is left."""
+    if not text:
+        return None
+    out = " ".join(html.unescape(_TAG.sub("", _BLOCK_TAG.sub(" ", text))).split())
+    return out or None
+
+
 def result_to_item(r: dict) -> ItemIn:
     authors = (r.get("authorList") or {}).get("author", [])
     pdfs = [
@@ -61,7 +76,7 @@ def result_to_item(r: dict) -> ItemIn:
         ],
         year=int(year) if year and str(year).isdigit() else None,
         venue=venue or None,
-        abstract=r.get("abstractText"),
+        abstract=plain_text(r.get("abstractText")),
         ids=Ids(doi=r.get("doi"), pmid=r.get("pmid"), pmcid=r.get("pmcid")).normalized(),
         oa_urls=pdfs,
         discovered_via="search",
@@ -145,7 +160,7 @@ def abstracts(http: HttpClient, dois: list[str]) -> dict[str, str]:
                                                    "pageSize": 4 * DOI_BATCH})
         for r in ((data or {}).get("resultList") or {}).get("result", []):
             d = by_norm.get(normalize_doi(r.get("doi")) or "")
-            if d is not None and d not in out and (text := (r.get("abstractText") or "").strip()):
+            if d is not None and d not in out and (text := plain_text(r.get("abstractText"))):
                 out[d] = text
     return out
 
