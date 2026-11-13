@@ -80,3 +80,36 @@ def test_library_rebuild_equal(lib):
     before = lib.get(i).model_dump(), lib.search("study")
     rebuild(lib.db)
     assert (lib.get(i).model_dump(), lib.search("study")) == before
+
+
+def test_merge_fills_a_missing_abstract(lib):
+    bare = item(doi="10.1000/m").model_copy(update={"abstract": None})
+    i = lib.add_item(bare, added_by="agent", actor="t").item_id
+    assert lib.get(i).abstract is None
+    lib.add_item(item(doi="10.1000/m").model_copy(update={"abstract": "Later abstract on humidity."}),
+                 added_by="agent", actor="t")
+    assert lib.get(i).abstract == "Later abstract on humidity."
+    assert [h.item_id for h in lib.search("humidity")] == [i]  # the FTS row has it too
+    before = lib.get(i).model_dump(), lib.search("humidity")
+    rebuild(lib.db)
+    assert (lib.get(i).model_dump(), lib.search("humidity")) == before
+
+
+def test_merge_keeps_the_first_abstract(lib):
+    i = lib.add_item(item(doi="10.1000/k").model_copy(update={"abstract": "First abstract."}),
+                     added_by="agent", actor="t").item_id
+    lib.add_item(item(doi="10.1000/k").model_copy(update={"abstract": "Second abstract."}), added_by="agent", actor="t")
+    lib.add_item(item(doi="10.1000/k").model_copy(update={"abstract": ""}), added_by="agent", actor="t")
+    assert lib.get(i).abstract == "First abstract."
+    assert not [e for e in lib.ps.log.iter() if e.type == "item.merged"]
+
+
+def test_fill_abstract_records_its_source(lib):
+    i = lib.add_item(item(doi="10.1000/f").model_copy(update={"abstract": ""}), added_by="agent", actor="t").item_id
+    assert lib.fill_abstract(i, "Fetched abstract.", source="pubmed", actor="k")
+    assert lib.get(i).abstract == "Fetched abstract."
+    (ev,) = [e for e in lib.ps.log.iter() if e.type == "item.merged"]
+    assert ev.payload["abstract"] == "Fetched abstract." and ev.payload["source"] == "pubmed"
+    assert ev.actor_kind == "kernel"
+    assert not lib.fill_abstract(i, "Another.", source="europepmc", actor="k")  # never replaced
+    assert lib.get(i).abstract == "Fetched abstract."

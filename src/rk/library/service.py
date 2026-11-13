@@ -129,7 +129,11 @@ class Library:
         self, item: ItemIn, *, added_by: Literal["human", "agent"], actor: str, actor_kind: ActorKind | None = None,
         provenance: dict | None = None,
     ) -> AddResult:
-        """``provenance`` is kept in the ``item.added`` event (e.g. the browser's ``page_metadata_diff``)."""
+        """``provenance`` is kept in the ``item.added`` event (e.g. the browser's ``page_metadata_diff``).
+
+        A hit of a work already in the library adds, in an ``item.merged``, what the item lacks: identifiers,
+        open-access URLs, the language and (calibration, search and screening, 2026-11-12) the abstract. Nothing the
+        item already has is replaced."""
         kind: ActorKind = actor_kind or ("human" if added_by == "human" else "agent")
         item = item.model_copy(update={"ids": item.ids.normalized()})
         with self.ps.lock:  # find-then-add must not interleave with another add of the same work
@@ -139,13 +143,27 @@ class Library:
                 new_ids = {k: v for k, v in item.ids.model_dump().items() if v and not getattr(cur.ids, k)}
                 new_urls = [u for u in item.oa_urls if u not in cur.oa_urls]
                 new_lang = item.language if item.language and not cur.language else None
-                if new_ids or new_urls or new_lang:
-                    payload = {"ids": new_ids, "oa_urls": new_urls, **({"language": new_lang} if new_lang else {})}
+                new_abstract = item.abstract if item.abstract and not cur.abstract else None
+                if new_ids or new_urls or new_lang or new_abstract:
+                    payload = {"ids": new_ids, "oa_urls": new_urls, **({"language": new_lang} if new_lang else {}),
+                               **({"abstract": new_abstract} if new_abstract else {})}
                     self._ev("item.merged", existing, payload, actor, kind)
                 return AddResult(item_id=existing, created=False)
             full = Item(**item.model_dump(), id=new_id("src"), added_by=added_by)
             self._ev("item.added", full.id, {"item": full.model_dump(mode="json"), **(provenance or {})}, actor, kind)
         return AddResult(item_id=full.id, created=True)
+
+    def fill_abstract(self, item_id: str, abstract: str, *, source: str, actor: str,
+                      actor_kind: ActorKind = "kernel") -> bool:
+        """Give an item without an abstract the one a source returned (an ``item.merged`` naming the ``source``).
+
+        An existing abstract is never replaced; returns whether the item took this one."""
+        with self.ps.lock:
+            if not abstract.strip() or self.get(item_id).abstract:
+                return False
+            self._ev("item.merged", item_id, {"ids": {}, "oa_urls": [], "abstract": abstract, "source": source},
+                     actor, actor_kind)
+        return True
 
     def update(self, item_id: str, *, actor: str, actor_kind: ActorKind = "kernel", **fields) -> None:
         bad = set(fields) - UPDATABLE_FIELDS
@@ -228,6 +246,8 @@ def _item_merged(conn: sqlite3.Connection, ev: Event) -> None:
     d["oa_urls"] = d.get("oa_urls", []) + ev.payload["oa_urls"]
     if ev.payload.get("language"):  # a source's language for an item that had none
         d["language"] = ev.payload["language"]
+    if ev.payload.get("abstract") and not d.get("abstract"):  # a source's abstract for an item that had none
+        d["abstract"] = ev.payload["abstract"]
     notes = conn.execute("SELECT notes, fulltext FROM items_fts WHERE item_id=?", (ev.entity_id,)).fetchone()
     _write_item(conn, d)
     if notes:
