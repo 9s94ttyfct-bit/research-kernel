@@ -192,6 +192,7 @@ from rk.llm.vendors import vendor_of
 from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.orchestrator.state import kernel_grants
 from rk.production.models import (
+    PAIR_ROLES,
     RECORD_CAP,
     SCREENED_LANGUAGES,
     Criterion,
@@ -299,7 +300,10 @@ DRAFT_TASK = (
     "studies, such as reporting bias, is assessed; certainty_of_evidence: how the certainty of each outcome's evidence "
     "is rated, e.g. GRADE; data_management: how records and extracted data are kept; outcomes_prioritisation: the "
     f"primary and secondary outcomes, in order). {ELIGIBILITY_RULE} A systematic review also names its outcomes in synthesis_plan.outcomes "
-    "whatever its synthesis method (a plan other than a meta-analysis maps no fields) and has an extraction field "
+    "whatever its synthesis method and maps every one of them, meta-analysis or not, to number fields of the "
+    "extraction schema: a meta-analysis outcome maps the effect measure's roles; any other outcome maps its field "
+    "pair, fields {\"intervention\": the intervention's or index test's value, \"comparator\": the comparator's "
+    "value}, from which the kernel counts the studies by the direction of the effect. It has an extraction field "
     "identifying each study (e.g. study_id: first author and year, source record). The statistics module has no "
     "diagnostic-accuracy measure: a question about sensitivity, specificity or AUC gets a narrative synthesis that "
     "states this limitation, not a meta-analysis. The kernel writes, from the project's records, the PRISMA-P items "
@@ -1075,11 +1079,12 @@ def check_protocol(body: Protocol, paper_type: str) -> list[str]:
         out += _outcome_problems(plan, {f.name: f for f in body.extraction_schema})
     elif plan is not None:
         out += _outcome_names(plan)
+        out += _pair_problems(plan, {f.name: f for f in body.extraction_schema})
     if paper_type == "systematic_review":
         if plan is not None and plan.method != "meta_analysis" and not plan.outcomes:
             out.append("synthesis_plan.outcomes is empty: a systematic review pre-specifies its outcomes (primary "
-                       "first) whatever its synthesis method; list them by name (a plan other than a meta-analysis "
-                       "maps no fields)")
+                       "first) whatever its synthesis method; list them, each mapping its field pair (fields: "
+                       "intervention and comparator, number fields of the extraction schema)")
         if body.extraction_schema and not any(STUDY_ID_FIELD.search(n) for n in names):
             out.append("extraction_schema has no field identifying the study (a name with study_id, author, citation "
                        "or reference): add one, e.g. study_id (text, source record): first author and year")
@@ -1317,6 +1322,35 @@ def _outcome_problems(plan: SynthesisPlan, schema: dict[str, ExtractionField]) -
             if (owner := numerators.setdefault(f, name)) != name:
                 out.append(f"synthesis_plan.outcomes: outcomes {owner!r} and {name!r} share the numerator field {f!r} "
                            f"(only n_* fields may be shared)")
+    return out
+
+
+def _pair_problems(plan: SynthesisPlan, schema: dict[str, ExtractionField]) -> list[str]:
+    """What keeps a plan's outcome field pairs (any method but a meta-analysis: ``OutcomeSpec.fields`` mapping
+    ``PAIR_ROLES``) from being counted by direction: a role other than the pair's, half a pair, a field that is not a
+    number field of the extraction schema quoted from the study's text, or one field for both roles. An outcome
+    without fields maps no pair: synthesize counts nothing for it (a protocol frozen before the pair is not refused).
+
+    Calibration (synthesis across studies, 2026-11-13): the kernel's direction counts come from these pairs."""
+    out: list[str] = []
+    for o in plan.outcomes:
+        if not o.fields:
+            continue
+        say = f"synthesis_plan.outcomes: outcome {o.name.strip()!r}"
+        out += [f"{say} maps {k!r}, not a role of the field pair ({', '.join(PAIR_ROLES)})" for k in o.fields
+                if k not in PAIR_ROLES]
+        if missing := [r for r in PAIR_ROLES if r not in o.fields]:
+            out.append(f"{say} maps no field to {', '.join(missing)}")
+        for r in PAIR_ROLES:
+            f = o.fields.get(r)
+            if f is not None and f not in schema:
+                out.append(f"{say}: {r} -> {f!r} is not a field of the extraction schema")
+            elif f is not None and schema[f].type != "number":
+                out.append(f"{say}: {r} -> {f!r} is not a number field")
+            elif f is not None and schema[f].source == "record":
+                out.append(f"{say}: {r} -> {f!r} is a record field; an outcome's values come from the study's text")
+        if len({o.fields.get(r) for r in PAIR_ROLES} - {None}) == 1 and not missing:
+            out.append(f"{say} maps one field to both intervention and comparator")
     return out
 
 

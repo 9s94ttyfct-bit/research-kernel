@@ -46,7 +46,7 @@ from rk.production.synthesis import (
 )
 from rk.stats import STATS_VERSION
 from rk.stats.effects import BINARY_FIELDS
-from rk.verify.stats import stat_claim_text
+from rk.verify.stats import DIRECTION, stat_claim_text
 from tests.discovery_fakes import ScriptedExecutor, add_text_layer
 from tests.production_fakes import (
     a_protocol,
@@ -227,9 +227,20 @@ def _answer(ps, cid: str, answer: dict) -> dict:
     return get_checkpoint(ps, cid)
 
 
+def _count(ps, c: dict) -> bool:
+    """Whether a claim is a kernel direction count (``rk.verify.stats.DIRECTION``; tests/test_synthesis_across.py)."""
+    return any(artifact(ps, a)["code_path"] == DIRECTION for a in c.get("artifact_ids") or [])
+
+
 def _claims(ps, attempt: int = 1) -> list[dict]:
+    """The attempt's findings and pooled results: its synthesis claims but the direction counts."""
     svc = ArgumentService(ps)
-    return [svc.get_claim(c) for c in synthesis_claims(ps, attempt)]
+    return [c for c in (svc.get_claim(c) for c in synthesis_claims(ps, attempt)) if not _count(ps, c)]
+
+
+def _pools(ps, attempt: int = 1) -> list[dict]:
+    """The attempt's pool and evidence-map artifacts: its artifacts but the direction counts."""
+    return [a for a in artifacts(ps, "synthesize", attempt) if a["code_path"] != DIRECTION]
 
 
 def _analysis_deviations(ps) -> list[str]:
@@ -288,7 +299,7 @@ def test_meta_analysis_pools_approved_group_with_kernel_claims(env):
     assert "model DL, HKSJ auto, prediction interval df k-2" in cp["prompt"]
     with pytest.raises(ValueError, match="only be answered by a human"):  # a hard human checkpoint
         answer_checkpoint(ps, cp["id"], {"decisions": {"0": "pool"}}, answered_by="vote", actor="kernel")
-    assert artifacts(ps, "synthesize", 1) == []  # nothing pooled before your approval
+    assert _pools(ps) == []  # nothing pooled before your approval
 
     bad = w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decisions": {"0": "maybe"}}))
     assert bad.status == "waiting_human" and bad.checkpoint_id != cp["id"]
@@ -297,7 +308,7 @@ def test_meta_analysis_pools_approved_group_with_kernel_claims(env):
     out = w.on_answer(_ctx(env, ex), _answer(ps, again["id"], {"decisions": {"0": "pool"}}))
     assert out.status == "done", out.reason
 
-    stt, fig = artifacts(ps, "synthesize", 1)
+    stt, fig = _pools(ps)
     assert (stt["kind"], fig["kind"]) == ("stt", "fig")
     # the protocol's pool options, passed through as requested
     assert stt["values"]["options"] == {"model": "DL", "hksj": "auto", "pi_df": "k-2", "level": 0.95}
@@ -321,7 +332,7 @@ def test_meta_analysis_pools_approved_group_with_kernel_claims(env):
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
     # handling the answer again does nothing twice
     assert w.on_answer(_ctx(env, ex), get_checkpoint(ps, again["id"])).status == "done"
-    assert len(artifacts(ps, "synthesize", 1)) == 2 and len(_claims(ps)) == 2
+    assert len(_pools(ps)) == 2 and len(_claims(ps)) == 2
 
 
 @pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
@@ -337,7 +348,7 @@ def test_p1_pooling_vote_disagreement_means_narrative(env):
     assert out.status == "done", out.reason
     (v,) = [r for r in ps.db.execute("SELECT * FROM votes")]
     assert v["decision"] == "no_pool" and v["conservative"] == 1
-    assert artifacts(ps, "synthesize", 1) == [] and all(c["kind"] != "stat_result" for c in _claims(ps))
+    assert _pools(ps) == [] and all(c["kind"] != "stat_result" for c in _claims(ps))
     (reason,) = _analysis_deviations(ps)
     assert "tuberculosis" in reason and "not approved by the P1 vote" in reason
     (call,) = [c for c in ex.calls if c["role"] == "judge" and c["schema"] == "VoteOut"]
@@ -361,7 +372,7 @@ def test_incomparable_studies_fall_back_to_narrative_with_deviation(env):
     out = w.run(_ctx(env, ex))
     assert out.status == "done", out.reason
     assert not [c for c in ex.calls if c["schema"] == "VoteOut"]  # nothing to approve
-    assert artifacts(ps, "synthesize", 1) == []
+    assert _pools(ps) == []
     claims = _claims(ps)
     assert claims and all(c["kind"] != "stat_result" for c in claims)  # no pooled number appears
     (reason,) = _analysis_deviations(ps)
@@ -386,7 +397,7 @@ def test_pooled_k_excludes_uncomputable_studies(env):
     out = w.run(_ctx(env, ex))
     out = w.on_answer(_ctx(env, ex), _answer(ps, out.checkpoint_id, {"decisions": {"0": "pool"}}))
     assert out.status == "done", out.reason
-    stt = next(a for a in artifacts(ps, "synthesize", 1) if a["kind"] == "stt")
+    stt = next(a for a in _pools(ps) if a["kind"] == "stt")
     assert stt["values"]["display"]["k"] == 4 and len(stt["values"]["studies"]) == 4
     (un,) = stt["values"]["uncomputable"]
     assert un["item_id"] == ids["Median"] and "events_treatment" in un["reason"]
@@ -407,7 +418,7 @@ def test_unvalidated_stats_module_means_narrative_and_deviation(env):
     w = SynthesizeWorker()
     out = w.run(_ctx(env, ex))
     assert out.status == "done", out.reason
-    assert not ex.of("arguer", "PoolingPlan") and artifacts(ps, "synthesize", 1) == []
+    assert not ex.of("arguer", "PoolingPlan") and _pools(ps) == []
     assert _analysis_deviations(ps) == [STATS_NOT_VALIDATED]
     assert STATS_NOT_VALIDATED == "meta-analysis pre-specified but the statistics module is not validated"
     assert [f["reason"] for f in synthesis_limitations(ps, 1)["fallbacks"]] == [STATS_NOT_VALIDATED]
@@ -428,7 +439,7 @@ def test_scoping_review_builds_evidence_map(env):
     w = SynthesizeWorker()
     out = w.run(_ctx(env, ex))
     assert out.status == "done", out.reason
-    stt, fig = artifacts(ps, "synthesize", 1)
+    stt, fig = _pools(ps)
     assert (stt["code_path"], fig["code_path"]) == ("rk.stats.plots:map_table", "rk.verify.stats:map_markdown")
     assert stt["values"]["fields"] == ["design"]  # the category fields only
     assert stt["values"]["table"]["fields"]["design"] == {"rct": 2, "cohort": 1}
@@ -455,7 +466,7 @@ def test_critical_review_thematic_synthesis_gate(env):
     ctx = _ctx(env, ex)
     out = w.run(ctx)
     assert out.status == "done", out.reason
-    assert artifacts(ps, "synthesize", 1) == []  # a thematic synthesis has no statistics
+    assert _pools(ps) == []  # a thematic synthesis has no statistics
     assert not list_checkpoints(ps, "open")  # P1 never asks
     # P1: the uncertain finding is narrowed and verified again before the attempt ends (M8), never voted up
     old, new = _claims(ps)
@@ -590,7 +601,7 @@ def test_missing_outcome_fields_go_back_to_read_extract(env):
     assert w.degrade(ctx, [out.reason]).status == "done"
     (reason,) = _analysis_deviations(ps)
     assert "events_control" in reason
-    assert artifacts(ps, "synthesize", 1) == [] and ex.of("arguer", "NarrativeSynthesis")
+    assert _pools(ps) == [] and ex.of("arguer", "NarrativeSynthesis")
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
     # never back twice for the same fields: the next attempt falls back instead
     out = w.run(_ctx(env, _exec(plans=list(plan)), 2))
@@ -612,7 +623,7 @@ def test_fields_reported_as_not_reported_fall_back_without_going_back(env):
     assert out.status == "done", out.reason  # the studies verifiably do not report it: no dead-end back-edge
     (reason,) = _analysis_deviations(ps)
     assert "events_control" in reason and "not reported" in reason
-    assert artifacts(ps, "synthesize", 1) == []
+    assert _pools(ps) == []
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
 
 
@@ -646,7 +657,7 @@ def test_measure_other_than_pre_specified_falls_back_with_deviation(env):
                votes=_votes_pool())
     w = SynthesizeWorker()
     assert w.run(_ctx(env, ex)).status == "done"
-    assert not [c for c in ex.calls if c["schema"] == "VoteOut"] and artifacts(ps, "synthesize", 1) == []
+    assert not [c for c in ex.calls if c["schema"] == "VoteOut"] and _pools(ps) == []
     reasons = _analysis_deviations(ps)
     assert any("pre-specifies the effect measure RR" in r and "OR" in r for r in reasons)
     assert "the pooling plan proposed no group for the pre-specified outcome 'tuberculosis' (effect measure RR)" in reasons
@@ -762,7 +773,7 @@ def test_gate_checks_the_figure_field_map_too(env):
     w = SynthesizeWorker()
     assert w.run(_ctx(env, ex)).status == "done"
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
-    (fig,) = [a["id"] for a in artifacts(ps, "synthesize", 1) if a["kind"] == "fig"]
+    (fig,) = [a["id"] for a in _pools(ps) if a["kind"] == "fig"]
     ps.db.execute("""UPDATE artifacts SET "values"=json_set("values", '$.field_map', json(?)) WHERE id=?""",
                   (json.dumps(AE.fields), fig))
     assert ("group 0 'tuberculosis' (RR) was pooled from other fields than the frozen protocol maps to it "
@@ -802,7 +813,7 @@ def test_group_of_an_unlisted_outcome_is_not_pooled(env):
                votes=_votes_pool())
     w = SynthesizeWorker()
     assert w.run(_ctx(env, ex)).status == "done"
-    assert not [c for c in ex.calls if c["schema"] == "VoteOut"] and artifacts(ps, "synthesize", 1) == []
+    assert not [c for c in ex.calls if c["schema"] == "VoteOut"] and _pools(ps) == []
     reasons = _analysis_deviations(ps)
     assert ("pooling of 'Tuberculosis cases' (RR) not done: 'Tuberculosis cases' is not a pre-specified outcome "
             "(pre-specified: 'tuberculosis')") in reasons
@@ -823,7 +834,7 @@ def test_every_pre_specified_outcome_pooled_from_its_own_fields(env):
     assert w.run(_ctx(env, ex)).status == "done"
     stats = [c for c in _claims(ps) if c["kind"] == "stat_result"]
     assert [c["scope_limits"][0] for c in stats] == ["outcome: tuberculosis", "outcome: adverse events"]
-    tb, ae = [a for a in artifacts(ps, "synthesize", 1) if a["kind"] == "stt"]
+    tb, ae = [a for a in _pools(ps) if a["kind"] == "stt"]
     # each outcome is pooled from its own fields: distinct numbers, the mapping recorded for V-STATS
     assert (tb["values"]["field_map"], ae["values"]["field_map"]) == (TB.fields, AE.fields)
     assert tb["values"]["display"]["estimate"] != pytest.approx(ae["values"]["display"]["estimate"])
@@ -850,7 +861,7 @@ def test_protocol_without_outcome_field_mappings_falls_back(env):
     ex = _exec()
     w = SynthesizeWorker()
     assert w.run(_ctx(env, ex)).status == "done"
-    assert not ex.of("arguer", "PoolingPlan") and artifacts(ps, "synthesize", 1) == []
+    assert not ex.of("arguer", "PoolingPlan") and _pools(ps) == []
     assert _analysis_deviations(ps) == [
         ("the protocol maps no extraction fields to the measure's roles for outcome 'tuberculosis' "
         "(synthesis_plan.outcomes[].fields)")]
@@ -866,7 +877,7 @@ def test_fewer_than_two_computable_studies_fall_back(env):
     ex = _exec(plans=[lambda inputs: _group(s["item_id"] for s in inputs["studies"])], votes=_votes_pool())
     w = SynthesizeWorker()
     assert w.run(_ctx(env, ex)).status == "done"
-    assert artifacts(ps, "synthesize", 1) == []
+    assert _pools(ps) == []
     (reason,) = _analysis_deviations(ps)
     assert "fewer than 2 studies with a computable effect (1; protocol minimum)" in reason
     assert [u["item_id"] for u in synthesis_limitations(ps, 1)["uncomputable"]] == [ids["Median"]]
@@ -901,7 +912,7 @@ def test_fewer_included_studies_than_the_protocol_minimum_are_not_comparable(env
     ex = _exec(plans=[lambda inputs: _group(s["item_id"] for s in inputs["studies"])], votes=_votes_pool())
     w = SynthesizeWorker()
     assert w.run(_ctx(env, ex)).status == "done"
-    assert artifacts(ps, "synthesize", 1) == [] and not ex.of("judge", "VoteOut")
+    assert _pools(ps) == [] and not ex.of("judge", "VoteOut")
     (plan,) = synthesis_notes(ps, 1, kind="plan")
     assert (plan["groups"][0]["comparable"], plan["groups"][0]["reason"]) == (
         False, "fewer than 3 included studies (2; protocol minimum)")
@@ -921,7 +932,7 @@ def test_fewer_computable_studies_than_the_protocol_minimum_fall_back(env):
     assert w.run(_ctx(env, ex)).status == "done"
     (vote,) = ex.of("judge", "VoteOut")
     assert vote["inputs"]["subject"]["pool_options"]["min_studies"] == 3  # the vote is shown the minimum
-    assert artifacts(ps, "synthesize", 1) == []  # two computable studies would pool under the default minimum
+    assert _pools(ps) == []  # two computable studies would pool under the default minimum
     (reason,) = _analysis_deviations(ps)
     assert ("pooling of 'tuberculosis' (RR) not done: fewer than 3 studies with a computable effect (2; protocol "
             "minimum)") in reason
@@ -956,7 +967,7 @@ def test_study_with_two_values_for_a_field_is_left_out_of_the_pool(env):
     ex = _exec(plans=[lambda inputs: _group(s["item_id"] for s in inputs["studies"])], votes=_votes_pool())
     w = SynthesizeWorker()
     assert w.run(_ctx(env, ex)).status == "done"
-    stt = next(a for a in artifacts(ps, "synthesize", 1) if a["kind"] == "stt")
+    stt = next(a for a in _pools(ps) if a["kind"] == "stt")
     assert stt["values"]["item_ids"] == [ids["Aronson"], ids["Ferguson"]] and stt["values"]["display"]["k"] == 2
     assert synthesis_limitations(ps, 1)["conflicting"] == [
         {"outcome": "tuberculosis", "measure": "RR", "item_id": ids["Rosenthal"],
@@ -975,7 +986,7 @@ def test_stats_invalidated_before_approval_falls_back(env):
     save_settings(load_settings().model_copy(update={"stats_validated": None}))
     out = w.on_answer(_ctx(env, ex), _answer(ps, out.checkpoint_id, {"decisions": {"0": "pool"}}))
     assert out.status == "done", out.reason
-    assert artifacts(ps, "synthesize", 1) == []
+    assert _pools(ps) == []
     (reason,) = _analysis_deviations(ps)
     assert STATS_NOT_VALIDATED in reason and "tuberculosis" in reason
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
@@ -1011,7 +1022,7 @@ def test_stale_stats_or_unrecorded_fallback_fail_the_gate(env):
     w = SynthesizeWorker()
     assert w.run(_ctx(env, ex)).status == "done"
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
-    stt = next(a for a in artifacts(ps, "synthesize", 1) if a["kind"] == "stt")
+    stt = next(a for a in _pools(ps) if a["kind"] == "stt")
     row = stt["values"]["row_ids"][0]
     store.mark_extraction(ps, row, "missing: changed", actor="tester")
     failures = w.gate(ps, 1).failures
@@ -1086,7 +1097,7 @@ def test_subset_plan_gets_every_computable_study(env):
     assert w.run(_ctx(env, ex)).status == "done"
     (g,) = synthesis_notes(ps, 1, kind="plan")[0]["groups"]
     assert g["item_ids"] == [*picked, ids["Rosenthal"]] and g["added_by_kernel"] == [ids["Rosenthal"]]
-    stt = next(a for a in artifacts(ps, "synthesize", 1) if a["kind"] == "stt")
+    stt = next(a for a in _pools(ps) if a["kind"] == "stt")
     assert stt["values"]["display"]["k"] == 3  # the uncomputable study is not added
     assert _analysis_deviations(ps) == []
     # the voters see the studies the kernel added, and why it added them
@@ -1108,7 +1119,7 @@ def test_plan_excluding_a_study_with_a_reason_records_a_deviation(env):
     assert w.run(_ctx(env, ex)).status == "done"
     subject = next(c for c in ex.calls if c["schema"] == "VoteOut")["inputs"]["subject"]
     assert subject["left_out"] == [{"study": "Rosenthal 1952", "reason": "a quasi-randomised trial"}]
-    stt = next(a for a in artifacts(ps, "synthesize", 1) if a["kind"] == "stt")
+    stt = next(a for a in _pools(ps) if a["kind"] == "stt")
     assert stt["values"]["item_ids"] == [ids["Aronson"], ids["Ferguson"]]
     (reason,) = _analysis_deviations(ps)
     assert reason == ("the pooling plan leaves out of 'tuberculosis' (RR) Rosenthal 1952 (a quasi-randomised trial), "
@@ -1144,7 +1155,7 @@ def test_split_outcome_pools_one_group_only(env):
     ex = _exec(plans=[{"groups": [first, second]}], votes=_votes_pool())
     w = SynthesizeWorker()
     assert w.run(_ctx(env, ex)).status == "done"
-    (stt,) = [a for a in artifacts(ps, "synthesize", 1) if a["kind"] == "stt"]
+    (stt,) = [a for a in _pools(ps) if a["kind"] == "stt"]
     assert stt["values"]["display"]["k"] == 3  # the first group, with the study the plan split off
     (reason,) = _analysis_deviations(ps)
     assert reason == ("pooling of 'tuberculosis' (RR) not done: a second group for the outcome; only one group per "
@@ -1177,7 +1188,7 @@ def test_protocol_frozen_in_the_plan_5a_shape_falls_back(env):
     ex = _exec()
     w = SynthesizeWorker()
     assert w.run(_ctx(env, ex)).status == "done"
-    assert not ex.of("arguer", "PoolingPlan") and artifacts(ps, "synthesize", 1) == []
+    assert not ex.of("arguer", "PoolingPlan") and _pools(ps) == []
     assert _analysis_deviations(ps) == ["the protocol pre-specifies no pooling model (synthesis_plan.pool_model)"]
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
 
@@ -1225,7 +1236,7 @@ def test_interrupted_attempt_resumes_in_place(env):
     assert len(synthesis_notes(ps, 1, kind="assessment")) == 3 and len(synthesis_notes(ps, 1, kind="plan")) == 1
     every = [c["id"] for c in ArgumentService(ps).list_claims(origin="synthesis")]
     assert sorted(every) == sorted(synthesis_claims(ps, 1))  # nothing orphaned
-    assert len(artifacts(ps, "synthesize", 1)) == 2 and len(ps.db.execute("SELECT * FROM votes").fetchall()) == 1
+    assert len(_pools(ps)) == 2 and len(ps.db.execute("SELECT * FROM votes").fetchall()) == 1
 
 
 @pytest.mark.parametrize("env", [{"paper_type": "systematic_review", "production_mode": "collab"}], indirect=True)
@@ -1252,9 +1263,10 @@ def test_pool_cut_short_by_a_crash_is_finished_not_made_again(env, monkeypatch):
     with pytest.raises(RuntimeError, match="crash after"):
         w.on_answer(_ctx(env, ex), cp)
     assert w.on_answer(_ctx(env, ex), cp).status == "done"
-    assert len(artifacts(ps, "synthesize", 1)) == 2
+    assert len(_pools(ps)) == 2
     assert len([c for c in _claims(ps) if c["kind"] == "stat_result"]) == 1
-    stat = [c for c in ArgumentService(ps).list_claims(origin="synthesis") if c["kind"] == "stat_result"]
+    stat = [c for c in ArgumentService(ps).list_claims(origin="synthesis") if c["kind"] == "stat_result"
+            and not _count(ps, c)]
     assert len(stat) == 1 and w.gate(ps, 1).ok, w.gate(ps, 1).failures
 
 
@@ -1452,7 +1464,7 @@ def test_pooling_approval_back_goes_to_read_extract_naming_studies(env):
     (note,) = synthesis_notes(ps, 1, kind="back_edge")
     assert note["by"] == "human" and note["version"] == 1
     assert note["studies"] == [{"item_id": ids["Ferguson"], "label": "Ferguson 1951", "fields": ["n_control"]}]
-    assert artifacts(ps, "synthesize", 1) == []  # nothing pooled
+    assert _pools(ps) == []  # nothing pooled
 
 
 @pytest.mark.parametrize("env", [{"paper_type": "critical_review", "production_mode": "collab"}], indirect=True)
@@ -1712,16 +1724,19 @@ def test_withdrawing_a_mismatched_stat_result_falls_back_and_passes_the_gate(env
     cp = get_checkpoint(ps, w.run(_ctx(env, ex)).checkpoint_id)
     assert w.on_answer(_ctx(env, ex), _answer(ps, cp["id"], {"decisions": {"0": "pool"}})).status == "done"
     (stat,) = [c for c in _claims(ps) if c["kind"] == "stat_result"]
-    stt = next(a for a in artifacts(ps, "synthesize", 1) if a["kind"] == "stt")
+    stt = next(a for a in _pools(ps) if a["kind"] == "stt")
     store.mark_extraction(ps, stt["values"]["row_ids"][0], "missing: changed", actor="tester")
     assert any(f"V-STATS mismatch {stt['id']}" in f for f in w.gate(ps, 1).failures)
-    listing = review_listing(ps, [stat["id"]])
-    assert listing[stat["id"]]["choices"] == ["withdraw"]
+    # the kernel's direction count of the outcome rests on the same rows: it mismatches too, and is withdraw-only
+    (count,) = [c["id"] for c in ArgumentService(ps).list_claims(origin="synthesis") if _count(ps, c)]
+    listing = review_listing(ps, [stat["id"], count])
+    assert listing[stat["id"]]["choices"] == ["withdraw"] and listing[count]["choices"] == ["withdraw"]
     s = mod._load(ps)
     cid = w._open_uncertain(_ctx(env, ex), s, listing, replaces=cp["id"])
-    out = w.on_answer(_ctx(env, ex), _answer(ps, cid, {"claims": {stat["id"]: "supported"}}))
+    out = w.on_answer(_ctx(env, ex), _answer(ps, cid, {"claims": {stat["id"]: "supported", count: "withdraw"}}))
     assert out.status == "waiting_human"  # supported is not one of its answers
-    out = w.on_answer(_ctx(env, ex), _answer(ps, out.checkpoint_id, {"claims": {stat["id"]: "withdraw"}}))
+    out = w.on_answer(_ctx(env, ex), _answer(ps, out.checkpoint_id,
+                                             {"claims": {stat["id"]: "withdraw", count: "withdraw"}}))
     assert out.status == "done"
     assert any("pooling of 'tuberculosis' (RR) withdrawn" in r for r in _analysis_deviations(ps))
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
@@ -1784,7 +1799,7 @@ def _pooled(env, ex) -> tuple[SynthesizeWorker, dict, dict]:
         out = w.on_answer(_ctx(env, ex), _answer(ps, out.checkpoint_id, {"decisions": {"0": "pool"}}))
     assert out.status == "done", out.reason
     (stat,) = [c for c in _claims(ps) if c["kind"] == "stat_result"]
-    stt = next(a for a in artifacts(ps, "synthesize", 1) if a["kind"] == "stt")
+    stt = next(a for a in _pools(ps) if a["kind"] == "stt")
     return w, stat, stt
 
 
