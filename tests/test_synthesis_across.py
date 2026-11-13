@@ -4,6 +4,7 @@ artifacts the kernel computes from the extraction rows and the claims it writes 
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -154,6 +155,30 @@ def test_the_judges_see_each_passage_under_its_study(env, labels, verdict):
     assert row["verdict"] == verdict
     assert "grouped by study" in INSTRUCTIONS
     _topic_free(INSTRUCTIONS)
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "critical_review"}], indirect=True)
+def test_a_supported_opinion_quoting_only_a_heading_is_not_valid(env):
+    """Fix round 1: the headings are the kernel's, written from the record and the extraction, not evidence. A
+    judge's quoted spans are checked against the passages alone, so a "supported" resting on a heading counts as
+    uncertain, and the rule stays as strict as before."""
+    _, ps, _ = env
+    _setup(env, ARMS, schema=[DESIGN, *TEXT], plan=SynthesisPlan(method="thematic"))
+
+    def heading(inputs):
+        return {"label": "supported", "quoted_spans": [inputs["evidence"].splitlines()[0]]}
+
+    ex = _Exec({("arguer", "AssessmentOut"): [assess()], ("arguer", "NarrativeSynthesis"): [_across],
+                ("arguer", "NarrowedClaim"): [{"text": ACROSS, "kind": "fact"}],
+                ("judge", "JudgeVerdict"): [heading] * 4, ("judge_2", "JudgeVerdict"): [heading] * 4})
+    SynthesizeWorker().run(_ctx(env, ex))
+    assert ex.of("judge", "JudgeVerdict")[0]["inputs"]["evidence"].startswith("Study 1 of 2: A 1950")
+    claim = next(c for c in synthesis_claims(ps, 1) if ArgumentService(ps).get_claim(c)["text"] == ACROSS)
+    (row,) = ps.db.execute("SELECT verdict, details FROM verifications WHERE target_id=? AND verifier='V-SUPPORT'",
+                           (claim,))
+    opinions = [o for o in json.loads(row["details"])["opinions"] if o["error"] is None]  # the admitted judges
+    assert row["verdict"] == "uncertain"
+    assert [(o["raw_label"], o["spans_ok"], o["label"]) for o in opinions] == [("supported", False, "uncertain")] * 2
 
 
 # ---- Task 3: the narrative contract ----

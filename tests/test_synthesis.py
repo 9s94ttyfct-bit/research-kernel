@@ -191,9 +191,14 @@ def narrative(*, representativeness: str | None = None, swim: bool = True, text:
     return out
 
 
+def first_passage(evidence: str) -> str:
+    """The first passage of a V-SUPPORT evidence document, below its first study heading: what a judge may quote."""
+    return evidence.split("\n\n")[0].splitlines()[-1]
+
+
 def judged(label: str = "supported"):
     def out(inputs):
-        return {"label": label, "quoted_spans": [inputs["evidence"].split("\n\n")[0]]}
+        return {"label": label, "quoted_spans": [first_passage(inputs["evidence"])]}
     return out
 
 
@@ -1288,7 +1293,7 @@ def _judges_on(word: str, label: str, n: int = 6) -> dict:
     """Judges labelling a claim containing ``word`` with ``label``, every other claim supported."""
     def judge(inputs):
         return {"label": label if word in inputs["claim"] else "supported",
-                "quoted_spans": [inputs["evidence"].split("\n\n")[0]]}
+                "quoted_spans": [first_passage(inputs["evidence"])]}
     return {("judge", "JudgeVerdict"): [judge] * n, ("judge_2", "JudgeVerdict"): [judge] * n}
 
 
@@ -1640,7 +1645,7 @@ class NoNarrative(Exec):
 def _uncertain_judge(*words: str, n: int = 12) -> dict:
     def judge(inputs):
         label = "partial" if any(w in inputs["claim"] for w in words) else "supported"
-        return {"label": label, "quoted_spans": [inputs["evidence"].split("\n\n")[0]]}
+        return {"label": label, "quoted_spans": [first_passage(inputs["evidence"])]}
     return {("judge", "JudgeVerdict"): [judge] * n, ("judge_2", "JudgeVerdict"): [judge] * n}
 
 

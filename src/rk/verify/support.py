@@ -148,7 +148,8 @@ def verify_support(kernel, registry, ps, claim_id: str, *, actor: str,
         doc = evidence_document(ps, claim)
         opinions = run_judges(kernel, registry, project=_slug(ps), claim_text=claim["text"], evidence_text=doc,
                               generator_vendor=claim.get("generator_vendor"), drivers=judge_drivers,
-                              providers=judge_providers, run=run, exclude_vendors=exclude_vendors)
+                              providers=judge_providers, run=run, exclude_vendors=exclude_vendors,
+                              span_text="\n\n".join(texts))  # the headings are the kernel's, not evidence
         verdict = combine(opinions, min_judges=k)
         nums = check_numbers(claim["text"], texts)
         if verdict == "supported" and not nums.ok:

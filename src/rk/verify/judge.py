@@ -142,27 +142,30 @@ def admitted_judges(ctx: StageContext, generator_vendors: Collection[str | None]
 
 
 def ask_judge(run: JudgeRunner, role: str, spec: DriverSpec, *, claim_text: str, evidence_text: str,
-              provider=None) -> JudgeOpinion:
+              provider=None, span_text: str | None = None) -> JudgeOpinion:
     """One judge's opinion as ``role`` (admission is the caller's): a no-tool task through ``run`` (``run_task``'s
-    keyword interface). A failed task gives an ``uncertain`` opinion carrying the task's error."""
+    keyword interface). A failed task gives an ``uncertain`` opinion carrying the task's error. The quoted spans must
+    be in ``span_text`` (default: ``evidence_text``): V-SUPPORT shows the passages under the kernel's study headings
+    and checks the spans against the passages alone, so a quote of a heading counts for nothing."""
     base = {"driver": str(spec), "vendor": vendor_of(spec.provider, spec.model)}
     r = run(role=role, instructions=INSTRUCTIONS, inputs={"claim": claim_text, "evidence": evidence_text},
             output_schema=JudgeVerdict, driver=spec, provider=provider, tools=[], max_turns=4, timeout_s=300)
     if not r.ok:
         return JudgeOpinion(**base, label="uncertain", task_id=r.task_id, error=r.error or "failed")
-    label, spans_ok = check_opinion(r.output, evidence_text)
+    label, spans_ok = check_opinion(r.output, evidence_text if span_text is None else span_text)
     return JudgeOpinion(**base, label=label, raw_label=r.output.label, spans_ok=spans_ok, task_id=r.task_id)
 
 
 def run_judges(kernel, registry, *, project: str, claim_text: str, evidence_text: str,
                generator_vendor: str | None, drivers: list[DriverSpec] | None = None,
                providers: dict[str, object] | None = None, run: JudgeRunner | None = None,
-               exclude_vendors: Collection[str | None] = ()) -> list[JudgeOpinion]:
+               exclude_vendors: Collection[str | None] = (), span_text: str | None = None) -> list[JudgeOpinion]:
     """``providers`` (driver string → Provider) replaces the configured driver; used by tests and evaluations. ``run``
     replaces ``run_task`` (called with ``role``, ``instructions``, ``inputs``, ``output_schema``, ``driver``,
     ``provider``, ``tools``, ``max_turns``, ``timeout_s``), e.g. a stage's task executor, whose budget and rate-cap
     exceptions then propagate. The judges admitted exclude ``generator_vendor`` and every one of ``exclude_vendors``
-    (the other vendors that wrote the claim's subject)."""
+    (the other vendors that wrote the claim's subject). ``span_text``: what the quoted spans are checked against
+    (``ask_judge``)."""
     if run is None:
         def run(**task):
             return run_task(kernel, registry, project=project, **task)
@@ -171,5 +174,5 @@ def run_judges(kernel, registry, *, project: str, claim_text: str, evidence_text
     return [JudgeOpinion(driver=str(spec), vendor=vendor_of(spec.provider, spec.model), label="uncertain",
                          error=skipped[role]) if role in skipped else
             ask_judge(run, role, spec, claim_text=claim_text, evidence_text=evidence_text,
-                      provider=(providers or {}).get(str(spec)))
+                      provider=(providers or {}).get(str(spec)), span_text=span_text)
             for role, spec in judges]
