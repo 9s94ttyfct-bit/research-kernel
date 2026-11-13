@@ -886,3 +886,21 @@ def test_both_unclear_at_title_abstract_reaches_the_full_text(env):
     assert store.retrieval_note(ps, 1)["sought"] == [t["Aspirin unsure [unclear/unclear]"]]
     assert [r["title"] for c in ex.of("screener_a", FT) for r in c["inputs"]["records"]] == [
         "Aspirin unsure [unclear/unclear]"]
+
+
+# ---- calibration (search and screening, 2026-11-12, plan Task 8): eligibility is not the outcome's reporting form
+@pytest.mark.parametrize("env", [SR_P1], indirect=True)
+def test_screeners_are_told_to_apply_criteria_as_written_not_the_reporting_form(env):
+    _, ps, _ = env
+    _freeze(ps)
+    ex = Screeners()
+    assert SearchScreenWorker().run(_ctx(env, ex, FakeSources({"aspirin": [_work("Aspirin K [yes/yes]", 1)]}))
+                                    ).status == "done"
+    calls = ex.of("screener_a", TA) + ex.of("screener_b", TA) + ex.of("screener_a", FT) + ex.of("screener_b", FT)
+    assert {c["inputs"]["phase"] for c in calls} == {TA, FT}
+    for c in calls:
+        assert ("Apply each criterion as written: a criterion that admits data from which an outcome can be computed "
+                "is met by reported values that allow the computation, and a comparator or intervention the "
+                "criterion lists is eligible.") in c["instructions"]
+        assert ("Do not exclude a study that measures an eligible outcome because of the statistic, unit or scale it "
+                "reports it in, unless a criterion explicitly requires that form.") in c["instructions"]

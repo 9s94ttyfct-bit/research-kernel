@@ -29,7 +29,9 @@ rules), V-PRISMA and the gate.
    from Europe PMC, written to the item as an ``item.merged`` naming the source. A failed lookup is added to the
    record's ``problem`` (the per-item boundary), never fatal; the note ``abstracts_filled`` says what was sought,
    filled by source and failed. Records go to a screener in batches of ``BATCH`` (title, abstract, year, venue,
-   language). Every decision is a ``screening.decided``. A decision on a record that is not in the batch, or a second
+   language). The screener task, in both phases, says to apply each criterion as written and not to exclude a study
+   for the statistic, unit or scale it reports an eligible outcome in unless a criterion requires that form
+   (``CRITERIA_AS_WRITTEN``; calibration, search and screening, 2026-11-12). Every decision is a ``screening.decided``. A decision on a record that is not in the batch, or a second
    one on a record, is ignored and noted (``stray_decision``); so is a decision without the reason its selection
    needs (``unreasoned``: for the PRISMA types an exclusion with a blank reason, at full text unless it names its
    criterion; for the others any decision with a blank reason), noted ``unreasoned_decision``. The records a batch's
@@ -161,18 +163,27 @@ ScreeningMode = Literal["dual", "sampled", "single"]
 MODES: dict[str, ScreeningMode] = {"systematic_review": "dual", "scoping_review": "sampled"}
 PRISMA_TYPES = frozenset({"systematic_review", "scoping_review"})  # PRISMA counts; an incomplete search blocks
 
+# Calibration (search and screening, 2026-11-12, docs/eval/search-screen-2026-11-12.md section 4): ozone's included
+# studies were excluded by misreading criteria that admitted them (a listed comparator; L*a*b* values ΔE is computed
+# from), tfa's for the form their outcome is reported in.
+CRITERIA_AS_WRITTEN = (
+    "Apply each criterion as written: a criterion that admits data from which an outcome can be computed is met by "
+    "reported values that allow the computation, and a comparator or intervention the criterion lists is eligible. "
+    "Do not exclude a study that measures an eligible outcome because of the statistic, unit or scale it reports it "
+    "in, unless a criterion explicitly requires that form.")
 SCREEN_TASK = (
     "Screen every given record against the eligibility criteria, using only its title, abstract and metadata. Give "
     "exactly one decision per record, keyed by its record_id exactly as given: include \"yes\", \"no\" or "
     "\"unclear\" (when the title and abstract do not settle a criterion), the id of the criterion the decision rests "
-    "on, and a short reason. Decide only the given records. Do not search or use tools.")
+    "on, and a short reason. " + CRITERIA_AS_WRITTEN + " Decide only the given records. Do not search or use tools.")
 FULL_TEXT_TASK = (
     "Screen every given record against the eligibility criteria, using its text and metadata. The text is the "
     "abstract, methods and results sections of its full text (text_kind \"sections\"), the beginning of its full "
     "text when no such sections were found (\"whole_text\"), or its abstract alone when no full text could be "
     "retrieved (\"abstract_only\"). Give exactly one decision per record, keyed by its record_id exactly as given: "
     "include \"yes\", \"no\" or \"unclear\" (when the text does not settle a criterion), the id of the criterion the "
-    "decision rests on, and a short reason. Decide only the given records. Do not search or use tools.")
+    "decision rests on, and a short reason. " + CRITERIA_AS_WRITTEN + " Decide only the given records. Do not search "
+    "or use tools.")
 TASKS = {TITLE_ABSTRACT: SCREEN_TASK, FULL_TEXT: FULL_TEXT_TASK}
 ASKED_AGAIN = ("your previous decision on this record gave no reason (an exclusion with no reason and, at full text, "
                "no criterion; in a critical review or research proposal any decision): a reason is required")

@@ -721,6 +721,19 @@ def test_the_scout_is_asked_for_queries_that_find_what_the_criteria_may_admit(en
         assert "eligibility criterion covered" not in asked and "cover the research question and" not in asked
 
 
+def test_the_ideator_is_told_eligibility_is_not_the_outcomes_reporting_form(env):
+    """Calibration (search and screening, 2026-11-12, plan Task 8): the draft request the Ideator receives says what
+    eligibility states and that it does not require an outcome's reporting form."""
+    ex = _executor([_draft()], [_strategy()], votes=_votes(("approve", "approve")))
+    assert ProtocolWorker().run(_ctx(env, ex)).status == "done"
+    (draft,) = [c for c in ex.calls if c["role"] == "ideator"]
+    assert ("Eligibility states the study design, the population, the intervention or exposure, the comparator and the "
+            "outcomes measured (with a time window only when the question needs one)") in draft["instructions"]
+    assert ("It does not require the statistic, unit or scale a study reports an outcome in, nor a particular "
+            "aggregate of it; whether a reported form can be pooled is settled by extraction and synthesis "
+            "(conversion, or narrative synthesis)") in draft["instructions"]
+
+
 def test_a_rerun_revises_the_best_version_not_a_failed_later_try(env):
     """The best try is still above the cap (its lower bound) when the narrowing runs out, so P1 reruns without a vote;
     a later, failed narrowing try is newer. The next attempt revises the best try, with its probe."""

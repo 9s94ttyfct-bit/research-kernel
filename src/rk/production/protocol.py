@@ -77,7 +77,10 @@ each source (``SEARCHED_IN``); the Scout (``STRATEGY_TASK``) builds each query f
 group of synonyms, only concepts every eligible record names in its title or abstract, and narrows by tightening a
 concept or dropping the broadest query, never by adding a concept.
 
-Calibration (search and screening, 2026-11-12, ``docs/eval/search-screen-2026-11-12.md``): the Scout's queries
+Calibration (search and screening, 2026-11-12, ``docs/eval/search-screen-2026-11-12.md``): the Ideator is told what
+eligibility states and that it does not require the statistic, unit or scale an outcome is reported in, nor an
+aggregate of it (``ELIGIBILITY_RULE`` in ``DRAFT_TASK``); a judge may raise a point on a criterion that does (no
+deterministic check: it cannot be detected reliably). The Scout's queries
 together find every record that may meet the eligibility criteria, and screening applies the criteria, so a query need
 not express each of them. An outcome is ANDed only when it is the subject of the question, and then with its broader
 names; a class concept lists its common members; a context such as the diet is not ANDed unless a criterion requires
@@ -274,9 +277,18 @@ DEDUP_RULE = ("duplicates: each hit joins the library item of the same work, mat
               "spaces and punctuation ignored) and publication year; the first record of each work is screened, "
               "every later hit is counted as a duplicate removed")
 
+# Calibration (search and screening, 2026-11-12, docs/eval/search-screen-2026-11-12.md section 4): tfa's eligibility
+# admitted only total TFA as % of total fatty acids, so studies that measure the outcome in another form were excluded.
+ELIGIBILITY_RULE = (
+    "Eligibility states the study design, the population, the intervention or exposure, the comparator and the "
+    "outcomes measured (with a time window only when the question needs one). It does not require the statistic, unit "
+    "or scale a study reports an outcome in, nor a particular aggregate of it; whether a reported form can be pooled "
+    "is settled by extraction and synthesis (conversion, or narrative synthesis)")
+
 DRAFT_TASK = (
     "Draft the review protocol for the frozen research question, its hypotheses and topic, for the intake's paper type "
-    "and audience: eligibility (include and exclude criteria, each with a short id and its text), the extraction "
+    "and audience: eligibility (include and exclude criteria, each with a short id and its text; "
+    f"{ELIGIBILITY_RULE}), the extraction "
     "schema (each field named, described and typed: text, number or category with its categories, and a unit where "
     "there is one; source record for a field about the study's bibliographic record, such as where it was published "
     "or its publication type, which the reader quotes from that record, else text), the synthesis plan (a "
