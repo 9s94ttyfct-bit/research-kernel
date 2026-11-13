@@ -1,15 +1,22 @@
-"""PubMed E-utilities and PMC BioC adapter."""
+"""PubMed E-utilities and PMC BioC adapter.
+
+Search builds its items from ``esummary``, which carries no abstract. Calibration (search and screening, 2026-11-12):
+``abstracts`` fetches the abstracts of given PMIDs with ``efetch`` (XML, at most ``EFETCH_BATCH`` PMIDs a request);
+the kernel asks for them only before title/abstract screening, for the records still without one."""
 
 from __future__ import annotations
 
 import re
 
+from lxml import etree
+
 from rk.library.models import Creator, Ids, ItemIn
-from rk.net.http import BadBody, HttpClient
+from rk.net.http import BadBody, HttpClient, HttpError
 from rk.sources.hits import Hits
 
 EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 BIOC = "https://www.ncbi.nlm.nih.gov/research/bionlp/RESTful/pmcoa.cgi/BioC_json"
+EFETCH_BATCH = 200
 
 
 def _search_params(term: str, retmax: int, date_from: int | None, date_to: int | None) -> dict:
@@ -130,6 +137,57 @@ def summaries(http: HttpClient, pmids: list[str]) -> Hits:
             raise BadBody(url, f"no esummary result for {len(pmids)} PMIDs")
     items = got[0]
     return Hits(items, dropped=len(pmids) - len(items))
+
+
+def _abstract_text(abstract) -> str | None:
+    """An ``Abstract`` element's ``AbstractText`` sections, each after its ``Label`` ("BACKGROUND: …"), one a line."""
+    parts = []
+    for sec in abstract.findall("AbstractText"):
+        text = " ".join("".join(sec.itertext()).split())
+        if text:
+            label = (sec.get("Label") or "").strip()
+            parts.append(f"{label}: {text}" if label else text)
+    return "\n".join(parts) or None
+
+
+def _parse_abstracts(xml: bytes, url: str) -> dict[str, str]:
+    try:
+        root = etree.fromstring(xml, etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False))
+    except etree.XMLSyntaxError as e:
+        raise BadBody(url, f"the body is not XML ({type(e).__name__})") from e
+    if root.tag != "PubmedArticleSet":
+        raise BadBody(url, f"the body is no PubmedArticleSet (root {root.tag!r})")
+    out: dict[str, str] = {}
+    for art in root:
+        doc = art.find("MedlineCitation") if art.tag == "PubmedArticle" else art.find("BookDocument")
+        if doc is None:
+            continue
+        pmid, abstract = doc.findtext("PMID"), doc.find("Article/Abstract")
+        if abstract is None:
+            abstract = doc.find("Abstract")  # a Bookshelf document's abstract
+        text = _abstract_text(abstract) if abstract is not None else None
+        if pmid and text:
+            out[pmid.strip()] = text
+    return out
+
+
+def abstracts(http: HttpClient, pmids: list[str]) -> dict[str, str]:
+    """The abstracts of ``pmids`` by PMID (``efetch``, ``EFETCH_BATCH`` PMIDs a request); a PMID whose record has no
+    abstract is left out. A status other than 200 is an ``HttpError``; a body that is no PubMed article set is a
+    ``BadBody`` and is dropped from the HTTP cache."""
+    out: dict[str, str] = {}
+    url = f"{EUTILS}/efetch.fcgi"
+    for i in range(0, len(pmids), EFETCH_BATCH):
+        params = {"db": "pubmed", "id": ",".join(pmids[i:i + EFETCH_BATCH]), "retmode": "xml", "rettype": "abstract"}
+        res = http.get(url, params)
+        if res.status != 200:
+            raise HttpError(res.status, res.url)
+        try:
+            out.update(_parse_abstracts(res.body, res.url))
+        except BadBody:
+            http.forget(url, params)
+            raise
+    return out
 
 
 def bioc_json(http: HttpClient, pmcid: str) -> dict | None:

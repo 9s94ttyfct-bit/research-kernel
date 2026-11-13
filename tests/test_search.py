@@ -30,7 +30,7 @@ from rk.production.search import (
     run_strategy,
     search_counts,
 )
-from rk.sources import arxiv, resolver
+from rk.sources import arxiv, pubmed, resolver
 from rk.sources.identifiers import Identifier
 from rk.sources.resolver import SourceContext, check_limits
 from rk.store import db as db_mod
@@ -535,6 +535,52 @@ def test_pubmed_page_of_only_withdrawn_uids_is_dropped_not_retried(tmp_path):
     hits = resolver.search(SourceContext(http=http, settings=Settings()), "aspirin", "pubmed", 1)
     assert (list(hits), hits.dropped) == ([], 1)
     assert len([r for r in seen if r.url.path.endswith("esummary.fcgi")]) == 1  # every missing uid is an error entry
+    http.close()
+
+
+def _efetch(*articles: tuple[str, str]) -> bytes:
+    """A hand-written efetch (``rettype=abstract``, XML) set of ``(pmid, Abstract element body)`` articles."""
+    body = "".join(f"<PubmedArticle><MedlineCitation><PMID Version=\"1\">{p}</PMID><Article><ArticleTitle>T{p}"
+                   f"</ArticleTitle>{f'<Abstract>{a}</Abstract>' if a else ''}</Article></MedlineCitation>"
+                   "</PubmedArticle>" for p, a in articles)
+    return ('<?xml version="1.0" ?>\n<!DOCTYPE PubmedArticleSet PUBLIC "-//NLM//DTD PubMedArticle, 1st January 2025//EN"'
+            ' "https://dtd.nlm.nih.gov/ncbi/pubmed/out/pubmed_250101.dtd">\n'
+            f"<PubmedArticleSet>{body}</PubmedArticleSet>").encode()
+
+
+def test_pubmed_abstracts_join_labelled_sections_and_leave_out_the_records_without_one(tmp_path):
+    xml = _efetch(
+        ("11", ('<AbstractText Label="BACKGROUND" NlmCategory="BACKGROUND">Rats were <i>fed</i> fructose.'
+                '</AbstractText><AbstractText Label="RESULTS">Blood pressure rose.</AbstractText>')),
+        ("12", "<AbstractText>One unstructured paragraph.</AbstractText>"),
+        ("13", ""))
+    http, seen = _client(tmp_path, lambda req: httpx.Response(200, content=xml))
+    assert pubmed.abstracts(http, ["11", "12", "13"]) == {
+        "11": "BACKGROUND: Rats were fed fructose.\nRESULTS: Blood pressure rose.",
+        "12": "One unstructured paragraph."}
+    assert seen[0].url.path.endswith("efetch.fcgi")
+    assert _params(seen[0]) == {"db": "pubmed", "id": "11,12,13", "retmode": "xml", "rettype": "abstract"}
+    assert pubmed.abstracts(http, []) == {} and len(seen) == 1
+    http.close()
+
+
+def test_pubmed_abstracts_are_fetched_200_pmids_at_a_time(tmp_path):
+    def respond(req):
+        ids = _params(req)["id"].split(",")
+        return httpx.Response(200, content=_efetch(*[(p, f"<AbstractText>A{p}</AbstractText>") for p in ids]))
+
+    http, seen = _client(tmp_path, respond)
+    pmids = [str(n) for n in range(1, 451)]
+    got = pubmed.abstracts(http, pmids)
+    assert [len(_params(r)["id"].split(",")) for r in seen] == [200, 200, 50]
+    assert got == {p: f"A{p}" for p in pmids}
+    http.close()
+
+
+def test_pubmed_abstracts_body_that_is_no_article_set_is_a_bad_body(tmp_path):
+    http, _ = _client(tmp_path, lambda req: httpx.Response(200, content=b"<html>busy</html>"))
+    with pytest.raises(BadBody):
+        pubmed.abstracts(http, ["11"])
     http.close()
 
 
