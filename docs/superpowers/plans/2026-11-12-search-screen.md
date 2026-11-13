@@ -76,9 +76,9 @@
 - **Change:**
   - **Coverage:** "together find every record that may meet the eligibility criteria; screening applies the criteria, so a query need not express each of them".
   - **Build rule**, after "AND only the concepts …":
-    - "An outcome or measure is a concept to AND only when it is the subject of the question; then its OR group includes its broader names too, since a record reports a measure under its general name ("blood pressure" OR hypertension for a systolic-pressure outcome)."
+    - "An outcome or measure is a concept to AND only when it is the subject of the question; then its OR group includes its broader names too, since a record reports a measure under its general name ("kidney function" OR "renal function" OR "glomerular filtration rate" for an eGFR outcome)."
     - "A concept that names a class (a drug class, a food group, a family of methods) lists the common members a record may name instead of the class (statin OR statins OR atorvastatin OR simvastatin OR rosuvastatin)."
-    - "A context such as the diet, the vehicle or the setting is not ANDed unless an eligibility criterion requires it."
+    - "A context such as the setting or the delivery route is not ANDed unless an eligibility criterion requires it."
   - **Narrowing:** "keep every eligibility criterion covered" becomes "keep the population or condition and the intervention or exposure concepts" everywhere it appears.
   - Leave no remaining "cover the eligibility criteria" or "keep every eligibility criterion covered" (grep `src` and `docs` other than `docs/eval`).
 - **Tests:** one behavioural test that the strategy request the Scout receives (the built task and inputs, not the constant) carries the build rule and the new narrowing rule. Update the tests that pin the old phrases to the new contract.

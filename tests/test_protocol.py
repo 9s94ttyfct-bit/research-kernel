@@ -20,7 +20,11 @@ from rk.orchestrator.state import latest_attempt, record_attempt, start_run
 from rk.production import store
 from rk.production.models import ExtractionField, OutcomeSpec, Protocol, SynthesisPlan
 from rk.production.protocol import (
+    ELIGIBILITY_RULE,
+    NARROW_KEEP,
     PRISMA_P_TEXT,
+    QUERY_BUILD_RULE,
+    QUERY_COVERAGE,
     STRATEGY_TASK,
     VOTE_QUESTION,
     ProtocolWorker,
@@ -694,9 +698,13 @@ def test_narrowing_that_does_not_lower_the_total_fails_and_p1_reruns_above_the_c
     wider = fourth["failed_tries"][1]
     assert wider["version"] == 3 and wider["total"] == 54000 and "not fewer than the 4000" in wider["why"]
     assert f"version {rows[3]['version']}" in out.reason  # the best try, its total named
-    assert "keep the population or condition and the intervention or exposure concepts" in out.reason
+    assert NARROW_KEEP in out.reason
     assert "eligibility criterion covered" not in out.reason
     assert store.frozen_protocol(ps) is None
+
+
+TOPIC_WORDS = ("prostate", "pulmonary", "colonoscop", "adenoma", "ozone", "bleach", "fructose", "blood pressure",
+               "diet", "fatty acid", "frying", "heated oil")
 
 
 def test_the_scout_is_asked_for_queries_that_find_what_the_criteria_may_admit(env):
@@ -711,14 +719,10 @@ def test_the_scout_is_asked_for_queries_that_find_what_the_criteria_may_admit(en
     assert "narrowing" not in draft["inputs"] and "narrowing" in narrow["inputs"]
     for call in (draft, narrow):
         asked = call["instructions"] + " " + str(call["inputs"].get("guidance", ""))
-        assert "together find every record that may meet the eligibility criteria" in asked
-        assert "screening applies the criteria, so a query need not express each of them" in asked
-        assert "An outcome or measure is a concept to AND only when it is the subject of the question" in asked
-        assert '("blood pressure" OR hypertension for a systolic-pressure outcome)' in asked
-        assert "statin OR statins OR atorvastatin OR simvastatin OR rosuvastatin" in asked
-        assert "is not ANDed unless an eligibility criterion requires it" in asked
-        assert "keep the population or condition and the intervention or exposure concepts" in asked
+        assert QUERY_COVERAGE in asked and QUERY_BUILD_RULE in asked and NARROW_KEEP in asked
         assert "eligibility criterion covered" not in asked and "cover the research question and" not in asked
+        # its examples come from none of the six evaluation topics (rk.eval sr_repro)
+        assert not [w for w in TOPIC_WORDS if w in asked.lower()]
 
 
 def test_the_ideator_is_told_eligibility_is_not_the_outcomes_reporting_form(env):
@@ -727,11 +731,8 @@ def test_the_ideator_is_told_eligibility_is_not_the_outcomes_reporting_form(env)
     ex = _executor([_draft()], [_strategy()], votes=_votes(("approve", "approve")))
     assert ProtocolWorker().run(_ctx(env, ex)).status == "done"
     (draft,) = [c for c in ex.calls if c["role"] == "ideator"]
-    assert ("Eligibility states the study design, the population, the intervention or exposure, the comparator and the "
-            "outcomes measured (with a time window only when the question needs one)") in draft["instructions"]
-    assert ("It does not require the statistic, unit or scale a study reports an outcome in, nor a particular "
-            "aggregate of it; whether a reported form can be pooled is settled by extraction and synthesis "
-            "(conversion, or narrative synthesis)") in draft["instructions"]
+    assert ELIGIBILITY_RULE in draft["instructions"]
+    assert "a time window only when the question needs one" in ELIGIBILITY_RULE  # a time window stays a boundary
 
 
 def test_a_rerun_revises_the_best_version_not_a_failed_later_try(env):

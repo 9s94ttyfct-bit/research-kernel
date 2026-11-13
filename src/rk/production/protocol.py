@@ -83,8 +83,8 @@ aggregate of it (``ELIGIBILITY_RULE`` in ``DRAFT_TASK``); a judge may raise a po
 deterministic check: it cannot be detected reliably). The Scout's queries
 together find every record that may meet the eligibility criteria, and screening applies the criteria, so a query need
 not express each of them. An outcome is ANDed only when it is the subject of the question, and then with its broader
-names; a class concept lists its common members; a context such as the diet is not ANDed unless a criterion requires
-it; narrowing keeps the population or condition and the intervention or exposure concepts (``STRATEGY_TASK``, the
+names; a class concept lists its common members; a context such as the setting or the delivery route is not ANDed
+unless a criterion requires it; narrowing keeps the population or condition and the intervention or exposure concepts (``STRATEGY_TASK``, the
 P1 over-cap rerun reason).
 
 Calibration 3 (P1 protocol rerun 4, 2026-11-12, ``docs/eval/p1-protocol-rerun-4-2026-11-12.md``):
@@ -283,12 +283,11 @@ ELIGIBILITY_RULE = (
     "Eligibility states the study design, the population, the intervention or exposure, the comparator and the "
     "outcomes measured (with a time window only when the question needs one). It does not require the statistic, unit "
     "or scale a study reports an outcome in, nor a particular aggregate of it; whether a reported form can be pooled "
-    "is settled by extraction and synthesis (conversion, or narrative synthesis)")
+    "is settled by extraction and synthesis (conversion, or narrative synthesis).")
 
 DRAFT_TASK = (
     "Draft the review protocol for the frozen research question, its hypotheses and topic, for the intake's paper type "
-    "and audience: eligibility (include and exclude criteria, each with a short id and its text; "
-    f"{ELIGIBILITY_RULE}), the extraction "
+    "and audience: eligibility (include and exclude criteria, each with a short id and its text), the extraction "
     "schema (each field named, described and typed: text, number or category with its categories, and a unit where "
     "there is one; source record for a field about the study's bibliographic record, such as where it was published "
     "or its publication type, which the reader quotes from that record, else text), the synthesis plan (a "
@@ -299,7 +298,7 @@ DRAFT_TASK = (
     f"and, for a systematic review, the PRISMA-P items keyed {', '.join(PRISMA_P_TEXT)} (meta_bias: how bias across "
     "studies, such as reporting bias, is assessed; certainty_of_evidence: how the certainty of each outcome's evidence "
     "is rated, e.g. GRADE; data_management: how records and extracted data are kept; outcomes_prioritisation: the "
-    "primary and secondary outcomes, in order). A systematic review also names its outcomes in synthesis_plan.outcomes "
+    f"primary and secondary outcomes, in order). {ELIGIBILITY_RULE} A systematic review also names its outcomes in synthesis_plan.outcomes "
     "whatever its synthesis method (a plan other than a meta-analysis maps no fields) and has an extraction field "
     "identifying each study (e.g. study_id: first author and year, source record). The statistics module has no "
     "diagnostic-accuracy measure: a question about sensitivity, specificity or AUC gets a narrative synthesis that "
@@ -324,28 +323,35 @@ DRAFT_TASK = (
 # Calibration (search and screening, 2026-11-12): the queries find what the criteria may admit (an outcome ANDed only
 # when it is the question's subject, a class with its members, no context ANDed); narrowing keeps the population and
 # the intervention concepts.
+# the Scout's coverage, query-building and narrowing rules (calibration, search and screening, 2026-11-12); their
+# examples come from none of the evaluation topics (rk.eval sr_repro)
+QUERY_COVERAGE = ("together find every record that may meet the eligibility criteria (screening applies the criteria, "
+                  "so a query need not express each of them)")
+QUERY_BUILD_RULE = (
+    "An outcome or measure is a concept to AND only when it is the subject of the question; then its OR group "
+    "includes its broader names too, since a record reports a measure under its general name (\"kidney function\" OR "
+    "\"renal function\" OR \"glomerular filtration rate\" for an eGFR outcome). A concept that names a class (a drug "
+    "class, a food group, a family of methods) lists the common members a record may name instead of the class "
+    "(statin OR statins OR atorvastatin OR simvastatin OR rosuvastatin). A context such as the setting or the delivery "
+    "route is not ANDed unless an eligibility criterion requires it.")
+NARROW_KEEP = "keep the population or condition and the intervention or exposure concepts"
 STRATEGY_TASK = (
-    "Write the search strategy for the protocol: at least 3 English search queries that together find every record "
-    "that may meet the eligibility criteria (screening applies the criteria, so a query need not express each of "
-    "them), at least 2 sources taken from `available_sources` exactly as given, and "
+    f"Write the search strategy for the protocol: at least 3 English search queries that {QUERY_COVERAGE}, at least "
+    "2 sources taken from `available_sources` exactly as given, and "
     "the publication-year range (date_from, date_to; null for an open end). The kernel searches OpenAlex and Europe "
     "PMC in titles and abstracts (OpenAlex also in the keywords it tags works with), so build each query as a few "
     "concepts joined by AND, each concept an OR group of its synonyms and spelling variants, the singular and the "
-    "plural of a quoted phrase included (\"trans fatty acid\" OR \"trans fatty acids\": Europe PMC does not stem "
+    "plural of a quoted phrase included (\"kidney stone\" OR \"kidney stones\": Europe PMC does not stem "
     "phrases), and AND only the concepts every eligible record names in its title or abstract (the population or "
-    "condition, the intervention or exposure, and the study design only when the eligibility requires it). An outcome "
-    "or measure is a concept to AND only when it is the subject of the question; then its OR group includes its "
-    "broader names too, since a record reports a measure under its general name (\"blood pressure\" OR hypertension "
-    "for a systolic-pressure outcome). A concept that names a class (a drug class, a food group, a family of "
-    "methods) lists the common members a record may name instead of the class (statin OR statins OR atorvastatin OR "
-    "simvastatin OR rosuvastatin). A context such as the diet, the vehicle or the setting is not ANDed unless an "
-    "eligibility criterion requires it. No bare unquoted string of many words, and no field tags. When a previous draft is given (with the record counts of its "
-    "queries), revise its strategy: change only what the guidance asks for. When `narrowing` is given, the record-cap "
+    "condition, the intervention or exposure, and the study design only when the eligibility requires it). "
+    f"{QUERY_BUILD_RULE} No bare unquoted string of many words, and no field tags. When a previous draft is given "
+    "(with the record counts of its queries), revise its strategy: change only what the guidance asks for. When "
+    "`narrowing` is given, the record-cap "
     "probe of the previous draft's strategy (`total`: the record counts of each query on each counted source within "
     "its years, summed, an upper bound since duplicates count again) is above `record_cap`: return a narrower "
     "strategy with fewer records. Tighten a concept (a quoted phrase for a loose synonym, keeping its singular and "
     "plural) or drop the broadest query (`counts` shows which); never add a concept a relevant record may not name in "
-    "its title or abstract; keep the population or condition and the intervention or exposure concepts. A strategy that repeats one already tried or "
+    f"its title or abstract; {NARROW_KEEP}. A strategy that repeats one already tried or "
     "does not lower the total below the best so far is a failed try (`failed_tries` lists them). Keep every source in "
     "`keep_sources` (the PRISMA-P texts name them): narrow the queries, not those sources. The kernel runs the "
     "searches; do not search yourself. Follow the guidance when there is any. When `open_points` is given (the "
@@ -1625,8 +1631,7 @@ def _over_cap_reason(best: dict, tries: int) -> str:
             f"the record cap {cap}, after {tries} narrowing tries, and P1 does not vote on a protocol the probe shows "
             "above the cap: narrow the search strategy to fewer records (tighten a concept, keeping the singular and "
             "plural of a quoted phrase, or drop the broadest query, which the probe's counts show; never add a "
-            "concept a relevant record may not name in its title or abstract) and keep the population or condition "
-            "and the intervention or exposure concepts")
+            f"concept a relevant record may not name in its title or abstract) and {NARROW_KEEP}")
 
 
 def _revise_reason(res: VoteResult) -> str:

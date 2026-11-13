@@ -177,8 +177,8 @@ frozen), `search_screen` (search, deduplication, title/abstract and full-text sc
   search strategy (at least 3 queries on at least 2 sources, years), each query a few concepts joined by AND, each
   concept an OR group of its synonyms. The queries together find every record that may meet the eligibility criteria
   (screening applies the criteria): an outcome is ANDed only when it is the subject of the question, and then with its
-  broader names; a concept naming a class lists its common members; a context such as the diet is not ANDed unless a
-  criterion requires it; narrowing keeps the population and the intervention concepts
+  broader names; a concept naming a class lists its common members; a context such as the setting or the delivery route is not
+  ANDed unless a criterion requires it; narrowing keeps the population and the intervention concepts
   (`docs/eval/search-screen-2026-11-12.md`). Every query runs on every source of the strategy as written, so a field tag one
   source understands (PubMed `[tiab]`, Europe PMC `TITLE_ABS:`) breaks the query on the other. The kernel picks the
   fields: OpenAlex is searched in titles, abstracts and the keywords it tags works with, Europe PMC in titles and
