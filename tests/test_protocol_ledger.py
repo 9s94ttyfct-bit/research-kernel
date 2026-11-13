@@ -188,6 +188,24 @@ def test_judges_see_points_answers_rules_and_a_diff(env):
     assert (first["inputs"]["you"], judge_2["inputs"]["you"]) == ("judge", "judge_2")
 
 
+def test_each_judge_sees_every_open_point_and_which_are_its_own(env):
+    """Calibration (P1 protocol rerun 4, 2026-11-12): a judge answered revise because another judge's point was open.
+    Each judge still sees every open point, for context, each marked with the judge that owns it (``role``); its own
+    are those whose ``role`` is its ``you``, so the vote question can tell it to vote on those only."""
+    ex = _executor(drafts=[_draft(), _draft("p1.judge.1")], strategies=[_strategy(), _strategy("p1.judge_2.1")],
+                   judge=[_opinion("revise", [_point()]), _opinion("approve", resolved=[("p1.judge.1", True)])],
+                   judge_2=[_opinion("revise", [_point("search", "no synonyms for octogenarian")]),
+                            _opinion("approve", resolved=[("p1.judge_2.1", True)])])
+    w = ProtocolWorker()
+    w.run(_ctx(env, ex))
+    assert w.run(_ctx(env, ex, attempt=2)).status == "done"
+    for role in ("judge", "judge_2"):
+        inputs = [c["inputs"] for c in ex.calls if c["role"] == role and c["schema"] == "ProtocolVoteOut"][1]
+        shown = {p["id"]: p["role"] for p in inputs["subject"]["open_points"]}
+        assert shown == {"p1.judge.1": "judge", "p1.judge_2.1": "judge_2"}
+        assert [i for i, owner in shown.items() if owner == inputs["you"]] == [f"p1.{role}.1"]
+
+
 def test_a_point_closes_only_by_its_judge(env):
     _, ps, _ = env
     ex = _executor(drafts=[_draft(), _draft("p1.judge.1"), _draft("p1.judge.1")],

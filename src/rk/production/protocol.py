@@ -319,17 +319,24 @@ DRAFT_KEYS = ("eligibility", "extraction_schema", "synthesis_plan", "prisma_p") 
 # Calibration (P1 protocol diagnosis 2026-11-12): §7 items 1, 5 and 6; free-text reasons mixed 3-9 faults, judges saw
 # neither earlier points nor answers, and asked for what the kernel cannot do. The blocking/advisory split is the
 # plan's deliberate policy change: an approve with an open blocking point of the judge's own counts as revise.
+# Calibration (P1 protocol rerun 4, 2026-11-12): fructose-rats-sbp attempt 3, judge found its own points resolved but
+# answered revise because judge_2's search point was open; that reason became its blocking point and the run failed at
+# the edge limit. Each point closes only by its own judge and the vote is unanimous, so another judge's open point
+# already keeps the protocol from freezing.
 VOTE_QUESTION = (
     "Is this review protocol complete and fit to freeze for the research question: its eligibility criteria, search "
     "strategy, extraction schema, synthesis plan and, for a systematic review, the PRISMA-P items? `protocol` is the "
-    "version to judge, `changes` what changed since the version voted on before. First mark each open point of yours "
-    "(the `open_points` whose `role` is `you`) in `resolved`, by its `id`: resolved or not, with why, reading the "
-    "authors' `answers` to it. Then list your new points in `points`, each with its section, the fault, the change "
-    "you ask for and whether it is blocking: blocking only for what must change before the protocol is frozen, "
-    "advisory (blocking false) for the rest; do not repeat an open point. Answer approve when none of your blocking "
-    "points is open (an approve with one of your blocking points open counts as revise), else revise. The rules sheet "
-    "(`kernel_rules`) is what the kernel does and cannot do whatever the protocol says: do not ask for anything it "
-    "rules out.")
+    "version to judge, `changes` what changed since the version voted on before. `open_points` lists every judge's "
+    "open points, each with the judge that owns it in `role`; yours are those whose `role` is `you`. First mark each "
+    "open point of yours in `resolved`, by its `id`: resolved or not, with why, reading the authors' `answers` to it. "
+    "Then list your new points in `points`, each with its section, the fault, the change you ask for and whether it "
+    "is blocking: blocking only for what must change before the protocol is frozen, advisory (blocking false) for the "
+    "rest; do not repeat an open point. Answer approve when none of your blocking points is open (an approve with one "
+    "of your blocking points open counts as revise), else revise: revise only for a blocking point of your own, still "
+    "open or new (what you find wrong yourself). Another judge's points are theirs to mark and close, and the protocol "
+    "is not frozen while a blocking one of them is open: do not answer revise, or raise a point, because another "
+    "judge's point is open. The rules sheet (`kernel_rules`) is what the kernel does and cannot do whatever the "
+    "protocol says: do not ask for anything it rules out.")
 # The follow-up a judge gets when it approved and left some of its own open blocking points unmarked.
 # Calibration (P1 protocol rerun 2, 2026-11-12): cade attempts 2 and 3; judge approved, left p1.judge.2 (answered
 # changed by the Scout) unmarked, and the kernel counted it open and tightened the approve.
