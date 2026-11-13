@@ -94,6 +94,34 @@ def test_http_error_on_one_channel_falls_through_to_the_next(ps, lib, tmp_path):
     assert r is not None and r.kind == "pdf"
 
 
+# Calibration (srrepro10, 2026-11-13): one record's open-access URL on a repository host (dspace.mit.edu) answered 429
+# with a long retry-after, and the whole review run paused (paused_budget) for one record's PDF
+def test_a_rate_limited_open_access_host_skips_that_url_and_the_run_goes_on(ps, lib, tmp_path):
+    pdf = (DOCS / "two_pages.pdf").read_bytes()
+
+    def handler(req):
+        if req.url.host in ("repo.example.org", "arxiv.org"):
+            return httpx.Response(429, headers={"retry-after": "3600"})
+        return httpx.Response(200, content=pdf, headers={"content-type": "application/pdf"})
+
+    ctx = SourceContext(http=HttpClient(tmp_path / "h.sqlite", user_agent="t", sleep=lambda s: None,
+                                        transport=httpx.MockTransport(handler)), settings=Settings())
+    iid = lib.add_item(ItemIn(title="Copper catalysts", year=2021, oa_urls=["https://repo.example.org/a.pdf",
+                                                                             "https://example.org/paper.pdf"]),
+                       added_by="agent", actor="t").item_id
+    assert fetch_fulltext(ps, lib, ctx, iid, actor="t").kind == "pdf"
+    only = lib.add_item(ItemIn(title="Iron catalysts", year=2022, oa_urls=["https://repo.example.org/b.pdf"]),
+                        added_by="agent", actor="t").item_id
+    why: list[str] = []
+    assert fetch_fulltext(ps, lib, ctx, only, actor="t", why=why) is None
+    assert why[-1].startswith("open-access URL https://repo.example.org/b.pdf: rate-limited (HTTP 429) until ")
+    paper = lib.add_item(ItemIn(title="Tin catalysts", year=2023, ids=Ids(arxiv="2404.10774"),
+                                oa_urls=["https://example.org/paper.pdf"]), added_by="agent", actor="t").item_id
+    why = []
+    assert fetch_fulltext(ps, lib, ctx, paper, actor="t", why=why).kind == "pdf"  # the arXiv page waits; the PDF serves
+    assert why[-1].startswith("arXiv HTML: rate-limited (HTTP 429) until ")
+
+
 # Calibration (full-text screening, 2026-11-13): the records with a PMCID that ended abstract-only were free PMC articles
 # outside the open-access subset: Europe PMC's full-text XML answered 500 and BioC "No result", reasons dropped
 NO_BIOC = b"[Error] : No result can be found. <BR><HR><B> - https://www.ncbi.nlm.nih.gov/research/bionlp/RESTful/"
