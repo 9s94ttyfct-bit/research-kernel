@@ -27,8 +27,9 @@ rules), V-PRISMA and the gate.
 5. Calibration (search and screening, 2026-11-12): before title/abstract screening, once per attempt, a record whose
    item has no abstract gets the one a source has (``fill_abstracts``): by PMID from PubMed ``efetch``, else by DOI
    from Europe PMC, written to the item as an ``item.merged`` naming the source. A failed lookup is added to the
-   record's ``problem`` (the per-item boundary), never fatal; the note ``abstracts_filled`` says what was sought,
-   filled by source and failed. Records go to a screener in batches of ``BATCH`` (title, abstract, year, venue,
+   ``problem`` of a record still without an abstract (the per-item boundary), never fatal; the note
+   ``abstracts_sought`` keeps the records sought across an interruption, and ``abstracts_filled`` says what was
+   sought, filled by source and failed. Records go to a screener in batches of ``BATCH`` (title, abstract, year, venue,
    language). The screener task, in both phases, says to apply each criterion as written and not to exclude a study
    for the statistic, unit or scale it reports an eligible outcome in unless a criterion requires that form
    (``CRITERIA_AS_WRITTEN``; calibration, search and screening, 2026-11-12). Every decision is a ``screening.decided``. A decision on a record that is not in the batch, or a second
@@ -314,41 +315,59 @@ def _lookup_id(lib: Library, item_id: str, source: str) -> str | None:
 LOOKUP_BATCH = {"pubmed": pubmed.EFETCH_BATCH, "europepmc": europepmc.DOI_BATCH}  # ids per abstract lookup
 
 
+def _filled_by(ps: ProjectStore, item_ids: list[str]) -> dict[str, str]:
+    """item id -> the source whose abstract it took (its ``item.merged`` naming a ``source``)."""
+    rows = ps.db.execute("SELECT entity_id, json_extract(payload, '$.source') AS source FROM events "
+                         "WHERE type='item.merged' AND json_extract(payload, '$.source') IS NOT NULL")
+    wanted = set(item_ids)
+    return {r["entity_id"]: r["source"] for r in rows if r["entity_id"] in wanted}
+
+
 def fill_abstracts(ctx: StageContext, recs: list[dict]) -> None:
     """Give the records of ``recs`` whose item has no abstract the one a source has, before title/abstract screening:
     by PMID from PubMed, then the rest by DOI from Europe PMC (``ABSTRACT_SOURCES``), ``LOOKUP_BATCH`` ids a lookup.
     Each abstract found goes to its item (``Library.fill_abstract``, naming the source). A lookup runs inside the
-    per-item boundary: its failure is added to the problem of each record it asked for, never fatal. Once per attempt:
-    the note ``abstracts_filled`` (the records ``sought``, those ``filled`` by source, and those ``failed``: a lookup
-    failed and they are still without an abstract) marks it done, so the phase run again fetches nothing twice."""
-    if screening_notes(ctx.ps, ctx.attempt, kind="abstracts_filled", phase=TITLE_ABSTRACT):
+    per-item boundary, never fatal; its failure is added to the problem of each record it asked for that is still
+    without an abstract at the end. The records sought are noted (``abstracts_sought``) before the first lookup, so a
+    run interrupted between lookups (a paused budget) goes on with the same records. Once per attempt: the note
+    ``abstracts_filled`` (the records ``sought``, those ``filled`` by source, read from their items' fill events, and
+    those ``failed``: a lookup failed and they are still without an abstract) marks it done, so the phase run again
+    fetches nothing twice."""
+    ps, lib = ctx.ps, ctx.lib
+    if screening_notes(ps, ctx.attempt, kind="abstracts_filled", phase=TITLE_ABSTRACT):
         return
-    lib = ctx.lib
-    sought = [r for r in recs if not (lib.get(r["item_id"]).abstract or "").strip()]
-    left = list(sought)
-    filled: dict[str, list[str]] = {s: [] for s in ABSTRACT_SOURCES}
-    failed: set[str] = set()
+    by_id = {r["id"]: r for r in recs}
+    if noted := screening_notes(ps, ctx.attempt, kind="abstracts_sought", phase=TITLE_ABSTRACT):
+        sought = [by_id[rid] for rid in noted[0]["sought"] if rid in by_id]
+    else:
+        sought = [r for r in recs if not (lib.get(r["item_id"]).abstract or "").strip()]
+        _note(ctx, TITLE_ABSTRACT, "abstracts_sought", sought=[r["id"] for r in sought])
+
+    def missing(r: dict) -> bool:
+        return not (lib.get(r["item_id"]).abstract or "").strip()
 
     def lookup(source: str, ids: list[str]) -> dict[str, str]:
         return ctx.sources.abstracts(source, ids)
 
+    errors: dict[str, list[str]] = {}
     for source in ABSTRACT_SOURCES:
-        ask = [(r, ident) for r in left if (ident := _lookup_id(lib, r["item_id"], source))]
+        ask = [(r, ident) for r in sought if missing(r) and (ident := _lookup_id(lib, r["item_id"], source))]
         for i in range(0, len(ask), LOOKUP_BATCH[source]):
             chunk = ask[i:i + LOOKUP_BATCH[source]]
             got, err = per_item(f"abstract lookup in {source}", lambda s=source, c=chunk: lookup(s, [x for _, x in c]))
             for r, ident in chunk:
                 if err:
-                    failed.add(r["id"])
-                    _add_problem(ctx, r["id"], err)
-                elif (text := (got or {}).get(ident)) and lib.fill_abstract(r["item_id"], text, source=source,
-                                                                           actor=ctx.actor):
-                    filled[source].append(r["id"])
-        done = set(filled[source])
-        left = [r for r in left if r["id"] not in done]
-    still = {r["id"] for r in left}
+                    errors.setdefault(r["id"], []).append(err)
+                elif text := (got or {}).get(ident):
+                    lib.fill_abstract(r["item_id"], text, source=source, actor=ctx.actor)
+    still = [r["id"] for r in sought if missing(r)]
+    for rid in still:
+        if rid in errors:
+            _add_problem(ctx, rid, *errors[rid])
+    source_of = _filled_by(ps, [r["item_id"] for r in sought])
+    filled = {s: [r["id"] for r in sought if source_of.get(r["item_id"]) == s] for s in ABSTRACT_SOURCES}
     _note(ctx, TITLE_ABSTRACT, "abstracts_filled", sought=[r["id"] for r in sought], filled=filled,
-          failed=[r["id"] for r in sought if r["id"] in failed and r["id"] in still])
+          failed=[rid for rid in still if rid in errors])
 
 
 # ---- full text ----

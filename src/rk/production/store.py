@@ -321,8 +321,9 @@ def screening_notes(ps: ProjectStore, attempt: int, *, kind: str | None = None,
     ``missing_decision`` (a record a screener left undecided, also when asked again), ``scoping_sample`` (the scoping
     review's dual sample, its differences on included-or-not and whether it switched to dual screening) and
     ``full_text_retrieval`` (the record ids sought for their full text, and those ``retrieved``, ``abstract_only`` and
-    ``not_retrieved``; it also marks that the attempt reached the full-text phase) and ``abstracts_filled`` (the records
-    without an abstract ``sought`` before title/abstract screening, those ``filled`` by source, and those ``failed``)."""
+    ``not_retrieved``; it also marks that the attempt reached the full-text phase), ``abstracts_sought`` (the records
+    without an abstract before title/abstract screening, noted before the first lookup) and ``abstracts_filled`` (those
+    records, ``sought``, those ``filled`` by source, and those ``failed``)."""
     rows = ps.db.execute("SELECT payload FROM events WHERE type='screening.noted' "
                          "AND json_extract(payload, '$.attempt')=? ORDER BY seq", (attempt,))
     notes = [json.loads(r["payload"]) for r in rows]

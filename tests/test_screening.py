@@ -846,6 +846,38 @@ def test_failed_abstract_lookup_is_the_records_problem_and_screening_goes_on(env
     (note,) = screening_notes(ps, 1, kind="abstracts_filled")
     assert note["failed"] == [t["Aspirin pmid [yes/-]"]]
     assert note["filled"] == {"pubmed": [], "europepmc": [t["Aspirin both ids [yes/-]"]]}
+    # the record Europe PMC filled keeps no PubMed failure in its problem: it has its abstract
+    assert "abstract lookup" not in (store.record_row(ps, t["Aspirin both ids [yes/-]"])["problem"] or "")
+
+
+def test_an_abstract_fill_interrupted_after_pubmed_counts_its_pubmed_fills(env):  # critical_review, P1
+    from rk.net.http import BudgetExhausted
+
+    class PausesOnce(FakeSources):
+        paused = False
+
+        def abstracts(self, source, ids):
+            if source == "europepmc" and not self.paused:
+                self.paused = True
+                raise BudgetExhausted("europepmc", 1.9e9)  # not a per-item failure: the run pauses
+            return super().abstracts(source, ids)
+
+    _, ps, _ = env
+    _freeze(ps)
+    works = [_bare("Aspirin pmid [yes/-]", 1, pmid="111"), _bare("Aspirin doi [yes/-]", 2, doi="10.1000/d2")]
+    src = PausesOnce({"aspirin": works}, abstracts={("pubmed", "111"): "From PubMed.",
+                                                    ("europepmc", "10.1000/d2"): "From Europe PMC."})
+    with pytest.raises(BudgetExhausted):
+        SearchScreenWorker().run(_ctx(env, Screeners(), src))
+    assert not screening_notes(ps, 1, kind="abstracts_filled")
+    n = len(src.calls)
+    assert SearchScreenWorker().run(_ctx(env, Screeners(), src)).status == "done"  # run again in the attempt
+    assert [c for c in src.calls[n:] if c[0] == "abstracts"] == [("abstracts", "europepmc", ("10.1000/d2",))]
+    t = {v: k for k, v in _titles(env).items()}
+    (note,) = screening_notes(ps, 1, kind="abstracts_filled")
+    assert sorted(note["sought"]) == sorted([t["Aspirin pmid [yes/-]"], t["Aspirin doi [yes/-]"]])
+    assert note["filled"] == {"pubmed": [t["Aspirin pmid [yes/-]"]], "europepmc": [t["Aspirin doi [yes/-]"]]}
+    assert note["failed"] == []
 
 
 def test_a_resumed_attempt_checks_the_records_still_without_an_abstract(env):  # critical_review, P1
