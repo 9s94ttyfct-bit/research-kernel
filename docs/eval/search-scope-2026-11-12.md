@@ -43,6 +43,25 @@ included studies the full-text search finds (two lost: one tfa study, one prosta
 records on each source. With the full-text search the same queries are far above the 3000-record cap on both sources
 for four of the six reviews; scoped, none is.
 
+### The strategies the runs froze
+
+The same comparison on the strategies two projects froze in a P1 rerun on `7753799` (written and narrowed under the
+full-text search; OpenAlex, Europe PMC and PubMed, PubMed unchanged in both), counting the review's included studies
+any source found:
+
+| review | included studies found, full text | included studies found, titles and abstracts |
+|---|---|---|
+| cade-colonoscopy (6) | 5 | 4 |
+| tfa-heated-oils (33) | 5 | 3 |
+
+Two things follow. These strategies lose recall when moved to titles and abstracts: their long unquoted queries find
+almost nothing there (`deep learning colonoscopy adenoma detection rate randomized controlled`: 601 OpenAlex records
+in full text, 6 in titles, abstracts and keywords; 268 in Europe PMC, 0 with `TITLE_ABS:`). And their recall is poor
+in either scope (tfa: 5 of 33), far below the selection query's 28 of 33: narrowing a strategy until its full-text
+count fits the cap cuts the included studies out. The change is therefore tested by its effect on the runs: the next
+rerun reports each entry's recall against the 0.85 target, and its frozen strategies are measured in both scopes
+again to separate the effect of the scope from that of the Scout's instructions.
+
 ## Decision
 
 The kernel searches titles and abstracts: OpenAlex with `search.title_abstract_keywords` (titles, abstracts and the
