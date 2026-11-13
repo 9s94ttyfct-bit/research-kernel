@@ -20,8 +20,15 @@ The screener and the judges read a criterion the text does not mention as failed
 ## Task 1: a "no" rests on text that shows the criterion fails
 - **Files:** `src/rk/production/screening.py` (SCREEN_TASK, FULL_TEXT_TASK, the full-text `_vote_question`), `src/rk/roles/screener_a.md`, `screener_b.md`, and `src/rk/roles/judge.md` if it describes screening votes.
 - **Screeners (both phases):** "Decide "no" only when the text shows the record fails a criterion; name the criterion and quote or point to the words that show it. When the text does not mention what a criterion needs (an abstract or excerpt that says nothing about it), the decision is "unclear", not "no". An exclusion criterion phrased as an absence ("does not report …") is met only when the text shows the absence (e.g. it reports other outcomes and not this one), not when the text shown is silent."
-- **Full-text vote question:** "The two screeners disagree on this record at full-text screening. Exclude it only when the text shown establishes that it fails a criterion; a criterion the text does not mention is not failed. Include it when the text shows it meets the criteria and no criterion is shown to fail." The conservative option stays "exclude".
-- **Tests:** the built full-text screener request and the built full-text vote request carry the rule (assert the constants appear in the requests); a title/abstract request carries the screener rule too.
+- **Full-text vote question:** "The two screeners disagree on this record at full-text screening. Include it when the text shown establishes that it meets every criterion. Exclude it when the text shown establishes that it fails one, naming the criterion. When the text shown leaves a criterion unsettled, choose exclude and say which criterion it does not settle." The conservative option stays "exclude".
+- **The exclusion's reason tells the two cases apart.**
+  - The vote's answer gets an optional `unsettled: bool` (the opinion keeps it). A full-text vote exclusion whose judges mark it unsettled, or a both-unclear pair excluded by the vote, gets the final reason "screeners disagreed; eligibility not established from the text shown (<text kind: abstract only / sections / whole text>); not reviewed by a human".
+  - It is an exclusion like any other: no new PRISMA state, no "awaiting classification" wording (reserved for a real non-final state later).
+  - The phase summary and the PRISMA notes count these apart ("of which N because eligibility was not established from the text shown"), and the limitations input lists the count.
+- **Tests:**
+  - the built full-text screener request and the built full-text vote request carry the rule (assert the constants appear in the requests); a title/abstract request carries the screener rule too;
+  - a both-unclear abstract-only record at full text whose judges answer unsettled gets that reason and is counted apart in the phase summary;
+  - a vote exclusion on a failed criterion keeps the existing reason.
 
 ## Task 2: the excerpt keeps the results
 - **Files:** `src/rk/production/screening.py` (`fulltext_excerpt`, `FULLTEXT_CHARS`), tests.
@@ -42,6 +49,6 @@ The screener and the judges read a criterion the text does not mention as failed
 ## Task 4: docs
 README's screening paragraph, the module docstrings, and a "Decision" section at the end of `docs/eval/ft-screening-2026-11-13.md`:
 - Tasks 1-3 as done;
-- not done and why: the vote majority rule (the two-vendor unanimity is a design principle), widening the protocol (it changes the reproduced question), and "awaiting classification" for abstract-only records (a PRISMA state the kernel does not have yet).
+- not done and why: the vote majority rule (the two-vendor unanimity is a design principle), widening the protocol (it changes the reproduced question), and a real "awaiting classification" state for abstract-only records (a non-final PRISMA state the kernel does not have yet; until then these are exclusions whose reason says eligibility was not established from the text shown, counted apart).
 
 After all tasks: review, then the full suite, a path scan, a merge and a push. Then a new home (`new_home.sh srrepro10`) and a measurement of the full-text recall per entry.
