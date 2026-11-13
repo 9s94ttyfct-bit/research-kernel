@@ -88,7 +88,8 @@ class Screeners(ScriptedExecutor):
     ``reasons[(title, phase)]`` replaces the reason both screeners give, ``criteria[(title, phase)]`` the criterion
     they name (default ``I1`` for yes, else ``E1``). ``extra[role]`` is added to that role's first output (e.g. a
     decision on a record not in the batch). Judges vote by title: ``votes[(title, phase)]``, else ``votes[title]``, is
-    ``(judge, judge_2)``."""
+    ``(judge, judge_2)``; a choice ending ``?`` (``"exclude?"``) is that choice marked ``unsettled`` (the full-text
+    vote's ``RecordVoteOut``)."""
 
     def __init__(self, *, votes: dict | None = None, extra: dict[str, list[dict]] | None = None,
                  overrides: dict[str, str] | None = None, full_text: dict[str, str] | None = None,
@@ -118,11 +119,15 @@ class Screeners(ScriptedExecutor):
                     out.append({"record_id": r["record_id"], "include": inc, "criterion_id": criterion,
                                 "reason": reason})
             self.script[(role, "ScreenOut")] = [{"decisions": out + self.extra.pop(role, [])}]
-        elif output_schema.__name__ == "VoteOut":
+        elif output_schema.__name__ in ("VoteOut", "RecordVoteOut"):
             subject = inputs["subject"]
             title = subject["record"]["title"]
             choice = (self.votes.get((title, subject["phase"])) or self.votes[title])[0 if role == "judge" else 1]
+            unsettled = choice.endswith("?")
+            choice = choice.rstrip("?")
             self.script[(role, "VoteOut")] = [{"choice": choice, "reason": f"{role} says {choice}"}]
+            self.script[(role, "RecordVoteOut")] = [{"choice": choice, "reason": f"{role} says {choice}",
+                                                     "unsettled": unsettled}]
         return super().run(role, instructions, inputs, output_schema, **kw)
 
     def of(self, role: str, phase: str | None = TA) -> list[dict]:

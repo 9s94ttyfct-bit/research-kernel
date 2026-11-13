@@ -306,6 +306,18 @@ def voted_out(final: dict) -> bool:
     return final["decided_by"] == "vote" and final["include"] == "no"
 
 
+# Calibration (full-text screening, 2026-11-13): what the reason of a full-text vote exclusion says when the text shown
+# left eligibility unsettled (``rk.production.screening``), as against one the text shows failing a criterion
+NOT_ESTABLISHED = "eligibility not established from the text shown"
+NOT_ESTABLISHED_WHY = "because eligibility was not established from the text shown"  # how the counts name them
+
+
+def not_established(final: dict) -> bool:
+    """Whether a final is a P1 vote's exclusion because eligibility was not established from the text shown (a
+    ``voted_out`` final whose reason says so; PRISMA and the phase summary count them apart)."""
+    return voted_out(final) and NOT_ESTABLISHED in (final["reason"] or "")
+
+
 def add_screening_note(ps: ProjectStore, attempt: int, phase: str | None, kind: str, *, actor: str,
                        **fields) -> None:
     """Something screening notes in the attempt (``screening_notes``)."""

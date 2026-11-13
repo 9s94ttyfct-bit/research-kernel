@@ -3,8 +3,11 @@ exclusions, stray and missing screener decisions, and disagreements (P2 checkpoi
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+import rk
 from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
 from rk.discovery.executor import RateCapped
 from rk.library.models import Ids, ItemIn
@@ -25,7 +28,13 @@ from rk.production.search import SearchResult, deduplicated, search_counts
 from rk.production.store import screening_notes, voted_out
 from rk.tools.builtin import build_registry
 from rk.tools.registry import ToolError
-from rk.verify.prisma import check_selection_reasons
+from rk.verify.prisma import (
+    NOT_ESTABLISHED_OUT,
+    VOTED_OUT,
+    check_selection_reasons,
+    prisma_counts,
+    prisma_notes,
+)
 from tests.discovery_fakes import FakeSources, FakeWorker
 from tests.production_fakes import (
     CappedAt,
@@ -36,6 +45,7 @@ from tests.production_fakes import (
     stage_run,
     votes_on,
 )
+from tests.test_protocol import TOPIC_WORDS
 
 TA, FT = "title_abstract", "full_text"
 SR_P1 = {"paper_type": "systematic_review", "production_mode": "auto"}
@@ -232,9 +242,7 @@ def test_p1_full_text_disagreement_votes_conservative_exclude(env):
     ft = {t[f["record_id"]]: (f["include"], f["decided_by"], f["reason"]) for f in store.finals(ps, 1, phase=FT)}
     assert ft["Aspirin X [yes/yes]"][:2] == ("no", "vote")
     assert ft["Aspirin X [yes/yes]"][2].startswith("screeners disagreed; P1 conservative: excluded")
-    assert ex.of("judge", FT)[0]["inputs"]["question"] == (
-        "The two screeners disagree on this record at full-text screening. Does it meet the eligibility criteria: "
-        "include it or exclude it?")
+    assert ex.of("judge", FT)[0]["inputs"]["question"] == screening.FULL_TEXT_VOTE
 
 
 @pytest.mark.parametrize("env", [SR_P1], indirect=True)
@@ -960,3 +968,97 @@ def test_a_carried_human_or_vote_final_on_a_both_unclear_pair_stands(env):
     assert got["Aspirin V [unclear/unclear]"] == ("no", "vote", 1)
     assert got["Aspirin Y [yes/yes]"][:2] == ("yes", "agreement")
     assert len(store.finals(ps, 2, phase=TA)) == 3  # one final each: the rule wrote none over the carried ones
+
+
+# ---- calibration (full-text screening, 2026-11-13): a "no" rests on text that shows the criterion fails
+def _ft_finals(env, attempt: int = 1) -> dict[str, tuple[str, str, str]]:
+    """title -> (include, decided_by, reason) of the full-text finals."""
+    _, ps, _ = env
+    t = _titles(env, attempt)
+    return {t[f["record_id"]]: (f["include"], f["decided_by"], f["reason"]) for f in store.finals(ps, attempt, phase=FT)}
+
+
+@pytest.mark.parametrize("env", [SR_P1], indirect=True)
+def test_screeners_and_full_text_judges_are_told_a_no_needs_text_showing_the_failure(env):
+    """Both phases' screener requests carry the rule that a "no" rests on text showing a criterion fails (silence is
+    "unclear"); the full-text vote request carries its rule for an unsettled criterion, with exclude still the
+    conservative option; none of these texts takes an example from the six evaluation topics."""
+    _, ps, _ = env
+    _freeze(ps)
+    works = [_work("Aspirin K [yes/yes]", 1), _work("Aspirin Q [yes/yes]", 2)]
+    ex = Screeners(full_text={"Aspirin Q [yes/yes]": "yes/no"},
+                   votes={("Aspirin Q [yes/yes]", FT): ("include", "include")})
+    assert SearchScreenWorker().run(_ctx(env, ex, FakeSources({"aspirin": works}))).status == "done"
+    calls = ex.of("screener_a", TA) + ex.of("screener_b", TA) + ex.of("screener_a", FT) + ex.of("screener_b", FT)
+    assert {c["inputs"]["phase"] for c in calls} == {TA, FT}
+    for c in calls:
+        assert screening.NO_SHOWS_FAILURE in c["instructions"]
+    judges = ex.of("judge", FT) + ex.of("judge_2", FT)
+    assert len(judges) == 2
+    for j in judges:
+        assert j["inputs"]["question"] == screening.FULL_TEXT_VOTE
+        assert j["inputs"]["options"] == ["include", "exclude"]
+    assert screening.CONSERVATIVE[FT] == "exclude"
+    assert "which criterion it does not settle" in screening.FULL_TEXT_VOTE
+    roles = Path(rk.__file__).parent / "roles"
+    texts = [screening.SCREEN_TASK, screening.FULL_TEXT_TASK, screening.FULL_TEXT_VOTE,
+             *((roles / f"{r}.md").read_text() for r in ("screener_a", "screener_b", "judge"))]
+    for text in texts:  # its examples come from none of the six evaluation topics
+        assert not [w for w in TOPIC_WORDS if w in text.lower()]
+
+
+@pytest.mark.parametrize("env", [SR_P1], indirect=True)
+def test_a_full_text_vote_that_cannot_settle_eligibility_excludes_with_its_own_reason(env):
+    """A both-unclear abstract-only record whose judges answer unsettled, and a split vote whose excluding judge
+    answers unsettled, are excluded with the reason that eligibility was not established from the text shown; the
+    phase summary and the PRISMA notes count them apart."""
+    _, ps, _ = env
+    _freeze(ps)
+    works = [_work("Aspirin open [yes/yes]", 1), _work("Aspirin split [yes/yes]", 2),
+             _work("Aspirin known [yes/yes]", 3)]
+    ex = Screeners(full_text={"Aspirin open [yes/yes]": "unclear/unclear", "Aspirin split [yes/yes]": "yes/no"},
+                   votes={("Aspirin open [yes/yes]", FT): ("exclude?", "exclude?"),
+                          ("Aspirin split [yes/yes]", FT): ("include", "exclude?")})
+    out = SearchScreenWorker().run(_ctx(env, ex, FakeSources({"aspirin": works})))  # no full text: abstract only
+
+    assert out.status == "done"
+    why = ("screeners disagreed; eligibility not established from the text shown (abstract only); not reviewed by "
+           "a human")
+    ft = _ft_finals(env)
+    assert ft["Aspirin open [yes/yes]"] == ("no", "vote", why)
+    assert ft["Aspirin split [yes/yes]"] == ("no", "vote", why)
+    assert ft["Aspirin known [yes/yes]"][:2] == ("yes", "agreement")
+    t = {v: k for k, v in _titles(env).items()}
+    (v,) = votes_on(ps, "record", t["Aspirin open [yes/yes]"])
+    assert v["opinions"] and all(o["unsettled"] is True for o in v["opinions"])  # the opinions keep the judges' mark
+    assert ("2 excluded by the P1 vote on a disagreement, of which 2 because eligibility was not established from "
+            "the text shown") in out.reason
+    p = prisma_counts(ps, 1)
+    assert p.excluded_ft == {NOT_ESTABLISHED_OUT: 2} and p.not_established == 2
+    assert ("2 excluded by the P1 vote on a screening disagreement (not reviewed by a human), of which 2 because "
+            "eligibility was not established from the text shown") in prisma_notes(p)
+    assert SearchScreenWorker().gate(ps, 1).ok
+
+
+@pytest.mark.parametrize("env", [SR_P1], indirect=True)
+def test_a_full_text_vote_exclusion_on_a_failed_criterion_keeps_its_reason(env):
+    """Judges who exclude on a criterion the text shows failing (not unsettled), unanimous or split, give the
+    existing vote reasons, and nothing is counted as not established."""
+    _, ps, _ = env
+    _freeze(ps)
+    works = [_work("Aspirin fails [yes/yes]", 1), _work("Aspirin torn [yes/yes]", 2),
+             _work("Aspirin known [yes/yes]", 3)]
+    ex = Screeners(full_text={"Aspirin fails [yes/yes]": "yes/no", "Aspirin torn [yes/yes]": "unclear/no"},
+                   votes={("Aspirin fails [yes/yes]", FT): ("exclude", "exclude"),
+                          ("Aspirin torn [yes/yes]", FT): ("include", "exclude")})
+    out = SearchScreenWorker().run(_ctx(env, ex, FakeSources({"aspirin": works})))
+
+    assert out.status == "done"
+    ft = _ft_finals(env)
+    assert ft["Aspirin fails [yes/yes]"] == ("no", "vote", ("screeners disagreed; the P1 vote excluded it (not "
+                                                            "reviewed by a human)"))
+    assert ft["Aspirin torn [yes/yes]"] == ("no", "vote", ("screeners disagreed; P1 conservative: excluded (the "
+                                                           "judges disagree; not reviewed by a human)"))
+    assert "2 excluded by the P1 vote on a disagreement)" in out.reason and "not established" not in out.reason
+    p = prisma_counts(ps, 1)
+    assert p.excluded_ft == {VOTED_OUT: 2} and p.not_established == 0

@@ -12,7 +12,9 @@ sentence and the section's balance.
    ``draft.prisma`` (``prisma_event``), which a ``[[run:]]`` marker cites for those numbers (V-NUM reads its count
    fields only, ``excluded_ft_total`` among them: ``rk.verify.cover.EVENT_NUMBERS``); it also records the search_screen
    attempt and the frozen protocol it was computed from, so the audit can recompute the counts and refuse a stale
-   event.
+   event. The limitations include search_screen's screening notes (``limitations["screening"]``,
+   ``rk.verify.prisma.prisma_notes``: the P1 vote's exclusions and, of them, those because eligibility was not
+   established from the text shown, the abstract-only assessments, …; calibration, full-text screening, 2026-11-13).
 2. **Writer** (``SectionDraft``, structured output: the Writer writes no draft itself, so it has no write tool): per
    section, the section's markdown with a source marker on every sentence, given the section spec, the claims (ids,
    texts, statuses, evidence notes with whether each is a verified quote), the objections it may cite with
@@ -117,7 +119,7 @@ from rk.verify.cover import (
     reported_values,
     verify_section,
 )
-from rk.verify.prisma import prisma_counts
+from rk.verify.prisma import prisma_counts, prisma_notes
 
 STAGE = "draft"
 ROLE = "writer"
@@ -519,6 +521,8 @@ def writer_inputs(ps: ProjectStore, s: DraftInputs, spec: SectionSpec, prisma: s
         events.append({"event_id": prisma, "type": PRISMA_EVENT, "numbers": {f: p[f] for f in PRISMA_FIELDS}})
     limitations: dict = {"synthesis": synthesis_limitations(ps, s.synth_attempt),
                          "argument": argue_limitations(ps, s.argue_attempt)}
+    if s.search_attempt is not None:  # the recall the screening may have lost (rk.verify.prisma)
+        limitations["screening"] = prisma_notes(prisma_counts(ps, s.search_attempt))
     inputs: dict = {"paper_type": s.paper_type, "audience": s.audience, "question": s.question,
                     "section": spec.model_dump(),
                     "sections": [{"id": x.id, "title": x.title} for x in s.sections],

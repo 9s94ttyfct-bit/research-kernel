@@ -12,12 +12,15 @@ that every selection decision carries its reason.
 - sought: the title/abstract includes, whose full text was sought; not retrieved: those with neither a full text nor
   an abstract (a record with an abstract but no full text is assessed on its abstract: ``abstract_only``);
 - assessed at full text: the records with a full-text final; excluded at full text by reason (the eligibility
-  criterion the screeners named; a disagreement the P1 vote or you excluded); included.
+  criterion the screeners named; a disagreement the P1 vote or you excluded; a disagreement the P1 vote excluded
+  because eligibility was not established from the text shown, ``NOT_ESTABLISHED_OUT``); included.
 
 The notes: the P1 vote's exclusions of screening disagreements per phase (``excluded_disagreement``, also counted in
-their box: the limitations name the recall loss), the language exclusions, the abstract-only assessments, the
-title/abstract exclusions without a reason, the screening rows carried over from interrupted attempts
-(``rk.production.resume``), the searches that could not finish and the entries sources dropped as unreadable."""
+their box: the limitations name the recall loss), and of them those because eligibility was not established from the
+text shown (``not_established``; calibration, full-text screening, 2026-11-13), the language exclusions, the
+abstract-only assessments, the title/abstract exclusions without a reason, the screening rows carried over from
+interrupted attempts (``rk.production.resume``), the searches that could not finish and the entries sources dropped
+as unreadable."""
 
 from __future__ import annotations
 
@@ -32,15 +35,19 @@ from rk.production.search import (
     search_counts,
 )
 from rk.production.store import (
+    NOT_ESTABLISHED,
+    NOT_ESTABLISHED_WHY,
     decisions,
     finals,
     frozen_protocol,
+    not_established,
     retrieval_note,
     voted_out,
 )
 from rk.store.project import ProjectStore
 
 VOTED_OUT = "screeners disagreed: excluded by the P1 vote (not reviewed by a human)"
+NOT_ESTABLISHED_OUT = f"screeners disagreed: {NOT_ESTABLISHED}, excluded by the P1 vote (not reviewed by a human)"
 HUMAN_OUT = "screeners disagreed: excluded by you"
 NO_CRITERION = "no criterion named"
 
@@ -49,8 +56,9 @@ NO_CRITERION = "no criterion named"
 class Prisma:
     """The PRISMA flow of an attempt (``prisma_counts``) and its notes. ``excluded_ft``: reason -> records (``""``:
     an exclusion without a reason); ``excluded_disagreement``: phase -> records the P1 vote excluded on a screening
-    disagreement; ``carried``: screening decisions and finals carried over from interrupted attempts;
-    ``dropped_entries``: source -> unreadable entries it returned."""
+    disagreement; ``not_established``: those of them excluded because eligibility was not established from the text
+    shown; ``carried``: screening decisions and finals carried over from interrupted attempts; ``dropped_entries``:
+    source -> unreadable entries it returned."""
     identified: int
     duplicates_removed: int
     screened: int
@@ -64,6 +72,7 @@ class Prisma:
     excluded_language: int = 0
     abstract_only: int = 0
     unreasoned_ta: int = 0
+    not_established: int = 0
     carried: int = 0
     incomplete_searches: list[str] = field(default_factory=list)
     dropped_entries: dict[str, int] = field(default_factory=dict)
@@ -93,6 +102,8 @@ def _reason(final: dict, said: list[dict], labels: dict[str, str]) -> str:
     """The reason a full-text exclusion is counted under: ``""`` without a reason (``_reasoned``)."""
     if not _reasoned(final, said, FULL_TEXT):
         return ""
+    if not_established(final):
+        return NOT_ESTABLISHED_OUT
     if voted_out(final):
         return VOTED_OUT
     if final["decided_by"] == "human":
@@ -134,6 +145,7 @@ def prisma_counts(ps: ProjectStore, attempt: int) -> Prisma:
                                  for f in ft if f["include"] == "no")),
         excluded_disagreement={p: sum(1 for f in fs if voted_out(f)) for p, fs in ((TITLE_ABSTRACT, ta),
                                                                                    (FULL_TEXT, ft))},
+        not_established=sum(1 for f in ta + ft if not_established(f)),
         included=sum(1 for f in ft if f["include"] == "yes"),
         excluded_language=sum(1 for f in ta_out if f["decided_by"] == "rule"),
         abstract_only=sum(1 for r in note["abstract_only"] if r in sought),
@@ -176,7 +188,8 @@ def prisma_notes(p: Prisma) -> list[str]:
     finish and the screening decisions carried over from interrupted attempts."""
     notes = []
     if voted := sum(p.excluded_disagreement.values()):
-        notes.append(f"{voted} excluded by the P1 vote on a screening disagreement (not reviewed by a human)")
+        notes.append(f"{voted} excluded by the P1 vote on a screening disagreement (not reviewed by a human)"
+                     + (f", of which {p.not_established} {NOT_ESTABLISHED_WHY}" if p.not_established else ""))
     if p.excluded_language:
         notes.append(f"{p.excluded_language} excluded for language")
     if p.abstract_only:

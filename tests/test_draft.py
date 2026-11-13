@@ -35,6 +35,7 @@ from rk.production.draft import (
     prisma_event,
     repair_sentences,
     unmet_support,
+    writer_inputs,
 )
 from rk.production.draft import load_inputs as draft_inputs
 from rk.production.manuscript import (
@@ -44,6 +45,7 @@ from rk.production.manuscript import (
     source_markers,
 )
 from rk.production.sections import SECTIONS, required_sections
+from rk.production.store import set_final
 from rk.production.synthesis import synthesis_claims
 from rk.roles.prompts import build_system_prompt
 from rk.verify.cover import EVENT_NUMBERS, verify_sentence
@@ -649,6 +651,23 @@ def test_prisma_event_pools_its_counts_never_its_attempt(env):
         (s,) = parse_section(f"The counts come from attempt {n} [[run:{evt}]].")
         v = verify_sentence(ps, s, paper_type="systematic_review")
         assert f"the number {n} is not in any marker's target" in v.problems
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_the_writers_limitations_list_the_screening_notes(env):
+    """Calibration (full-text screening, 2026-11-13): the Writer's limitations input lists search_screen's screening
+    notes (``rk.verify.prisma.prisma_notes``), the full-text vote exclusions because eligibility was not established
+    from the text shown counted apart."""
+    _, ps, _ = env
+    _ready(env)
+    rid = ps.db.execute("SELECT record_id FROM screening_final WHERE attempt=1 AND phase='full_text' "
+                        "ORDER BY rowid").fetchone()["record_id"]
+    set_final(ps, rid, 1, "full_text", "no", "vote", "screeners disagreed; eligibility not established from the "
+              "text shown (abstract only); not reviewed by a human", actor="tester")
+    s = draft_inputs(ps)
+    screening = writer_inputs(ps, s, s.sections[0], None)["limitations"]["screening"]
+    assert ("1 excluded by the P1 vote on a screening disagreement (not reviewed by a human), of which 1 because "
+            "eligibility was not established from the text shown") in screening
 
 
 def test_draft_section_retries_setting_bounds_the_writer(env):

@@ -32,7 +32,11 @@ rules), V-PRISMA and the gate.
    sought, filled by source and failed. Records go to a screener in batches of ``BATCH`` (title, abstract, year, venue,
    language). The screener task, in both phases, says to apply each criterion as written and not to exclude a study
    for the statistic, unit or scale it reports an eligible outcome in unless a criterion requires that form
-   (``CRITERIA_AS_WRITTEN``; calibration, search and screening, 2026-11-12). Every decision is a ``screening.decided``. A decision on a record that is not in the batch, or a second
+   (``CRITERIA_AS_WRITTEN``; calibration, search and screening, 2026-11-12), and to decide "no" only when the text
+   shows the record fails a criterion, naming it and pointing to the words that show it: a criterion the text shown
+   does not mention, or an exclusion criterion phrased as an absence the text is merely silent on, is "unclear"
+   (``NO_SHOWS_FAILURE``; calibration, full-text screening, 2026-11-13). Every decision is a ``screening.decided``. A
+   decision on a record that is not in the batch, or a second
    one on a record, is ignored and noted (``stray_decision``); so is a decision without the reason its selection
    needs (``unreasoned``: for the PRISMA types an exclusion with a blank reason, at full text unless it names its
    criterion; for the others any decision with a blank reason), noted ``unreasoned_decision``. The records a batch's
@@ -59,7 +63,16 @@ rules), V-PRISMA and the gate.
      excluding it only when its title and abstract show it fails one; at full text "exclude". Every vote's final is
      decided by ``vote`` and its reason starts "screeners disagreed" ("screeners disagreed; P1 conservative: to the
      full text" or "…: excluded" when the vote took the conservative option); ``voted_out`` tells its exclusions
-     (by the decision, never by the conservative option) apart for PRISMA and the limitations.
+     (by the decision, never by the conservative option) apart for PRISMA and the limitations. Calibration
+     (full-text screening, 2026-11-13): at full text the question (``FULL_TEXT_VOTE``) asks the judges to include a
+     record when the text shown establishes that it meets every criterion, to exclude it when the text shown
+     establishes that it fails one, naming it, and to exclude it, saying which criterion is unsettled and marking
+     ``unsettled`` (``RecordVoteOut``, kept in the opinion), when the text shown leaves a criterion unsettled. An
+     exclusion of a both-unclear pair, or one where every judge whose choice counted as exclude marked it unsettled,
+     gets the reason "screeners disagreed; eligibility not established from the text shown (<abstract only, sections
+     or whole text>); not reviewed by a human" (``not_established``). It is an exclusion like any other (no other
+     PRISMA state); the phase summary, the PRISMA flow (its own exclusion reason) and notes, and the Writer's
+     limitations count these apart.
 8. An attempt interrupted by a rate cap, a budget or a crash is resumed by the next attempt
    (``rk.production.resume``), in both phases: the screener decisions of the interrupted attempts right before it,
    under the same frozen protocol, are carried over by library item (``carried_from``) instead of asked again, and so
@@ -130,11 +143,14 @@ from rk.production.search import (
     run_strategy,
 )
 from rk.production.store import (
+    NOT_ESTABLISHED,
+    NOT_ESTABLISHED_WHY,
     add_decision,
     add_screening_note,
     decisions,
     finals,
     frozen_protocol,
+    not_established,
     record_row,
     retrieval_note,
     screening_notes,
@@ -142,7 +158,7 @@ from rk.production.store import (
     set_record,
     voted_out,
 )
-from rk.production.vote import vote
+from rk.production.vote import VoteOut, VoteResult, vote
 from rk.sources import europepmc, pubmed
 from rk.store.project import ProjectStore
 from rk.verify.prisma import check_prisma, check_selection_reasons, flow, prisma_counts
@@ -173,22 +189,41 @@ CRITERIA_AS_WRITTEN = (
     "reported values that allow the computation, and a comparator or intervention the criterion lists is eligible. "
     "Do not exclude a study that measures an eligible outcome because of the statistic, unit or scale it reports it "
     "in, unless a criterion explicitly requires that form.")
+# Calibration (full-text screening, 2026-11-13, docs/eval/ft-screening-2026-11-13.md): a screener read a criterion the
+# text shown does not mention as failed (an abstract silent on it, an exclusion criterion phrased as an absence)
+NO_SHOWS_FAILURE = (
+    "Decide \"no\" only when the text shows the record fails a criterion; name the criterion and quote or point to "
+    "the words that show it. When the text does not mention what a criterion needs (an abstract or excerpt that says "
+    "nothing about it), the decision is \"unclear\", not \"no\". An exclusion criterion phrased as an absence (\"does "
+    "not report …\") is met only when the text shows the absence (e.g. it reports other outcomes and not this one), "
+    "not when the text shown is silent.")
 SCREEN_TASK = (
     "Screen every given record against the eligibility criteria, using only its title, abstract and metadata. Give "
     "exactly one decision per record, keyed by its record_id exactly as given: include \"yes\", \"no\" or "
     "\"unclear\" (when the title and abstract do not settle a criterion), the id of the criterion the decision rests "
-    "on, and a short reason. " + CRITERIA_AS_WRITTEN + " Decide only the given records. Do not search or use tools.")
+    "on, and a short reason. " + NO_SHOWS_FAILURE + " " + CRITERIA_AS_WRITTEN + " Decide only the given records. Do "
+    "not search or use tools.")
 FULL_TEXT_TASK = (
     "Screen every given record against the eligibility criteria, using its text and metadata. The text is the "
     "abstract, methods and results sections of its full text (text_kind \"sections\"), the beginning of its full "
     "text when no such sections were found (\"whole_text\"), or its abstract alone when no full text could be "
     "retrieved (\"abstract_only\"). Give exactly one decision per record, keyed by its record_id exactly as given: "
     "include \"yes\", \"no\" or \"unclear\" (when the text does not settle a criterion), the id of the criterion the "
-    "decision rests on, and a short reason. " + CRITERIA_AS_WRITTEN + " Decide only the given records. Do not search "
-    "or use tools.")
+    "decision rests on, and a short reason. " + NO_SHOWS_FAILURE + " " + CRITERIA_AS_WRITTEN + " Decide only the "
+    "given records. Do not search or use tools.")
 TASKS = {TITLE_ABSTRACT: SCREEN_TASK, FULL_TEXT: FULL_TEXT_TASK}
 ASKED_AGAIN = ("your previous decision on this record gave no reason (an exclusion with no reason and, at full text, "
                "no criterion; in a critical review or research proposal any decision): a reason is required")
+# Calibration (full-text screening, 2026-11-13): the judges read silence as a failed criterion ("cannot be confirmed:
+# the conservative choice is exclude"); they now exclude an unsettled criterion saying so (``RecordVoteOut``)
+FULL_TEXT_VOTE = (
+    f"The two screeners disagree on this record at {PHASE_WORDS[FULL_TEXT]} screening. Include it when the text shown "
+    "establishes that it meets every criterion. Exclude it when the text shown establishes that it fails one, naming "
+    "the criterion. When the text shown leaves a criterion unsettled, choose exclude and say which criterion it does "
+    "not settle. Set unsettled to true when you exclude because the text shown leaves a criterion unsettled, and to "
+    "false otherwise.")
+# how the reason of a not-established exclusion names the kind of text shown
+TEXT_KIND_WORDS = {"abstract_only": "abstract only", "sections": "sections", "whole_text": "whole text"}
 
 
 def _vote_question(phase: str) -> str:
@@ -196,8 +231,13 @@ def _vote_question(phase: str) -> str:
         return (f"The two screeners disagree on this record at {PHASE_WORDS[phase]} screening. Include it when it may "
                 "meet the eligibility criteria (its full text is then screened by both screeners); exclude it only "
                 "when its title and abstract show it fails a criterion.")
-    return (f"The two screeners disagree on this record at {PHASE_WORDS[phase]} screening. Does it meet the "
-            "eligibility criteria: include it or exclude it?")
+    return FULL_TEXT_VOTE
+
+
+class RecordVoteOut(VoteOut):
+    """A judge's answer in a full-text record vote: ``unsettled`` when it excludes because the text shown leaves a
+    criterion unsettled (not because the text shows it fails one). The vote's opinion keeps it."""
+    unsettled: bool = False
 
 
 class ScreenDecision(BaseModel):
@@ -708,12 +748,29 @@ def _apply(ctx: StageContext, phase: str, cp: dict) -> None:
                   actor_kind="human")
 
 
+def _unsettled(res: VoteResult, screeners: list[dict]) -> bool:
+    """Whether a full-text vote's exclusion rests on a criterion the text shown leaves unsettled: both screeners were
+    unclear, or every judge whose choice counted as exclude marked it ``unsettled``."""
+    if all(s["include"] == "unclear" for s in screeners):
+        return True
+    excluding = [o for o in res.opinions if o.get("effective", o["choice"]) == "exclude"]
+    return bool(excluding) and all(o.get("unsettled") for o in excluding)
+
+
 def _vote_on(ctx: StageContext, phase: str, rid: str, context: dict, record: dict,
              views: dict[str, list[dict]]) -> None:
-    inputs = {**context, "record": record, "screeners": _view_of(views, rid)}
-    res = vote(ctx, "record", rid, _vote_question(phase), list(CHOICES), CONSERVATIVE[phase], inputs)
+    """The P1 vote on a disagreement. At full text the judges answer ``RecordVoteOut``; an exclusion that rests on a
+    criterion the text shown leaves unsettled (``_unsettled``) gets the reason that eligibility was not established
+    from it, naming the kind of text (calibration, full-text screening, 2026-11-13)."""
+    screeners = _view_of(views, rid)
+    inputs = {**context, "record": record, "screeners": screeners}
+    res = vote(ctx, "record", rid, _vote_question(phase), list(CHOICES), CONSERVATIVE[phase], inputs,
+               output=RecordVoteOut if phase == FULL_TEXT else VoteOut)
     inc = "yes" if res.decision == "include" else "no"
-    if res.conservative_used:
+    if phase == FULL_TEXT and inc == "no" and _unsettled(res, screeners):
+        reason = (f"screeners disagreed; {NOT_ESTABLISHED} ({TEXT_KIND_WORDS[record['text_kind']]}); not reviewed by "
+                  "a human")
+    elif res.conservative_used:
         what = "to the full text" if inc == "yes" else "excluded"
         reason = f"screeners disagreed; P1 conservative: {what} ({res.reason}; not reviewed by a human)"
     else:
@@ -740,8 +797,10 @@ def _phase_summary(ps: ProjectStore, attempt: int, phase: str) -> str:
     if excluded["rule"]:
         details.append(f"{excluded['rule']} for language")
     if voted:
+        unsettled = sum(1 for f in fs if not_established(f))
         details.append(f"{voted} disagreements decided by the P1 vote (not reviewed by a human): "
-                       f"{sum(1 for f in fs if voted_out(f))} excluded by the P1 vote on a disagreement")
+                       f"{sum(1 for f in fs if voted_out(f))} excluded by the P1 vote on a disagreement"
+                       + (f", of which {unsettled} {NOT_ESTABLISHED_WHY}" if unsettled else ""))
     if human:
         details.append(f"{human} disagreements decided by you")
     out = f"{PHASE_WORDS[phase]} screening: {included} included, {sum(excluded.values())} excluded"
