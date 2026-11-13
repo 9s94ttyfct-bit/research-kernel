@@ -725,16 +725,20 @@ TEXT_LABELS = {"sections": "Full text (abstract, methods, results)", "whole_text
 def disagreement_view(ps: ProjectStore, lib: Library, attempt: int, phase: str, record_ids: list[str]) -> list[dict]:
     """What a ``screening_disagreements`` checkpoint shows of each of its records (its prompt, and the Workbench's
     card): ``record_id``, ``title``, ``year``, ``venue``, ``language``, the ``text`` the screeners read as far as it is
-    shown (an abstract cut to ``ABSTRACT_SHOWN``; at full text the excerpt cut to ``EXCERPT_SHOWN``, every section
-    keeping its share), its ``text_label``, and what each screener decided (``screeners``)."""
+    shown (an abstract cut to ``ABSTRACT_SHOWN``; at full text the full text's sections cut to ``EXCERPT_SHOWN``,
+    every section keeping its share), its ``text_label``, and what each screener decided (``screeners``).
+    Calibration (full-text screening, 2026-11-13): the sections are cut from the full text itself, never from the
+    screeners' excerpt again, where an abstract cut before its closing sub-heading would take the next section's
+    heading for one of its own."""
     views = _views(ps, attempt, phase)
     out = []
     for rid in record_ids:
-        rec = phase_input(ps, lib, phase, record_row(ps, rid))
+        row = record_row(ps, rid)
+        rec = phase_input(ps, lib, phase, row)
         if phase == FULL_TEXT:
             label, text = TEXT_LABELS[rec["text_kind"]], rec["text"]
             if rec["text_kind"] == "sections":  # every section keeps its share of the room
-                shown = fulltext_excerpt(text, EXCERPT_SHOWN)[0]
+                shown = fulltext_excerpt(latest_snapshot(ps, row["item_id"])[1].full_text(), EXCERPT_SHOWN)[0]
             else:
                 shown = text[:EXCERPT_SHOWN] + "…" if len(text) > EXCERPT_SHOWN else text
         else:

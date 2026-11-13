@@ -149,9 +149,6 @@ def test_a_structured_abstracts_own_sub_headings_are_not_the_bodys_sections():
     plain = "Abstract\nWe randomised people.\n\nMethods\nBODY-METHODS a trial.\n\nResults\nBODY-RESULTS fewer."
     assert fulltext_excerpt(plain) == (("Abstract\nWe randomised people.\n\nMethods\nBODY-METHODS a trial.\n\n"
                                         "Results\nBODY-RESULTS fewer."), ["abstract", "methods", "results"])
-    # the disagreement checkpoint cuts the excerpt again: the abstract's sub-headings stay in the abstract there too
-    shown = fulltext_excerpt(text, 2400)[0]
-    assert shown.split("\n\n")[2] == "Results\nBODY-RESULTS sensitivity 0.91 and specificity 0.80 per reader."
 
 
 def test_the_results_get_the_largest_share_of_the_excerpt():
@@ -164,6 +161,30 @@ def test_the_results_get_the_largest_share_of_the_excerpt():
     short = f"Abstract\n{'q' * 300}\n\nMethods\n{'w' * 20000}\n\nResults\n{'z' * 20000}"
     text, _ = fulltext_excerpt(short)
     assert text.count("q") == 300 and len(text) >= FULLTEXT_CHARS - 40 and text.count("z") > 6500
+
+
+# a BMJ-style structured abstract (no Methods sub-heading) longer than its share: the excerpt loses its Conclusions
+BMJ = ("Abstract\nObjective\n" + "OBJ " * 75 + "\nDesign\nA cohort.\nSetting\nClinics.\nParticipants\n400 people.\n"
+       "Main outcome measures\nStrokes.\nResults\n" + "ABSTRACT-RESULTS " * 120 + "\nConclusions\n"
+       "ABSTRACT-CONCLUSIONS it may help.\n\nIntroduction\nINTRO-TEXT\n\nMethods\nBODY-METHODS " + "m" * 6000
+       + "\n\nResults\nBODY-RESULTS " + "r" * 8000)
+
+
+@pytest.mark.parametrize("env", [SR_P2], indirect=True)
+def test_the_disagreement_checkpoint_shows_every_section_of_a_long_structured_abstracts_full_text(env):
+    """The checkpoint cuts the full text's sections to its smaller room, not the screeners' excerpt again: there the
+    excerpt's Methods heading, after an abstract cut before its Conclusions, would read as an abstract sub-heading."""
+    _, ps, _ = env
+    _freeze(ps)
+    title = "Aspirin cohort [yes/yes]"
+    ex = Screeners(full_text={title: "yes/no"})
+    out = SearchScreenWorker().run(_ctx(env, ex, _sources(env, [_work(title, 1)], fulltexts={title: [BMJ]})))
+    assert out.status == "waiting_human"
+    assert "ABSTRACT-CONCLUSIONS" not in _ft_records(ex, "screener_a")[title]["text"]  # the trigger
+    (cp,) = list_checkpoints(ps, "open")
+    assert cp["options"]["phase"] == FT
+    assert "BODY-METHODS" in cp["prompt"] and "BODY-RESULTS" in cp["prompt"] and "Objective" in cp["prompt"]
+
 
 
 @pytest.mark.parametrize("env", [SR_P1], indirect=True)

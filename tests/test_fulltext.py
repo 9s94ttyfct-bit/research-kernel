@@ -112,6 +112,8 @@ def pmc_sources(tmp_path, asked: list[str], *, search: dict | None = None) -> So
         asked.append(url)
         if url.endswith("/PMC7654321/fullTextXML"):
             return httpx.Response(200, content=JATS, headers={"content-type": "application/xml"})
+        if url.endswith("/PMC5030303/fullTextXML"):
+            return httpx.Response(503)
         if url.endswith("/fullTextXML"):
             return httpx.Response(500)
         if "BioC_json" in url:
@@ -134,17 +136,55 @@ def test_a_pmc_article_outside_the_open_access_subset_stays_without_full_text_na
     assert not [u for u in asked if "pmc.ncbi.nlm.nih.gov" in u] and latest_snapshot(ps, iid) is None
 
 
+def test_pmc_web_site_links_are_never_fetched(ps, lib, tmp_path):
+    """An open-access link on PMC's web site (OpenAlex lists PMC's PDF) is not requested: PMC's terms forbid
+    automated downloading; the problem names it."""
+    asked: list[str] = []
+    why: list[str] = []
+    links = ["https://pmc.ncbi.nlm.nih.gov/articles/PMC1234567/pdf/article.pdf",
+             "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC1234567/pdf/article.pdf"]
+    iid = lib.add_item(ItemIn(title="A reading aid", year=2020, ids=Ids(pmcid="PMC1234567"), oa_urls=links),
+                       added_by="agent", actor="t").item_id
+    assert fetch_fulltext(ps, lib, pmc_sources(tmp_path, asked), iid, actor="t", why=why) is None
+    assert not [u for u in asked if "pmc.ncbi.nlm.nih.gov" in u or "www.ncbi.nlm.nih.gov/pmc/" in u]
+    assert why == [XML_500, "PMC BioC: no result",
+                   "open-access URL pmc.ncbi.nlm.nih.gov: PMC web site, not fetched (PMC's terms)",
+                   "open-access URL www.ncbi.nlm.nih.gov: PMC web site, not fetched (PMC's terms)"]
+
+
+def test_only_a_500_is_named_as_outside_the_open_access_subset(ps, lib, tmp_path):
+    why: list[str] = []
+    iid = _add(lib, pmcid="PMC5030303")
+    assert fetch_fulltext(ps, lib, pmc_sources(tmp_path, []), iid, actor="t", why=why) is None
+    assert why[0] == "Europe PMC full-text XML: HTTP 503"
+
+
+def test_a_pmid_record_outside_the_open_access_subset_skips_the_full_text_xml(ps, lib, tmp_path):
+    """Europe PMC's record says ``isOpenAccess`` N: its full-text XML (a 500, retried) is not requested."""
+    asked: list[str] = []
+    why: list[str] = []
+    closed = {"hitCount": 1, "resultList": {"result": [{"id": "32222222", "source": "MED", "pmid": "32222222",
+                                                        "pmcid": "PMC2222222", "isOpenAccess": "N",
+                                                        "title": "A reading aid", "pubYear": "2020"}]}}
+    iid = _add(lib, pmid="32222222")
+    assert fetch_fulltext(ps, lib, pmc_sources(tmp_path, asked, search=closed), iid, actor="t", why=why) is None
+    assert lib.get(iid).ids.pmcid == "PMC2222222" and not [u for u in asked if "fullTextXML" in u]
+    assert why == ["Europe PMC full-text XML: not requested (not in the open-access subset)", "PMC BioC: no result",
+                   "open-access PDF: no URL"]
+
+
 def test_a_pmid_only_item_gets_its_pmcid_from_europe_pmc_and_its_full_text(ps, lib, tmp_path):
     asked: list[str] = []
     found = {"hitCount": 1, "resultList": {"result": [{"id": "31234567", "source": "MED", "pmid": "31234567",
-                                                       "pmcid": "PMC7654321", "title": "A reading aid",
-                                                       "pubYear": "2019"}]}}
+                                                       "pmcid": "PMC7654321", "isOpenAccess": "Y",
+                                                       "title": "A reading aid", "pubYear": "2019"}]}}
     iid = _add(lib, pmid="31234567")
     r = fetch_fulltext(ps, lib, pmc_sources(tmp_path, asked, search=found), iid, actor="t")
     assert r is not None and r.kind == "jats" and lib.get(iid).ids.pmcid == "PMC7654321"
     assert "JATS-RESULTS sensitivity 0.91." in latest_snapshot(ps, iid)[1].full_text()
     (lookup,) = [u for u in asked if "/search" in u]
     assert "EXT_ID%3A31234567" in lookup and "SRC%3AMED" in lookup
+    assert [u for u in asked if u.endswith("/PMC7654321/fullTextXML")]  # open access: the XML is requested
     # a PMID Europe PMC maps to no PMCID: no full text, and nothing more asked by PMCID
     asked.clear()
     other = lib.add_item(ItemIn(title="Another trial", year=2018, ids=Ids(pmid="30000001")), added_by="agent",

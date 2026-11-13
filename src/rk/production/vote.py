@@ -4,11 +4,12 @@ question. Only admitted judges vote: distinct known, non-human vendors, none the
 admitted judges, any disagreement, or a failed or invalid answer gives the conservative option. Every vote is recorded
 (``vote.decided``) as not human-reviewed.
 
-A vote may ask for a richer answer (``output``, a ``VoteOut`` with more fields, e.g. the protocol judges' points):
-each opinion then stores those fields too. A caller may also tighten a judge's choice (``tighten``): a non-conservative
-choice the caller rules out counts as the conservative option (the opinion's ``effective`` choice), never the other
-way. Before that, a caller may ask a judge one follow-up question about its answer (``follow_up``, e.g. the protocol
-judge's marks it left out), whose answer the caller merges into the judge's. Every other vote asks and stores exactly
+A vote may ask for a richer answer (``output``, a ``VoteOut`` with more fields, e.g. the protocol judges' points, or
+the full-text record vote's ``unsettled``: ``rk.production.screening.RecordVoteOut``): each opinion then stores those
+fields too. A caller may also tighten a judge's choice (``tighten``): a non-conservative choice the caller rules out
+counts as the conservative option (the opinion's ``effective`` choice), never the other way. Before that, a caller
+may ask a judge one follow-up question about its answer (``follow_up``, e.g. the protocol judge's marks it left out),
+whose answer the caller merges into the judge's. Every other vote asks and stores exactly
 ``{role, vendor, choice, reason}``."""
 
 from __future__ import annotations

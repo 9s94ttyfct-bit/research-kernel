@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import html
 import re
+from typing import NamedTuple
 
 from rk.library.models import Creator, Ids, ItemIn
 from rk.net.http import HttpClient
@@ -167,17 +168,28 @@ def abstracts(http: HttpClient, dois: list[str]) -> dict[str, str]:
     return out
 
 
-def by_pmid(http: HttpClient, pmid: str) -> ItemIn | None:
+class MedlineRecord(NamedTuple):
+    """A MEDLINE record found by PMID (``by_pmid``): the work, and whether Europe PMC says it is in the open-access
+    subset (``isOpenAccess`` Y or N; ``None`` when the record does not say)."""
+    item: ItemIn
+    open_access: bool | None
+
+
+def by_pmid(http: HttpClient, pmid: str) -> MedlineRecord | None:
     """The MEDLINE record of ``pmid`` (``EXT_ID:… AND SRC:MED``, the core result, which carries its PMCID when the work
-    is in PMC), or ``None`` when Europe PMC has none. An HTTP error raises (``HttpClient.get_json``). Calibration
-    (full-text screening, 2026-11-13): an item with a PMID and no PMCID looks its PMCID up here before its full text
-    is sought."""
+    is in PMC, and its ``isOpenAccess`` flag), or ``None`` when Europe PMC has none. An HTTP error raises
+    (``HttpClient.get_json``). Calibration (full-text screening, 2026-11-13): an item with a PMID and no PMCID looks
+    its PMCID up here before its full text is sought, and a record outside the open-access subset does not ask for
+    the full-text XML (which Europe PMC answers with a retried 500)."""
     if not pmid.isdigit():
         return None
     data, _ = http.get_json(f"{BASE}/search", {"query": f"EXT_ID:{pmid} AND SRC:MED", "format": "json",
                                                "resultType": "core", "pageSize": 1})
     rows = ((data or {}).get("resultList") or {}).get("result", [])
-    return result_to_item(rows[0]) if rows and str(rows[0].get("pmid")) == pmid else None
+    if not rows or str(rows[0].get("pmid")) != pmid:
+        return None
+    flag = rows[0].get("isOpenAccess")
+    return MedlineRecord(result_to_item(rows[0]), {"Y": True, "N": False}.get(flag))
 
 
 def fulltext_xml(http: HttpClient, pmcid: str) -> bytes | None:

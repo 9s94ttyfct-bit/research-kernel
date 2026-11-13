@@ -10,6 +10,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel
 
@@ -108,21 +109,31 @@ def _html_snapshot(ps: ProjectStore, http: HttpClient, item_id: str, url: str, a
     return _record_snapshot(ps, item_id, res.body, layer, "html", url, actor)
 
 
+def _on_pmc_web_site(url: str) -> bool:
+    """Whether ``url`` is on PMC's web site, from which PMC's terms forbid automated downloading of articles
+    (https://pmc.ncbi.nlm.nih.gov/about/copyright/)."""
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    return host == "pmc.ncbi.nlm.nih.gov" or (host == "www.ncbi.nlm.nih.gov" and parts.path.startswith("/pmc/"))
+
+
 def fetch_fulltext(ps: ProjectStore, lib: Library, ctx: SourceContext, item_id: str, *, actor: str,
                    why: list[str] | None = None) -> FulltextResult | None:
     """The open-access API channels, in order: an item without a PMCID looks it up (by DOI in OpenAlex, else by PMID
     in Europe PMC: ``europepmc.by_pmid``), then by PMCID Europe PMC's full-text XML (JATS) and PMC's BioC, then
-    arXiv's HTML, then the item's open-access PDF URLs. ``None`` when none has the text; each source tried and why it
-    gave none is then added to ``why`` (one line per source).
+    arXiv's HTML, then the item's open-access PDF URLs (never one on PMC's web site: ``_on_pmc_web_site``). ``None``
+    when none has the text; each source tried and why it gave none is then added to ``why`` (one line per source).
 
     Calibration (full-text screening, 2026-11-13, docs/eval/ft-screening-2026-11-13.md): the 36 abstract-only records
     with a PMCID across the srrepro9 projects were free PMC articles outside PMC's open-access subset, for which
-    Europe PMC's full-text XML answers 500 and BioC "No result", and the reasons were dropped. Such an article is not
-    fetched from PMC's web site (PMC's terms forbid automated downloading of articles): it stays abstract-only, with
-    the reasons recorded."""
+    Europe PMC's full-text XML answers 500 (retried) and BioC "No result", and the reasons were dropped. Such an
+    article is not fetched from PMC's web site (PMC's terms forbid automated downloading of articles): it stays
+    abstract-only, with the reasons recorded. When the PMID lookup's record says it is outside the open-access subset,
+    its full-text XML is not requested."""
     why = [] if why is None else why
     item = lib.get(item_id)
     http = ctx.http
+    open_access: bool | None = None  # what the PMID lookup's record says, when it ran
     if not item.ids.pmcid and item.ids.doi:
         try:
             oa = openalex.get_work(http, Identifier(kind="doi", value=item.ids.doi), ctx.settings.openalex_key)
@@ -138,21 +149,24 @@ def fetch_fulltext(ps: ProjectStore, lib: Library, ctx: SourceContext, item_id: 
         except HttpError as e:
             why.append(f"Europe PMC (PMCID by PMID): HTTP {e.status}")
             med = None
-        if med is not None and med.ids.pmcid:
-            lib.add_item(med, added_by="agent", actor=actor)
-            item = lib.get(item_id)
+        if med is not None and med.item.ids.pmcid:
+            lib.add_item(med.item, added_by="agent", actor=actor)
+            item, open_access = lib.get(item_id), med.open_access
     if not item.ids.pmcid:
         why.append("PMC: no PMCID")
     else:
-        try:
-            xml = europepmc.fulltext_xml(http, item.ids.pmcid)
-        except HttpError as e:
-            outside = " (Europe PMC answers so for articles outside the open-access subset)" if e.status >= 500 else ""
-            why.append(f"Europe PMC full-text XML: HTTP {e.status}{outside}")
-            xml = None
+        xml = None
+        if open_access is False:
+            why.append("Europe PMC full-text XML: not requested (not in the open-access subset)")
         else:
-            if not xml:
-                why.append("Europe PMC full-text XML: none")
+            try:
+                xml = europepmc.fulltext_xml(http, item.ids.pmcid)
+            except HttpError as e:
+                outside = " (Europe PMC answers so for articles outside the open-access subset)" if e.status == 500 else ""
+                why.append(f"Europe PMC full-text XML: HTTP {e.status}{outside}")
+            else:
+                if not xml:
+                    why.append("Europe PMC full-text XML: none")
         if xml:
             layer = jats_to_layer(xml, "")
             if layer.pages[0].text.strip():
@@ -177,6 +191,9 @@ def fetch_fulltext(ps: ProjectStore, lib: Library, ctx: SourceContext, item_id: 
                                                   "arXiv HTML", why)):
         return page
     for url in item.oa_urls:
+        if _on_pmc_web_site(url):
+            why.append(f"open-access URL {urlsplit(url).hostname}: PMC web site, not fetched (PMC's terms)")
+            continue
         try:
             res = http.get(url, ttl_s=0)
         except HttpError as e:
