@@ -18,7 +18,7 @@ from rk.canon import canonical_json
 from rk.ids import new_id
 from rk.library.models import Item
 from rk.library.service import Library, fts_append
-from rk.net.http import HttpClient, HttpError
+from rk.net.http import BudgetExhausted, HttpClient, HttpError
 from rk.sources import arxiv, europepmc, openalex, pubmed
 from rk.sources.identifiers import Identifier
 from rk.sources.resolver import SourceContext
@@ -129,7 +129,10 @@ def fetch_fulltext(ps: ProjectStore, lib: Library, ctx: SourceContext, item_id: 
     Europe PMC's full-text XML answers 500 (retried) and BioC "No result", and the reasons were dropped. Such an
     article is not fetched from PMC's web site (PMC's terms forbid automated downloading of articles): it stays
     abstract-only, with the reasons recorded. When the PMID lookup's record says it is outside the open-access subset,
-    its full-text XML is not requested."""
+    its full-text XML is not requested.
+
+    Calibration (srrepro10, 2026-11-13): an open-access URL whose host rate-limits for longer than a request waits
+    (``BudgetExhausted``) is skipped with the reason recorded, rather than pausing the whole run for one record's PDF."""
     why = [] if why is None else why
     item = lib.get(item_id)
     http = ctx.http
@@ -198,6 +201,10 @@ def fetch_fulltext(ps: ProjectStore, lib: Library, ctx: SourceContext, item_id: 
             res = http.get(url, ttl_s=0)
         except HttpError as e:
             why.append(f"open-access URL {url}: HTTP {e.status}")
+            continue
+        except BudgetExhausted as e:  # one host's long rate limit costs this URL, not a pause of the whole run
+            why.append(f"open-access URL {url}: rate-limited (HTTP 429) until "
+                       f"{datetime.fromtimestamp(e.reset_at, UTC):%Y-%m-%d %H:%M} UTC")
             continue
         if res.status != 200 or not _looks_pdf(res.body, res.content_type):
             why.append(f"open-access URL {url}: no PDF (HTTP {res.status})")
