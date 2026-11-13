@@ -92,3 +92,17 @@ def test_vnum_bound_numbers_follow_their_bindings():
     r = check_bound_numbers("RR 0.62 (95% CI)", bound)
     assert not r.ok and r.ungrounded == [] and r.problems
     assert not check_bound_numbers("RR 0.62", [("0.62", None)]).ok  # a key the artifact lacks
+
+
+@pytest.mark.parametrize(("claim", "ok"), [
+    ("Pressure rose in 3 studies.", True),
+    ("Pressure rose in 3 of the cited studies.", True),
+    ("Pressure rose in 3 trials.", True),
+    ("Pressure rose in 3 of the included studies.", False),
+    ("Pressure rose after 3 weeks.", False),
+    ("Pressure rose with 3 doses daily.", False),
+])
+def test_a_cited_study_count_is_grounded_only_where_it_counts_studies(claim, ok):
+    """Re-review of fix round 1: a number equal to the claim's count of cited studies is grounded only when the words
+    after it name the studies ("3 studies", "3 of the cited studies"), never as a dose, a duration or a fold."""
+    assert check_numbers(claim, [], counts={3}).ok is ok
