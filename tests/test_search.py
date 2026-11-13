@@ -615,6 +615,12 @@ def test_europepmc_abstracts_are_plain_text(tmp_path):
     http.close()
 
 
+def test_europepmc_plain_text_keeps_literal_angle_brackets():
+    # Europe PMC abstracts hold "<" and ">" as text beside their tags; only tag shapes are removed
+    text = "Rose (P < 0.05) and <i>x</i> fell (P > 0.1); n<10 vs n>20.<br/>End<td>cell</td>"
+    assert europepmc.plain_text(text) == "Rose (P < 0.05) and x fell (P > 0.1); n<10 vs n>20. End cell"
+
+
 def _arxiv_feed(*entries: tuple[str | None, str | None], total: int | None = None) -> bytes:
     """An arXiv Atom feed of ``(arxiv id, title)`` entries; ``None`` leaves the element out (a malformed entry).
     ``total`` is its ``opensearch:totalResults``."""

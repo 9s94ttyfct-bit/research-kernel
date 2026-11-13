@@ -44,8 +44,10 @@ def _kind(r: dict) -> tuple[str, str | None]:
     return "journalArticle", journal
 
 
-_BLOCK_TAG = re.compile(r"</?(?:h[1-6]|p|div|br|li|ul|ol|section|title)\b[^>]*>", re.IGNORECASE)
-_TAG = re.compile(r"<[^>]+>")
+# Only tag shapes are tags: Europe PMC's abstractText also holds a literal "<" or ">" ("P < 0.05"), which a bare
+# "<[^>]+>" would delete together with the text up to the next ">".
+_BLOCK_TAG = re.compile(r"</?(?:h[1-6]|p|div|br|li|ul|ol|section|title|table|tr|td|th)\b[^<>]*>", re.IGNORECASE)
+_TAG = re.compile(r"</?[A-Za-z][A-Za-z0-9:-]*(?:\s[^<>]*)?/?>")
 
 
 def plain_text(text: str | None) -> str | None:

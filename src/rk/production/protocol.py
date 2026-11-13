@@ -317,14 +317,11 @@ DRAFT_TASK = (
     "`open_points` is given (the judges' open points), answer in `answers` every point whose `owner` is ideator, by "
     "its `id`: how changed, with where the protocol changes it in note, or how rebutted, with why it stays in note; a "
     "draft that leaves one of them unanswered is sent back to you.")
-# Calibration (search scope, 2026-11-12): strategies written for the full-text search and narrowed to fit the cap lost
-# recall when searched in titles and abstracts (a long unquoted query found no Europe PMC record); the Scout builds
-# each query from concepts every eligible record names in its title or abstract, and narrows by tightening a concept.
-# Calibration (search and screening, 2026-11-12): the queries find what the criteria may admit (an outcome ANDed only
-# when it is the question's subject, a class with its members, no context ANDed); narrowing keeps the population and
-# the intervention concepts.
-# the Scout's coverage, query-building and narrowing rules (calibration, search and screening, 2026-11-12); their
-# examples come from none of the evaluation topics (rk.eval sr_repro)
+# Calibration (search scope, 2026-11-12, then search and screening, 2026-11-12): the queries find what the criteria
+# may admit (an outcome ANDed only when it is the question's subject, a class with its members, no context ANDed),
+# each from concepts a record names in its title or abstract; narrowing tightens a concept or drops the broadest query
+# and keeps the population and the intervention concepts. The examples come from none of the evaluation topics
+# (docs/eval/search-screen-2026-11-12.md).
 QUERY_COVERAGE = ("together find every record that may meet the eligibility criteria (screening applies the criteria, "
                   "so a query need not express each of them)")
 QUERY_BUILD_RULE = (

@@ -4,10 +4,12 @@ record-cap probe, P2 approval and the P1 vote, the freeze and deviations after s
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import httpx
 import pytest
 
+import rk
 from rk.canon import canonical_json, sha256_hex
 from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
 from rk.config import Settings, save_settings
@@ -721,8 +723,10 @@ def test_the_scout_is_asked_for_queries_that_find_what_the_criteria_may_admit(en
         asked = call["instructions"] + " " + str(call["inputs"].get("guidance", ""))
         assert QUERY_COVERAGE in asked and QUERY_BUILD_RULE in asked and NARROW_KEEP in asked
         assert "eligibility criterion covered" not in asked and "cover the research question and" not in asked
-        # its examples come from none of the six evaluation topics (rk.eval sr_repro)
+        # its examples come from none of the six evaluation topics (docs/eval/search-screen-2026-11-12.md)
         assert not [w for w in TOPIC_WORDS if w in asked.lower()]
+    role = (Path(rk.__file__).parent / "roles" / "scout.md").read_text().lower()  # the Scout's role prompt too
+    assert not [w for w in TOPIC_WORDS if w in role]
 
 
 def test_the_ideator_is_told_eligibility_is_not_the_outcomes_reporting_form(env):
