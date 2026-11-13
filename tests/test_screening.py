@@ -182,29 +182,78 @@ def test_disagreements_batch_into_checkpoints_of_25(env):
 
 
 @pytest.mark.parametrize("env", [SR_P1], indirect=True)
-def test_p1_disagreement_votes_conservative_exclude(env):
+def test_p1_title_abstract_disagreement_votes_conservative_include(env):
     _, ps, _ = env
     _freeze(ps)
-    works = [_work("Aspirin A [yes/no]", 1), _work("Aspirin B [no/unclear]", 2), _work("Aspirin C [yes/yes]", 3)]
-    ex = Screeners(votes={"Aspirin A [yes/no]": ("include", "include"), "Aspirin B [no/unclear]": ("include", "exclude")})
+    works = [_work("Aspirin A [yes/no]", 1), _work("Aspirin B [no/unclear]", 2), _work("Aspirin C [yes/yes]", 3),
+             _work("Aspirin D [no/yes]", 4)]
+    ex = Screeners(votes={"Aspirin A [yes/no]": ("include", "include"), "Aspirin B [no/unclear]": ("include", "exclude"),
+                          "Aspirin D [no/yes]": ("exclude", "exclude")})
     out = SearchScreenWorker().run(_ctx(env, ex, FakeSources({"aspirin": works})))
 
     assert out.status == "done" and not list_checkpoints(ps, "open")
     f = _finals(env)
     assert f["Aspirin A [yes/no]"][:2] == ("yes", "vote")
     assert f["Aspirin A [yes/no]"][2].startswith("screeners disagreed")
-    assert f["Aspirin B [no/unclear]"][:2] == ("no", "vote")
-    assert f["Aspirin B [no/unclear]"][2].startswith("screeners disagreed; P1 conservative")
+    # the judges disagree: the conservative option at title/abstract is to include, so the full text decides
+    assert f["Aspirin B [no/unclear]"][:2] == ("yes", "vote")
+    assert f["Aspirin B [no/unclear]"][2] == ("screeners disagreed; P1 conservative: to the full text (the judges "
+                                               "disagree; not reviewed by a human)")
     assert f["Aspirin C [yes/yes]"][:2] == ("yes", "agreement")
+    assert f["Aspirin D [no/yes]"][:2] == ("no", "vote")
     t = {v: k for k, v in _titles(env).items()}
     (va,), (vb,) = votes_on(ps, "record", t["Aspirin A [yes/no]"]), votes_on(ps, "record", t["Aspirin B [no/unclear]"])
-    assert (va["decision"], va["conservative"], vb["decision"], vb["conservative"]) == ("include", 0, "exclude", 1)
-    assert [f["record_id"] for f in store.finals(ps, 1, phase=TA) if voted_out(f)] == [t["Aspirin B [no/unclear]"]]
+    assert (va["decision"], va["conservative"], vb["decision"], vb["conservative"]) == ("include", 0, "include", 1)
+    assert [f["record_id"] for f in store.finals(ps, 1, phase=TA) if voted_out(f)] == [t["Aspirin D [no/yes]"]]
     judge = ex.of("judge")[0]["inputs"]
     assert judge["options"] == ["include", "exclude"]
+    assert judge["question"] == (
+        "The two screeners disagree on this record at title/abstract screening. Include it when it may meet the "
+        "eligibility criteria (its full text is then screened by both screeners); exclude it only when its title and "
+        "abstract show it fails a criterion.")
     assert {s["screener"]: s["include"] for s in judge["subject"]["screeners"]} == {"screener_a": "yes",
                                                                                      "screener_b": "no"}
+    assert store.retrieval_note(ps, 1)["sought"] == [t[x] for x in ("Aspirin A [yes/no]", "Aspirin B [no/unclear]",
+                                                                    "Aspirin C [yes/yes]")]
     assert "1 excluded by the P1 vote on a disagreement" in out.reason
+
+
+@pytest.mark.parametrize("env", [SR_P1], indirect=True)
+def test_p1_full_text_disagreement_votes_conservative_exclude(env):
+    _, ps, _ = env
+    _freeze(ps)
+    works = [_work("Aspirin X [yes/yes]", 1), _work("Aspirin Y [yes/yes]", 2)]
+    ex = Screeners(full_text={"Aspirin X [yes/yes]": "yes/no"},
+                   votes={("Aspirin X [yes/yes]", FT): ("include", "exclude")})
+    out = SearchScreenWorker().run(_ctx(env, ex, FakeSources({"aspirin": works})))
+
+    assert out.status == "done"
+    t = _titles(env)
+    ft = {t[f["record_id"]]: (f["include"], f["decided_by"], f["reason"]) for f in store.finals(ps, 1, phase=FT)}
+    assert ft["Aspirin X [yes/yes]"][:2] == ("no", "vote")
+    assert ft["Aspirin X [yes/yes]"][2].startswith("screeners disagreed; P1 conservative: excluded")
+    assert ex.of("judge", FT)[0]["inputs"]["question"] == (
+        "The two screeners disagree on this record at full-text screening. Does it meet the eligibility criteria: "
+        "include it or exclude it?")
+
+
+@pytest.mark.parametrize("env", [SR_P1], indirect=True)
+def test_p1_title_abstract_vote_without_two_judges_goes_to_the_full_text(env):
+    from rk.config import save_settings
+
+    k, ps, _ = env
+    _freeze(ps)
+    s = k.settings()
+    save_settings(s.model_copy(update={"drivers": {**s.drivers, "judge_2": s.drivers["judge"],
+                                                   "judge_3": s.drivers["judge"]}}))
+    ex = Screeners()
+    out = SearchScreenWorker().run(_ctx(env, ex, FakeSources({"aspirin": [_work("Aspirin S [yes/no]", 1)]})))
+
+    assert out.status == "done" and ex.of("judge", None) == []
+    inc, by, reason = _finals(env)["Aspirin S [yes/no]"]
+    assert (inc, by) == ("yes", "vote") and "P1 conservative: to the full text" in reason
+    assert "fewer than two admitted judges" in reason
+    assert len(store.retrieval_note(ps, 1)["sought"]) == 1
 
 
 def test_scoping_sample_rule():
@@ -443,7 +492,7 @@ def test_p1_votes_carry_over(env):
     f = _finals(env, 2)
     assert len(f) == 5
     assert {t: v[:2] for t, v in f.items() if t.startswith("Aspirin D")} == {
-        "Aspirin D1 [yes/no]": ("yes", "vote"), "Aspirin D2 [yes/no]": ("no", "vote"),
+        "Aspirin D1 [yes/no]": ("yes", "vote"), "Aspirin D2 [yes/no]": ("yes", "vote"),  # conservative: full text
         "Aspirin D3 [yes/no]": ("no", "vote")}
     t = _titles(env, 2)
     assert {t[r["record_id"]]: r["carried_from"] for r in store.finals(ps, 2, phase=TA)

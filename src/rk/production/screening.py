@@ -50,10 +50,13 @@ rules), V-PRISMA and the gate.
      record of that checkpoint and for no other. An invalid answer gets a replacement checkpoint saying why. Answers
      apply in any order; the attempt waits on the first checkpoint still open. Applying an answer again changes
      nothing (``decided_by`` ``human``).
-   - P1: ``vote()`` per record (no generator vendors: a record is no generated text; conservative option
-     "exclude"). Every vote's final is decided by ``vote`` and its reason starts "screeners disagreed" ("screeners
-     disagreed; P1 conservative" when the vote took the conservative option); ``voted_out`` tells its exclusions
-     apart for PRISMA and the limitations.
+   - P1: ``vote()`` per record (no generator vendors: a record is no generated text). The conservative option is per
+     phase (``CONSERVATIVE``; calibration, search and screening, 2026-11-12): at title/abstract "include" (to the
+     full text, screened there by both screeners), and the question asks whether the record may meet the criteria,
+     excluding it only when its title and abstract show it fails one; at full text "exclude". Every vote's final is
+     decided by ``vote`` and its reason starts "screeners disagreed" ("screeners disagreed; P1 conservative: to the
+     full text" or "…: excluded" when the vote took the conservative option); ``voted_out`` tells its exclusions
+     (by the decision, never by the conservative option) apart for PRISMA and the limitations.
 8. An attempt interrupted by a rate cap, a budget or a crash is resumed by the next attempt
    (``rk.production.resume``), in both phases: the screener decisions of the interrupted attempts right before it,
    under the same frozen protocol, are carried over by library item (``carried_from``) instead of asked again, and so
@@ -143,7 +146,9 @@ from rk.verify.prisma import check_prisma, check_selection_reasons, flow, prisma
 KIND = "screening_disagreements"
 BATCH = 25  # records per screener task, and disagreements per checkpoint
 CHOICES = ("include", "exclude")
-CONSERVATIVE = "exclude"
+# the P1 vote's conservative option per phase (calibration, search and screening, 2026-11-12): at title/abstract the
+# full text settles the doubt, at full text the record is excluded
+CONSERVATIVE = {TITLE_ABSTRACT: "include", FULL_TEXT: "exclude"}
 SCREENERS = ("screener_a", "screener_b")
 SAMPLE_PERCENT = 10  # the scoping review's dual sample, rounded up
 SWITCH_PERCENT = 10  # more differences on included-or-not than this share of the sample: dual for the rest
@@ -174,6 +179,10 @@ ASKED_AGAIN = ("your previous decision on this record gave no reason (an exclusi
 
 
 def _vote_question(phase: str) -> str:
+    if phase == TITLE_ABSTRACT:
+        return (f"The two screeners disagree on this record at {PHASE_WORDS[phase]} screening. Include it when it may "
+                "meet the eligibility criteria (its full text is then screened by both screeners); exclude it only "
+                "when its title and abstract show it fails a criterion.")
     return (f"The two screeners disagree on this record at {PHASE_WORDS[phase]} screening. Does it meet the "
             "eligibility criteria: include it or exclude it?")
 
@@ -671,10 +680,11 @@ def _apply(ctx: StageContext, phase: str, cp: dict) -> None:
 def _vote_on(ctx: StageContext, phase: str, rid: str, context: dict, record: dict,
              views: dict[str, list[dict]]) -> None:
     inputs = {**context, "record": record, "screeners": _view_of(views, rid)}
-    res = vote(ctx, "record", rid, _vote_question(phase), list(CHOICES), CONSERVATIVE, inputs)
+    res = vote(ctx, "record", rid, _vote_question(phase), list(CHOICES), CONSERVATIVE[phase], inputs)
     inc = "yes" if res.decision == "include" else "no"
     if res.conservative_used:
-        reason = f"screeners disagreed; P1 conservative: excluded ({res.reason}; not reviewed by a human)"
+        what = "to the full text" if inc == "yes" else "excluded"
+        reason = f"screeners disagreed; P1 conservative: {what} ({res.reason}; not reviewed by a human)"
     else:
         reason = (f"screeners disagreed; the P1 vote {'included' if inc == 'yes' else 'excluded'} it (not reviewed "
                   "by a human)")

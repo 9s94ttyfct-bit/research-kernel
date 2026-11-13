@@ -17,7 +17,13 @@ from rk.production import screening, store
 from rk.production.screening import FULLTEXT_CHARS, SearchScreenWorker, fulltext_excerpt
 from rk.production.search import deduplicated
 from rk.production.store import screening_notes
-from rk.verify.prisma import check_prisma, check_selection_reasons, flow, prisma_counts
+from rk.verify.prisma import (
+    check_prisma,
+    check_selection_reasons,
+    flow,
+    prisma_counts,
+    prisma_notes,
+)
 from tests.discovery_fakes import FakeSources
 from tests.production_fakes import (
     CappedAt,
@@ -126,7 +132,7 @@ def test_prisma_arithmetic_holds_and_fails_when_broken(env):
              _work("Aspirine chez le sujet âgé [yes/yes]", 7, language="fr")]
     pages = {t: [PAPER] for t in ("Aspirin A [yes/yes]", "Aspirin B [yes/yes]", "Aspirin D [yes/no]")}
     ex = Screeners(full_text={"Aspirin B [yes/yes]": "no/no", "Aspirin D [yes/no]": "yes/no"},
-                   votes={"Aspirin D [yes/no]": ("include", "include"), "Aspirin E [yes/no]": ("include", "exclude"),
+                   votes={"Aspirin D [yes/no]": ("include", "include"), "Aspirin E [yes/no]": ("exclude", "exclude"),
                           ("Aspirin D [yes/no]", FT): ("include", "exclude")})
     w = SearchScreenWorker()
     out = w.run(_ctx(env, ex, _sources(env, works, fulltexts=pages)))
@@ -161,6 +167,20 @@ def test_prisma_arithmetic_holds_and_fails_when_broken(env):
     store.set_final(ps, _ids(env)["Aspirin A [yes/yes]"], 1, FT, "unclear", "human", "unsure", actor="tester")
     gate = w.gate(ps, 1)
     assert not gate.ok and any(f.startswith("V-PRISMA:") and "but 0 were included" in f for f in gate.failures)
+
+
+@pytest.mark.parametrize("env", [SR_P1], indirect=True)
+def test_conservative_include_at_title_abstract_is_no_exclusion(env):
+    _, ps, _ = env
+    _freeze(ps)
+    works = [_work("Aspirin split [yes/no]", 1), _work("Aspirin out [no/no]", 2)]
+    ex = Screeners(votes={"Aspirin split [yes/no]": ("include", "exclude")})
+    out = SearchScreenWorker().run(_ctx(env, ex, _sources(env, works)))
+    assert out.status == "done"
+    p = prisma_counts(ps, 1)
+    assert (p.screened, p.excluded_ta, p.sought, p.included) == (2, 1, 1, 1)
+    assert p.excluded_disagreement == {TA: 0, FT: 0}
+    assert check_prisma(p) == [] and "excluded by the P1 vote" not in " ".join(prisma_notes(p))
 
 
 @pytest.mark.parametrize("env", [SR_P1], indirect=True)
