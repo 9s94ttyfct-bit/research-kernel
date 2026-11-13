@@ -51,7 +51,11 @@ from rk.production.synthesis import synthesis_claims
 from rk.stats import plots, version_files
 from rk.stats.effects import BINARY_FIELDS
 from rk.store.events import NewEvent
-from rk.verify.stats import make_forest_artifact, make_stats_artifact
+from rk.verify.stats import (
+    make_direction_artifact,
+    make_forest_artifact,
+    make_stats_artifact,
+)
 from tests.production_fakes import make_frozen_project, production_ctx
 from tests.test_audit import _ctx as audit_ctx
 from tests.test_audit import _judges, _passed
@@ -227,6 +231,31 @@ def test_markers_convert_to_citations_and_cross_references(env):
                                                      sections[2][1]), sections[3]], target="docx")
     at, end = md.index("{#theme-1}"), md.index("# Discussion {#discussion}")
     assert at < md.index(f"{{#tbl:{stt}}}") < end and at < md.index(f"{{#fig:{fig}}}") < end
+
+
+def test_a_direction_count_exports_as_a_table(env):
+    """Calibration (synthesis across studies, 2026-11-13): the Writer may cite a direction count (``[[stat:]]``), so
+    the export renders it as a table: each study's label, both values and the direction, then the counts. It renders
+    from the artifact alone: a count whose claim could not be written exports the same way."""
+    _, ps, lib = env
+    _ready(env)
+    ids = [next(i.id for i in lib.list() if i.title == t) for t in ("A trial", "B trial")]
+    rows = [{"id": add_extraction(ps, 1, iid, f, v, None, True, actor="tester")}
+            for iid, vals in zip(ids, ((0.9, 0.8), ("0.70", 0.7)), strict=True)
+            for f, v in zip(("score_new", "score_old"), vals, strict=True)]
+    count = make_direction_artifact(ps, rows, {"intervention": "score_new", "comparator": "score_old"},
+                                    outcome="score", item_ids=ids, labels={ids[0]: "A 1950", ids[1]: "B 1951"},
+                                    stage="synthesize", attempt=1, actor="kernel")
+    assert not [c for c in ArgumentService(ps).list_claims() if count in (c.get("artifact_ids") or [])]
+    sections = [(_spec("results", "Results"), f"The directions are counted [[stat:{count}]].\n"),
+                (_spec("discussion", "Discussion"), "Done [[inf]].\n")]
+    md, _, refmap = to_pandoc_markdown(ps, sections, target="docx")
+    assert f"The directions are counted (@tbl:{count})." in md and refmap["tables"] == {count: f"tbl:{count}"}
+    table = md[md.index("| Study |"):md.index(f"{{#tbl:{count}}}")]
+    assert table.splitlines()[:5] == ["| Study | score\\_new | score\\_old | Direction |", "|---|---|---|---|",
+                                      "| A 1950 | 0.9 | 0.8 | higher |", "| B 1951 | 0.7 | 0.7 | same |",
+                                      "| 2 studies | | | 1 higher, 0 lower, 1 same |"]
+    assert "vote counting by direction of effect" in table
 
 
 def test_an_objection_marker_cites_its_source(env):
