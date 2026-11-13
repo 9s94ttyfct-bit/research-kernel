@@ -911,7 +911,8 @@ def test_kernel_sources_count_reads_openalex_europepmc_and_pubmed(tmp_home, tmp_
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append((request.url.host, dict(request.url.params)))
         params = request.url.params
-        if "nothing" in (params.get("search"), params.get("query"), params.get("term")):
+        if params.get("search.title_abstract_keywords") == "nothing" or params.get("term") == "nothing" \
+                or params.get("query") == "TITLE_ABS:(nothing)":
             return httpx.Response(200, json={"results": [], "esearchresult": {}})  # no count field
         if "openalex" in request.url.host:
             return httpx.Response(200, json={"meta": {"count": 1234}, "results": [{"id": "https://openalex.org/W1"}]})
@@ -927,10 +928,10 @@ def test_kernel_sources_count_reads_openalex_europepmc_and_pubmed(tmp_home, tmp_
     try:
         src = KernelSources(k, "demo")
         assert src.count("aspirin stroke", "openalex") == 1234
-        assert seen[-1][1]["search"] == "aspirin stroke" and seen[-1][1]["per_page"] == "1"
+        assert seen[-1][1]["search.title_abstract_keywords"] == "aspirin stroke" and seen[-1][1]["per_page"] == "1"
         assert "filter" not in seen[-1][1]  # no years given: no year filter
         assert src.count("aspirin stroke", "europepmc") == 567
-        assert seen[-1][1]["query"] == "aspirin stroke" and seen[-1][1]["pageSize"] == "1"
+        assert seen[-1][1]["query"] == "TITLE_ABS:(aspirin stroke)" and seen[-1][1]["pageSize"] == "1"
         assert src.count("aspirin stroke", "pubmed") == 89
         assert (seen[-1][1]["term"], seen[-1][1]["retmax"], seen[-1][1]["db"]) == ("aspirin stroke", "0", "pubmed")
         assert "mindate" not in seen[-1][1]
@@ -942,9 +943,9 @@ def test_kernel_sources_count_reads_openalex_europepmc_and_pubmed(tmp_home, tmp_
                                              (2000, None, "publication_year:>1999", "[2000 TO 9999]"),
                                              (None, 2020, "publication_year:<2021", "[1000 TO 2020]")):
             assert src.count("aspirin stroke", "openalex", date_from=date_from, date_to=date_to) == 1234
-            assert (seen[-1][1]["search"], seen[-1][1]["filter"]) == ("aspirin stroke", oa)
+            assert (seen[-1][1]["search.title_abstract_keywords"], seen[-1][1]["filter"]) == ("aspirin stroke", oa)
             assert src.count("aspirin stroke", "europepmc", date_from=date_from, date_to=date_to) == 567
-            assert seen[-1][1]["query"] == f"(aspirin stroke) AND (PUB_YEAR:{epmc})"
+            assert seen[-1][1]["query"] == f"TITLE_ABS:(aspirin stroke) AND (PUB_YEAR:{epmc})"
             assert src.count("aspirin stroke", "pubmed", date_from=date_from, date_to=date_to) == 89
             assert (seen[-1][1]["datetype"], seen[-1][1]["mindate"], seen[-1][1]["maxdate"]) == (
                 "pdat", str(date_from or 1000), str(date_to or 9999))

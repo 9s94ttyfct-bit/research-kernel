@@ -39,3 +39,29 @@ def test_openalex_wakefield_retracted(replay_http):
 def test_openalex_search(replay_http):
     hits = openalex.search(replay_http, "quotation accuracy", api_key=None, per_page=5)
     assert len(hits) == 5 and all(h.title for h in hits)
+
+
+def test_openalex_searches_titles_abstracts_and_keywords(tmp_path):
+    """Calibration (search scope, 2026-11-12): ``search=`` also matches the full text; searches, counts and year counts
+    send the query as ``search.title_abstract_keywords`` and never as ``search``."""
+    import httpx
+
+    from rk.net.http import HttpClient
+
+    seen: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(dict(req.url.params))
+        return httpx.Response(200, json={"meta": {"count": 3}, "results": [],
+                                         "group_by": [{"key": "2020", "count": 3}]})
+
+    http = HttpClient(tmp_path / "h.sqlite", user_agent="t", sleep=lambda s: None,
+                      transport=httpx.MockTransport(handler))
+    openalex.search(http, "aspirin AND stroke", api_key=None, per_page=5, filters={"publication_year": "2020"})
+    assert openalex.count(http, "aspirin AND stroke", api_key=None, date_from=2020) == 3
+    assert openalex.year_counts(http, "aspirin AND stroke", api_key=None) == {2020: 3}
+    assert len(seen) == 3
+    assert all(p["search.title_abstract_keywords"] == "aspirin AND stroke" and "search" not in p for p in seen)
+    assert (seen[0]["filter"], seen[1]["filter"], seen[2]["group_by"]) == (
+        "publication_year:2020", "publication_year:>2019", "publication_year")
+    http.close()

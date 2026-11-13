@@ -1,4 +1,8 @@
-"""OpenAlex adapter: works, search, citation graph, retraction flag, OA locations."""
+"""OpenAlex adapter: works, search, citation graph, retraction flag, OA locations.
+
+Calibration (search scope, 2026-11-12): searches, counts and year counts match a query in titles, abstracts and the
+keywords OpenAlex tags works with (``search.title_abstract_keywords``, openalex.org's own default), not in the full
+text as ``search=`` does; a systematic review searches titles and abstracts (docs/eval/search-scope-2026-11-12.md)."""
 
 from __future__ import annotations
 
@@ -10,6 +14,7 @@ from rk.sources.identifiers import Identifier
 
 BASE = "https://api.openalex.org"
 BUDGET = "openalex"
+SEARCH = "search.title_abstract_keywords"  # the parameter every search, count and year count sends its query in
 
 _TYPE = {
     "article": "journalArticle", "review": "journalArticle", "letter": "journalArticle", "editorial": "journalArticle",
@@ -122,13 +127,13 @@ def _list(http: HttpClient, params: dict) -> list[dict]:
 
 def search(http: HttpClient, query: str, *, api_key: str | None, per_page: int = 25,
            filters: dict | None = None, offset: int = 0) -> list[ItemIn]:
-    """One page of works matching ``query``: ``per_page`` from ``offset``, which must be a multiple of ``per_page``
-    (OpenAlex pages by page number)."""
+    """One page of works matching ``query`` in their titles, abstracts or keywords: ``per_page`` from ``offset``,
+    which must be a multiple of ``per_page`` (OpenAlex pages by page number)."""
     if offset % per_page:
         raise ValueError(f"OpenAlex pages by page number: offset {offset} is not a multiple of {per_page}")
     flt = ",".join(f"{k}:{v}" for k, v in (filters or {}).items()) or None
     page = offset // per_page + 1 if offset else None
-    return [work_to_item(w) for w in _list(http, _params(api_key, search=query, per_page=per_page, filter=flt,
+    return [work_to_item(w) for w in _list(http, _params(api_key, **{SEARCH: query}, per_page=per_page, filter=flt,
                                                          page=page))]
 
 
@@ -141,8 +146,9 @@ def cited_by(http: HttpClient, openalex_id: str, *, api_key: str | None, per_pag
 
 
 def year_counts(http: HttpClient, query: str, *, api_key: str | None) -> dict[int, int]:
-    """Works matching ``query`` per publication year (``group_by=publication_year``); unknown years are left out."""
-    data, _ = http.get_json(f"{BASE}/works", _params(api_key, search=query, group_by="publication_year"),
+    """Works matching ``query`` in their titles, abstracts or keywords per publication year
+    (``group_by=publication_year``); unknown years are left out."""
+    data, _ = http.get_json(f"{BASE}/works", _params(api_key, **{SEARCH: query}, group_by="publication_year"),
                             budget_key=BUDGET)
     counts = {int(g["key"]): int(g["count"]) for g in (data or {}).get("group_by", []) if str(g["key"]).isdigit()}
     return dict(sorted(counts.items()))
@@ -161,10 +167,11 @@ def publication_years(after_year: int | None, date_from: int | None, date_to: in
 
 def count(http: HttpClient, query: str, *, api_key: str | None, date_from: int | None = None,
           date_to: int | None = None) -> int | None:
-    """How many works match ``query`` (``meta.count`` of a one-result page), published in the years
-    ``date_from``..``date_to`` (inclusive, either end open) when given; ``None`` when the response gives none."""
+    """How many works match ``query`` in their titles, abstracts or keywords (``meta.count`` of a one-result page),
+    published in the years ``date_from``..``date_to`` (inclusive, either end open) when given; ``None`` when the
+    response gives none."""
     years = publication_years(None, date_from, date_to)
-    data, _ = http.get_json(f"{BASE}/works", _params(api_key, search=query, per_page=1, select="id",
+    data, _ = http.get_json(f"{BASE}/works", _params(api_key, **{SEARCH: query}, per_page=1, select="id",
                                                      filter=f"publication_year:{years}" if years else None),
                             budget_key=BUDGET)
     n = ((data or {}).get("meta") or {}).get("count")

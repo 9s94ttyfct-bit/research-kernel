@@ -202,7 +202,7 @@ def test_kernel_sources_year_counts_and_cited_by_after_year(tmp_home, tmp_path):
         _, lib = k.project("demo")
         src = KernelSources(k, "demo")
         assert src.year_counts("aspirin stroke") == {2020: 3, 2021: 7}
-        assert seen[-1]["search"] == "aspirin stroke"
+        assert seen[-1]["search.title_abstract_keywords"] == "aspirin stroke"
         iid = lib.add_item(ItemIn(title="Retracted", ids=Ids(openalex="W1")), added_by="agent", actor="t").item_id
         got = src.cited_by(iid, after_year=2019)
         assert [i.title for i in got] == ["Citing work"]
@@ -233,7 +233,7 @@ def test_kernel_sources_search_after_year(tmp_home, tmp_path):
     try:
         src = KernelSources(k, "demo")
         assert [i.title for i in src.search("aspirin", "openalex", 10, after_year=2015)] == ["New"]
-        assert seen[-1][1]["filter"] == "publication_year:>2015" and seen[-1][1]["search"] == "aspirin"
+        assert seen[-1][1]["filter"] == "publication_year:>2015" and seen[-1][1]["search.title_abstract_keywords"] == "aspirin"
         assert [i.title for i in src.search("aspirin", "openalex", 10)] == ["Old", "New"]
         assert "filter" not in seen[-1][1]
         # Europe PMC has no year filter here: the hits are filtered by year after the search

@@ -11,6 +11,44 @@ def test_europepmc_search_and_fulltext(replay_http):
     assert xml and b"<article" in xml
 
 
+def test_europepmc_searches_titles_and_abstracts(tmp_path):
+    """Calibration (search scope, 2026-11-12): a bare Europe PMC query also matches open-access full text; searches
+    and counts send it inside ``TITLE_ABS:( … )`` with the year and open-access filters outside it, and a query that
+    already names a Europe PMC field (``TITLE_ABS:``, ``TITLE:``, ``ABSTRACT:``, ``KW:``, ``MESH:``, ``AUTH:``) is
+    sent as written."""
+    import httpx
+
+    from rk.net.http import HttpClient
+
+    seen: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req.url.params["query"])
+        return httpx.Response(200, json={"hitCount": 2, "resultList": {"result": []}})
+
+    http = HttpClient(tmp_path / "h.sqlite", user_agent="t", sleep=lambda s: None,
+                      transport=httpx.MockTransport(handler))
+    europepmc.search(http, "aspirin AND (stroke OR TIA)")
+    assert europepmc.count(http, "aspirin AND (stroke OR TIA)") == 2
+    europepmc.search(http, "aspirin", open_access_only=True, date_from=2005, date_to=2020)
+    europepmc.count(http, "aspirin", date_to=2020)
+    assert seen == ["TITLE_ABS:(aspirin AND (stroke OR TIA))"] * 2 + [
+        "TITLE_ABS:(aspirin) AND OPEN_ACCESS:y AND (PUB_YEAR:[2005 TO 2020])",
+        "TITLE_ABS:(aspirin) AND (PUB_YEAR:[1000 TO 2020])"]
+    seen.clear()
+    given = ["TITLE_ABS:(fructose AND rats)", 'TITLE:"aspirin" AND stroke', "ABSTRACT:aspirin", "KW:aspirin",
+             'MESH:"Stroke" AND aspirin', 'AUTH:"Smith J" AND aspirin']
+    for q in given:
+        europepmc.count(http, q)
+        europepmc.count(http, q, date_from=2010)
+    assert seen == [sent for q in given for sent in (q, f"({q}) AND (PUB_YEAR:[2010 TO 9999])")]
+    # the wrap is idempotent, and a field name inside a word is not a field
+    once = europepmc.title_abstract("aspirin")
+    assert europepmc.title_abstract(once) == once == "TITLE_ABS:(aspirin)"
+    assert europepmc.title_abstract("SUBTITLE: analysis") == "TITLE_ABS:(SUBTITLE: analysis)"
+    http.close()
+
+
 def test_europepmc_bookshelf_records_are_books_and_chapters():
     """Calibration (critical3 export, 2026-11-12): the AHRQ report (PMID 42981454) was added from Europe PMC as a journal
     article with no venue and exported so. A book (pubType Book) has its publisher as venue; a chapter (a book whose

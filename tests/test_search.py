@@ -366,7 +366,7 @@ def test_openalex_filters_the_years_and_pages(tmp_path):
     ctx = SourceContext(http=http, settings=Settings())
     hits = resolver.search(ctx, "aspirin", "openalex", 200, offset=400, date_from=2005, date_to=2020)
     assert hits[0].language == "en"
-    assert _params(seen[-1]) == {"search": "aspirin", "per_page": "200", "page": "3",
+    assert _params(seen[-1]) == {"search.title_abstract_keywords": "aspirin", "per_page": "200", "page": "3",
                                  "filter": "publication_year:2005-2020"}
     resolver.search(ctx, "aspirin", "openalex", 50, date_from=2005)
     assert _params(seen[-1])["filter"] == "publication_year:>2004" and "page" not in _params(seen[-1])
@@ -396,12 +396,12 @@ def test_europepmc_pages_by_cursor_with_the_year_range(tmp_path):
     hits = resolver.search(ctx, "aspirin", "europepmc", 2, offset=4, date_from=2005, date_to=2020)
     assert [h.title for h in hits] == ["Page after c2"] and hits[0].language == "fr"
     assert [_params(r).get("cursorMark") for r in seen] == [None, "c1", "c2"]
-    assert {_params(r)["query"] for r in seen} == {"(aspirin) AND (PUB_YEAR:[2005 TO 2020])"}
+    assert {_params(r)["query"] for r in seen} == {"TITLE_ABS:(aspirin) AND (PUB_YEAR:[2005 TO 2020])"}
     assert {_params(r)["pageSize"] for r in seen} == {"2"}
     resolver.search(ctx, "aspirin", "europepmc", 2, offset=4, date_from=2005, date_to=2020)
     assert len(seen) == 3  # the pages walked again come from the HTTP cache
     resolver.search(ctx, "aspirin", "europepmc", 2, date_to=2020)
-    assert _params(seen[-1])["query"] == "(aspirin) AND (PUB_YEAR:[1000 TO 2020])"
+    assert _params(seen[-1])["query"] == "TITLE_ABS:(aspirin) AND (PUB_YEAR:[1000 TO 2020])"
     http.close()
 
 
