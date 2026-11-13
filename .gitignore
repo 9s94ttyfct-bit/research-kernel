@@ -7,3 +7,5 @@ build/
 *.egg-info/
 .DS_Store
 /tmp/
+.ruff_cache/
+.superpowers/
