@@ -143,7 +143,8 @@ class Library:
                 new_ids = {k: v for k, v in item.ids.model_dump().items() if v and not getattr(cur.ids, k)}
                 new_urls = [u for u in item.oa_urls if u not in cur.oa_urls]
                 new_lang = item.language if item.language and not cur.language else None
-                new_abstract = item.abstract if item.abstract and not cur.abstract else None
+                fills = (item.abstract or "").strip() and not (cur.abstract or "").strip()
+                new_abstract = item.abstract if fills else None
                 if new_ids or new_urls or new_lang or new_abstract:
                     payload = {"ids": new_ids, "oa_urls": new_urls, **({"language": new_lang} if new_lang else {}),
                                **({"abstract": new_abstract} if new_abstract else {})}
@@ -159,7 +160,7 @@ class Library:
 
         An existing abstract is never replaced; returns whether the item took this one."""
         with self.ps.lock:
-            if not abstract.strip() or self.get(item_id).abstract:
+            if not abstract.strip() or (self.get(item_id).abstract or "").strip():
                 return False
             self._ev("item.merged", item_id, {"ids": {}, "oa_urls": [], "abstract": abstract, "source": source},
                      actor, actor_kind)
@@ -246,7 +247,7 @@ def _item_merged(conn: sqlite3.Connection, ev: Event) -> None:
     d["oa_urls"] = d.get("oa_urls", []) + ev.payload["oa_urls"]
     if ev.payload.get("language"):  # a source's language for an item that had none
         d["language"] = ev.payload["language"]
-    if ev.payload.get("abstract") and not d.get("abstract"):  # a source's abstract for an item that had none
+    if (ev.payload.get("abstract") or "").strip() and not (d.get("abstract") or "").strip():  # a source's abstract for an item that had none
         d["abstract"] = ev.payload["abstract"]
     notes = conn.execute("SELECT notes, fulltext FROM items_fts WHERE item_id=?", (ev.entity_id,)).fetchone()
     _write_item(conn, d)

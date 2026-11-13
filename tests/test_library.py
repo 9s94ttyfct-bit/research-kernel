@@ -113,3 +113,19 @@ def test_fill_abstract_records_its_source(lib):
     assert ev.actor_kind == "kernel"
     assert not lib.fill_abstract(i, "Another.", source="europepmc", actor="k")  # never replaced
     assert lib.get(i).abstract == "Fetched abstract."
+
+
+def test_a_whitespace_abstract_counts_as_missing(lib):
+    blank = item(doi="10.1000/w").model_copy(update={"abstract": "  \n "})
+    i = lib.add_item(blank, added_by="agent", actor="t").item_id
+    lib.add_item(item(doi="10.1000/w").model_copy(update={"abstract": " \t"}), added_by="agent", actor="t")
+    assert not [e for e in lib.ps.log.iter() if e.type == "item.merged"]  # a blank hit adds nothing
+    lib.add_item(item(doi="10.1000/w").model_copy(update={"abstract": "Merged abstract."}), added_by="agent", actor="t")
+    assert lib.get(i).abstract == "Merged abstract."
+    other = item(title="Another study", doi="10.1000/v").model_copy(update={"abstract": " "})
+    j = lib.add_item(other, added_by="agent", actor="t").item_id
+    assert lib.fill_abstract(j, "Fetched abstract.", source="pubmed", actor="k")
+    assert lib.get(j).abstract == "Fetched abstract."
+    before = lib.get(i).model_dump(), lib.get(j).model_dump()
+    rebuild(lib.db)
+    assert (lib.get(i).model_dump(), lib.get(j).model_dump()) == before
