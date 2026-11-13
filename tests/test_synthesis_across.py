@@ -20,7 +20,15 @@ from rk.orchestrator.state import (
 )
 from rk.production import argue as argue_module
 from rk.production import synthesis
-from rk.production.argue import SYNTHESIS_QUESTION, ArgueWorker, argue_notes
+from rk.production.argue import (
+    SYNTHESIS_QUESTION,
+    ArgueWorker,
+    ArgumentDraft,
+    argue_notes,
+    argument_claims,
+    argument_roles,
+    main_claim,
+)
 from rk.production.artifacts import artifacts
 from rk.production.models import ExtractionField, OutcomeSpec, SynthesisPlan
 from rk.production.protocol import DRAFT_TASK as IDEATOR_TASK
@@ -392,6 +400,59 @@ def test_argue_is_given_the_direction_count_as_a_kernel_finding(env):
     assert given[claim["id"]]["text"] == COUNTED and given[claim["id"]]["kind"] == "stat_result"
     assert "count of the included studies by the direction of their effect" in first["instructions"]
     _topic_free(argue_module.DRAFT_TASK)
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_the_main_claim_may_reuse_the_direction_count(env):
+    """Fix round 1: the main claim may reuse a supported synthesis claim by claim_id, as reasons can, e.g. the kernel's
+    direction count (verified by V-STATS and V-NUM, never judged again). It is the main claim: the reasons support it,
+    the RQ vote judges its text, the gate passes. A claim_id that is no supported finding is asked again; a draft giving
+    both a main claim and a main_claim_id is invalid."""
+    k, ps, lib = env
+    _setup(env, RESPONSES, schema=PAIRED, plan=SWIM_PLAN)
+    ex = _Exec({("arguer", "AssessmentOut"): [assess()],
+                ("arguer", "NarrativeSynthesis"): [ta._synth_narrative([ta.F1, ta.F2])], **ta._judges()})
+    record_attempt(ps, "synthesize", 1, run_id=None, guidance="", requested=None, actor="tester")
+    assert SynthesizeWorker().run(production_ctx(k, ps, lib, ex, stage="synthesize")).status == "done"
+    record_ran(ps, "synthesize", 1, "done", "", actor="tester")
+    record_passed(ps, "synthesize", 1, actor="tester")
+    _, counted = _direction(ps)
+    assert counted["status"] == "supported"
+
+    def verified() -> list[tuple]:
+        return [tuple(r) for r in ps.db.execute("SELECT verifier, verdict FROM verifications WHERE target_id=? "
+                                                "ORDER BY rowid", (counted["id"],))]
+    before = verified()
+
+    def reusing(main_id):
+        def out(inputs):
+            return {"main_claim_id": main_id, "answers_rq": ta.SELF_CHECK,
+                    "reasons": [{"ref": "r1", "claim": ta.claim(inputs, ta.REASON, "rct"), "supports": "main",
+                                 "warrant": ta.WARRANT}]}
+        return out
+
+    ex = ta._exec([reusing("clm_nonesuch"), reusing(counted["id"])], [ta.critique()])
+    w = ArgueWorker()
+    out = w.run(ta._ctx(env, ex))
+    assert out.status == "done", out.reason
+    second = ex.of("arguer", "ArgumentDraft")[1]
+    assert "clm_nonesuch is not a supported claim of the synthesis" in second["inputs"]["guidance"]
+    assert main_claim(ps, 1) == counted["id"]
+    assert argument_roles(ps, 1, synthesis_claims(ps, 1))[counted["id"]] == "main"
+    (reason,) = argument_claims(ps, 1)  # the main claim is the finding, not a new claim
+    (link,) = ArgumentService(ps).list_edges(type="reason_of")
+    assert (link["from_id"], link["to_id"]) == (reason, counted["id"])
+    (check,) = argue_notes(ps, 1, kind="rq_check")
+    assert (check["main_claim_id"], check["decision"]) == (counted["id"], "answers")
+    assert all(v["inputs"]["subject"]["main_claim"] == COUNTED for v in ex.of("judge", "VoteOut")
+               if "main_claim" in v["inputs"].get("subject", {}))
+    assert any("main_claim" in v["inputs"].get("subject", {}) for v in ex.of("judge", "VoteOut"))
+    assert verified() == before  # verified by V-STATS and V-NUM in synthesize, never judged again
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    with pytest.raises(ValueError, match="exactly one of claim and claim_id"):
+        ArgumentDraft.model_validate({"main_claim": {"text": ta.MAIN, "kind": "fact"}, "main_claim_id": counted["id"]})
+    assert "main_claim_id" in argue_module.DRAFT_TASK
+    assert "`main_claim_id`" in (Path(rk.__file__).parent / "roles" / "arguer.md").read_text()
 
 
 def test_the_protocol_maps_a_field_pair_for_every_outcome():

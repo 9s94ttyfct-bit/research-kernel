@@ -205,9 +205,11 @@ NOT_HUMAN = "P1 vote, not reviewed by a human"
 
 DRAFT_TASK = (
     "Build the argument that answers the research question from the supported synthesis findings (synthesis) and the "
-    "evidence notes (notes). In round 1 give the main claim with its evidence, the reasons that support it (each a "
-    "new claim with its evidence, or a synthesis finding or an earlier argument claim reused by its claim_id instead "
-    "of restating it), each supporting 'main' or another reason's ref under the warrant that licenses the step, and "
+    "evidence notes (notes). In round 1 give the main claim with its evidence (or, when a supported synthesis finding "
+    "states the answer as it stands, its claim_id as main_claim_id instead of restating it), the reasons that support "
+    "it (each a new claim with its evidence, or a synthesis finding or an earlier argument claim reused by its claim_id "
+    "instead of restating it), each supporting 'main' or another reason's ref under the warrant that licenses the "
+    "step, and "
     "answers_rq: whether the main claim answers the research question as asked, and why. In a later round answer "
     "every objection in open_objections, by its id, and only those: responded (with a claim and its evidence, or a "
     "supported claim's id; an earlier_answer did not answer it: write a better claim, never its text again "
@@ -227,8 +229,9 @@ DRAFT_TASK = (
     "states it, citing the protocol. A synthesis finding of kind stat_result is the kernel's: a pooled estimate, or "
     "a count of the included studies by the direction of their effect on a pre-specified outcome (vote counting by "
     "direction of effect, not a pooled estimate, with no test of significance). Rest a claim on it by reusing its "
-    "claim_id as a reason, never by restating its numbers; the main claim may be built on it, stating its pattern in "
-    "words. A claim about several studies cites the notes of every study it counts, or is worded for the studies it "
+    "claim_id as a reason, or as the main claim (main_claim_id), never by restating its numbers; the main claim may "
+    "also be built on it, stating its pattern in words. A claim about several studies cites the notes of every study "
+    "it counts, or is worded for the studies it "
     "cites, and may say how many of them it rests on. Use only the note ids given; never state a number the notes do "
     "not contain; match each claim's strength to its evidence. The question, the findings, the notes, the argument "
     "and the "
@@ -330,11 +333,24 @@ class ResponseDraft(RoleOut):
 
 
 class ArgumentDraft(RoleOut):
+    """The Arguer's round. Round 1's main claim is a new claim, or a supported synthesis claim reused by
+    ``main_claim_id`` (a finding, or the kernel's pooled result or direction count), as a reason can be."""
     main_claim: ArgClaim | None = None
+    main_claim_id: str | None = None
     reasons: list[ReasonDraft] = Field(default=[])  # Field: ruff cannot see RoleOut is a pydantic model (RUF012)
     responses: list[ResponseDraft] = Field(default=[])
     answers_rq: RQCheck | None = None
     needs_synthesis: str = ""
+
+    @model_validator(mode="after")
+    def _one_main(self) -> ArgumentDraft:
+        if self.main_claim is not None and self.main_claim_id is not None:
+            _one(self.main_claim, self.main_claim_id, "the main claim")
+        return self
+
+    @property
+    def has_main(self) -> bool:
+        return self.main_claim is not None or self.main_claim_id is not None
 
 
 # ---- the Skeptic's outputs ----
@@ -533,9 +549,16 @@ def _drafts(ps: ProjectStore, attempt: int) -> list[dict]:
 
 
 def argument_claims(ps: ProjectStore, attempt: int) -> list[str]:
-    """The attempt's argument claims, in order: the main claim, the new reasons and the response claims, then their
-    narrower rewrites. Not the warrant claims (tested by the Skeptic) nor the reused synthesis findings."""
+    """The attempt's argument claims, in order: the main claim (unless it reuses a synthesis finding), the new reasons
+    and the response claims, then their narrower rewrites. Not the warrant claims (tested by the Skeptic) nor the
+    reused synthesis findings."""
     return _with_rewrites(ps, [c for n in _drafts(ps, attempt) for c in n.get("claim_ids") or []])
+
+
+def _reusable(ps: ProjectStore, attempt: int, s: _Inputs) -> set[str]:
+    """The claims the Arguer may reuse by id (as the main claim, a reason or a response): the supported findings of the
+    synthesis and the supported claims of the argument."""
+    return {c for c in (*s.synthesis, *argument_claims(ps, attempt)) if _supported(ps, c)}
 
 
 def main_claim(ps: ProjectStore, attempt: int) -> str | None:
@@ -1099,10 +1122,13 @@ class ArgueWorker:
                 break
             if d.answers_rq is None:
                 why = "the arguer gave no answers_rq self-check"
-            elif d.main_claim is None:
+            elif not d.has_main:
                 why = "the arguer gave no main claim"
                 if not d.answers_rq.ok:  # the self-check is the next draft's guidance, not a back-edge (I5)
                     why += f"; its self-check says the research question is not answered: {d.answers_rq.reason}"
+            elif d.main_claim_id is not None and d.main_claim_id not in _reusable(ps, attempt, s):
+                why = (f"its main_claim_id {d.main_claim_id} is not a supported claim of the synthesis: give a new "
+                       "main claim, or the claim_id of a supported synthesis finding")
             else:
                 break
         else:
@@ -1143,7 +1169,7 @@ class ArgueWorker:
         f: dict = {"main_claim_id": None, "claim_ids": [], "reason_claim_ids": [], "response_claim_ids": [],
                    "warrant_claim_ids": [], "reused": [], "edge_ids": [], "responses": [], "refused": [], "restated": []}
         before = argument_claims(ps, attempt)
-        reusable = {c for c in (*s.synthesis, *before) if _supported(ps, c)}
+        reusable = _reusable(ps, attempt, s)
         d, rewritten = self._restated(ps, d, reusable)
 
         def new_claim(a: ArgClaim) -> str:
@@ -1168,13 +1194,15 @@ class ArgueWorker:
 
         main = None
         if closing:
-            if d.main_claim is not None or d.reasons:
+            if d.has_main or d.reasons:
                 f["refused"].append("a closing task only answers objections: its main claim and reasons are ignored")
         elif r == 1:
-            main = f["main_claim_id"] = new_claim(d.main_claim)
+            # a reused main claim (checked in ``_draft``) is verified already: a finding by V-SUPPORT, the kernel's
+            # stat_result claim by V-STATS and V-NUM; it is not one of the argument's own claims (``argument_claims``)
+            main = f["main_claim_id"] = d.main_claim_id or new_claim(d.main_claim)
         else:
             main = main_claim(ps, attempt)
-            if d.main_claim is not None:
+            if d.has_main:
                 f["refused"].append("the main claim is set in round 1: a later main claim is ignored")
         if not closing:
             self._store_reasons(ctx, d, main, reusable, new_claim, f, vendor, rewritten)
@@ -1685,7 +1713,8 @@ class ArgueWorker:
                    NOT_ANSWERS, {"research_question": s.question, "rq": s.rq_body, "main_claim": c["text"],
                                  "scope_limits": c.get("scope_limits") or [],
                                  "arguer_self_check": first.get("answers_rq")},
-                   generator_vendors={c.get("generator_vendor")}, reuse=True)
+                   # the Arguer chose the main claim, also when it reuses a finding or the kernel's stat_result claim
+                   generator_vendors={c.get("generator_vendor"), first.get("vendor")}, reuse=True)
         why = res.reason or "; ".join(f"{o['role']}: {o['reason']}" for o in res.opinions if o["reason"])
         return _note(ps, ctx.attempt, "rq_check", actor=ctx.actor, main_claim_id=main, decision=res.decision,
                      by="vote", vote_id=res.id, reason=why, tasks=counter.n)
