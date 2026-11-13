@@ -1,4 +1,9 @@
-"""Identifier resolution and multi-source search."""
+"""Identifier resolution and multi-source search.
+
+Calibration (search scope, 2026-11-12, docs/eval/search-scope-2026-11-12.md): OpenAlex is searched in titles, abstracts
+and the keywords it tags works with (``openalex.SEARCH``) and Europe PMC in titles and abstracts
+(``europepmc.title_abstract``), in every search, count and year count; PubMed takes a query as given (its automatic
+term mapping applies), arXiv searches all fields and Semantic Scholar its relevance search."""
 
 from __future__ import annotations
 
@@ -120,7 +125,8 @@ def resolve(ctx: SourceContext, ident: Identifier) -> ResolvedWork | None:
 def search(ctx: SourceContext, query: str, source: SearchSource, limit: int = 25, *,
            after_year: int | None = None, offset: int = 0, date_from: int | None = None,
            date_to: int | None = None) -> Hits:
-    """Search one source: ``limit`` hits from ``offset``, within the source's ``SEARCH_LIMITS`` (else
+    """Search one source (OpenAlex in titles, abstracts and keywords, Europe PMC in titles and abstracts, PubMed as
+    given, arXiv in all fields, Semantic Scholar by relevance): ``limit`` hits from ``offset``, within the source's ``SEARCH_LIMITS`` (else
     ``ValueError``; OpenAlex and Europe PMC page, so there ``offset`` must be a multiple of ``limit``).
     ``date_from``..``date_to`` (publication years, inclusive, either end open) is filtered on every source's server.
     With ``after_year`` only works published in a later year are returned: OpenAlex filters on the server; the other

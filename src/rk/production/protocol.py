@@ -3,7 +3,8 @@ systematic review, the PRISMA-P items) for the frozen RQ, the Scout its search s
 ``Protocol`` (the question is the frozen RQ's) with the facts only it knows (``with_kernel_facts``: the admin PRISMA-P
 items of a systematic or scoping review, ``KERNEL_PRISMA_P``: registration, amendments, support and competing
 interests, and the language exclusion ``E-lang``; the rendered protocol adds the search execution,
-``search_execution_lines``, with the publication years written out), stores it as the
+``search_execution_lines``, with the publication years written out and the fields each source searches), stores it as
+the
 next version, checks it (``check_strategy``, ``check_protocol``), sizes the strategy (the record-cap probe:
 ``sources.count`` per query on each counted source of the strategy within its publication years, summed and their
 largest kept, stored as ``protocol.probed``) and then:
@@ -68,6 +69,13 @@ Calibration 2 (P1 protocol rerun 2, 2026-11-12, ``docs/eval/p1-protocol-rerun-2-
   unresolved keeps the approve from counting. A failed follow-up leaves the opinion as it was; the follow-up is
   recorded with the vote, so a resumed attempt reuses it and asks nothing again. Points close only by their own
   judge's explicit mark.
+
+Calibration (search scope, 2026-11-12, ``docs/eval/search-scope-2026-11-12.md``): the kernel searches OpenAlex in
+titles, abstracts and keywords and Europe PMC in titles and abstracts (``rk.sources``), no longer their full texts, in
+every search, record-cap probe and year count. The search execution and the judges' rules sheet name the fields of
+each source (``SEARCHED_IN``); the Scout (``STRATEGY_TASK``) builds each query from concepts joined by AND, each an OR
+group of synonyms, only concepts every eligible record names in its title or abstract, and narrows by tightening a
+concept or dropping the broadest query, never by adding a concept.
 
 Tries inside the attempt (Plan 5c Task 9 fix: in P1 every rerun spends a ``protocol->protocol`` edge use, and nothing
 else could narrow a search):

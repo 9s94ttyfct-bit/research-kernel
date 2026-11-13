@@ -82,13 +82,14 @@ class KernelSources:
                                date_from=date_from, date_to=date_to)
 
     def year_counts(self, query: str) -> dict[int, int]:
+        """OpenAlex works matching ``query`` in their titles, abstracts or keywords, per publication year."""
         ctx = self.kernel.ctx()
         return openalex.year_counts(ctx.http, query, api_key=ctx.settings.openalex_key)
 
     def count(self, query: str, source: str, *, date_from: int | None = None, date_to: int | None = None) -> int | None:
-        """OpenAlex ``meta.count``, Europe PMC ``hitCount`` or PubMed esearch ``count`` of the query in the years
-        ``date_from``..``date_to`` when given, filtered on the source's server (``None`` when the response has
-        none)."""
+        """OpenAlex ``meta.count`` (titles, abstracts and keywords), Europe PMC ``hitCount`` (titles and abstracts) or
+        PubMed esearch ``count`` (the query as given) of the query in the years ``date_from``..``date_to`` when given,
+        filtered on the source's server (``None`` when the response has none)."""
         ctx = self.kernel.ctx()
         if source == "openalex":
             return openalex.count(ctx.http, query, api_key=ctx.settings.openalex_key, date_from=date_from,

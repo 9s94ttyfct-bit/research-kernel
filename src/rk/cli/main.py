@@ -401,7 +401,7 @@ def project_intake(audience: str = typer.Option(..., "--audience", help="Who the
 def search(query: str, source: str = typer.Option("openalex", "--source"), limit: int = typer.Option(10, "--limit"),
            add: bool = typer.Option(False, "--add", help="Add hits to the current project's library"),
            project: str | None = typer.Option(None, "--project"), as_json: bool = JSON_OPT) -> None:
-    """Search OpenAlex, Europe PMC, PubMed, arXiv or Semantic Scholar."""
+    """Search OpenAlex, Europe PMC (both in titles and abstracts), PubMed, arXiv or Semantic Scholar."""
     args = {"query": query, "source": source, "limit": limit, "add": add, "project": _project(project) if add else None}
     r = _call("rk_search_works", args, write=True)
 

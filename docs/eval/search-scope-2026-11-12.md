@@ -47,5 +47,17 @@ for four of the six reviews; scoped, none is.
 
 The kernel searches titles and abstracts: OpenAlex with `search.title_abstract_keywords` (titles, abstracts and the
 keywords OpenAlex tags a work with; OpenAlex's own default on openalex.org) for searches, counts and year counts, and
-Europe PMC with the query inside `TITLE_ABS:( … )`. PubMed (no full text; its automatic term mapping stays) and arXiv
-are unchanged. The protocol's search-execution text says so, so the judges and the human see it.
+Europe PMC with the query inside `TITLE_ABS:( … )` for searches and counts. A Europe PMC query that already names a
+search field (`TITLE_ABS:`, `TITLE:`, `ABSTRACT:`, `KW:`, `MESH:`, `AUTH:`) is sent as written, so the wrap is
+idempotent and a query written with its own fields (the reproduction set's Europe PMC queries) keeps them. One
+convention everywhere: production searches, the record-cap probe, discovery searches and year counts all go through
+`rk.sources.openalex` and `rk.sources.europepmc`. PubMed (no full text; its automatic term mapping stays), arXiv
+(all fields) and Semantic Scholar are unchanged.
+
+The protocol's search-execution text and the judges' rules sheet name the fields each source searches
+(`SEARCHED_IN` in `rk.production.protocol`), so the judges and the human see it. Strategies written for the full-text
+search lose recall in titles and abstracts (a long unquoted query found no Europe PMC record; strategies narrowed to
+fit the cap under the full-text search dropped included studies), so the Scout's instructions (`STRATEGY_TASK`,
+`src/rk/roles/scout.md`) ask for queries of a few concepts joined by AND, each an OR group of synonyms and spelling
+variants, with only the concepts every eligible record names in its title or abstract, and for narrowing by
+tightening a concept or dropping the broadest query, never by adding a concept.
