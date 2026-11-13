@@ -259,17 +259,24 @@ DRAFT_TASK = (
     "`open_points` is given (the judges' open points), answer in `answers` every point whose `owner` is ideator, by "
     "its `id`: how changed, with where the protocol changes it in note, or how rebutted, with why it stays in note; a "
     "draft that leaves one of them unanswered is sent back to you.")
+# Calibration (search scope, 2026-11-12): strategies written for the full-text search and narrowed to fit the cap lost
+# recall when searched in titles and abstracts (a long unquoted query found no Europe PMC record); the Scout builds
+# each query from concepts every eligible record names in its title or abstract, and narrows by tightening a concept.
 STRATEGY_TASK = (
     "Write the search strategy for the protocol: at least 3 English search queries that together cover the research "
     "question and the eligibility criteria, at least 2 sources taken from `available_sources` exactly as given, and "
-    "the publication-year range (date_from, date_to; null for an open end). When a previous draft is given (with the "
-    "record counts of its queries), revise its strategy: change only what the guidance asks for. When `narrowing` is "
-    "given, the record-cap probe of the previous draft's strategy (`total`: the record counts of each query on each "
-    "counted source within its years, summed, an upper bound since duplicates count again) is above `record_cap`: "
-    "return a narrower strategy with fewer records. Drop or tighten the broadest queries (`counts` shows which), "
-    "for example with quoted phrases and AND between the concepts every record needs; restrict fields (title or "
-    "abstract) only in a syntax every chosen source reads; keep every eligibility criterion covered. A strategy that "
-    "repeats one already tried or does not lower the total below the best so far is a failed try (`failed_tries` "
+    "the publication-year range (date_from, date_to; null for an open end). The kernel searches OpenAlex and Europe "
+    "PMC in titles and abstracts (OpenAlex also in the keywords it tags works with), so build each query as a few "
+    "concepts joined by AND, each concept an OR group of its synonyms and spelling variants (a phrase in quotes), and "
+    "AND only the concepts every eligible record names in its title or abstract (the population or condition, the "
+    "intervention or exposure, and the study design only when the eligibility requires it); no bare unquoted string "
+    "of many words, and no field tags. When a previous draft is given (with the record counts of its queries), revise "
+    "its strategy: change only what the guidance asks for. When `narrowing` is given, the record-cap probe of the "
+    "previous draft's strategy (`total`: the record counts of each query on each counted source within its years, "
+    "summed, an upper bound since duplicates count again) is above `record_cap`: return a narrower strategy with "
+    "fewer records. Tighten a concept (a quoted phrase for a loose synonym) or drop the broadest query (`counts` shows "
+    "which); never add a concept a relevant record may not name in its title or abstract; keep every eligibility "
+    "criterion covered. A strategy that repeats one already tried or does not lower the total below the best so far is a failed try (`failed_tries` "
     "lists them). Keep every source in `keep_sources` (the PRISMA-P texts name them): narrow the queries, not those "
     "sources. The kernel runs the searches; do not search yourself. Follow the guidance when there is any. When "
     "`open_points` is given (the judges' open points), answer in `answers` every point whose `owner` is scout (the "
@@ -305,6 +312,18 @@ MARKS_TASK = (
     "`resolved`, by its `id`: resolved true when this version resolves it, false when it does not, with why. A point "
     "you leave unmarked or mark false keeps your approve from counting (it counts as revise). Do not search or use "
     "tools.")
+# Where each search source matches a query (rk.sources.resolver and the source modules), as the protocol's search
+# execution and the judges' rules sheet state it.
+# Calibration (search scope, 2026-11-12, docs/eval/search-scope-2026-11-12.md): OpenAlex and Europe PMC no longer
+# search full texts; a systematic review searches titles and abstracts.
+SEARCHED_IN = {
+    "openalex": "OpenAlex in titles, abstracts and the keywords it tags works with",
+    "europepmc": ("Europe PMC in titles and abstracts (the query inside TITLE_ABS:( ), unless it names Europe PMC "
+                  "fields itself)"),
+    "pubmed": "PubMed as given (its automatic term mapping applies)",
+    "arxiv": "arXiv in all fields (as all:<query>)",
+    "s2": "Semantic Scholar as given (its relevance search)",
+}
 # The judges' rules sheet: what the kernel does whatever the protocol says, so a judge does not ask the authors for
 # what they cannot change or the kernel cannot do. Every statement is what the code does (rk.production.search,
 # rk.production.screening, rk.sources.resolver) or what the project's records establish.
@@ -320,9 +339,9 @@ KERNEL_RULES = (
     "OpenAlex, Europe PMC, PubMed, arXiv and, when its API key is set, Semantic Scholar. The kernel has no search of "
     "trial registries or grey literature, no reference-list or citation searching, no hand-searching and no contact "
     "with authors.\n"
-    "3. Queries. Each query is sent verbatim to the search API of each listed source (arXiv receives it as "
-    "all:<query>); the kernel adds no MeSH terms or field tags and does not rewrite a query into a source's own syntax "
-    "(PubMed applies its own automatic term mapping). "
+    "3. Queries. Each query is sent as written to the search API of each listed source and searched there in these "
+    f"fields: {'; '.join(SEARCHED_IN.values())}. The kernel adds no MeSH terms and does not rewrite a query into a "
+    "source's own syntax; a query needs no field tags to be searched in titles and abstracts. "
     "OpenAlex rejects wildcards (* and ?) and ~, so the protocol's checks fail a query with them on OpenAlex.\n"
     "4. Years. The publication years are applied as each source's own publication-year filter (arXiv: its "
     "submission date); an open start is the earliest record a source indexes, an open end the date of the search.\n"
@@ -1277,22 +1296,23 @@ def publication_years(ss: dict) -> str:
 
 def search_execution_lines(body: dict) -> list[str]:
     """How ``search_screen`` runs the protocol's search strategy (``rk.production.search``), as the protocol's review
-    shows it after the strategy: the publication years written out, each query sent verbatim to each source, the
-    search log, deduplication, the record cap counted after deduplication and the language rule. Facts of the kernel,
-    not of the draft; the judges read them as facts.
+    shows it after the strategy: the publication years written out, each query sent as written to each source and the
+    fields each source searches it in (``SEARCHED_IN``), the search log, deduplication, the record cap counted after
+    deduplication and the language rule. Facts of the kernel, not of the draft; the judges read them as facts.
 
     Calibration (P1 protocol diagnosis 2026-11-12): rule R4; no_start_date, not_reproducible, dedup_unspecified and
-    cap_handling_unspecified points."""
+    cap_handling_unspecified points. Calibration (search scope, 2026-11-12): the fields of each of the strategy's
+    sources, OpenAlex's and Europe PMC's titles and abstracts instead of their full texts."""
     ss, cap = body["search_strategy"], body["record_cap"]
     n_q, n_s = len(ss["queries"]), len(ss["sources"])
     return [
         "Search execution (written by the kernel: how search_screen runs this strategy after the freeze):",
         (f"- publication years: {publication_years(ss)} (inclusive), applied as each source's own publication-year "
-         "filter (arXiv: its submission date)."),
-        (f"- each query is sent verbatim, as written above, to the search API of each listed source ({n_q} queries x "
-         f"{n_s} sources = {n_q * n_s} searches; arXiv receives it as all:<query>); the kernel adds no MeSH terms or "
-         "field tags and does not rewrite a query into a source's own syntax (PubMed applies its own automatic term "
-         "mapping)."),
+         f"filter{' (arXiv: its submission date)' if 'arxiv' in ss['sources'] else ''}."),
+        (f"- each query is sent as written above to the search API of each listed source ({n_q} queries x {n_s} "
+         f"sources = {n_q * n_s} searches) and searched there in these fields: "
+         f"{'; '.join(SEARCHED_IN[s] for s in ss['sources'])}. The kernel adds no MeSH terms and does not rewrite a "
+         "query into a source's own syntax."),
         ("- every page a source returns is logged in the project's search log with its time (the search date), "
          "source, query, publication years, offset and the records it returned. Each source and query is paged to its "
          "last result; a search a source cannot finish (e.g. its paging limit) is logged as incomplete with its "
@@ -1512,9 +1532,9 @@ def _over_cap_reason(best: dict, tries: int) -> str:
     return (f"the record-cap probe of version {best['version']} shows nearly always at least {probe['lower']} records "
             f"(its largest single query-on-source count; {probe['total']} summed, an upper bound), above "
             f"the record cap {cap}, after {tries} narrowing tries, and P1 does not vote on a protocol the probe shows "
-            "above the cap: narrow the search strategy to fewer records (drop or tighten the broadest queries, which "
-            "the probe's counts show, e.g. with quoted phrases and AND between the concepts every record needs) and "
-            "keep every eligibility criterion covered")
+            "above the cap: narrow the search strategy to fewer records (tighten a concept or drop the broadest "
+            "query, which the probe's counts show; never add a concept a relevant record may not name in its title "
+            "or abstract) and keep every eligibility criterion covered")
 
 
 def _revise_reason(res: VoteResult) -> str:

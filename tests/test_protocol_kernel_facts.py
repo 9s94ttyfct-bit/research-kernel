@@ -4,12 +4,15 @@ never by the Ideator, so no vote asks the authors for what they cannot know."""
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from rk.production import store
 from rk.production.models import SCREENED_LANGUAGES, Criterion, SearchStrategy
 from rk.production.protocol import (
     KERNEL_PRISMA_P,
+    KERNEL_RULES,
     LANGUAGE_CRITERION_ID,
     ProtocolWorker,
     kernel_prisma_p,
@@ -40,6 +43,40 @@ def sr_env(tmp_home, replay_http):
 
 def _exclude_ids(body) -> list[str]:
     return [c.id for c in body.eligibility.exclude]
+
+
+# what each source's search matches (rk.sources): the text names the fields, the request sends them
+FIELDS = {"openalex": r"OpenAlex[^;\n]*titles, abstracts and[^;\n]*keywords",
+          "europepmc": r"Europe PMC[^;\n]*titles and abstracts[^;\n]*TITLE_ABS",
+          "pubmed": r"PubMed[^;\n]*automatic term mapping", "arxiv": r"arXiv[^;\n]*all fields",
+          "s2": r"Semantic Scholar[^;\n]*relevance search"}
+NAMES = {"openalex": "OpenAlex", "europepmc": "Europe PMC", "pubmed": "PubMed", "arxiv": "arXiv",
+         "s2": "Semantic Scholar"}
+
+
+def test_search_execution_names_the_fields_each_chosen_source_searches(sr_env):
+    """Calibration (search scope, 2026-11-12): the kernel searches OpenAlex in titles, abstracts and keywords and Europe
+    PMC in titles and abstracts; the protocol's search execution says where each of the strategy's sources searches a
+    query (and names no source the strategy does not have), and the judges' rules sheet says it for every source."""
+    from rk.sources import europepmc, openalex
+
+    assert openalex.SEARCH == "search.title_abstract_keywords"
+    assert europepmc.title_abstract("x") == "TITLE_ABS:(x)"
+    _, ps, _ = sr_env
+    for sources in (["openalex", "pubmed"], ["europepmc", "arxiv"], ["s2", "openalex", "europepmc"]):
+        body = with_kernel_facts(a_protocol(search_strategy=SearchStrategy(
+            sources=sources, queries=["aspirin AND stroke", "antiplatelet AND elderly"])), "systematic_review")
+        row = {"id": "prt_none", "version": 1, "body": body.model_dump(mode="json")}
+        block = search_execution_lines(row["body"])
+        assert "\n".join(render_protocol(ps, row)).count("\n".join(block)) == 1
+        (fields,) = [line for line in block if "fields" in line]
+        for s, name in NAMES.items():
+            if s in sources:
+                assert re.search(FIELDS[s], fields), (s, fields)
+            else:
+                assert name not in fields, (s, fields)
+    assert all(re.search(pattern, KERNEL_RULES) for pattern in FIELDS.values())
+    assert "adds no MeSH terms or field tags" not in KERNEL_RULES  # Europe PMC's query goes inside TITLE_ABS
 
 
 def test_kernel_writes_admin_prisma_p_items(sr_env):
@@ -116,7 +153,7 @@ def test_rendered_protocol_states_search_execution(sr_env):
     assert lines.index(f"Record cap: {body.record_cap} records.") > start
     text = "\n".join(block)
     assert "earliest indexed record to 2020" in text
-    assert "verbatim" in text and "4 searches" in text  # 2 queries x 2 sources
+    assert "as written" in text and "4 searches" in text  # 2 queries x 2 sources
     assert "duplicate" in text and "normalised title" in text
     assert f"{body.record_cap}" in text and "after deduplication" in text
     open_end = search_execution_lines({**row["body"], "search_strategy": {**row["body"]["search_strategy"],

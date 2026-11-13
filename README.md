@@ -174,10 +174,13 @@ frozen), `search_screen` (search, deduplication, title/abstract and full-text sc
 - **Protocol.** The Ideator drafts the eligibility criteria, the extraction schema (text, number or category fields),
   the synthesis plan and, for a systematic review, the PRISMA-P items, written to agree with the protocol's languages
   (English: records in another language are excluded by rule, so no criterion admits one); the Scout drafts the
-  search strategy (at least 3 queries on at least 2 sources, years). Every query runs on every source of the strategy
-  as written, so a field tag one source understands (PubMed `[tiab]`, Europe PMC `TITLE_ABS:`) breaks the query on the
-  other; Europe PMC and OpenAlex also match full texts, so their hit counts are much higher than PubMed's. The kernel
-  checks the draft (its free texts may not claim novelty, the same rule as for topics and RQs) and sizes it: the
+  search strategy (at least 3 queries on at least 2 sources, years), each query a few concepts joined by AND, each
+  concept an OR group of its synonyms. Every query runs on every source of the strategy as written, so a field tag one
+  source understands (PubMed `[tiab]`, Europe PMC `TITLE_ABS:`) breaks the query on the other. The kernel picks the
+  fields: OpenAlex is searched in titles, abstracts and the keywords it tags works with, Europe PMC in titles and
+  abstracts, PubMed as given (its automatic term mapping applies), arXiv in all fields
+  (`docs/eval/search-scope-2026-11-12.md`: 79 of the 81 included studies the full-text search found, with 10 to 25
+  times fewer records). The kernel checks the draft (its free texts may not claim novelty, the same rule as for topics and RQs) and sizes it: the
   record-cap probe counts each query on each source that reports counts (OpenAlex, Europe PMC, PubMed) within the strategy's publication years. The probe
   is advisory and gives two bounds on the records: the sum of the counts (an upper bound: duplicates count again) and
   the largest single count (nearly always a lower bound). A draft that fails the checks is drafted again within the
@@ -187,8 +190,8 @@ frozen), `search_screen` (search, deduplication, title/abstract and full-text sc
   is above the cap when the best version's is within it); the version with the lowest total goes
   on. The kernel writes what only it knows: the administrative PRISMA-P items (registration, amendments, support,
   competing interests), the language exclusion `E-lang` and the search execution (publication years written out,
-  each query sent verbatim to each source); the checks also reject placeholders, a missing PRISMA-P item of a
-  systematic review, prose naming sources or searches the strategy does not have, missing outcomes or study
+  each query sent as written to each source and the fields each source searches); the checks also reject
+  placeholders, a missing PRISMA-P item of a systematic review, prose naming sources or searches the strategy does not have, missing outcomes or study
   identifier field, a meta-analysis of diagnostic accuracy, unbalanced or AND/OR-mixed queries, and a redraft that
   drops a PRISMA-P item no open point and no revise comment of yours asked to remove. In P2 you approve, revise or go
   back in a `protocol_approval` checkpoint (a revise, like
