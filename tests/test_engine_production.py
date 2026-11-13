@@ -30,9 +30,11 @@ from rk.orchestrator.state import (
     current_stage,
     discovery_passed,
     edge_count,
+    fixed_stages,
     latest_attempt,
     orchestrator_drives,
     production_began,
+    record_fixed_stages,
     run_row,
     stage_rows,
     start_run,
@@ -177,6 +179,50 @@ def test_back_edge_protocol_to_question_reopens_question_and_protocol(project):
     assert [latest_attempt(ps, s) for s in ("topics", "question", "protocol")] == [1, 2, 2]
     assert w["question"].calls[-2] == ("run", 2, "RQ too broad")
     assert edge_count(ps, "protocol->question") == 1
+
+
+SEED_REASON = "the reproduction seed (its question is the published review's)"
+
+
+def test_fixed_stages_keep_their_first_reason(project):
+    _, ps = project
+    assert fixed_stages(ps) == {}
+    record_fixed_stages(ps, ["gaps", "topics", "question"], SEED_REASON, actor="tester")
+    record_fixed_stages(ps, ["question"], "another reason", actor="tester")
+    assert fixed_stages(ps) == {"gaps": SEED_REASON, "topics": SEED_REASON, "question": SEED_REASON}
+
+
+@pytest.mark.parametrize("project", [{"production_mode": "auto"}, {"production_mode": "collab"}], indirect=True,
+                         ids=["p1", "p2"])
+def test_a_back_edge_to_a_fixed_stage_fails_the_run(project):
+    """Calibration (seeded reproduction, 2026-11-13): a back-edge to a stage the project's seed fixed is not taken, in
+    P1 and P2 alike; the run fails with why, and the fixed stage gets no new attempt. Unseeded, the same edge is taken
+    (``test_back_edge_protocol_to_question_reopens_question_and_protocol``)."""
+    k, ps = project
+    record_fixed_stages(ps, ["gaps", "topics", "question"], SEED_REASON, actor="tester")
+    w = _workers(protocol=FakeWorker(runs=[StageOutcome("back_edge", to="question", reason="RQ too broad")]))
+    o = _orch(k, w)
+    run_id = start_run(ps, until="protocol", actor="tester", clock=lambda: T0)
+    assert _drive(o, run_id)[-1] == "failed"
+    assert run_row(ps, run_id)["reason"] == (
+        "question is fixed by the reproduction seed (its question is the published review's): RQ too broad")
+    assert latest_attempt(ps, "question") == 1 and current_stage(ps) == "protocol"
+    assert edge_count(ps, "protocol->question") == 0 and w["question"].kinds() == ["run", "gate"]
+    assert not list_checkpoints(ps)  # P2 is not asked to allow a use either
+
+
+def test_a_rerun_of_a_fixed_stage_fails_the_run(project):
+    """``stage == to``: a fixed stage that asks to run again is not rerun either."""
+    k, ps = project
+    record_fixed_stages(ps, ["question"], SEED_REASON, actor="tester")
+    w = _workers(question=FakeWorker(runs=[StageOutcome("rerun", reason="one more pass")]))
+    o = _orch(k, w)
+    run_id = start_run(ps, until="question", actor="tester", clock=lambda: T0)
+    assert _drive(o, run_id)[-1] == "failed"
+    assert run_row(ps, run_id)["reason"] == (
+        "question is fixed by the reproduction seed (its question is the published review's): one more pass")
+    assert latest_attempt(ps, "question") == 1 and edge_count(ps, "question->question") == 0
+
 
 
 @pytest.mark.parametrize("project", [{"production_mode": "collab"}], indirect=True)

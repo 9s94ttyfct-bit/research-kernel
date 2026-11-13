@@ -24,6 +24,7 @@ from rk.orchestrator.graph import DISCOVERY
 from rk.orchestrator.state import (
     current_stage,
     discovery_passed,
+    fixed_stages,
     record_attempt,
     record_passed,
     record_ran,
@@ -216,6 +217,9 @@ def test_seeded_project_starts_at_protocol_with_frozen_rq(kernel):
     # the reproduced review is never named to the agents (its included studies would leak through it)
     rq_text = json.dumps(rq["body"]) + topic
     assert entry.doi not in rq_text and entry.title not in rq_text and entry.pmcid not in rq_text
+    # Calibration (seeded reproduction, 2026-11-13): the stages the seed passed are fixed, no back-edge reopens them
+    assert fixed_stages(ps) == dict.fromkeys(DISCOVERY, sr.FIXED_REASON)
+    assert "published review" in sr.FIXED_REASON
     # seeding again continues the seeded project: nothing is recorded twice
     events = ps.db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
     assert sr.seed_project(kernel, entry).root == ps.root
@@ -531,3 +535,18 @@ def test_seeding_resumes_after_each_interruption(kernel, monkeypatch):
     ps = sr.seed_project(kernel, c)
     assert count(ps, "SELECT COUNT(*) FROM topics") == 1 and frozen_rq(ps) is not None
     assert current_stage(ps) == "protocol"
+
+
+def test_a_project_seeded_before_its_stages_were_fixed_gets_them_on_reseed(kernel, monkeypatch):
+    """Calibration (seeded reproduction, 2026-11-13): a project seeded before seeding fixed its stages (srrepro7-9) has
+    them fixed when it is seeded again (``rk eval sr-repro`` seeds every entry before it runs or continues it)."""
+    entry = _entry("fixed-late")
+    real = sr.record_fixed_stages
+    monkeypatch.setattr(sr, "record_fixed_stages", lambda *a, **kw: None)  # seeded as before this change
+    ps = sr.seed_project(kernel, entry)
+    assert fixed_stages(ps) == {}
+    monkeypatch.setattr(sr, "record_fixed_stages", real)
+    sr.seed_project(kernel, entry)
+    sr.seed_project(kernel, entry)
+    assert fixed_stages(ps) == dict.fromkeys(DISCOVERY, sr.FIXED_REASON)
+    assert ps.db.execute("SELECT COUNT(*) FROM events WHERE type='stages.fixed'").fetchone()[0] == 1

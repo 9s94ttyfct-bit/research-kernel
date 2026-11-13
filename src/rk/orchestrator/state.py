@@ -176,6 +176,26 @@ def kernel_grants(ps: ProjectStore, edge: str) -> int:
                          "AND json_extract(payload, '$.by')='kernel'", (edge,)).fetchone()[0]
 
 
+# ---- fixed stages ----
+def record_fixed_stages(ps: ProjectStore, stages: list[str], reason: str, *, actor: str) -> None:
+    """``stages`` are fixed: no back-edge or rerun reopens them (the engine fails the run instead), ``reason`` says by
+    what, as in "<stage> is fixed by <reason>". Written by whoever set the stages from outside the stage graph (the
+    reproduction set's seeding); a stage fixed already keeps its first reason."""
+    _emit(ps, "stages.fixed", ps.project_id, {"stages": list(stages), "reason": reason}, actor)
+
+
+def fixed_stages(ps: ProjectStore) -> dict[str, str]:
+    """Every fixed stage of the project with the reason it was first fixed by (``record_fixed_stages``); empty for a
+    project nothing fixed."""
+    out: dict[str, str] = {}
+    for r in ps.db.execute("SELECT payload FROM events WHERE type='stages.fixed' ORDER BY seq"):
+        p = json.loads(r["payload"])
+        for s in p["stages"]:
+            out.setdefault(s, p["reason"])
+    return out
+
+
+
 # ---- guided (D1) stage calls ----
 def record_d1_finished(ps: ProjectStore, outcome: dict, *, actor: str) -> None:
     """A guided stage call that ran in the background finished: ``outcome`` holds its action, stage, start and end

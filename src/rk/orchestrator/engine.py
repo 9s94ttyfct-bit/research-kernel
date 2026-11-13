@@ -4,7 +4,13 @@ stages are those of the project's paper type (``stages_of``); a stage runs only 
 
 ``run_stage`` / ``advance`` are guided discovery (D1: you decide when to run a stage again; discovery stages only);
 ``step`` is one unit of a run (D2 discovery, and from protocol on every project). P1 (``production_mode ==
-"auto"``) degrades at an edge limit, P2 (``collab``) asks."""
+"auto"``) degrades at an edge limit, P2 (``collab``) asks.
+
+A stage the project fixed (``fixed_stages``) is never reopened: a back-edge or a rerun to it fails the run with why,
+in P1 and P2 alike. Calibration (seeded reproduction, 2026-11-13): a reproduction's discovery stages are fixed by its
+seed (its question is the published review's); in srrepro7 and srrepro8 argue->question re-ran the question's
+novelty check, which found published reviews (the reproduced one among them), went back to topics and gaps, and gaps
+failed: re-running discovery on a given question measures nothing."""
 
 from __future__ import annotations
 
@@ -42,6 +48,7 @@ from rk.orchestrator.state import (
     attempt_ran,
     current_stage,
     edge_row,
+    fixed_stages,
     latest_attempt,
     orchestrator_drives,
     record_attempt,
@@ -480,6 +487,11 @@ class Orchestrator:
 
     def _edge(self, ps: ProjectStore, run: dict, worker: Worker, ctx: StageContext, to: str,
               failures: list[str]) -> str:
+        """Settle a back-edge or a rerun (``to == stage``) in a run: a fixed stage (``fixed_stages``) is not reopened,
+        the run fails with why; any other edge is used under its limit (``_use_edge``)."""
+        if (fixed := fixed_stages(ps).get(to)) is not None:
+            why = f"{to} is fixed by {fixed}" + (f": {'; '.join(failures)}" if failures else "")
+            return self._set_run(ps, run, "failed", why, actor=ctx.actor)
         res = self._use_edge(ps, worker, ctx, to, failures)
         if res.kind == "taken":
             return self._set_run(ps, run, "running", actor=ctx.actor)

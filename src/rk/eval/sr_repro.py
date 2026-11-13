@@ -6,7 +6,10 @@ text) and its main conclusion. The manifest is ``data/sr_repro.json`` (selected 
 Each review is reproduced in a project of its own, ``srrepro-<id>`` under the normal RK_HOME (``seed_project``): a
 P1 systematic review whose research question is the review's question, frozen as the RQ (Plan 5c Deviation 4: the
 discovery stages are recorded as passed, seeded, so a run starts at ``protocol``), with the review's search window in
-the topic the protocol's Ideator and Scout read. The reproduced review is never named to the agents (its reference
+the topic the protocol's Ideator and Scout read. The seeded stages are fixed: no back-edge reopens them (the run fails
+instead), and a P1 RQ vote that finds the main claim not answering the RQ goes back to synthesize, not to question.
+Calibration (seeded reproduction, 2026-11-13): re-running discovery on a given question measures nothing, and it pulled
+the reproduced review into the library. The reproduced review is never named to the agents (its reference
 list would hand them the answer), nor is its main conclusion; ``score`` reports whether the project included it or
 rests its main claim on it (then the direction does not count) and, as information, whether it entered the library.
 
@@ -55,8 +58,10 @@ from rk.orchestrator.state import (
     active_run,
     attempt_ran,
     current_stage,
+    fixed_stages,
     latest_run,
     record_attempt,
+    record_fixed_stages,
     record_passed,
     record_ran,
     stage_row,
@@ -105,6 +110,8 @@ DIRECTION_QUESTION = (
     "conditions or in different subgroups; unclear: the claim states no direction for this outcome.")
 SEED_REASON = ("seeded from the systematic-review reproduction set: the question of a published review frozen as the "
                "research question (Plan 5c Deviation 4); discovery did not run")
+# why no back-edge reopens a seeded stage (rk.orchestrator.state.fixed_stages): "<stage> is fixed by <FIXED_REASON>"
+FIXED_REASON = "the reproduction seed (its question is the published review's)"
 
 
 # ---- the manifest -----------------------------------------------------------------------------------------------
@@ -277,10 +284,15 @@ def _topic(entry: Entry) -> Topic:
 def seed_project(kernel, entry: Entry, *, actor: str = ACTOR) -> ProjectStore:
     """The entry's project ``srrepro-<id>``, created and seeded on first use (Deviation 4): a P1 (auto) D2 systematic
     review whose RQ is the entry's question, frozen as adopted by you (the published question, chosen for the
-    reproduction set), with every discovery stage recorded as passed, so a run starts at ``protocol``. Resumable: the
-    seed record comes first and every later step checks what is stored, so seeding again (or after an interruption)
-    continues the project and records nothing twice. A project with that slug not seeded from the entry is refused
-    (``ValueError``)."""
+    reproduction set), with every discovery stage recorded as passed, so a run starts at ``protocol``, and fixed
+    (``record_fixed_stages``, ``FIXED_REASON``): no back-edge reopens one, and argue's RQ vote goes back to synthesize.
+    Resumable: the seed record comes first and every later step checks what is stored, so seeding again (or after an
+    interruption) continues the project and records nothing twice; a project seeded before its stages were fixed has
+    them fixed when seeded again. A project with that slug not seeded from the entry is refused (``ValueError``).
+
+    Calibration (seeded reproduction, 2026-11-13): unfixed, a P1 RQ vote that found the main claim not answering the RQ
+    sent srrepro7 and srrepro8 back to question, whose novelty check found published reviews (the reproduced one among
+    them) and went on to topics and gaps, where the run failed (``docs/eval/seeded-fixed-2026-11-13.md``)."""
     slug, title = slug_of(entry), f"Reproduction set: {entry.id}"
     try:
         ps, _ = kernel.project(slug)
@@ -322,6 +334,8 @@ def seed_project(kernel, entry: Entry, *, actor: str = ACTOR) -> ProjectStore:
             if not attempt_ran(ps, s, 1):  # an interruption between ran and passed records the pass only
                 record_ran(ps, s, 1, "done", SEED_REASON, actor=actor)
             record_passed(ps, s, 1, actor=actor)
+        if unfixed := [s for s in DISCOVERY if s not in fixed_stages(ps)]:  # once; a project seeded before gets it
+            record_fixed_stages(ps, unfixed, FIXED_REASON, actor=actor)
     return ps
 
 
