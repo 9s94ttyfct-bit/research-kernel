@@ -432,7 +432,9 @@ After argue (and design, for a research proposal), four stages turn the argument
   - G-PREREG (systematic and scoping reviews), V-PRISMA where the paper type reports it, and V-STATS.
 
   A failure goes back to the stage that owns it (draft, argue or read_extract). A failure no stage can mend fails the
-  run and names its owner. When every gate passes, you read the manuscript in `final_review` (P1: a vote).
+  run and names its owner. When every gate passes, you read the manuscript in `final_review`. In P1 the judges vote
+  instead: `approve`; `not_approved` sends it to revise; `argue_again` (a claim must change, which revise cannot do)
+  sends it to argue.
 - **Export.** Only an audited manuscript that you approved exports. pandoc, citeproc and tectonic write
   `paper.pdf`, `paper.docx`, `paper.md` and `paper.tex` with a bibliography; claim markers become citations of their
   evidence. The reproducible package (`package-<hash>.zip`) holds:
