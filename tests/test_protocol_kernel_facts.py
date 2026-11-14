@@ -241,9 +241,28 @@ def test_language_exclusion_is_appended_once():
 
     forged = a_protocol()
     forged.eligibility.exclude.append(Criterion(id=LANGUAGE_CRITERION_ID, text="Any language is admitted"))
-    fixed = with_kernel_facts(forged, "systematic_review", "auto")
+    fixed = with_kernel_facts(forged, "critical_review", "auto")
     assert [c for c in fixed.eligibility.exclude if c.id == LANGUAGE_CRITERION_ID] == [lang]
     assert fixed.eligibility.include == a_protocol().eligibility.include
+
+
+def test_language_exclusion_names_where_its_count_is_reported():
+    """The ``E-lang`` rationale (srrepro11 tfa-heated-oils: a judge blocked the vote on an unjustified English
+    restriction) points to the PRISMA flow only for a type that reports one, and its calibration claim stays English
+    whatever languages the strategy lists."""
+    def lang(paper_type, languages=None):
+        body = a_protocol()
+        if languages:
+            body.search_strategy.languages = languages
+        (c,) = [c for c in with_kernel_facts(body, paper_type, "auto").eligibility.exclude
+                if c.id == LANGUAGE_CRITERION_ID]
+        return c.text
+
+    for paper_type in ("systematic_review", "scoping_review"):
+        assert "PRISMA flow" in lang(paper_type)
+    for paper_type in ("critical_review", "research_proposal"):
+        assert "PRISMA" not in lang(paper_type)
+    assert "calibrated on English-language reports only" in lang("systematic_review", ["en", "de"])
 
 
 def test_rendered_protocol_states_search_execution(sr_env):

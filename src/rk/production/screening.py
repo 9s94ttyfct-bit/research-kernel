@@ -137,6 +137,7 @@ from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.production.models import (
     FULL_TEXT,
     PHASE_WORDS,
+    PRISMA_TYPES,
     TITLE_ABSTRACT,
     Include,
     Protocol,
@@ -187,7 +188,6 @@ NO_STUDY = "no study met the criteria"
 
 ScreeningMode = Literal["dual", "sampled", "single"]
 MODES: dict[str, ScreeningMode] = {"systematic_review": "dual", "scoping_review": "sampled"}
-PRISMA_TYPES = frozenset({"systematic_review", "scoping_review"})  # PRISMA counts; an incomplete search blocks
 
 # Calibration (search and screening, 2026-11-12, docs/eval/search-screen-2026-11-12.md section 4): ozone's included
 # studies were excluded by misreading criteria that admitted them (a listed comparator; L*a*b* values ΔE is computed

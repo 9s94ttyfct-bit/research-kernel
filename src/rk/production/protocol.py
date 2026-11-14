@@ -193,6 +193,7 @@ from rk.orchestrator.engine import GateResult, StageContext, StageOutcome
 from rk.orchestrator.state import kernel_grants
 from rk.production.models import (
     PAIR_ROLES,
+    PRISMA_TYPES,
     RECORD_CAP,
     SCREENED_LANGUAGES,
     Criterion,
@@ -1120,11 +1121,21 @@ def _language_names(codes: list[str]) -> str:
     return ", ".join(f"{LANGUAGE_NAMES[c]} ({c})" if c in LANGUAGE_NAMES else c for c in codes)
 
 
-def _language_criterion(languages: list[str]) -> Criterion:
+def _language_criterion(languages: list[str], paper_type: str) -> Criterion:
+    """The kernel's language exclusion, with its rationale and the bias it risks (rule R3: the justification the
+    judges asked for; srrepro11 tfa-heated-oils, 2026-11-14: a judge blocked the last vote on the unjustified English
+    restriction, which the Ideator may not rewrite). The calibration is a fixed fact, whatever ``languages`` lists. A
+    type that reports PRISMA counts (``PRISMA_TYPES``) states the count of records the rule excluded in its flow; the
+    others hold it in their screening records, which the Writer's limitations input lists (``prisma_notes``) without
+    a check that the Writer states it."""
+    told = ("the PRISMA flow reports how many records this rule excluded" if paper_type in PRISMA_TYPES
+            else "the screening records count the records this rule excluded")
     return Criterion(id=LANGUAGE_CRITERION_ID, text=(
         f"Reports in a language other than {_language_names(languages)}: search_screen excludes a record whose "
         "language a source records as another language, by a kernel rule before screening; a record with no recorded "
-        "language is screened. Written by the kernel."))
+        "language is screened. Rationale: the review has no translation step; its screeners, readers and checks work "
+        "on the text as written and were calibrated on English-language reports only. Studies reported only in another "
+        f"language may be missed (language bias); {told}. Written by the kernel."))
 
 
 def with_kernel_facts(body: Protocol, paper_type: str, mode: str) -> Protocol:
@@ -1141,7 +1152,7 @@ def with_kernel_facts(body: Protocol, paper_type: str, mode: str) -> Protocol:
     elig = body.eligibility
     include = [c for c in elig.include if c.id.strip() != LANGUAGE_CRITERION_ID]
     exclude = [c for c in elig.exclude if c.id.strip() != LANGUAGE_CRITERION_ID]
-    exclude.append(_language_criterion(body.search_strategy.languages))
+    exclude.append(_language_criterion(body.search_strategy.languages, paper_type))
     return body.model_copy(update={"prisma_p": {**own, **kernel_prisma_p(paper_type, body.question, mode)} or None,
                                    "eligibility": Eligibility(include=include, exclude=exclude)})
 
