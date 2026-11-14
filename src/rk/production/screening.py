@@ -126,11 +126,12 @@ from rk.checkpoints import (
     answered_by_actor,
     create_checkpoint,
     get_checkpoint,
+    list_checkpoints,
     opened_in_place_of,
 )
 from rk.discovery.boundary import per_item
 from rk.discovery.models import Intake
-from rk.discovery.sources import ABSTRACT_SOURCES
+from rk.discovery.sources import ABSTRACT_SOURCES, LibrarySignIn
 from rk.discovery.store import intake_of
 from rk.fulltext import latest_snapshot
 from rk.library.service import Library
@@ -176,6 +177,7 @@ from rk.store.project import ProjectStore
 from rk.verify.prisma import check_prisma, check_selection_reasons, flow, prisma_counts
 
 KIND = "screening_disagreements"
+LOGIN_KIND = "login_wait"  # the stage's wait for your library sign-in (``_sign_in``), as the browser's own wait
 BATCH = 25  # records per screener task, and disagreements per checkpoint
 CHOICES = ("include", "exclude")
 # the P1 vote's conservative option per phase (calibration, search and screening, 2026-11-12): at title/abstract the
@@ -560,7 +562,8 @@ def _retrieve(ctx: StageContext, rec: dict) -> str:
     iid = rec["item_id"]
     tried: list[str] = []
     got, err = per_item(f"full text of {iid}",
-                        lambda: ctx.sources.fulltext(iid, why=tried) and latest_snapshot(ctx.ps, iid))
+                        lambda: ctx.sources.fulltext(iid, why=tried, wait_for_library=True)
+                        and latest_snapshot(ctx.ps, iid))
     has_text = bool(got) and bool(got[1].full_text().strip())
     whys = [err] if err else []
     if got and not has_text:
@@ -950,12 +953,20 @@ class SearchScreenWorker:
     def _full_text(self, ctx: StageContext, incomplete: list[str]) -> StageOutcome:
         """Seek the full text of every title/abstract include (once per attempt: the retrieval note), then screen
         those with a full text or an abstract. Run again in the same attempt (an answer applied again after an
-        interruption), it goes on from what the attempt stored."""
+        interruption), it goes on from what the attempt stored. When the library proxy needs you to sign in
+        (``LibrarySignIn``), the retrieval stops and the stage waits on a ``login_wait`` checkpoint of its own; your
+        answer lets the library go on (``resume_library``) and runs the retrieval again, the records already
+        retrieved keeping their text (calibration, a university EZproxy, 2026-11-14: without the wait every record
+        after the sign-in page went on abstract-only)."""
         ps, phase = ctx.ps, FULL_TEXT
         note = retrieval_note(ps, ctx.attempt)
         if note is None:
             ta = {f["record_id"]: f["include"] for f in finals(ps, ctx.attempt, phase=TITLE_ABSTRACT)}
-            kinds = {r["id"]: _retrieve(ctx, r) for r in deduplicated(ps, ctx.attempt) if ta.get(r["id"]) == "yes"}
+            try:
+                kinds = {r["id"]: _retrieve(ctx, r) for r in deduplicated(ps, ctx.attempt)
+                         if ta.get(r["id"]) == "yes"}
+            except LibrarySignIn as e:
+                return self._sign_in(ctx, str(e), e.checkpoint_id)
             _note(ctx, phase, "full_text_retrieval", sought=list(kinds),
                   **{k: [r for r, got in kinds.items() if got == k] for k in ("retrieved", "abstract_only",
                                                                              "not_retrieved")})
@@ -969,6 +980,25 @@ class SearchScreenWorker:
                    if (c := by_item.get(row["item_id"])) is not None}
         return self._screen_phase(ctx, intake, Protocol.model_validate(prot["body"]), prot["frozen_hash"], phase,
                                   list(rows), inputs, carried, incomplete)
+
+    @staticmethod
+    def _sign_in(ctx: StageContext, why: str, browser_wait: str | None) -> StageOutcome:
+        """Wait for your library sign-in on one ``login_wait`` checkpoint: the browser's own (``browser_wait``) when it
+        is open in this project, else the stage's open one, else a new one of the stage (the library was paused for
+        another project's sign-in). You sign in in the built-in browser window and answer done."""
+        try:
+            mine = browser_wait and get_checkpoint(ctx.ps, browser_wait)["status"] == "open"
+        except KeyError:  # another project's checkpoint
+            mine = False
+        cid = browser_wait if mine else next((c["id"] for c in list_checkpoints(ctx.ps, "open")
+                                              if c["kind"] == LOGIN_KIND and c["stage"] == ctx.stage), None)
+        if cid is None:
+            cid = create_checkpoint(ctx.ps, LOGIN_KIND, (
+                f"The library proxy needs you to sign in before the full texts can be fetched ({why}). Sign in to "
+                "the library in the built-in browser window (the Kernel never sees your password), then answer "
+                "'done': the full-text retrieval goes on from where it stopped."), ["done"], stage=ctx.stage,
+                actor=ctx.actor)
+        return StageOutcome("waiting_human", checkpoint_id=cid, reason="waiting for you to sign in to the library")
 
     def _screen_phase(self, ctx: StageContext, intake: Intake, protocol: Protocol, protocol_hash: str, phase: str,
                       eligible: list[str], inputs: dict[str, dict], carried: dict[str, Carried],
@@ -1055,14 +1085,20 @@ class SearchScreenWorker:
 
     def on_answer(self, ctx: StageContext, checkpoint: dict) -> StageOutcome:
         opts = checkpoint.get("options") or {}
-        phase = opts.get("phase")
-        if checkpoint["kind"] != KIND or opts.get("attempt") != ctx.attempt or phase not in PHASE_WORDS:
+        # your library sign-in (or CAPTCHA on it): the stage's own wait, or the browser's (no stage) the stage waited on
+        login = checkpoint["kind"] in (LOGIN_KIND, "captcha_wait") and checkpoint["stage"] in (ctx.stage, None)
+        phase = FULL_TEXT if login else opts.get("phase")
+        if not login and (checkpoint["kind"] != KIND or opts.get("attempt") != ctx.attempt
+                          or phase not in PHASE_WORDS):
             return StageOutcome("failed", reason=f"search_screen cannot apply checkpoint {checkpoint['id']} "
                                                  f"({checkpoint['kind']})")
         ps = ctx.ps
         incomplete = incomplete_searches(ps, ctx.attempt)
         if incomplete and reports_prisma(intake_of(ps).paper_type):
             return StageOutcome("back_edge", to="protocol", reason=_incomplete_block(incomplete))
+        if login:  # you signed in: the library goes on and the retrieval runs again
+            ctx.sources.resume_library()
+            return self._full_text(ctx, incomplete)
         return self._settle(ctx, phase, incomplete, checkpoint)
 
     def _settle(self, ctx: StageContext, phase: str, incomplete: list[str],

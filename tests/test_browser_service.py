@@ -1,5 +1,6 @@
 import dataclasses
 import time
+import types
 from urllib.parse import quote
 
 import pytest
@@ -350,3 +351,37 @@ def test_save_page_again_keeps_reference_check_and_text_layer(service, kernel, s
     assert (again["item_id"], again["created"], again["ref_status"]) == (first["item_id"], False, "pass")
     assert again["attachment"]["snapshot_sha"] is None and latest_snapshot(ps, first["item_id"])[0] == sha
     assert col in lib.get(first["item_id"]).collection_ids
+
+
+@pytest.mark.parametrize("proxy", ["https://libproxy.example.edu/login?url={url}",
+                                   "https://login.libproxy.example.edu/login?url={url}"])
+def test_an_ezproxy_that_proxies_by_host_name_is_the_library(tmp_home, replay_http, proxy):
+    """Calibration (a university EZproxy, 2026-11-14): an EZproxy that proxies by host name serves the article from
+    www-nature-com.libproxy.<university>, whether its start URL is on libproxy.<university> or EZproxy's
+    login.libproxy.<university>; that page is the library's (its origin, its pause and pace), and only a host under the
+    proxy's domain is."""
+    save_settings(Settings(email="rk-fixtures@users.noreply.github.com", library_proxy=proxy))
+    k = Kernel(tmp_home, http=replay_http)
+    try:
+        svc = BrowserService(k, types.SimpleNamespace(submit_hosts=set()), pacer=None)
+        for url, library in (("https://www-nature-com.libproxy.example.edu/articles/x", True),
+                             (proxy.replace("{url}", "https://doi.org/10.1/x"), True),
+                             ("https://www.nature.com/articles/x", False),
+                             ("https://notlibproxy.example.edu/x", False)):
+            assert svc._via_library(url) is library, url
+            assert (svc._site_of(url) == "library") is library, url
+    finally:
+        k.close()
+
+
+def test_a_proxy_on_this_computer_is_told_apart_by_its_port(tmp_home, replay_http):
+    """A library proxy on 127.0.0.1 is the library only on its own port: another site on the same host is not."""
+    save_settings(Settings(email="rk-fixtures@users.noreply.github.com",
+                           library_proxy="http://127.0.0.1:8001/proxy?url={url}"))
+    k = Kernel(tmp_home, http=replay_http)
+    try:
+        svc = BrowserService(k, types.SimpleNamespace(submit_hosts=set()), pacer=None)
+        assert svc._via_library("http://127.0.0.1:8001/proxy?url=x") is True
+        assert svc._via_library("http://127.0.0.1:8002/scholar") is False
+    finally:
+        k.close()

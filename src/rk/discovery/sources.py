@@ -28,6 +28,17 @@ COUNTED_SOURCES = ("openalex", "europepmc", "pubmed")  # the sources ``count`` c
 ABSTRACT_SOURCES = ("pubmed", "europepmc")  # the sources ``abstracts`` looks abstracts up in, by PMID and by DOI
 
 
+class LibrarySignIn(Exception):
+    """The library proxy needs you to sign in (a sign-in page, or the library paused for one): the full-text fetch of
+    one item stopped there, so the caller can wait for you instead of going on without the library. ``checkpoint_id``
+    is the browser's ``login_wait`` (in the project that met the sign-in page; another project's when the library was
+    already paused for one)."""
+
+    def __init__(self, message: str, checkpoint_id: str | None = None):
+        super().__init__(message)
+        self.checkpoint_id = checkpoint_id
+
+
 class DiscoverySources(Protocol):
     def search(self, query: str, source: str, limit: int = 25, after_year: int | None = None, *, offset: int = 0,
                date_from: int | None = None, date_to: int | None = None) -> list[ItemIn]:
@@ -57,7 +68,14 @@ class DiscoverySources(Protocol):
 
     def retraction(self, item_id: str) -> RetractionInfo: ...
 
-    def fulltext(self, item_id: str, why: list[str] | None = None) -> bool: ...
+    def fulltext(self, item_id: str, why: list[str] | None = None, *, wait_for_library: bool = False) -> bool:
+        """Whether the item has a text layer; with ``wait_for_library``, raises ``LibrarySignIn`` when the library
+        proxy needs you."""
+        ...
+
+    def resume_library(self) -> None:
+        """You signed in to the library: the browser may use the library proxy again."""
+        ...
 
     def add(self, identifier: str) -> str | None: ...
 
@@ -146,10 +164,14 @@ class KernelSources:
         resolved = resolver.resolve(self.kernel.ctx(), parse_identifier(ident)) if ident else None
         return retraction_status(resolved)
 
-    def fulltext(self, item_id: str, why: list[str] | None = None) -> bool:
+    def fulltext(self, item_id: str, why: list[str] | None = None, *, wait_for_library: bool = False) -> bool:
         """Whether the item has a text layer: an existing one, else the open-access API channels, else the built-in
         browser when it runs and the browser fallback is on. Without one, each source tried and why it gave none is
-        added to ``why`` (``rk.fulltext.fulltext_with_fallback``)."""
+        added to ``why`` (``rk.fulltext.fulltext_with_fallback``). With ``wait_for_library`` (the full-text screening's
+        retrieval, which can wait for you), the library proxy asking you to sign in (its sign-in page, or the library
+        paused for one) raises ``LibrarySignIn`` instead: the caller waits for you, then asks again; the other callers
+        record it as a reason and go on. Calibration (a university EZproxy, 2026-11-14): without the wait each record
+        after the sign-in page went on abstract-only."""
         ps, lib = self._lib()
         if latest_snapshot(ps, item_id) is not None:
             return True
@@ -159,9 +181,17 @@ class KernelSources:
             got = fulltext_with_fallback(self.kernel, ps, lib, item_id, call=call, project=self.project,
                                          browser=self._browser, why=why)
         except ToolError as e:  # the browser got no PDF, or the page needs you (a login_wait checkpoint is open)
+            if (wait_for_library and e.type in ("human_required", "site_paused")
+                    and e.details.get("site") == "library"):
+                raise LibrarySignIn(str(e), e.details.get("checkpoint_id")) from None
             why.append(f"built-in browser: {e}")
             return False
         return got is not None
+
+    def resume_library(self) -> None:
+        svc = self._browser()
+        if svc is not None:
+            svc.resume_site("library")
 
     def add(self, identifier: str) -> str | None:
         """Add a cited work by its identifier (the ``rk_source_add`` path, ``discovered_via="backward"``, not verified
