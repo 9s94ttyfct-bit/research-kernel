@@ -46,8 +46,10 @@ def _orch(k, ex, protocol=None) -> Orchestrator:
 
 
 def _judged(judge: list[dict]) -> _Authors:
-    """``judge``'s votes in order; judge_2 approves every time."""
-    return _Authors({("judge", "ProtocolVoteOut"): judge, ("judge_2", "ProtocolVoteOut"): [_opinion("approve")] * 9})
+    """``judge``'s votes in order; judge_2 approves every time. Asked to mark the points a revise left unmarked, judge
+    marks none (the shapes' marks are all in its votes)."""
+    return _Authors({("judge", "ProtocolVoteOut"): judge, ("judge_2", "ProtocolVoteOut"): [_opinion("approve")] * 9,
+                     ("judge", "PointMarksOut"): [{"resolved": []}] * 9})
 
 
 def _grants(ps, by: str | None = None) -> list[dict]:
