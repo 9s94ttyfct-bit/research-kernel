@@ -20,7 +20,7 @@ from rk.production.manuscript import parse_section
 from rk.production.models import DesignIn
 from rk.production.sections import describes_operations
 from rk.store.events import NewEvent
-from rk.verify.cover import verify_section, verify_sentence
+from rk.verify.cover import ck_count, ck_problem, verify_section, verify_sentence
 from rk.workspace import Kernel
 
 from .browser_sites import tiny_pdf
@@ -127,15 +127,24 @@ def test_number_must_be_covered_by_a_marker_target(env):
     assert not _one(ps, "Twelve runs gave 12 results [[inf]].").ok  # an inference covers no number
 
 
-def test_ck_share_over_five_percent_fails_section(env):
+def test_ck_share_is_capped_over_the_manuscript_not_a_section(env):
+    """Calibration (srrepro10, 2026-11-13): a 3-sentence introduction with one [[ck]] background sentence is 33% common
+    knowledge and failed the section on every try, though the manuscript was 2 of ~72 (2.8%). The 5% of spec §9.1
+    V-COVER is of the whole manuscript: a section passes whatever its own share, and the cap is ``ck_problem``'s."""
     ps, _ = env
-    body = " ".join(f"Point {chr(65 + i)} may hold [[inf]]." for i in range(19))
-    ok = verify_section(ps, "discussion", body + " Water is wet [[ck]].", paper_type="systematic_review")
-    assert ok.ok and ok.ck_share == pytest.approx(1 / 20)
-    bad = verify_section(ps, "discussion", body + " Water is wet [[ck]]. Ice is cold [[ck]].",
-                         paper_type="systematic_review")
-    assert not bad.ok and bad.ck_share == pytest.approx(2 / 21)
-    assert all(s.ok for s in bad.sentences)  # the share fails the section, not a sentence
+    v = verify_section(ps, "introduction", "Colonoscopy finds adenomas [[ck]]. Point A may hold [[inf]]. "
+                       "Point B may hold [[inf]].", paper_type="systematic_review")
+    assert v.ok and not v.problems and v.ck_share == pytest.approx(1 / 3)
+    body = " ".join(f"Point {chr(65 + i)} may hold [[inf]]." for i in range(10))
+    rest = " ".join(f"Item {chr(65 + i)} may hold [[inf]]." for i in range(9))
+    ok = {"introduction": body + " Water is wet [[ck]].", "discussion": rest}
+    n = ck_count(ok)
+    assert (n.sentences, n.ck, n.by_section) == (20, 1, {"introduction": 1}) and not n.over
+    assert ck_problem(ok) is None
+    bad = {**ok, "discussion": rest + " Ice is cold [[ck]]."}
+    assert ck_count(bad).over
+    assert ck_problem(bad) == ("2 of 21 sentences of the manuscript are common knowledge ([[ck]]), more than 5%: "
+                               "introduction (1), discussion (1)")
 
 
 def test_ck_sentence_with_number_fails(env):

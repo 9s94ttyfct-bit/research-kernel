@@ -60,12 +60,14 @@ drafted again. Every other reopening edge (revise, audit, an upstream stage) dra
 The gate reads every required section's latest text (a missing, unreadable or altered file is a failure naming the
 section and version): each was written in the attempt and verified ok, and verifies now too (``section_verdict``: a
 claim withdrawn, an objection answered or a conflict decided since counts); and the manuscript as a whole
-(``manuscript_problems``, which revise checks too): every cited ``fig`` and ``stat`` is an artifact of synthesize's
-passed attempt, the main claim and every supported synthesis claim are cited in some section. A failing gate reruns the
-stage (``draft->draft``) with the failures as guidance. P1 at an edge limit deletes the failing sentences and those
-citing another attempt's artifact (spec §5.3 delete-or-narrow; ``deletable``, ``delete_sentences``;
-``stage.degraded``); it fails naming a section that would be left empty, or naming the failures when there is no such
-sentence to delete; the engine gates again.
+(``manuscript_problems``, which revise and audit check too): every cited ``fig`` and ``stat`` is an artifact of
+synthesize's passed attempt, the main claim and every supported synthesis claim are cited in some section, and at most
+5% of all its sentences are common knowledge (``[[ck]]``; the cap is the manuscript's, never a section's: calibration
+srrepro10, 2026-11-13, in ``rk.verify.cover``). A failing gate reruns the stage (``draft->draft``) with the failures
+as guidance. P1 at an edge limit deletes the failing sentences and those citing another attempt's artifact, and
+common-knowledge sentences while the manuscript's share is over its cap (spec §5.3 delete-or-narrow; ``deletable``,
+``ck_deletions``, ``delete_sentences``; ``stage.degraded``); it fails naming a section that would be left empty, or
+naming the failures when there is no such sentence to delete; the engine gates again.
 P2's only checkpoint is ``argue_request`` (above); P1 opens none."""
 
 from __future__ import annotations
@@ -113,9 +115,12 @@ from rk.verify.balance import (
     citable_objections,
 )
 from rk.verify.cover import (
+    CK_MAX_SHARE,
     EVENT_NUMBERS,
     SectionVerdict,
     SentenceVerdict,
+    ck_problem,
+    is_ck,
     reported_values,
     verify_section,
 )
@@ -133,7 +138,7 @@ MARKER_GRAMMAR = (
     "counts, the frozen protocol), [[fig:<fig id>]] a figure, [[stat:<stt id>]] a statistic"
     ", [[plan:<design id>]] or [[plan:<hypothesis id>]] the design or a hypothesis (research proposal only), [[inf]] "
     "your own inference (worded tentatively: may, might, suggests), [[ck]] common knowledge (no number; at most one "
-    "sentence in twenty). Ids exactly as given.")
+    "sentence in twenty of the whole manuscript). Ids exactly as given.")
 STAGE_NAMES = {"intake": "intake", "landscape": "landscape", "gaps": "gap-finding", "topics": "topic",
                "question": "research question", "protocol": "protocol", "search_screen": "search and screening",
                "read_extract": "reading and extraction", "synthesize": "synthesis", "argue": "argument",
@@ -381,7 +386,8 @@ def latest_texts(ps: ProjectStore, s: DraftInputs) -> tuple[dict[str, str], dict
 def manuscript_problems(ps: ProjectStore, s: DraftInputs, texts: dict[str, str]) -> list[str]:
     """What the manuscript ``texts`` (section id -> markdown) must give as a whole: every cited ``fig`` and ``stat`` is
     an artifact of synthesize's passed attempt; the main claim (unless withdrawn) and every supported synthesis finding
-    are cited in some section."""
+    are cited in some section; at most ``CK_MAX_SHARE`` of all its sentences are common knowledge (``ck_problem``: the
+    cap is the manuscript's, never a section's; calibration srrepro10, 2026-11-13, in ``rk.verify.cover``)."""
     cited = [(sec, m.kind, m.target) for sec, md in texts.items() for m in source_markers(md) if m.target]
     out = [f"section {sec}: [[{kind}:{t}]] is not an artifact of synthesize's passed attempt"
            for sec, kind, t in cited if kind in ("fig", "stat") and t not in s.artifact_ids]
@@ -391,6 +397,8 @@ def manuscript_problems(ps: ProjectStore, s: DraftInputs, texts: dict[str, str])
         out.append(f"the main claim {s.main} is cited in no section")
     out += [f"the supported finding {c} is cited in no section" for c in s.findings
             if c not in claims and svc.get_claim(c)["status"] == "supported"]
+    if (ck := ck_problem(texts)) is not None:
+        out.append(ck)
     return out
 
 
@@ -401,6 +409,29 @@ def deletable(s: DraftInputs, sentences: list[Sentence], verdict: SectionVerdict
     return {x.index for x in v.sentences if not x.ok} | {
         x.index for x in sentences
         if any(m.kind in ("fig", "stat") and m.target and m.target not in s.artifact_ids for m in x.markers)}
+
+
+def ck_deletions(sections: dict[str, list[Sentence]], drop: dict[str, set[int]]) -> dict[str, set[int]]:
+    """The common-knowledge (``[[ck]]``) sentences P1 deletes besides ``drop`` (section id -> the sentence indices
+    already to be deleted, a ck sentence among them counting as deleted) until the manuscript ``sections`` (section id
+    -> its sentences, in manuscript order) is within ``CK_MAX_SHARE`` of its sentences: one at a time, the last ck
+    sentence of the section with the most left (the earlier section on a tie); never a section's last sentence, so the
+    share may stay over when only such are left. Returns section id -> the indices added (sections with none left
+    out)."""
+    left = {sec: [x for x in xs if x.index not in drop.get(sec, set())] for sec, xs in sections.items()}
+    added: dict[str, set[int]] = {}
+    while True:
+        ck = {sec: [x for x in xs if is_ck(x)] for sec, xs in left.items()}
+        total = sum(len(xs) for xs in left.values())
+        if not total or sum(len(xs) for xs in ck.values()) / total <= CK_MAX_SHARE:
+            return added
+        able = [sec for sec in left if ck[sec] and len(left[sec]) > 1]
+        if not able:
+            return added
+        sec = max(able, key=lambda sec: len(ck[sec]))  # the first of the most: the earlier on a tie
+        x = ck[sec][-1]
+        left[sec].remove(x)
+        added.setdefault(sec, set()).add(x.index)
 
 
 def delete_sentences(markdown: str, dropped: list[Sentence]) -> str:
@@ -883,17 +914,21 @@ class DraftWorker:
         """P1 at an edge limit (spec §5.3 delete-or-narrow): delete from each section's latest version of the attempt
         every sentence that fails its recorded verdict or a fresh one (``section_verdict`` now: a claim withdrawn or
         failing its gate since it was verified counts, as in the gate) and every sentence citing a ``fig``/``stat``
-        that is no artifact of synthesize's passed attempt, and store and verify what is left as a new version;
-        disclosed (``stage.degraded``). When that would
-        leave a section empty, nothing is deleted and the run fails naming it; when there is no such sentence (only
-        section-level failures, a one-sided section among them, or uncited claims), the run fails naming the failures,
-        unless it verified a version here (one left unverified), when the engine gates again. The engine gates again
-        after a deletion too: an uncited main claim or finding, or a section-level problem, still fails it."""
+        that is no artifact of synthesize's passed attempt, and, while the manuscript's common knowledge is over
+        ``CK_MAX_SHARE`` of its sentences, ``[[ck]]`` sentences (``ck_deletions``: never a section's last sentence;
+        calibration srrepro10, 2026-11-13, in ``rk.verify.cover``); store and verify what is left as a new version;
+        disclosed (``stage.degraded``). When the failing sentences would
+        leave a section empty, nothing is deleted and the run fails naming it; when there is no sentence to delete
+        (only section-level failures, a one-sided section among them, or uncited claims), the run fails naming the
+        failures, unless it verified a version here (one left unverified), when the engine gates again. The engine
+        gates again after a deletion too: an uncited main claim or finding, a section-level problem, or common
+        knowledge still over the cap, still fails it."""
         ps = ctx.ps
         s = load_inputs(ps)
         if isinstance(s, str):
             return StageOutcome("failed", reason=s)
-        plans: list[tuple[str, str, list]] = []
+        read: dict[str, tuple[str, list[Sentence]]] = {}
+        drops: dict[str, set[int]] = {}
         emptied: list[str] = []
         verified_here = False
         for spec in s.sections:
@@ -910,35 +945,39 @@ class DraftWorker:
             except (KeyError, ValueError) as e:
                 return StageOutcome("failed", reason=f"cannot degrade section {spec.id} v{last['version']}: {e}")
             sentences = parse_section(md)
+            read[spec.id] = (md, sentences)
             drop = deletable(s, sentences, last["verdict"]) | deletable(
                 s, sentences, section_verdict(ps, spec.id, md, paper_type=s.paper_type))
-            if not drop:
-                continue
-            if {x.index for x in sentences} <= drop:
+            if drop and {x.index for x in sentences} <= drop:
                 emptied.append(spec.id)
-                continue
-            plans.append((spec.id, md, [x for x in sentences if x.index in drop]))
+            elif drop:
+                drops[spec.id] = drop
         if emptied:
             return StageOutcome("failed", reason=(
                 f"degrading draft at the edge limit (P1) would leave {', '.join(emptied)} empty: every sentence fails "
                 "or cites an artifact of another attempt, and a required section is never dropped; "
                 + ("; ".join(failures) or "no failures given")))
+        ck = ck_deletions({sec: sentences for sec, (_, sentences) in read.items()}, drops)
+        for sec, added in ck.items():
+            drops[sec] = drops.get(sec, set()) | added
+        plans = [(sec, md, [x for x in sentences if x.index in drops[sec]])
+                 for sec, (md, sentences) in read.items() if sec in drops]
         if not plans and verified_here:
             return StageOutcome("done", reason="degraded: nothing deleted; an unverified version was verified, so the "
                                                "engine gates again")
         if not plans:
             return StageOutcome("failed", reason=(
                 "degrading draft at the edge limit (P1) deletes nothing: no sentence fails or cites an artifact of "
-                "another attempt, and what fails the gate is no sentence to delete; "
-                + ("; ".join(failures) or "no failures given")))
+                "another attempt, no common knowledge over the manuscript's cap can go without emptying its section, "
+                "and what fails the gate is no sentence to delete; " + ("; ".join(failures) or "no failures given")))
         removed: list[str] = []
         for section, md, dropped in plans:
             md = delete_sentences(md, dropped)
             removed += [f"{section}: “{x.text.strip()}”" for x in sorted(dropped, key=lambda x: x.span[0])]
             v = write_draft(ps, section, md, stage=STAGE, attempt=ctx.attempt, round=0, by_task=None, actor=ctx.actor)
             self._verify(ctx, s, section, v)
+        what = "failing sentences and sentences citing another attempt's artifact" + (
+            f", and common knowledge ([[ck]]) over {CK_MAX_SHARE:.0%} of the manuscript's sentences," if ck else "")
         record_degraded(ps, stage=STAGE, attempt=ctx.attempt, removed=removed,
-                        reason="failing sentences and sentences citing another attempt's artifact deleted at the "
-                               "edge limit (P1): " + "; ".join(failures),
-                        actor=ctx.actor)
+                        reason=f"{what} deleted at the edge limit (P1): " + "; ".join(failures), actor=ctx.actor)
         return StageOutcome("done", reason=f"degraded: {len(removed)} sentences deleted")

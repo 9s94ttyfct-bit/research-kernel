@@ -17,8 +17,9 @@ but P1's vote.
    nothing.
 3. **Audit** (``audit_manuscript``), one list of failures per gate:
    - **G-COVER:** every section verifies (``rk.verify.cover.verify_section``, the one sentence verifier: V-COVER and
-     V-NUM, the ``[[ck]]``/``[[plan:]]`` rules, tables), the disclosure included; the manuscript as a whole
-     (``rk.production.draft.manuscript_problems``); a section that cannot be read.
+     V-NUM, a ``[[ck]]`` sentence's number, the ``[[plan:]]`` rule, tables), the disclosure included; the manuscript
+     as a whole (``rk.production.draft.manuscript_problems``, the 5% common-knowledge cap among them: the
+     manuscript's, never a section's), back to draft; a section that cannot be read.
    - **G-SUPPORT**, **G-HEDGE**, **G-QUOTE** (in sentences): a sentence's problems with a cited claim (unknown,
      withdrawn, failing its gate), its wording (V-HEDGE, ``[[inf]]``) or its quotations (V-QUOTE).
    - **V-BALANCE:** ``check_balance`` on every section.

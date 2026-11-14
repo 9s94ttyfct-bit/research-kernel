@@ -36,7 +36,7 @@ from rk.production.synthesis import synthesis_claims
 from rk.roles.prompts import build_system_prompt
 from tests.production_fakes import make_frozen_project, production_ctx
 from tests.test_balance import contest
-from tests.test_draft import _ready, _sentence, writes
+from tests.test_draft import _points, _ready, _sentence, writes
 from tests.test_synthesis import CapOnce, Exec
 
 REVISABLE = ["introduction", "theme-1", "gaps-agenda", "conclusion"]
@@ -631,6 +631,70 @@ def test_p1_degrade_fails_when_a_deletion_would_empty_a_section(env):
     out = w.degrade(_ctx(env, _exec([], [])), w.gate(ps, 1).failures)
     assert out.status == "failed" and "gaps-agenda" in out.reason and "empty" in out.reason
     assert len(draft_versions(ps, "gaps-agenda")) == 1 and not _degraded(ps)
+
+
+def _with_ck(fillers: int = 0):
+    """A draft Writer output: ``writes()`` with one [[ck]] sentence in the introduction, gaps-agenda and conclusion,
+    and ``fillers`` tentative [[inf]] sentences ending theme-1."""
+    def out(inputs):
+        section = inputs["section"]["id"]
+        extra = (_points("Point", fillers) if section == "theme-1" else
+                 {"introduction": "Colonoscopy finds adenomas [[ck]].", "gaps-agenda": "Fire is hot [[ck]].",
+                  "conclusion": "Snow is white [[ck]]."}[section])
+        return writes(extra=extra)(inputs)
+    return out
+
+
+def test_p1_degrade_deletes_common_knowledge_its_deletions_would_put_over_the_cap(env):
+    """Revise's P1 degrade deletes sentences, which can put the manuscript's common knowledge over 5% of what is left:
+    it then deletes [[ck]] sentences too (``rk.production.draft.ck_deletions``), rather than failing on a broken
+    manuscript."""
+    _, ps, _ = env
+    _drafted(env, writer=_with_ck(60))
+    save_settings(load_settings().model_copy(update={"revise_max_rounds": 1}))
+    texts = {sec: draft_text(ps, sec, draft_versions(ps, sec)[-1]["version"]) for sec in [*REVISABLE, "disclosure"]}
+    total = sum(len(parse_section(md)) for md in texts.values())
+    n = len(parse_section(texts["theme-1"]))
+    w = ReviseWorker()
+    ex = _exec([ask(*[("theme-1", 1, i) for i in range(n - 30, n)])], [revision(how="declined", note="no")])
+    assert _done(w.run(_ctx(env, ex)))
+    # 30 filler sentences go; then ck sentences until (3 - d) / (total - 30 - d) <= 5%
+    d = next(d for d in range(4) if (3 - d) / (total - 30 - d) <= 0.05)
+    assert d >= 1 and 3 / total <= 0.05, (total, d)
+    assert _done(w.degrade(_ctx(env, _exec([], [])), w.gate(ps, 1).failures))
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    (deg,) = _degraded(ps)
+    order = ["introduction: “Colonoscopy finds adenomas [[ck]].”", "gaps-agenda: “Fire is hot [[ck]].”",
+             "conclusion: “Snow is white [[ck]].”"]
+    assert sorted(r for r in deg["removed"] if "[[ck]]" in r) == sorted(order[:d])
+    assert len(deg["removed"]) == 30 + d and "common knowledge" in deg["reason"]
+
+
+def test_a_revision_is_rejected_only_when_it_raises_common_knowledge_over_the_cap(env):
+    """The cap's problem names its counts, which any revision changing a sentence count changes: a revision breaks the
+    manuscript when it puts it over the cap, or raises a share already over it; one that lowers it does not."""
+    from rk.production.manuscript import write_draft
+
+    _, ps, _ = env
+    _drafted(env, writer=_with_ck(60))
+    main = main_claim(ps, 1)
+    save_settings(load_settings().model_copy(update={"revise_max_rounds": 1}))
+    w = ReviseWorker()
+    ex = _exec([ask(("introduction", 1))], [revision(add="Ice is cold [[ck]]. Water is wet [[ck]].")], [repair()])
+    assert _done(w.run(_ctx(env, ex)))
+    (decided, *_) = revise_notes(ps, 1, kind="decided")
+    assert not decided["accepted"] and any("common knowledge" in r for r in decided["broken"]), decided
+    # already over the cap (a later version of the conclusion): a revision adding a sentence of no common knowledge
+    # lowers the share and is accepted; one adding common knowledge raises it and is rejected
+    md = draft_text(ps, "conclusion", 1)
+    write_draft(ps, "conclusion", md.rstrip("\n") + " Ice is cold [[ck]]. Water is wet [[ck]].\n", stage="draft",
+                attempt=1, round=0, by_task=None, actor="tester")
+    ex2 = _exec([ask(("introduction", 1), ("theme-1", 1))],
+                [revision(add=_restated(ps, main)), revision(add="Grass is green [[ck]].")], [repair()])
+    assert _done(w.run(_ctx(env, ex2, attempt=2)))
+    intro, theme = revise_notes(ps, 2, kind="decided")[:2]
+    assert intro["accepted"], intro["reasons"]
+    assert not theme["accepted"] and any("common knowledge" in r for r in theme["broken"]), theme
 
 
 def test_new_attempt_carries_unresolved_priority1_questions(env):

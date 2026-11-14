@@ -42,9 +42,10 @@ only when it verifies as well as the version it would replace.
    the ``target_state`` of each of its markers is unchanged since that check; every other sentence is verified
    (``reverified``). The section-level rules and V-BALANCE run over the whole revision, and the manuscript as a whole
    (``rk.production.draft.manuscript_problems``: the main claim and every supported finding cited, every ``fig`` and
-   ``stat`` an artifact of synthesize's passed attempt) must not lose what it had. The revision is accepted only when
-   all of that holds: nothing that verified before fails now. An accepted revision becomes the section's next version
-   (``write_draft``, stage ``revise``, its round; ``draft.verified`` with that verdict), unless its text is the
+   ``stat`` an artifact of synthesize's passed attempt, at most 5% of all sentences common knowledge) must not lose
+   what it had (``_broken``: a common-knowledge share already over the cap may not grow). The revision is accepted only
+   when all of that holds: nothing that verified before fails now. An accepted revision becomes the section's next
+   version (``write_draft``, stage ``revise``, its round; ``draft.verified`` with that verdict), unless its text is the
    version's own (nothing to store). A rejected one stays a candidate: its text is only in its ``revision`` note and
    the ``decided`` note gives the reasons, so it never becomes a version the gate, the audit or the preview reads. An
    answer counts only from an accepted revision.
@@ -72,9 +73,11 @@ answers nothing; of the answers to a question on the whole manuscript, one that 
 degrade deleted its sentence; the latest version of every required section verifies and is balanced, checked afresh;
 the manuscript as a whole passes ``manuscript_problems``. A failing gate reruns the stage. P1 at an edge limit
 (``degrade``, spec §5.3 delete-or-narrow) deletes from the latest versions
-the sentences that cannot verify (draft's rule, ``deletable``) and the sentence each unresolved priority-1 question is
-about, stores what is left as new versions (stage ``revise``, round 0, no Writer task) and records the deleted
-sentences and those questions (``stage.degraded``), which the gate then accepts; it fails the run, naming the cause,
+the sentences that cannot verify (draft's rule, ``deletable``), the sentence each unresolved priority-1 question is
+about and, while the manuscript's common knowledge is over 5% of what is left (deleting other sentences can put it
+there), ``[[ck]]`` sentences (draft's rule, ``ck_deletions``), stores what is left as new versions (stage ``revise``,
+round 0, no Writer task) and records the deleted sentences and those questions (``stage.degraded``), which the gate
+then accepts; it fails the run, naming the cause,
 when a question is about a section as a whole (every revisable section is required, so none can be deleted) or the
 whole manuscript (the final review's request), or about a
 sentence no longer in it, when a deletion would empty a section, break the manuscript's coverage or leave a section
@@ -104,6 +107,7 @@ from rk.production.common import RoleOut
 from rk.production.draft import (
     DraftInputs,
     SentenceRepair,
+    ck_deletions,
     deletable,
     delete_sentences,
     latest_texts,
@@ -129,7 +133,13 @@ from rk.production.screening import reports_prisma
 from rk.production.sections import SectionSpec
 from rk.store.events import NewEvent
 from rk.store.project import ProjectStore
-from rk.verify.cover import SentenceVerdict, target_state
+from rk.verify.cover import (
+    CK_MAX_SHARE,
+    SentenceVerdict,
+    ck_count,
+    ck_problem,
+    target_state,
+)
 
 STAGE = "revise"
 READER = "simreader"
@@ -358,6 +368,17 @@ def _same_text(a: str, b: str) -> bool:
     a paragraph split or merged is a change (re-review: comparing the words alone hid one)."""
     paragraphs = lambda md: [p.split() for p in re.split(r"\n\s*\n", md.strip()) if p.strip()]  # \s: CRLF too
     return paragraphs(a) == paragraphs(b)
+
+
+def _broken(ps: ProjectStore, s: DraftInputs, texts: dict[str, str], new: dict[str, str]) -> list[str]:
+    """What the manuscript ``texts`` loses with the sections ``new`` (section id -> markdown) put in: each
+    ``manuscript_problems`` problem it did not have. The common-knowledge cap's problem names its counts, which any
+    change of a sentence count changes, so it counts only when the share was within the cap or grows (one already over
+    it that a change lowers is not lost again)."""
+    after = {**texts, **new}
+    before, was = manuscript_problems(ps, s, texts), ck_count(texts)
+    kept = ck_problem(after) if was.over and ck_count(after).share <= was.share else None
+    return [p for p in manuscript_problems(ps, s, after) if p not in before and p != kept]
 
 
 def _questions_of(ps: ProjectStore, attempt: int) -> list[dict]:
@@ -807,9 +828,7 @@ class ReviseWorker:
                          broken=[], unchanged=False, version=None)
         base = _recorded(ps, attempt, "checked", rev["round"], section)
         c = _check(ps, s.draft.paper_type, section, rev["markdown"], base["sentences"])
-        texts = latest_texts(ps, s.draft)[0]
-        before = manuscript_problems(ps, s.draft, texts)
-        broken = [p for p in manuscript_problems(ps, s.draft, {**texts, section: rev["markdown"]}) if p not in before]
+        broken = _broken(ps, s.draft, latest_texts(ps, s.draft)[0], {section: rev["markdown"]})
         reasons = [*(version_failures(rev["markdown"], c["verdict"]) if not c["verdict"]["ok"] else []), *broken]
         ok = not reasons
         unchanged = ok and _same_text(rev["markdown"], draft_text(ps, section, rev["version"]))
@@ -874,9 +893,11 @@ class ReviseWorker:
 
     def degrade(self, ctx: StageContext, failures: list[str]) -> StageOutcome:
         """P1 at an edge limit (spec §5.3: delete or narrow, never keep and only label): delete the sentences that cannot
-        verify and the sentence of each unresolved priority-1 question, store and verify what is left, and record the
-        deletions with those questions (``stage.degraded``); fail naming the cause when that is not possible (see the
-        module docstring). The engine gates again."""
+        verify and the sentence of each unresolved priority-1 question and, while the manuscript's common knowledge is
+        over ``CK_MAX_SHARE`` of what is left (the deletions can put it there), ``[[ck]]`` sentences
+        (``rk.production.draft.ck_deletions``); store and verify what is left, and record the deletions with those
+        questions (``stage.degraded``); fail naming the cause when that is not possible (see the module docstring). The
+        engine gates again."""
         ps, attempt = ctx.ps, ctx.attempt
         s = _load(ps)
         if isinstance(s, str):
@@ -884,7 +905,8 @@ class ReviseWorker:
         head = "degrading revise at the edge limit (P1)"
         unresolved = _unresolved(ps, attempt)
         texts: dict[str, str] = {}
-        plans: list[tuple[str, str, list[Sentence]]] = []
+        read: dict[str, list[Sentence]] = {}
+        drops: dict[str, set[int]] = {}
         questions: list[str] = []
         cannot: list[str] = [f"the priority-1 question {q['id']} on the whole manuscript “{q['text']}” (the final "
                              "review's request) has no sentence that could be deleted for it"
@@ -894,7 +916,7 @@ class ReviseWorker:
             if isinstance(got, str):
                 return StageOutcome("failed", reason=f"{head}: cannot read {got}")
             md = texts[spec.id] = got[1]
-            sentences = parse_section(md)
+            sentences = read[spec.id] = parse_section(md)
             drop = deletable(s.draft, sentences, section_verdict(ps, spec.id, md, paper_type=s.draft.paper_type))
             for q in unresolved:
                 if q["section"] != spec.id:
@@ -911,16 +933,19 @@ class ReviseWorker:
                     cannot.append(f"{what} is about a sentence that is no longer in it (“{q['sentence']}”), and "
                                   f"{spec.id} is a required section: nothing can be deleted for it")
             if drop:
-                plans.append((spec.id, md, [x for x in sentences if x.index in drop]))
+                drops[spec.id] = drop
                 if {x.index for x in sentences} <= drop:
                     cannot.append(f"deleting would leave {spec.id} empty, and a required section is never dropped")
+        ck = ck_deletions(read, drops)
+        for sec, added in ck.items():
+            drops[sec] = drops.get(sec, set()) | added
+        plans = [(sec, texts[sec], [x for x in sentences if x.index in drops[sec]])
+                 for sec, sentences in read.items() if sec in drops]
         if not cannot and not plans:
             cannot.append("no sentence fails and no unresolved question has a sentence to delete")
         new = {section: delete_sentences(md, dropped) for section, md, dropped in plans}
         if not cannot:
-            before = manuscript_problems(ps, s.draft, texts)
-            cannot += [f"deleting would break the manuscript: {p}" for p in
-                       manuscript_problems(ps, s.draft, {**texts, **new}) if p not in before]
+            cannot += [f"deleting would break the manuscript: {p}" for p in _broken(ps, s.draft, texts, new)]
         verdicts = {}
         for section, md in new.items() if not cannot else ():
             verdicts[section] = section_verdict(ps, section, md, paper_type=s.draft.paper_type)
@@ -935,7 +960,8 @@ class ReviseWorker:
             v = write_draft(ps, section, new[section], stage=STAGE, attempt=attempt, round=0, by_task=None,
                             actor=ctx.actor)
             record_section_verdict(ps, section, v, verdicts[section], actor=ctx.actor)
+        what = "sentences that cannot verify and the sentences of unresolved priority-1 reader questions" + (
+            f", and common knowledge ([[ck]]) over {CK_MAX_SHARE:.0%} of the manuscript's sentences," if ck else "")
         record_degraded(ps, stage=STAGE, attempt=attempt, removed=removed, questions=questions,
-                        reason="sentences that cannot verify and the sentences of unresolved priority-1 reader "
-                               "questions deleted at the edge limit (P1): " + "; ".join(failures), actor=ctx.actor)
+                        reason=f"{what} deleted at the edge limit (P1): " + "; ".join(failures), actor=ctx.actor)
         return StageOutcome("done", reason=f"degraded: {len(removed)} sentences deleted")
