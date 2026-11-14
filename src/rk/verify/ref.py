@@ -38,12 +38,13 @@ def _fold(s: str) -> str:
     return "".join(c for c in s if not unicodedata.combining(c))
 
 
-def _title_score(a: str, b: str) -> float:
+def title_score(a: str, b: str) -> float:
+    """How alike two titles are, 0-100 (token-set ratio of the folded words)."""
     clean = lambda s: re.sub(r"[^\w\s]", " ", _fold(s))
     return float(fuzz.token_set_ratio(clean(a), clean(b)))
 
 
-def _author_match(cited: str, family: str) -> bool:
+def author_match(cited: str, family: str) -> bool:
     """True when the record's family name appears in the cited author string: as a contiguous run of word tokens
     ('van der Berg' in 'J. van der Berg'), joined ('vanderberg'), or — for scripts written without spaces (CJK) —
     as a substring."""
@@ -73,11 +74,11 @@ def compare(cited: CitedRef, resolved: ResolvedWork | None) -> RefResult:
     details: dict = {"sources": resolved.sources_used}
     ok = True
     if cited.title.strip():
-        score = _title_score(cited.title, item.title)
+        score = title_score(cited.title, item.title)
         details["title"] = {"cited": cited.title, "record": item.title, "score": score, "ok": score >= TITLE_MIN}
         ok &= score >= TITLE_MIN
     if cited.first_author and item.creators:
-        m = _author_match(cited.first_author, item.creators[0].family)
+        m = author_match(cited.first_author, item.creators[0].family)
         details["first_author"] = {"cited": cited.first_author, "record": item.creators[0].family, "ok": m}
         # calibration (srrepro10, 2026-11-13): PubMed and a DOI's Crossref deposit may order the same authors
         # differently (the corresponding author first); the same author set is no wrong reference

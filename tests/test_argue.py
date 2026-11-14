@@ -13,6 +13,7 @@ from rk.argument import ArgumentService, ObjectionIn
 from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
 from rk.discovery.executor import BudgetExceeded, KernelExecutor, RateCapped
 from rk.ids import new_id
+from rk.library.models import ItemIn
 from rk.llm.chat.base import ToolCall, Turn
 from rk.llm.chat_provider import ChatApiProvider
 from rk.llm.types import TaskResult
@@ -53,7 +54,12 @@ from rk.production.argue import (
 from rk.production.argue import _load as argue_inputs
 from rk.production.extraction import usable_evidence
 from rk.production.models import SynthesisPlan
-from rk.production.synthesis import SynthesizeWorker, _revised, synthesis_claims
+from rk.production.synthesis import (
+    SynthesizeWorker,
+    _revised,
+    study_identities,
+    synthesis_claims,
+)
 from rk.roles.policy import tool_roles
 from rk.roles.prompts import build_system_prompt
 from rk.tools import builtin
@@ -186,10 +192,11 @@ def _synth_narrative(texts):
     return out
 
 
-def _synthesize(env, texts=(F1, F2)) -> list[str]:
-    """A passed synthesize attempt 1 with one supported finding per text (study A: rct, study B: cohort)."""
+def _synthesize(env, texts=(F1, F2), names=("A", "B")) -> list[str]:
+    """A passed synthesize attempt 1 with one supported finding per text (study A: rct, study B: cohort; ``names``
+    gives their first authors)."""
     k, ps, lib = env
-    _setup(env, {"A": {"design": "rct"}, "B": {"design": "cohort"}}, schema=[DESIGN],
+    _setup(env, {names[0]: {"design": "rct"}, names[1]: {"design": "cohort"}}, schema=[DESIGN],
            plan=SynthesisPlan(method="thematic"))
     ex = Exec({("arguer", "AssessmentOut"): [assess()], ("arguer", "NarrativeSynthesis"): [_synth_narrative(texts)],
                **_judges()})
@@ -441,6 +448,78 @@ def test_objections_must_be_answered_for_gate(env):
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
     lim = argue_limitations(ps, 1)
     assert [o["objection_id"] for o in lim["claims"]["conceded"]] == [first["id"]]
+
+
+def _old_work(lib, title: str, year: int = 1995, *, verified: bool = True) -> str:
+    i = lib.add_item(ItemIn(title=title, year=year), added_by="agent", actor="t").item_id
+    if verified:
+        lib.update(i, ref_status="pass", actor="k")
+    return i
+
+
+def _p1(source: str, *, category: str = "counterexample", target: str = "reason", text: str = ""):
+    def out(inputs):
+        if target == "link":
+            (e,) = [e for e in inputs["argument"]["edges"] if e["type"] == "reason_of"]
+            tid = e["id"]
+        else:
+            tid = role(inputs, target)[0]
+        return {"target_id": tid, "category": category, "priority": 1,
+                "text": text or f"A {category} study ({source}).", "source_id": source}
+    return out
+
+
+def test_an_objection_offering_a_work_outside_the_date_window_may_be_rejected(env):
+    """Calibration (srrepro10 cade, 2026-11-13): the Skeptic objected with a trial published two years after the
+    protocol's date window ("within the evidence window": it recruited then); the Arguer, never told the source's
+    year, conceded it, and the judges then refused the main claim for not reconciling that trial. A counterexample or
+    problem on a claim, offering a verified work (V-REF pass) published outside the frozen protocol's date window that
+    is no report of an included study, is shown with its year and may be rejected as invalid at any priority; the
+    Skeptic sees the window. The priority-1 rule holds for an unverified source, one inside the window, one whose title
+    is an included study's, a soundness objection, one on a reason link and one naming an included study by its first
+    author and year (a later report on it); the author's name alone, which recurs, does not stop the rule."""
+    _, ps, lib = env
+    _synthesize(env, names=("Rossi", "Bianchi"))  # the protocol's date window: from 2000, open end
+    first = usable_evidence(ps, 1)[0]["item_id"]
+    included, label = lib.get(first).title, study_identities(ps, [first])[first]["label"]
+    sources = [_old_work(lib, "An older trial"), _old_work(lib, "Another older trial", 1994, verified=False),
+               _old_work(lib, "A trial in the window", 2010), _old_work(lib, included)]
+    objections = [_p1(x) for x in sources] + [
+        _p1(sources[0], category="soundness"), _p1(sources[0], category="problem", target="link"),
+        _p1(_old_work(lib, "Long-term results"), text=f"The long-term follow-up of {label} found no effect."),
+        _p1(_old_work(lib, "Yet another older trial"), text=f"A trial by {label.split()[0]} et al. found no effect.")]
+    why = ("rejected_invalid", "Published in 1995, before the window.")
+    ex = _exec([draft(), responses(*[why] * len(objections)), responses()], [critique(objections=objections),
+                                                                             critique()])
+    w = ArgueWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    assert ex.of("skeptic", "Critique")[0]["inputs"]["date_window"] == {"date_from": 2000, "date_to": None}
+    shown = {o["id"]: o for o in ex.of("arguer", "ArgumentDraft")[1]["inputs"]["open_objections"]}
+    obs = _objections(ps)
+    off = {"year": 1995, "date_from": 2000, "date_to": None}
+    assert [shown[o["id"]].get("source_outside_date_window") for o in obs] == [off] + [None] * 6 + [off]
+    assert [o["status"] for o in obs] == ["rejected_invalid"] + ["open"] * 6 + ["rejected_invalid"]
+    g = w.gate(ps, 1)
+    assert [any(o["id"] in f for f in g.failures) for o in obs] == [False] + [True] * 6 + [False], g.failures
+
+
+def test_the_degrade_rejects_an_objection_offering_a_work_outside_the_date_window(env):
+    """Left open at the edge limit, such an objection is rejected by the kernel with the window as its reason, not
+    conceded: conceded, it would narrow the claim for a study the review never included."""
+    _, ps, lib = env
+    _synthesize(env)
+    ex = _exec([draft(), responses(), responses()], [critique(objections=[_p1(_old_work(lib, "An older trial"))]),
+                                                     critique()])
+    w = ArgueWorker()
+    assert w.run(_ctx(env, ex)).status == "done"
+    (o,) = _objections(ps)
+    assert o["status"] == "open" and not w.gate(ps, 1).ok
+    out = w.degrade(_ctx(env, ex), ["the objection is open"])
+    assert out.status == "done" and f"objection {o['id']} rejected as invalid" in out.reason, out.reason
+    (o,) = _objections(ps)
+    assert (o["status"], o["note"]) == ("rejected_invalid", ("rejected at the edge limit (P1): its source was published "
+                                        "in 1995, outside the protocol's date window (2000 to the search)"))
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
 
 
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
