@@ -117,6 +117,8 @@ def test_points_are_numbered_and_carried_across_runs(env):
                           reason="STALE-3"),
                  _opinion("revise", [_point("eligibility", "E1 too broad")], reason="judge_2 round 3"),
                  _opinion("revise")])
+    for role in ("judge", "judge_2"):  # each revise leaves its earlier points unmarked: asked, it marks none
+        ex.script[(role, "PointMarksOut")] = [{"resolved": []}] * 4
     workers = {s: FakeWorker() for s in ("landscape", "gaps", "topics", "question")}
     workers["protocol"] = ProtocolWorker()
     o = Orchestrator(k, None, workers=workers, executor_factory=lambda project, run_id, session: ex,
@@ -635,16 +637,24 @@ def test_a_failed_follow_up_leaves_the_opinion_as_it_was(env):
     assert [(m["point_id"], m["resolved"]) for m in judge["resolved"]] == [("p1.judge.1", True)]
 
 
-def test_no_follow_up_for_a_judge_that_marks_every_own_point_or_revises(env):
-    """judge approves marking its one point; judge_2 revises leaving its point unmarked: neither is asked again."""
+def test_a_revise_leaving_an_own_point_unmarked_is_asked_to_mark_it(env):
+    """srrepro12 tfa (2026-11-14): judge_2 revises with a new point and leaves its earlier one, which this version
+    resolves, unmarked; it is asked once to mark it, and its mark closes the point, so the ledger shows what the
+    version closed. judge approves marking its one point: it is not asked."""
     _, ps, _ = env
     ex = _executor(drafts=[_draft(), _draft("p1.judge.1", "p1.judge_2.1")], strategies=[_strategy()] * 2,
                    judge=[_opinion("revise", [_point()]), _opinion("approve", resolved=[("p1.judge.1", True)])],
-                   judge_2=[_opinion("revise", [_point("synthesis", "no harm outcome")]), _opinion("revise")])
+                   judge_2=[_opinion("revise", [_point("synthesis", "no harm outcome")]),
+                            _opinion("revise", [_point("synthesis", "the 180 °C boundary is ambiguous")])])
+    ex.script[("judge_2", "PointMarksOut")] = [_marks(("p1.judge_2.1", True))]
     w = ProtocolWorker()
     w.run(_ctx(env, ex))
     assert w.run(_ctx(env, ex, attempt=2)).status == "rerun"
-    assert _follow_ups(ex) == []
+    (asked,) = _follow_ups(ex)
+    assert asked["role"] == "judge_2" and asked["inputs"]["choice"] == "revise"
+    assert [p["id"] for p in asked["inputs"]["points"]] == ["p1.judge_2.1"]
     (row,) = store.protocols(ps, 2)
     (v,) = votes_on(ps, "protocol", row["id"])
-    assert not any("repaired" in o for o in v["opinions"])
+    assert v["opinions"][1]["repaired"] == ["p1.judge_2.1"] and "repaired" not in v["opinions"][0]
+    assert {p["id"]: p["status"] for p in points_ledger(ps)} == {
+        "p1.judge.1": "resolved", "p1.judge_2.1": "resolved", "p2.judge_2.1": "open"}
