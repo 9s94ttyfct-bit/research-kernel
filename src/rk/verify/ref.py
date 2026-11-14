@@ -81,7 +81,7 @@ def compare(cited: CitedRef, resolved: ResolvedWork | None) -> RefResult:
         details["first_author"] = {"cited": cited.first_author, "record": item.creators[0].family, "ok": m}
         # calibration (srrepro10, 2026-11-13): PubMed and a DOI's Crossref deposit may order the same authors
         # differently (the corresponding author first); the same author set is no wrong reference
-        if not m and _same_authors(cited.authors, [c.family for c in item.creators]):
+        if not m and _same_authors(cited.authors, [c.family for c in item.creators if c.family]):
             m = True
             details["first_author"].update(ok=True, order="the same authors in another order")
         ok &= m
