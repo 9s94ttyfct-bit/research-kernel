@@ -5,11 +5,13 @@ import httpx
 import pytest
 
 from rk.discovery.sources import COUNTED_SOURCES, KernelSources, log_and_search_hits
-from rk.library.models import Ids
+from rk.fulltext import fulltext_with_fallback
+from rk.library.models import Ids, ItemIn
 from rk.net.http import HttpClient
 from rk.sources import clinicaltrials
 from rk.sources.identifiers import normalize_nct
 from rk.sources.resolver import SEARCH_LIMITS, search
+from rk.tools.registry import CallContext
 
 from .discovery_fakes import make_project
 
@@ -104,5 +106,28 @@ def test_kernel_sources_search_count_and_deduplicate(tmp_home, replay_http, sour
         assert again == first and len(set(first)) == 3
         item = lib.get(first[0])
         assert item.ids.nct == "NCT02247128" and lib.find_by_ids(Ids(nct="nct02247128")) == first[0]
+    finally:
+        k.close()
+
+
+def test_registry_records_with_one_generic_title_stay_apart_and_skip_the_browser(tmp_home, replay_http):
+    """Registries reuse sponsor titles: two studies with one title and year but different NCT numbers are two items
+    (a registration without an NCT still joins by title). A registry record never sends the built-in browser to its
+    study page for full text."""
+    k, ps, lib = make_project(tmp_home, replay_http)
+    try:
+        def add(nct):
+            item = ItemIn(item_type="report", title="A Study of X in Healthy Participants", year=2020,
+                          ids=Ids(nct=nct, url=f"https://clinicaltrials.gov/study/{nct}" if nct else None))
+            return lib.add_item(item, added_by="agent", actor="t").item_id
+        a, b = add("NCT00000001"), add("NCT00000002")
+        assert a != b and add(None) in (a, b)
+
+        def no_browser():
+            raise AssertionError("the browser was asked for a registry record")
+        why: list[str] = []
+        got = fulltext_with_fallback(k, ps, lib, a, call=CallContext(role="kernel", actor="t", project="demo"),
+                                     project="demo", browser=no_browser, why=why)
+        assert got is None and "trial registry record" in why[-1]
     finally:
         k.close()
