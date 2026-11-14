@@ -11,9 +11,11 @@ that every selection decision carries its reason.
   screeners, a vote or you);
 - sought: the title/abstract includes, whose full text was sought; not retrieved: those with neither a full text nor
   an abstract (a record with an abstract but no full text is assessed on its abstract: ``abstract_only``);
-- assessed at full text: the records with a full-text final; excluded at full text by reason (the eligibility
-  criterion the screeners named; a disagreement the P1 vote or you excluded; a disagreement the P1 vote excluded
-  because eligibility was not established from the text shown, ``NOT_ESTABLISHED_OUT``); included.
+- assessed at full text: the records with a full-text final, of them ``full_text_retrieved`` on their retrieved full
+  text and ``abstract_only`` on their abstract (when any was assessed on its abstract, the two make up the box);
+  excluded at full text by reason (the eligibility criterion the screeners named; a disagreement the P1 vote or you
+  excluded; a disagreement the P1 vote excluded because eligibility was not established from the text shown,
+  ``NOT_ESTABLISHED_OUT``); included.
 
 The notes: the P1 vote's exclusions of screening disagreements per phase (``excluded_disagreement``, also counted in
 their box: the limitations name the recall loss), and of them those because eligibility was not established from the
@@ -69,6 +71,7 @@ class Prisma:
     excluded_ft: dict[str, int]
     excluded_disagreement: dict[str, int]
     included: int
+    full_text_retrieved: int  # the assessed records whose full text was retrieved (the retrieval note)
     excluded_language: int = 0
     abstract_only: int = 0
     unreasoned_ta: int = 0
@@ -130,7 +133,8 @@ def prisma_counts(ps: ProjectStore, attempt: int) -> Prisma:
     ta = [f for f in finals(ps, attempt, phase=TITLE_ABSTRACT) if f["record_id"] in recs]
     ft = [f for f in finals(ps, attempt, phase=FULL_TEXT) if f["record_id"] in recs]
     sought = {f["record_id"] for f in ta if f["include"] == "yes"}
-    note = retrieval_note(ps, attempt) or {"not_retrieved": [], "abstract_only": []}
+    note = retrieval_note(ps, attempt) or {"retrieved": [], "not_retrieved": [], "abstract_only": []}
+    retrieved = set(note["retrieved"])
     said_ta, said_ft = _said(ps, attempt, TITLE_ABSTRACT), _said(ps, attempt, FULL_TEXT)
     labels = _criteria(ps)
     ta_out = [f for f in ta if f["include"] == "no"]
@@ -147,6 +151,7 @@ def prisma_counts(ps: ProjectStore, attempt: int) -> Prisma:
                                                                                    (FULL_TEXT, ft))},
         not_established=sum(1 for f in ta + ft if not_established(f)),
         included=sum(1 for f in ft if f["include"] == "yes"),
+        full_text_retrieved=sum(1 for f in ft if f["record_id"] in retrieved),
         excluded_language=sum(1 for f in ta_out if f["decided_by"] == "rule"),
         abstract_only=sum(1 for r in note["abstract_only"] if r in sought),
         unreasoned_ta=sum(1 for f in ta_out
@@ -172,6 +177,9 @@ def check_prisma(p: Prisma) -> list[str]:
         out.append(f"sought {p.sought} - not retrieved {p.not_retrieved} = {p.sought - p.not_retrieved}, but "
                    f"{p.assessed_ft} were assessed at full text")
     excluded = sum(p.excluded_ft.values())
+    if p.abstract_only and p.full_text_retrieved + p.abstract_only != p.assessed_ft:
+        out.append(f"assessed on the full text {p.full_text_retrieved} + on the abstract only {p.abstract_only} = "
+                   f"{p.full_text_retrieved + p.abstract_only}, but {p.assessed_ft} were assessed at full text")
     if p.assessed_ft - excluded != p.included:
         out.append(f"assessed at full text {p.assessed_ft} - excluded at full text {excluded} = "
                    f"{p.assessed_ft - excluded}, but {p.included} were included")

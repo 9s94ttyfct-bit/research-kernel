@@ -27,7 +27,6 @@ from rk.production.artifacts import ArtifactIn, add_artifact
 from rk.production.design import DesignWorker, approved_design
 from rk.production.disclosure import disclosure_problems, render_disclosure
 from rk.production.draft import (
-    PRISMA_EVENT,
     DraftWorker,
     SectionDraft,
     SentenceRepair,
@@ -36,6 +35,7 @@ from rk.production.draft import (
     manuscript_problems,
     prisma_event,
     repair_sentences,
+    selection_text,
     unmet_support,
     writer_inputs,
 )
@@ -46,11 +46,13 @@ from rk.production.manuscript import (
     parse_section,
     source_markers,
 )
-from rk.production.sections import SECTIONS, required_sections
+from rk.production.sections import KERNEL_WRITTEN, SECTIONS, required_sections
 from rk.production.store import set_final
 from rk.production.synthesis import synthesis_claims
 from rk.roles.prompts import build_system_prompt
-from rk.verify.cover import EVENT_NUMBERS, verify_sentence
+from rk.store.events import NewEvent
+from rk.verify.cover import EVENT_NUMBERS, PRISMA_EVENT, verify_section, verify_sentence
+from rk.verify.support import cited_studies
 from tests.production_fakes import make_frozen_project, production_ctx
 from tests.test_balance import contest, object_to
 from tests.test_design import _argued, plan
@@ -145,9 +147,9 @@ def test_draft_writes_every_required_section_per_paper_type(env):
     else:
         assert ids == [s.id for s in SECTIONS[paper_type]]
     if paper_type == "scoping_review":
-        assert SECTIONS[paper_type][3].title == "Evidence map and thematic synthesis"
-    # one Writer task per section in order, none for the kernel's disclosure
-    assert _writer_sections(ex) == [i for i in ids if i != "disclosure"]
+        assert {s.id: s for s in SECTIONS[paper_type]}["results"].title == "Evidence map and thematic synthesis"
+    # one Writer task per section in order, none for the kernel's sections (the disclosure, a review's Study selection)
+    assert _writer_sections(ex) == [i for i in ids if i not in KERNEL_WRITTEN]
     for sid in ids:
         (v,) = draft_versions(ps, sid)
         assert v["verdict"]["ok"], (sid, v["verdict"])
@@ -159,7 +161,11 @@ def test_draft_writes_every_required_section_per_paper_type(env):
     later = ex.of("writer", "SectionDraft")[1]["inputs"]
     assert [x["id"] for x in later["earlier_sections"]] == [ids[0]]
     types = {e["type"] for e in first["events"]}
-    assert (PRISMA_EVENT in types) == (paper_type in ("systematic_review", "scoping_review"))
+    assert PRISMA_EVENT not in types  # the Writers never get the PRISMA flow: the kernel's Study selection states it
+    if paper_type in ("systematic_review", "scoping_review"):
+        (evt,) = [r["evt_id"] for r in ps.db.execute("SELECT evt_id FROM events WHERE type=?", (PRISMA_EVENT,))]
+        assert ids[ids.index("methods") + 1] == "study-selection"
+        assert f"[[run:{evt}]]" in draft_text(ps, "study-selection", 1)
     if paper_type == "research_proposal":
         assert first["design"]["id"] == approved_design(ps)["id"] and first["hypotheses"]
         methods = draft_text(ps, "methods", 1)
@@ -638,7 +644,7 @@ def test_prisma_event_pools_its_counts_never_its_attempt(env):
     _, ps, _ = env
     _ready(env)
     fields = EVENT_NUMBERS[PRISMA_EVENT]
-    assert len(fields) == 11 and "excluded_ft_total" in fields
+    assert len(fields) == 12 and {"excluded_ft_total", "full_text_retrieved"} <= set(fields)
     assert not {"attempt", "search_attempt", "protocol_id"} & set(fields)
     pid = ps.db.execute("SELECT id FROM protocols WHERE status='frozen'").fetchone()["id"]
     evt = prisma_event(ps, 9, 1, pid, actor="tester")
@@ -648,11 +654,84 @@ def test_prisma_event_pools_its_counts_never_its_attempt(env):
     assert (p["attempt"], p["search_attempt"], p["protocol_id"], p["identified"], p["included"]) == (9, 1, pid, 2, 2)
     assert p["excluded_ft_total"] == 0
     (ok,) = parse_section(f"The search identified 2 records and included 2 studies [[run:{evt}]].")
-    assert verify_sentence(ps, ok, paper_type="systematic_review").ok
+    assert verify_sentence(ps, ok, paper_type="systematic_review", kernel_written=True).ok
+    # a Writer's sentence never cites (nor so restates) the flow: the kernel's Study selection section states it
+    (problem,) = verify_sentence(ps, ok, paper_type="systematic_review").problems
+    assert "is the PRISMA flow" in problem and "Study selection" in problem, problem
     for n in ("9", "1"):  # the draft attempt and the search_screen attempt it records are never pooled
         (s,) = parse_section(f"The counts come from attempt {n} [[run:{evt}]].")
-        v = verify_sentence(ps, s, paper_type="systematic_review")
+        v = verify_sentence(ps, s, paper_type="systematic_review", kernel_written=True)
         assert f"the number {n} is not in any marker's target" in v.problems
+    # an event recorded before full_text_retrieved was added is not reused (a resumed attempt records it again; else
+    # selection_text would read a field the event lacks: review of D3)
+    old = ps.apply(NewEvent(type=PRISMA_EVENT, entity_id=None, actor_kind="kernel", actor="tester",
+                            payload={"attempt": 8, "search_attempt": 1, "protocol_id": pid,
+                                     **{f: 1 for f in fields if f != "full_text_retrieved"}})).evt_id
+    new = prisma_event(ps, 8, 1, pid, actor="tester")
+    assert new != old and "full_text_retrieved" in json.loads(ps.db.execute(
+        "SELECT payload FROM events WHERE evt_id=?", (new,)).fetchone()["payload"])
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_study_selection_states_each_prisma_count_under_its_own_label(env):
+    """Your decision (2026-11-14, after srrepro10 cade's Writer wrote "Thirty-four full texts assessed" while 25 of the
+    34 were assessed on their abstract only): the kernel writes the PRISMA flow, each count under its own label, and
+    every sentence verifies against the event; a box of no records gets no clause."""
+    _, ps, _ = env
+    _ready(env)
+    cade = {"identified": 846, "duplicates_removed": 371, "screened": 475, "excluded_ta": 360, "sought": 115,
+            "not_retrieved": 81, "assessed_ft": 34, "full_text_retrieved": 9, "excluded_ft_total": 27, "included": 7,
+            "excluded_language": 23, "abstract_only": 25}
+    none_lost = {**cade, "duplicates_removed": 0, "not_retrieved": 0, "abstract_only": 0, "excluded_language": 0,
+                 "full_text_retrieved": 34}
+    for counts, says, never in (
+            (cade, ["identified 846 records, of which 371 were duplicates", "475 records were screened",
+                    "360 records were excluded, 23 of them for their language", "sought for 115 records",
+                    "for 81 of them neither a full text nor an abstract",
+                    "assessed for 34 records: 9 on the full text and 25 on the abstract only",
+                    "27 records were excluded and 7 records were included"],
+             ["34 full texts"]),
+            (none_lost, ["identified 846 records, and 475", "assessed for 34 records on the full text"],
+             ["duplicate", "neither", "abstract only", "language"])):
+        evt = ps.apply(NewEvent(type=PRISMA_EVENT, entity_id=None, actor_kind="kernel", actor="tester",
+                                payload={"attempt": 1, "search_attempt": 1, "protocol_id": None, **counts})).evt_id
+        md = selection_text(ps, evt)
+        assert all(s in md for s in says) and not any(s in md for s in never), md
+        verdict = verify_section(ps, "study-selection", md, paper_type="systematic_review")
+        assert verdict.ok, verdict
+        assert all(f"[[run:{evt}]]" in s.text for s in parse_section(md))
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_a_spelled_count_of_what_the_protocol_searches_is_checked_against_it(env):
+    """Your decision (2026-11-14): a spelled count is checked like a written one; the frozen protocol holds how many
+    sources and queries it searches (srrepro10 cade: "three search strings" cited the protocol)."""
+    _, ps, _ = env
+    _ready(env)
+    pid = ps.db.execute("SELECT id FROM protocols WHERE status='frozen'").fetchone()["id"]
+    (ok,) = parse_section(f"We searched two databases with one search string [[run:{pid}]].")
+    assert verify_sentence(ps, ok, paper_type="systematic_review").ok
+    (bad,) = parse_section(f"We searched three databases [[run:{pid}]].")
+    assert "the number three is not in any marker's target" in verify_sentence(
+        ps, bad, paper_type="systematic_review").problems
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_a_count_of_the_studies_a_cited_claim_rests_on_is_grounded(env):
+    """Review of D5: "Two studies found …" citing a claim that rests on two studies is grounded by that count, as a
+    claim's own count of its cited studies is; a duration equal to it is not."""
+    _, ps, _ = env
+    _ready(env)
+    cid = synthesis_claims(ps, 1)[0]
+    k = cited_studies(ArgumentService(ps).get_claim(cid))
+    word = {1: "one", 2: "two", 3: "three"}[k]
+    for text, ok in ((f"{word.capitalize()} randomised trials found it [[clm:{cid}]].", True),
+                     (f"It was found in {k} studies [[clm:{cid}]].", True),
+                     (f"It lasted {word} weeks after the studies [[clm:{cid}]].", True),  # "weeks": no count
+                     (f"It lasted {k} weeks [[clm:{cid}]].", False)):
+        (s,) = parse_section(text)
+        number = [p for p in verify_sentence(ps, s, paper_type="systematic_review").problems if "the number" in p]
+        assert (not number) is ok, (text, number)
 
 
 @pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
@@ -667,7 +746,7 @@ def test_the_writers_limitations_list_the_screening_notes(env):
     set_final(ps, rid, 1, "full_text", "no", "vote", "screeners disagreed; eligibility not established from the "
               "text shown (abstract only); not reviewed by a human", actor="tester")
     s = draft_inputs(ps)
-    screening = writer_inputs(ps, s, s.sections[0], None)["limitations"]["screening"]
+    screening = writer_inputs(ps, s, s.sections[0])["limitations"]["screening"]
     assert ("1 excluded by the P1 vote on a screening disagreement (not reviewed by a human), of which 1 because "
             "eligibility was not established from the text shown") in screening
 
@@ -680,7 +759,7 @@ def test_a_main_claim_reusing_a_finding_is_offered_once_as_the_main_claim(env):
     _ready(env)
     s = draft_inputs(ps)
     s = replace(s, main=s.findings[0])
-    claims = writer_inputs(ps, s, s.sections[0], None)["claims"]
+    claims = writer_inputs(ps, s, s.sections[0])["claims"]
     assert [c["role"] for c in claims if c["claim_id"] == s.main] == ["main"]
 
 
@@ -813,7 +892,8 @@ def test_section_titles_follow_the_spec_and_a_critical_review_needs_themes(env):
 
     _, ps, _ = env
     sr = {s.id: s for s in SECTIONS["systematic_review"]}
-    assert "risk of bias" in sr["methods"].purpose and "PRISMA flow" in sr["results"].purpose
+    assert "risk of bias" in sr["methods"].purpose and "Study selection" in sr["results"].purpose
+    assert sr["study-selection"].kernel_written
     rp = {s.id: s.title for s in SECTIONS["research_proposal"]}
     assert (rp["background"], rp["questions-hypotheses"], rp["methods"], rp["expected-outcomes"]) == (
         "Background & Significance", "Research Question & Hypotheses", "Proposed Methods",

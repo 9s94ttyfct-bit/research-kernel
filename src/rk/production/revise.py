@@ -120,7 +120,6 @@ from rk.production.draft import (
     latest_version,
     load_inputs,
     manuscript_problems,
-    prisma_event,
     repair_sentences,
     repairable,
     section_verdict,
@@ -136,7 +135,6 @@ from rk.production.manuscript import (
     record_section_verdict,
     write_draft,
 )
-from rk.production.screening import reports_prisma
 from rk.production.sections import SectionSpec
 from rk.store.events import NewEvent
 from rk.store.project import ProjectStore
@@ -673,10 +671,6 @@ class ReviseWorker:
             return StageOutcome("back_edge", to=sent[-1]["to"], reason=sent[-1]["reason"])
         self._carry(ctx)
         rounds = load_settings().revise_max_rounds
-        d = s.draft
-        prisma = (prisma_event(ps, s.draft_attempt, d.search_attempt, d.protocol["id"] if d.protocol else None,
-                               actor=ctx.actor)
-                  if reports_prisma(d.paper_type) and d.search_attempt is not None else None)
         rnd = 1
         while True:
             if failures := self._check_round(ctx, s, rnd):
@@ -698,7 +692,7 @@ class ReviseWorker:
                 # a recorded revision is decided and stored whatever questions the section has now (a resume)
                 questions = self._questions_for(ps, ctx.attempt, spec.id, rnd)
                 if questions or _recorded(ps, ctx.attempt, "revision", rnd, spec.id) is not None:
-                    self._revise(ctx, s, spec, rnd, questions, prisma)
+                    self._revise(ctx, s, spec, rnd, questions)
             rnd += 1
 
     # ---- carried questions and the budget ----
@@ -845,15 +839,14 @@ class ReviseWorker:
                  if q["section"] == section and q["round"] == rnd]
                 + [{**q, "earlier_answer": _earlier_answer(q, answers)} for q in carried])
 
-    def _revise(self, ctx: StageContext, s: _Inputs, spec: SectionSpec, rnd: int, questions: list[dict],
-                prisma: str | None) -> None:
+    def _revise(self, ctx: StageContext, s: _Inputs, spec: SectionSpec, rnd: int, questions: list[dict]) -> None:
         """The section's revision in the round: recorded, or asked of the Writer and recorded; then decided; a rejected
         one that repairs can mend is repaired once (``_repair``) and decided again; an accepted one is stored."""
         ps, attempt = ctx.ps, ctx.attempt
         rev = _recorded(ps, attempt, "revision", rnd, spec.id)
         if rev is None:
             version = draft_versions(ps, spec.id)[-1]["version"]
-            inputs = self._writer_inputs(ctx, s, spec, prisma, version, draft_text(ps, spec.id, version), questions)
+            inputs = self._writer_inputs(ctx, s, spec, version, draft_text(ps, spec.id, version), questions)
             res = ctx.executor.run(WRITER, REVISE_TASK, inputs, Revision, stage=ctx.stage, attempt=attempt, tools=[])
             asked = [q["id"] for q in questions]
             if not res.ok or res.output is None:
@@ -868,13 +861,13 @@ class ReviseWorker:
                                                 f"the revision is of section {out.section!r}, not {spec.id!r}"))
         decided = _decided(ps, attempt, rev) or self._decide(ctx, s, rev)
         if not decided["accepted"] and self._repairable(ctx, s, spec, rnd, rev, decided):
-            rev = self._repair(ctx, s, spec, questions, prisma, rev, decided)
+            rev = self._repair(ctx, s, spec, questions, rev, decided)
             decided = _decided(ps, attempt, rev) or self._decide(ctx, s, rev)
         if decided["accepted"] and not decided["unchanged"]:
             self._store(ctx, rev, decided)
 
     @staticmethod
-    def _writer_inputs(ctx: StageContext, s: _Inputs, spec: SectionSpec, prisma: str | None, version: int, md: str,
+    def _writer_inputs(ctx: StageContext, s: _Inputs, spec: SectionSpec, version: int, md: str,
                        questions: list[dict]) -> dict:
         """The Writer's inputs on ``md``: each question's sentence by its ``sentence_number`` in ``md`` (from 1, as
         ``revise.failures`` numbers them): where its text occurs once in ``md``; where it occurs more than once, the
@@ -883,7 +876,7 @@ class ReviseWorker:
         repair of sentence 4 was given as sentence 3 and ignored."""
         ps = ctx.ps
         texts = [x.text for x in parse_section(md)]
-        inputs = writer_inputs(ps, s.draft, spec, prisma)
+        inputs = writer_inputs(ps, s.draft, spec)
         inputs["revise"] = {"version": version, "markdown": md, "questions": [
             {"id": q["id"], "priority": q["priority"], "text": q["text"], "sentence_number": _sentence_number(texts, q),
              "sentence": q.get("sentence"), "round": q["round"], "earlier_answer": q["earlier_answer"]}
@@ -920,14 +913,14 @@ class ReviseWorker:
               needed=1 + pending, budget=self.budget)
         return False
 
-    def _repair(self, ctx: StageContext, s: _Inputs, spec: SectionSpec, questions: list[dict], prisma: str | None,
-                rev: dict, decided: dict) -> dict:
+    def _repair(self, ctx: StageContext, s: _Inputs, spec: SectionSpec, questions: list[dict], rev: dict,
+                decided: dict) -> dict:
         """One Writer task giving repairs of the rejected revision's failing sentences, put into that revision
         (``repair_sentences``: every other sentence word for word); recorded as a ``revision`` of the round with
         ``repair_of`` and the rejected one's answers, each replaced by the repair's answer to the same question, which
         count when it is accepted."""
         ps, attempt = ctx.ps, ctx.attempt
-        inputs = self._writer_inputs(ctx, s, spec, prisma, rev["version"], rev["markdown"], questions)
+        inputs = self._writer_inputs(ctx, s, spec, rev["version"], rev["markdown"], questions)
         inputs["revise"]["failures"] = decided["reasons"]
         res = ctx.executor.run(WRITER, REPAIR_TASK, inputs, RevisionRepair, stage=ctx.stage, attempt=attempt, tools=[])
         fields = {"round": rev["round"], "section": spec.id, "task": res.task_id, "version": rev["version"],

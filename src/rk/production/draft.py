@@ -9,8 +9,9 @@ sentence and the section's balance.
    Writer task), a research proposal's approved design (``approved_design``,
    ``design_limitations``), the frozen protocol, and the search events of search_screen's passed attempt. A systematic
    or scoping review's PRISMA counts (``prisma_counts``) are recorded once per attempt as the kernel event
-   ``draft.prisma`` (``prisma_event``), which a ``[[run:]]`` marker cites for those numbers (V-NUM reads its count
-   fields only, ``excluded_ft_total`` among them: ``rk.verify.cover.EVENT_NUMBERS``); it also records the search_screen
+   ``draft.prisma`` (``prisma_event``, its numbers ``prisma_numbers``, ``excluded_ft_total`` among them:
+   ``rk.verify.cover.EVENT_NUMBERS``), which only the kernel-written Study
+   selection section cites (step 3; a Writer's sentence citing it fails V-COVER); it also records the search_screen
    attempt and the frozen protocol it was computed from, so the audit can recompute the counts and refuse a stale
    event. The limitations include search_screen's screening notes (``limitations["screening"]``,
    ``rk.verify.prisma.prisma_notes``: the P1 vote's exclusions and, of them, those because eligibility was not
@@ -45,8 +46,12 @@ sentence and the section's balance.
    previous attempt is retried from that attempt's last version (verified again), not drafted afresh. A section still
    failing then is left to the gate, which names its failing sentences and problems. The Writer gets the limitations
    without any id of a withdrawn claim, which it cannot cite.
-3. **Disclosure** is kernel-written: until the audit writes it from ``disclosure.md``, it is one ``[[run:]]`` sentence
-   per stage passed so far, citing the event of its pass.
+3. **Kernel-written sections.** The Disclosure: until the audit writes it from ``disclosure.md``, it is one ``[[run:]]``
+   sentence per stage passed so far, citing the event of its pass. A systematic or scoping review's Study selection
+   (``rk.production.sections.SELECTION``, after Methods): the PRISMA flow in fixed sentences (``selection_text``), each
+   count under its own label, citing the attempt's ``draft.prisma`` event; the Writers neither cite nor restate those
+   counts (your decision, 2026-11-14: srrepro10 cade's Writer wrote "Thirty-four full texts assessed" while 25 of the 34
+   were assessed on their abstract only).
 
 An interrupted attempt runs again in place: a section whose latest version in the attempt verified ok is not drafted
 again, an unverified version is verified (no Writer task), the retries already spent count, and a back-edge already
@@ -99,7 +104,7 @@ from rk.production.manuscript import (
     write_draft,
 )
 from rk.production.screening import reports_prisma
-from rk.production.sections import SectionSpec, required_sections
+from rk.production.sections import SELECTION, SectionSpec, required_sections
 from rk.production.store import frozen_protocol
 from rk.production.synthesis import (
     synthesis_claims,
@@ -117,6 +122,7 @@ from rk.verify.balance import (
 from rk.verify.cover import (
     CK_MAX_SHARE,
     EVENT_NUMBERS,
+    PRISMA_EVENT,
     SectionVerdict,
     SentenceVerdict,
     ck_problem,
@@ -124,18 +130,18 @@ from rk.verify.cover import (
     reported_values,
     verify_section,
 )
-from rk.verify.prisma import prisma_counts, prisma_notes
+from rk.verify.prisma import Prisma, prisma_counts, prisma_notes
 
 STAGE = "draft"
 ROLE = "writer"
 PROPOSAL = "research_proposal"
-PRISMA_EVENT = "draft.prisma"
 PRISMA_FIELDS = EVENT_NUMBERS[PRISMA_EVENT]
 MARKER_GRAMMAR = (
     "Every sentence ends with one or more source markers, before or after its full stop: [[clm:<claim id>]] a claim "
     "(only a supported one), [[obj:<objection id>]] what an objection's source (an outside work, from objections) "
-    "says, [[run:<event id>]] or [[run:<protocol id>]] what the kernel ran (a search, the PRISMA "
-    "counts, the frozen protocol), [[fig:<fig id>]] a figure, [[stat:<stt id>]] a statistic"
+    "says, [[run:<event id>]] or [[run:<protocol id>]] what the kernel ran (a search, the frozen protocol; the PRISMA "
+    "flow counts are the kernel's Study selection section, never cited or restated), [[fig:<fig id>]] a figure, "
+    "[[stat:<stt id>]] a statistic"
     ", [[plan:<design id>]] or [[plan:<hypothesis id>]] the design or a hypothesis (research proposal only), [[inf]] "
     "your own inference (worded tentatively: may, might, suggests), [[ck]] common knowledge (no number; at most one "
     "sentence in twenty of the whole manuscript). Ids exactly as given.")
@@ -245,22 +251,66 @@ def unmet_support(ps: ProjectStore) -> list[dict]:
     return out
 
 
+def prisma_numbers(p: Prisma) -> dict[str, int]:
+    """The PRISMA event's numbers (``PRISMA_FIELDS``) of the flow ``p``: its count fields, ``excluded_ft_total`` the
+    full-text exclusions summed over their reasons. The audit recomputes them the same way."""
+    counts = {**vars(p), "excluded_ft_total": sum(p.excluded_ft.values())}
+    return {f: counts[f] for f in PRISMA_FIELDS}
+
+
 def prisma_event(ps: ProjectStore, attempt: int, search_attempt: int, protocol_id: str | None, *,
                  actor: str) -> str:
     """The attempt's ``draft.prisma`` event (its ``evt_id``), recorded once: the PRISMA counts of search_screen's attempt
-    ``search_attempt`` as top-level fields (``PRISMA_FIELDS``, what V-NUM reads; ``excluded_ft_total`` sums the
-    full-text exclusions over their reasons), with that attempt and the frozen protocol id it was computed from (never
-    pooled: the audit recomputes the counts from them and refuses a stale event)."""
-    r = ps.db.execute("SELECT evt_id FROM events WHERE type=? AND json_extract(payload, '$.attempt')=? "
+    ``search_attempt`` as top-level fields (``prisma_numbers``, what V-NUM reads), with that attempt and the frozen
+    protocol id it was computed from (never pooled: the audit recomputes the counts from them and refuses a stale
+    event). An event recorded before a field was added (``full_text_retrieved``, 2026-11-14) is not reused: an
+    attempt resumed across that change records the counts again (review of D3)."""
+    r = ps.db.execute("SELECT evt_id, payload FROM events WHERE type=? AND json_extract(payload, '$.attempt')=? "
                       "AND json_extract(payload, '$.search_attempt')=? ORDER BY seq DESC LIMIT 1",
                       (PRISMA_EVENT, attempt, search_attempt)).fetchone()
-    if r is not None:
+    if r is not None and set(PRISMA_FIELDS) <= set(json.loads(r["payload"])):
         return r["evt_id"]
-    p = prisma_counts(ps, search_attempt)
-    counts = {**vars(p), "excluded_ft_total": sum(p.excluded_ft.values())}
+    numbers = prisma_numbers(prisma_counts(ps, search_attempt))
     return ps.apply(NewEvent(type=PRISMA_EVENT, entity_id=None, actor_kind="kernel", actor=actor,
                              payload={"attempt": attempt, "search_attempt": search_attempt, "protocol_id": protocol_id,
-                                      **{f: counts[f] for f in PRISMA_FIELDS}})).evt_id
+                                      **numbers})).evt_id
+
+
+def _count(n: int, one: str, many: str) -> str:
+    return f"{n} {one if n == 1 else many}"
+
+
+def selection_text(ps: ProjectStore, evt_id: str) -> str:
+    """The kernel-written Study selection section (``SELECTION``): the PRISMA flow of the event ``evt_id`` in fixed
+    sentences, each count under its own label and every sentence citing the event, so that no count is stated under
+    another box's label (your decision, 2026-11-14: srrepro10 cade's Writer wrote "Thirty-four full texts assessed"
+    while 25 of the 34 were assessed on their abstract only). A box of no records gets no clause."""
+    n = json.loads(ps.db.execute("SELECT payload FROM events WHERE evt_id=?", (evt_id,)).fetchone()["payload"])
+    run = f"[[run:{evt_id}]]"
+    out = [f"The searches identified {_count(n['identified'], 'record', 'records')}"
+           + (f", of which {_count(n['duplicates_removed'], 'was a duplicate', 'were duplicates')}"
+              if n["duplicates_removed"] else "")
+           + f", and {_count(n['screened'], 'record was', 'records were')} screened on title and abstract {run}."]
+    if n["excluded_ta"]:
+        out.append(f"At title and abstract screening, {_count(n['excluded_ta'], 'record was', 'records were')} "
+                   "excluded" + (f", {n['excluded_language']} of them for their language" if n["excluded_language"]
+                                 else "") + f" {run}.")
+    if n["sought"]:
+        out.append(f"Full texts were sought for {_count(n['sought'], 'record', 'records')}"
+                   + (f", and for {n['not_retrieved']} of them neither a full text nor an abstract could be retrieved"
+                      if n["not_retrieved"] else "") + f" {run}.")
+    if n["assessed_ft"]:
+        if n["abstract_only"]:
+            out.append(f"Eligibility was assessed for {_count(n['assessed_ft'], 'record', 'records')}: "
+                       f"{n['full_text_retrieved']} on the full text and {n['abstract_only']} on the abstract only "
+                       f"because no full text was available {run}.")
+        else:
+            out.append(f"Eligibility was assessed for {_count(n['assessed_ft'], 'record', 'records')} on the full "
+                       f"text {run}.")
+        out.append((f"Of these, {_count(n['excluded_ft_total'], 'record was', 'records were')} excluded and "
+                    if n["excluded_ft_total"] else "Of these, ")
+                   + f"{_count(n['included'], 'record was', 'records were')} included in the review {run}.")
+    return " ".join(out) + "\n"
 
 
 # ---- inputs ----
@@ -500,15 +550,16 @@ def _quotable(note: dict) -> bool:
     return note["kind"] == "quote" and bool(((note.get("verified") or {}).get("quote") or {}).get("ok"))
 
 
-def writer_inputs(ps: ProjectStore, s: DraftInputs, spec: SectionSpec, prisma: str | None) -> dict:
+def writer_inputs(ps: ProjectStore, s: DraftInputs, spec: SectionSpec) -> dict:
     """What every Writer task gets for ``spec`` (draft and revise alike): the paper type, audience and question, the
     section and the sections, the marker grammar, the claims (ids, texts, statuses, evidence notes with whether each is
     a verified quote, and their balance facts: ``rk.verify.balance.balance_requirements``; a withdrawn claim is not
     offered, since it cannot be cited: the limitations list it), the objections a sentence may cite with ``[[obj:]]``
     (``rk.verify.balance.citable_objections``: id, text, status, target (none when it is a withdrawn claim:
     ``_citable_only``) and the source's id, title and year), the
-    artifacts with their reported values only (``rk.verify.cover.reported_values``), the protocol, the search events and
-    the PRISMA event ``prisma``, a proposal's design and hypotheses, and the limitations. Calibration (critical3 final
+    artifacts with their reported values only (``rk.verify.cover.reported_values``), the protocol, the search events
+    (never the PRISMA event: its counts are the kernel's Study selection section), a proposal's design and hypotheses,
+    and the limitations. Calibration (critical3 final
     review): given no objection to cite, the Writer stated what an outside benchmark (a Skeptic objection's source)
     says under a claim that never mentions it."""
     svc = ArgumentService(ps)
@@ -546,10 +597,6 @@ def writer_inputs(ps: ProjectStore, s: DraftInputs, spec: SectionSpec, prisma: s
             events.append({"event_id": r["evt_id"], "type": r["type"], "source": p["source"], "query": p["query"],
                            "numbers": {f: (len(p[f]) if isinstance(p[f], list) else p[f])
                                        for f in EVENT_NUMBERS[r["type"]] if p.get(f) is not None}})
-    if prisma is not None:
-        r = ps.db.execute("SELECT payload FROM events WHERE evt_id=?", (prisma,)).fetchone()
-        p = json.loads(r["payload"])
-        events.append({"event_id": prisma, "type": PRISMA_EVENT, "numbers": {f: p[f] for f in PRISMA_FIELDS}})
     limitations: dict = {"synthesis": synthesis_limitations(ps, s.synth_attempt),
                          "argument": argue_limitations(ps, s.argue_attempt)}
     if s.search_attempt is not None:  # the recall the screening may have lost (rk.verify.prisma)
@@ -633,12 +680,16 @@ class DraftWorker:
                 continue
             if spec.kernel_written:
                 if not mine:
-                    v = write_draft(ps, spec.id, self._disclosure(ps), stage=STAGE, attempt=ctx.attempt, round=0,
-                                    by_task=None, actor=ctx.actor)
+                    if spec.id == SELECTION.id and prisma is None:
+                        return StageOutcome("failed", reason="search_screen has not passed: there is no PRISMA flow "
+                                                             f"for the {SELECTION.title} section")
+                    md = selection_text(ps, prisma) if spec.id == SELECTION.id else self._disclosure(ps)
+                    v = write_draft(ps, spec.id, md, stage=STAGE, attempt=ctx.attempt, round=0, by_task=None,
+                                    actor=ctx.actor)
                     self._verify(ctx, s, spec.id, v)
                 continue
             while len(mine) <= retries and not (mine and mine[-1]["verdict"]["ok"]):
-                out = self._write(ctx, s, spec, mine, prisma)
+                out = self._write(ctx, s, spec, mine)
                 if out is not None:
                     return out
                 mine = _mine(ps, spec.id, ctx.attempt)
@@ -670,12 +721,11 @@ class DraftWorker:
                 out[sec] = (md, verdict, last["by_task"])
         return out
 
-    def _write(self, ctx: StageContext, s: DraftInputs, spec: SectionSpec, mine: list[dict],
-               prisma: str | None) -> StageOutcome | None:
+    def _write(self, ctx: StageContext, s: DraftInputs, spec: SectionSpec, mine: list[dict]) -> StageOutcome | None:
         """One Writer task for the section, then the version stored and verified; an outcome when the attempt ends
         here (a back-edge, no output), else ``None``."""
         ps = ctx.ps
-        res = ctx.executor.run(ROLE, DRAFT_TASK, self._inputs(ctx, s, spec, mine, prisma), SectionDraft,
+        res = ctx.executor.run(ROLE, DRAFT_TASK, self._inputs(ctx, s, spec, mine), SectionDraft,
                                stage=ctx.stage, attempt=ctx.attempt, tools=[])
         if not res.ok or res.output is None:
             return StageOutcome("rerun", reason=f"the writer gave no draft of {spec.id} ({res.error})")
@@ -784,10 +834,9 @@ class DraftWorker:
                  for st, e in last.items()]
         return " ".join(lines) + "\n"
 
-    def _inputs(self, ctx: StageContext, s: DraftInputs, spec: SectionSpec, mine: list[dict],
-                prisma: str | None) -> dict:
+    def _inputs(self, ctx: StageContext, s: DraftInputs, spec: SectionSpec, mine: list[dict]) -> dict:
         ps = ctx.ps
-        inputs = writer_inputs(ps, s, spec, prisma)
+        inputs = writer_inputs(ps, s, spec)
         earlier = []
         for x in s.sections:
             if x.id == spec.id:

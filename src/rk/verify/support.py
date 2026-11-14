@@ -85,6 +85,11 @@ def _evidence_notes(claim: dict) -> dict[str, tuple[str, str]]:
     return out
 
 
+def cited_studies(claim: dict) -> int:
+    """How many distinct studies (source items) the claim's evidence notes come from."""
+    return len({item for item, _ in _evidence_notes(claim).values()})
+
+
 def evidence_texts(claim: dict) -> list[str]:
     """The verified passages behind a claim: quote notes' text, paraphrase notes' original span."""
     return [text for _, text in _evidence_notes(claim).values()]
@@ -152,7 +157,7 @@ def verify_support(kernel, registry, ps, claim_id: str, *, actor: str,
                               span_text="\n\n".join(texts))  # the headings are the kernel's, not evidence
         verdict = combine(opinions, min_judges=k)
         nums = check_numbers(claim["text"], texts,  # a count of the cited studies is grounded by the citations
-                             counts={len({item for item, _ in _evidence_notes(claim).values()})})
+                             counts={cited_studies(claim)})
         if verdict == "supported" and not nums.ok:
             verdict = "uncertain"
         result = SupportResult(verdict=verdict, opinions=opinions, numbers_ok=nums.ok,
