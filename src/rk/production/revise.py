@@ -140,6 +140,7 @@ from rk.store.events import NewEvent
 from rk.store.project import ProjectStore
 from rk.verify.cover import (
     CK_MAX_SHARE,
+    PRISMA_EVENT,
     SentenceVerdict,
     ck_count,
     ck_problem,
@@ -318,8 +319,11 @@ def _check(ps: ProjectStore, paper_type: str, section: str, markdown: str, prior
     states: dict[tuple[str, str | None], str] = {}
     earlier = {r["key"]: r for r in prior or []}
     rows, known, reverified = [], {}, []
+    # a Writer's sentence is also checked against the latest PRISMA event (``rk.verify.cover._restated_prisma``),
+    # whatever it cites: a kept verdict is of that event too (a check before this key reads as another state)
+    flow = ps.db.execute("SELECT evt_id FROM events WHERE type=? ORDER BY seq DESC LIMIT 1", (PRISMA_EVENT,)).fetchone()
     for x in sentences:
-        state = {}
+        state = {"prisma": flow["evt_id"] if flow else None}
         for m in x.markers:
             if (m.kind, m.target) not in states:
                 states[m.kind, m.target] = target_state(ps, m, paper_type=paper_type)
