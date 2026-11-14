@@ -65,6 +65,7 @@ from tests.production_fakes import (
     votes_on,
 )
 from tests.test_agent_loop import ScriptedBackend
+from tests.test_protocol import TOPIC_WORDS
 from tests.test_synthesis import DESIGN, CapOnce, Exec, _setup, assess, first_passage
 
 F1 = "Aspirin was studied in a randomised trial of older people."
@@ -679,6 +680,40 @@ def test_failed_self_check_in_p1_is_an_input_of_the_rq_vote(env):
     out = w.run(_ctx(env, _exec([draft(answers=NOT_ANSWERED)], [critique()],
                                 votes=_votes(["answers"], ["does_not_answer"])), 2))
     assert (out.status, out.to) == ("back_edge", "question")
+
+
+def test_the_rq_vote_sees_the_findings_the_answer_stands_on(env):
+    """Calibration (srrepro10, 2026-11-13): judges voted does_not_answer because the main claim did not cover parts of
+    the question that no included study addressed, which they could not tell from parts the claim left out. The RQ
+    vote shows them the supported findings of the synthesis it argues on, how many studies are included, and the
+    Arguer's synthesis requests (a part asked for is no evidence gap)."""
+    _, ps, _ = env
+    _synthesize(env)
+    record_edge_taken(ps, "argue->synthesize", EDGE_LIMIT, actor="tester")  # the requests proceed without a vote
+    ex = _exec([draft(needs_synthesis=NEED)], [critique()])
+    assert ArgueWorker().run(_ctx(env, ex)).status == "done"
+    (rq,) = [c for c in ex.of("judge", "VoteOut") if c["inputs"]["question"] == RQ_QUESTION]
+    svc = ArgumentService(ps)
+    supported = [c for c in synthesis_claims(ps, 1) if svc.get_claim(c)["status"] == "supported"]
+    subject = rq["inputs"]["subject"]
+    assert supported and subject["findings"] == [{"claim_id": c, "text": svc.get_claim(c)["text"]} for c in supported]
+    usable = usable_evidence(ps, stage_row(ps, "read_extract")["passed_attempt"])
+    assert subject["included_k"] == len({u["item_id"] for u in usable}) > 0
+    assert subject["synthesis_requests"] == [NEED]
+    assert not [w for w in TOPIC_WORDS if w in RQ_QUESTION.lower()]
+
+
+@pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
+def test_your_final_review_shows_the_findings_the_answer_stands_on(env):
+    """The P2 final review asks you the RQ vote's question by the same rule: it lists the findings argued on."""
+    _, ps, _ = env
+    _synthesize(env)
+    out = ArgueWorker().run(_ctx(env, _exec([draft()], [critique()])))
+    assert out.status == "waiting_human", out.reason
+    prompt = get_checkpoint(ps, out.checkpoint_id)["prompt"]
+    svc = ArgumentService(ps)
+    texts = [svc.get_claim(c)["text"] for c in synthesis_claims(ps, 1) if svc.get_claim(c)["status"] == "supported"]
+    assert texts and all(f"- {t}" in prompt for t in texts) and "evidence gap" in prompt
 
 
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
