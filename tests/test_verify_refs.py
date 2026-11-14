@@ -12,7 +12,7 @@ from rk.sources.crossref import Update
 from rk.sources.resolver import ResolvedWork, SourceContext
 from rk.store.project import ProjectStore
 from rk.verify.records import FLAG_COLLECTION, verify_item
-from rk.verify.ref import CitedRef, _author_match, compare, verify_reference
+from rk.verify.ref import CitedRef, author_match, compare, verify_reference
 from rk.verify.retract import FLAGGED, retraction_status
 
 from .conftest import GOLD
@@ -69,7 +69,7 @@ def test_verify_item_flags_wakefield(tmp_path, source_ctx):
     ("Smithson", "Smith", False),
 ])
 def test_author_match(cited, family, ok):
-    assert _author_match(cited, family) is ok
+    assert author_match(cited, family) is ok
 
 
 def _record(*families: str) -> ResolvedWork:
