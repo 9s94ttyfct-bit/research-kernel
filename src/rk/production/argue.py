@@ -832,7 +832,8 @@ def _item_facts(ps: ProjectStore, item_id: str) -> dict | None:
 
 def _off_window(ps: ProjectStore, o: dict) -> dict | None:
     """When the objection offers a work outside the review as counter-evidence: a ``counterexample`` or ``problem``
-    on a claim or its evidence (never a reason link or warrant: a later work can show a warrant fails), whose source is
+    on a claim or its evidence (never a reason link, a warrant edge or a warrant claim: a later work can show a warrant
+    fails), whose source is
     a verified library work (V-REF ``pass``: its year is the registry's) published outside the frozen protocol's date
     window and not a report of an included study (no DOI, PMID or PMCID in common with one, no title matching one's,
     and the objection does not name an included study by its first author and year: a follow-up, a correction, a
@@ -840,8 +841,9 @@ def _off_window(ps: ProjectStore, o: dict) -> dict | None:
     ``None``. Calibration (srrepro10 cade, 2026-11-13): objections offering a trial
     published two years after the window (the Skeptic: "within the evidence window", since it recruited then) were
     conceded, and the main claim then never answered the question for not reconciling that trial."""
-    if (o.get("category") not in _OFF_WINDOW_CATEGORIES or str(o.get("target_id", "")).startswith("edg_")
-            or not o.get("source_id")):
+    tid = str(o.get("target_id") or "")
+    if (o.get("category") not in _OFF_WINDOW_CATEGORIES or not o.get("source_id") or tid.startswith("edg_")
+            or _claim(ps, _claim_end(ps, tid)).get("origin") == "warrant"):
         return None
     window = _date_window(ps)
     src = _item_facts(ps, o["source_id"])

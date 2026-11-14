@@ -476,8 +476,9 @@ def test_an_objection_offering_a_work_outside_the_date_window_may_be_rejected(en
     problem on a claim, offering a verified work (V-REF pass) published outside the frozen protocol's date window that
     is no report of an included study, is shown with its year and may be rejected as invalid at any priority; the
     Skeptic sees the window. The priority-1 rule holds for an unverified source, one inside the window, one whose title
-    is an included study's, a soundness objection, one on a reason link and one naming an included study by its first
-    author and year (a later report on it); the author's name alone, which recurs, does not stop the rule."""
+    is an included study's, a soundness objection, one on a reason link, one on a warrant claim and one naming an
+    included study by its first author and year (a later report on it); the author's name alone, which recurs, does
+    not stop the rule."""
     _, ps, lib = env
     _synthesize(env, names=("Rossi", "Bianchi"))  # the protocol's date window: from 2000, open end
     first = usable_evidence(ps, 1)[0]["item_id"]
@@ -487,7 +488,8 @@ def test_an_objection_offering_a_work_outside_the_date_window_may_be_rejected(en
     objections = [_p1(x) for x in sources] + [
         _p1(sources[0], category="soundness"), _p1(sources[0], category="problem", target="link"),
         _p1(_old_work(lib, "Long-term results"), text=f"The long-term follow-up of {label} found no effect."),
-        _p1(_old_work(lib, "Yet another older trial"), text=f"A trial by {label.split()[0]} et al. found no effect.")]
+        _p1(_old_work(lib, "Yet another older trial"), text=f"A trial by {label.split()[0]} et al. found no effect."),
+        _p1(sources[0], category="problem", target="warrant")]
     why = ("rejected_invalid", "Published in 1995, before the window.")
     ex = _exec([draft(), responses(*[why] * len(objections)), responses()], [critique(objections=objections),
                                                                              critique()])
@@ -497,10 +499,10 @@ def test_an_objection_offering_a_work_outside_the_date_window_may_be_rejected(en
     shown = {o["id"]: o for o in ex.of("arguer", "ArgumentDraft")[1]["inputs"]["open_objections"]}
     obs = _objections(ps)
     off = {"year": 1995, "date_from": 2000, "date_to": None}
-    assert [shown[o["id"]].get("source_outside_date_window") for o in obs] == [off] + [None] * 6 + [off]
-    assert [o["status"] for o in obs] == ["rejected_invalid"] + ["open"] * 6 + ["rejected_invalid"]
+    assert [shown[o["id"]].get("source_outside_date_window") for o in obs] == [off] + [None] * 6 + [off, None]
+    assert [o["status"] for o in obs] == ["rejected_invalid"] + ["open"] * 6 + ["rejected_invalid", "open"]
     g = w.gate(ps, 1)
-    assert [any(o["id"] in f for f in g.failures) for o in obs] == [False] + [True] * 6 + [False], g.failures
+    assert [any(o["id"] in f for f in g.failures) for o in obs] == [False] + [True] * 6 + [False, True], g.failures
 
 
 def test_the_degrade_rejects_an_objection_offering_a_work_outside_the_date_window(env):
