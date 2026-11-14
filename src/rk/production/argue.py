@@ -203,6 +203,9 @@ MIN_ROUND_TASKS = 2  # an Arguer and a Skeptic task
 WARRANT_KIND = {"causal": "cause", "definition": "definition"}  # the warrant claim's kind; the other types: fact
 NOT_HUMAN = "P1 vote, not reviewed by a human"
 
+# Calibration (srrepro10, 2026-11-13): under the RQ vote that tells an evidence gap from an omission, both judges
+# refused main claims that left out a finding the synthesis had (sensitivity/specificity beside AUROC, a measured
+# change beside its direction) or named a gap only in scope_limits; the main claim covers every part, gaps in its text.
 DRAFT_TASK = (
     "Build the argument that answers the research question from the supported synthesis findings (synthesis) and the "
     "evidence notes (notes). In round 1 give the main claim with its evidence (or, when a supported synthesis finding "
@@ -218,11 +221,15 @@ DRAFT_TASK = (
     "the claim is narrowed or withdrawn, or, on a reason link or its warrant, drops that link from the argument), or "
     "rejected_invalid with the reason in note (priority 2 or 3 "
     "only); you may add new reasons, but give no main claim and none of the argument's reasons again (each stays "
-    "in the argument). refused_last_round says what of your last answer the kernel refused: do not repeat it. Argue "
-    "with the findings you have: when the synthesis lacks a finding the research "
-    "question calls for, narrow the main claim to what the findings support and state what is missing as a limitation "
-    "(its scope_limits); then set needs_synthesis, saying what is missing, only for what synthesize could still "
-    "produce from the included studies (their extracted data), never for studies, populations or results outside "
+    "in the argument). refused_last_round says what of your last answer the kernel refused: do not repeat it. The "
+    "main claim answers every part of the research question (its population, its exposure or intervention and "
+    "comparison, and each outcome it names): for each part a supported finding speaks to, it states that finding's "
+    "answer, leaving none out; for each part no finding speaks to, its text says that the included studies do not "
+    "address it (and its scope_limits list it). Argue with the findings you have: when the synthesis lacks a finding "
+    "the research question calls for, narrow the main claim to what the findings support and say in it what is "
+    "missing (and in its scope_limits); then set needs_synthesis, saying what is missing, only for what synthesize "
+    "could still produce from the included studies (their extracted data), never for studies, populations or results "
+    "outside "
     "them. It does not stop the argument: the judges or the researcher decide at the end whether synthesize runs "
     "again. Reasons and warrants are about the evidence: what the protocol required (a minimum number of studies to "
     "pool, the eligibility, the search) is no reason of the argument, since no note supports it; the draft's Methods "
@@ -264,8 +271,9 @@ RQ_QUESTION = (
     "Does the main claim answer the research question? Answer answers when it states an answer to the question as "
     "asked (its population, its exposure or intervention, and its outcome) for what the included studies establish: "
     "the findings are what the synthesis found in them. A part of the question that no finding speaks to (a setting, a "
-    "range of the exposure, a subgroup no included study addressed) is answered by saying that the included studies do "
-    "not address it: that is an evidence gap, not a failure to answer. A part the Arguer asked synthesize for "
+    "range of the exposure, a subgroup no included study addressed) is answered by the claim's text saying that the "
+    "included studies do not address it: that is an evidence gap, not a failure to answer. A part the Arguer asked "
+    "synthesize for "
     "(synthesis_requests) is no evidence gap: the included studies may address it. Answer does_not_answer when the "
     "claim answers another question (another population, exposure, comparison or outcome), states no answer, leaves "
     "out a part of the question that a finding speaks to, or leaves out a part no finding speaks to without saying "
