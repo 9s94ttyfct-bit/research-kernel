@@ -1124,7 +1124,8 @@ def _language_names(codes: list[str]) -> str:
 def _language_criterion(languages: list[str], paper_type: str) -> Criterion:
     """The kernel's language exclusion, with its rationale and the bias it risks (rule R3: the justification the
     judges asked for; srrepro11 tfa-heated-oils, 2026-11-14: a judge blocked the last vote on the unjustified English
-    restriction, which the Ideator may not rewrite). The calibration is a fixed fact, whatever ``languages`` lists. A
+    restriction, which the Ideator may not rewrite). The rationale states only what the code does: no translation, and
+    number checks that read English number words (``rk.verify.numbers``), whatever ``languages`` lists. A
     type that reports PRISMA counts (``PRISMA_TYPES``) states the count of records the rule excluded in its flow; the
     others hold it in their screening records, which the Writer's limitations input lists (``prisma_notes``) without
     a check that the Writer states it."""
@@ -1133,8 +1134,8 @@ def _language_criterion(languages: list[str], paper_type: str) -> Criterion:
     return Criterion(id=LANGUAGE_CRITERION_ID, text=(
         f"Reports in a language other than {_language_names(languages)}: search_screen excludes a record whose "
         "language a source records as another language, by a kernel rule before screening; a record with no recorded "
-        "language is screened. Rationale: the review has no translation step; its screeners, readers and checks work "
-        "on the text as written and were calibrated on English-language reports only. Studies reported only in another "
+        "language is screened. Rationale: the review has no translation step; its screeners and readers work on the "
+        "text as written, and its number checks read English number words only. Studies reported only in another "
         f"language may be missed (language bias); {told}. Written by the kernel."))
 
 
