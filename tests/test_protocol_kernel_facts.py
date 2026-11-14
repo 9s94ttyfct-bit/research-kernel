@@ -248,13 +248,10 @@ def test_language_exclusion_is_appended_once():
 
 def test_language_exclusion_names_where_its_count_is_reported():
     """The ``E-lang`` rationale (srrepro11 tfa-heated-oils: a judge blocked the vote on an unjustified English
-    restriction) points to the PRISMA flow only for a type that reports one, and its calibration claim stays English
-    whatever languages the strategy lists."""
-    def lang(paper_type, languages=None):
-        body = a_protocol()
-        if languages:
-            body.search_strategy.languages = languages
-        (c,) = [c for c in with_kernel_facts(body, paper_type, "auto").eligibility.exclude
+    restriction) states the reason and the language bias, and points to the PRISMA flow only for a type that reports
+    one."""
+    def lang(paper_type):
+        (c,) = [c for c in with_kernel_facts(a_protocol(), paper_type, "auto").eligibility.exclude
                 if c.id == LANGUAGE_CRITERION_ID]
         return c.text
 
@@ -262,7 +259,8 @@ def test_language_exclusion_names_where_its_count_is_reported():
         assert "PRISMA flow" in lang(paper_type)
     for paper_type in ("critical_review", "research_proposal"):
         assert "PRISMA" not in lang(paper_type)
-    assert "calibrated on English-language reports only" in lang("systematic_review", ["en", "de"])
+    for paper_type in ("systematic_review", "critical_review"):
+        assert "no translation step" in lang(paper_type) and "language bias" in lang(paper_type)
 
 
 def test_rendered_protocol_states_search_execution(sr_env):
