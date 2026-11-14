@@ -433,8 +433,10 @@ After argue (and design, for a research proposal), four stages turn the argument
 
   A failure goes back to the stage that owns it (draft, argue or read_extract). A failure no stage can mend fails the
   run and names its owner. When every gate passes, you read the manuscript in `final_review`. In P1 the judges vote
-  instead: `approve`; `not_approved` sends it to revise; `argue_again` (a claim must change, which revise cannot do)
-  sends it to argue.
+  instead: `approve`; `not_approved` sends it to revise; `argue_again` (a claim of the argument must change, which
+  revise cannot do) sends it to argue; `synthesize_again` (a synthesis finding must change, which argue cannot do)
+  sends it to synthesize, which writes again the findings the judges name and keeps the others word for word. A split
+  vote sends it to revise.
 - **Export.** Only an audited manuscript that you approved exports. pandoc, citeproc and tectonic write
   `paper.pdf`, `paper.docx`, `paper.md` and `paper.tex` with a bibliography; claim markers become citations of their
   evidence. The reproducible package (`package-<hash>.zip`) holds:

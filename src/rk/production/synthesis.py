@@ -607,9 +607,11 @@ def revise_problem(answer: dict, allowed: dict[str, str]) -> str:
 
 
 def _revised(ps: ProjectStore) -> set[str]:
-    """Every finding you named in ``revise`` (noted by synthesize's rerun answer and argue's back answer)."""
-    rows = ps.db.execute("SELECT json_extract(payload, '$.revise') FROM events WHERE type IN ('synthesis.noted', "
-                         "'argue.noted') AND json_extract(payload, '$.revise') IS NOT NULL")
+    """Every finding named to write again in ``revise``: by you (noted by synthesize's rerun answer and argue's back
+    answer) or, in P1, by the final review's judges agreeing on ``synthesize_again`` (the audit's back-edge note)."""
+    rows = ps.db.execute("SELECT json_extract(payload, '$.revise') FROM events WHERE (type IN ('synthesis.noted', "
+                         "'argue.noted') OR (type='audit.noted' AND json_extract(payload, '$.kind')='back_edge')) "
+                         "AND json_extract(payload, '$.revise') IS NOT NULL")
     return {c for (ids,) in rows for c in json.loads(ids)}
 
 
@@ -625,10 +627,10 @@ def _findings_attempt(ps: ProjectStore, attempt: int) -> int | None:
 def _kept_findings(ps: ProjectStore, attempt: int, s: _Inputs) -> tuple[list[tuple[str, FindingDraft]], list[str]]:
     """The findings a new attempt keeps word for word, with their evidence, as ``(claim id, finding)``: those of the
     latest earlier attempt that made findings which still pass the claim gate (``claim_problems``), are not contested
-    and cite only notes of this attempt's usable studies; and the ids of those you named in ``revise`` instead (your
-    rerun or back answer: released, written again). Only your answer releases one: the Arguer never does, and P1, with
-    no answer of yours, keeps them all. Calibration (critical review rerun): a finding written again came back
-    reworded, stronger than its sources, although your comment said to keep it exactly."""
+    and cite only notes of this attempt's usable studies; and the ids of those named in ``revise`` instead (your
+    rerun or back answer, or P1's final review: released, written again). The Arguer never releases one, and P1 keeps
+    them all but those its final review's judges name. Calibration (critical review rerun): a finding written again came
+    back reworded, stronger than its sources, although your comment said to keep it exactly."""
     before = _findings_attempt(ps, attempt)
     if before is None:
         return [], []
