@@ -12,7 +12,7 @@ from rk.sources.crossref import Update
 from rk.sources.resolver import ResolvedWork, SourceContext
 from rk.store.project import ProjectStore
 from rk.verify.records import FLAG_COLLECTION, verify_item
-from rk.verify.ref import CitedRef, _author_match, verify_reference
+from rk.verify.ref import CitedRef, _author_match, compare, verify_reference
 from rk.verify.retract import FLAGGED, retraction_status
 
 from .conftest import GOLD
@@ -70,6 +70,26 @@ def test_verify_item_flags_wakefield(tmp_path, source_ctx):
 ])
 def test_author_match(cited, family, ok):
     assert _author_match(cited, family) is ok
+
+
+def _record(*families: str) -> ResolvedWork:
+    return ResolvedWork(item=ItemIn(title="Study on detection rate of polyps", year=2020,
+                                    creators=[Creator(family=f) for f in families]), sources_used=["crossref"])
+
+
+def test_the_same_authors_in_another_order_pass_v_ref():
+    """Calibration (srrepro10, 2026-11-13): a cade run failed its audit on G-REF for a PubMed record (Liu first, Huang
+    last) whose DOI's Crossref deposit lists the same seven authors with Huang first: registries ordering the same
+    authors differently is no wrong reference. A first author absent from the record's authors still fails, and so
+    does a different author set with the cited first author in it."""
+    cited = CitedRef(identifier="10.1/x", title="Study on detection rate of polyps", first_author="Liu", year=2020,
+                     authors=["Liu", "Zhang", "Huang"])
+    ref = compare(cited, _record("Huang", "Liu", "Zhang"))
+    assert ref.verdict == "pass" and ref.details["first_author"] == {
+        "cited": "Liu", "record": "Huang", "ok": True, "order": "the same authors in another order"}
+    assert compare(cited, _record("Huang", "Zhang", "Wang")).verdict == "mismatch"
+    assert compare(cited, _record("Huang", "Liu", "Zhang", "Wang")).verdict == "mismatch"
+    assert compare(cited.model_copy(update={"authors": []}), _record("Huang", "Liu", "Zhang")).verdict == "mismatch"
 
 
 def _resolved(*types: str) -> ResolvedWork:

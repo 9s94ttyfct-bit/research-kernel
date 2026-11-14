@@ -44,7 +44,7 @@ def verify_item(ps: ProjectStore, lib: Library, ctx: SourceContext, item_id: str
     item = lib.get(item_id)
     ident = best_identifier(item.ids)
     cited = CitedRef(identifier=ident, title=item.title, first_author=item.creators[0].family if item.creators else None,
-                     year=item.year)
+                     year=item.year, authors=[c.family for c in item.creators if c.family])
     if ident is None:
         ref, resolved = RefResult(verdict="page_metadata_only", details={"reason": "no identifier"}), None
     else:
