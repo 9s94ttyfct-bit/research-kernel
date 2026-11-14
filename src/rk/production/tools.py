@@ -75,7 +75,12 @@ from rk.production.protocol import (
     search_execution_lines,
 )
 from rk.production.revise import STAGE as REVISE
-from rk.production.revise import revise_notes, settled_answers, withheld_questions
+from rk.production.revise import (
+    limitation_problems,
+    revise_notes,
+    settled_answers,
+    withheld_questions,
+)
 from rk.production.screening import reports_prisma
 from rk.production.store import (
     decisions,
@@ -664,7 +669,8 @@ def _section_view(ps: ProjectStore, section: str, title: str | None, version: in
 
 def revise_view(ps: ProjectStore, attempt: int | None = None) -> dict:
     """revise's questions (of the attempt it shows, or ``attempt``), each with how it was handled: ``outcome``
-    ``revised`` / ``answered`` / ``declined`` (its answer in an accepted revision, with the ``note``), ``rejected`` (only
+    ``revised`` / ``answered`` / ``unanswerable`` / ``declined`` (its answer in an accepted revision, with the
+    ``note``), ``rejected`` (only
     rejected revisions answered it), ``deleted`` (P1's degrade deleted its sentence) or ``open``; when ``rejected``,
     ``rejected_reasons`` (the last rejected revision's, after those of the revision it repaired when it is a repair);
     and every revision asked for it (accepted or not, with the reasons and ``repair_of``); the refused questions, those
@@ -680,6 +686,7 @@ def revise_view(ps: ProjectStore, attempt: int | None = None) -> dict:
              for n in notes if n["kind"] == "revision"]
     deleted = degraded_questions(ps, REVISE, attempt)
     settled, held = settled_answers(ps, attempt), withheld_questions(ps, attempt)
+    limits = limitation_problems(ps, attempt)
     questions = []
     for qn in (n for n in notes if n["kind"] == "questions"):
         for q in qn["questions"]:
@@ -690,9 +697,10 @@ def revise_view(ps: ProjectStore, attempt: int | None = None) -> dict:
                                   "reasons": t["reasons"], "how": a["how"] if a else None,
                                   "note": a["note"] if a else None, "repair_of": t.get("repair_of"),
                                   "unchanged": t["unchanged"]})
-            # a "revised" answer from a revision that changed nothing answers nothing (the gate's rule)
+            # a "revised" answer from a revision that changed nothing answers nothing, nor does an "unanswerable" one
+            # without its limitation sentence (the gate's rule: only ``settled`` has it resolved)
             answered = [r for r in revisions if r["accepted"] and r["how"]
-                        and not (r["how"] == "revised" and r["unchanged"])]
+                        and not (r["how"] == "revised" and r["unchanged"]) and r["how"] != "unanswerable"]
             if q["id"] in deleted:
                 outcome, note = "deleted", "P1's degrade deleted the sentence it was about"
             elif q["id"] in settled:  # the gate's rule: a settling answer wins over a later section's decline
@@ -700,7 +708,9 @@ def revise_view(ps: ProjectStore, attempt: int | None = None) -> dict:
             elif answered and q["id"] not in held:
                 outcome, note = answered[-1]["how"], answered[-1]["note"]
             else:
-                outcome, note = ("rejected" if any(r["accepted"] is False for r in revisions) else "open"), None
+                outcome = "rejected" if any(r["accepted"] is False for r in revisions) else "open"
+                # an "unanswerable" answer settles nothing without its limitation sentence: say why, as the gate does
+                note = f"answered unanswerable, but {limits[q['id']]}" if q["id"] in limits else None
             rejected = [r for r in revisions if r["accepted"] is False]
             shown = rejected[-1:]
             if shown and shown[0]["repair_of"]:  # a repair's reasons alone may hide why its revision was rejected

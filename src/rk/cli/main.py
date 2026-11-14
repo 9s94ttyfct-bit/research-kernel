@@ -1403,7 +1403,7 @@ def draft_show(section: str | None = typer.Option(None, "--section", help="One s
 
 def _handled(q: dict) -> str:
     """How a reader question was handled, in words."""
-    if q["outcome"] in ("revised", "answered", "declined", "deleted"):
+    if q["outcome"] in ("revised", "answered", "unanswerable", "declined", "deleted"):
         return f"{q['outcome']}: {q['note'] or 'no note'}"
     if q["outcome"] == "rejected":
         return "rejected: the revision answering it was not accepted: " + "; ".join(q["rejected_reasons"])

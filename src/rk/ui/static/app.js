@@ -1576,7 +1576,8 @@ function verdictPanel(s) {
 }
 
 // revise's questions (the attempt it shows), each with how it was handled, as text.
-const OUTCOMES = { revised: ["ok", "Revised"], answered: ["ok", "Answered"], declined: ["warn", "Declined"],
+const OUTCOMES = { revised: ["ok", "Revised"], answered: ["ok", "Answered"],
+  unanswerable: ["ok", "The evidence cannot answer it (a limitation sentence says so)"], declined: ["warn", "Declined"],
   deleted: ["neutral", "Deleted by the P1 degrade"], rejected: ["bad", "Rejected"], open: ["warn", "Not answered yet"] };
 function revisePanel(rv) {
   const gate = rv.gate ? (rv.gate.passed ? "It passed its gate." : rv.gate.failures.length ? `Its gate failed: ${rv.gate.failures.join("; ")}` : "Not gated yet.") : "";

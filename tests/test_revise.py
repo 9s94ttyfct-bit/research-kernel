@@ -31,7 +31,13 @@ from rk.production.manuscript import (
     latest_draft,
     parse_section,
 )
-from rk.production.revise import ReaderQuestions, ReviseWorker, Revision, revise_notes
+from rk.production.revise import (
+    ReaderQuestions,
+    ReviseWorker,
+    Revision,
+    _states_limitation,
+    revise_notes,
+)
 from rk.production.synthesis import synthesis_claims
 from rk.roles.prompts import build_system_prompt
 from tests.production_fakes import make_frozen_project, production_ctx
@@ -74,8 +80,10 @@ def ask(*questions: tuple) -> dict:
                            "text": f"What does {q[0]} mean here?", "priority": q[1]} for i, q in enumerate(questions)]}
 
 
-def revision(*, add: str = "", drop: str | None = None, how: str = "revised", note: str = "clarified"):
-    """A Writer output: the section given, with ``drop`` removed and ``add`` appended, answering every question."""
+def revision(*, add: str = "", drop: str | None = None, how: str = "revised", note: str = "clarified",
+             limitation: int | str | None = None):
+    """A Writer output: the section given, with ``drop`` removed and ``add`` appended, answering every question
+    (``limitation``: an unanswerable answer's ``limitation_sentence``; ``"last"``: the revision's last sentence)."""
     def out(inputs):
         md = inputs["revise"]["markdown"]
         if drop is not None:
@@ -83,8 +91,10 @@ def revision(*, add: str = "", drop: str | None = None, how: str = "revised", no
             md = md.replace(drop, "")
         if add:
             md = md.rstrip("\n") + " " + add + "\n"
+        number = len(parse_section(md)) if limitation == "last" else limitation
+        extra = {} if number is None else {"limitation_sentence": number}
         return {"section": inputs["section"]["id"], "markdown": md,
-                "answers": [{"question_id": q["id"], "how": how, "note": note}
+                "answers": [{"question_id": q["id"], "how": how, "note": note, **extra}
                             for q in inputs["revise"]["questions"]]}
     return out
 
@@ -393,6 +403,97 @@ def test_priority1_question_cannot_be_declined(env):
     assert w.gate(ps, 3).ok, w.gate(ps, 3).failures
 
 
+def test_a_priority1_question_the_evidence_cannot_answer_is_unanswerable_with_a_cited_limitation_sentence(env):
+    """Your decision (2026-11-13, after srrepro10 cade's revise deleted the sentences of reader questions no data could
+    answer): a priority-1 question may be answered unanswerable, but only with a sentence the revision writes for it,
+    given by its number, stating the limitation with a source marker. A number of no sentence, or of a sentence that
+    was already in the text (cited, but not written for the question), leaves it unresolved."""
+    _, ps, _ = env
+    _drafted(env)
+    main = main_claim(ps, 1)
+    save_settings(load_settings().model_copy(update={"revise_max_rounds": 1}))
+    w = ReviseWorker()
+    ex = _exec([ask(("introduction", 1))], [revision(how="unanswerable", note="no study reports it", limitation=99)])
+    assert w.run(_ctx(env, ex)).status == "done"
+    (failure,) = w.gate(ps, 1).failures
+    assert "unanswerable" in failure and "limitation_sentence 99 is no sentence" in failure, failure
+    from rk.production.tools import revise_view
+
+    (shown,) = revise_view(ps, 1)["questions"]  # the view says why, as the gate does
+    assert shown["outcome"] == "open" and "limitation_sentence 99 is no sentence" in shown["note"], shown
+    ex2 = _exec([ask()], [revision(how="unanswerable", note="no study reports it", limitation=1)])
+    assert w.run(_ctx(env, ex2, attempt=2)).status == "done"
+    (failure,) = w.gate(ps, 2).failures
+    assert "limitation_sentence 1 was already in the text" in failure, failure
+    text = ArgumentService(ps).get_claim(main)["text"].rstrip(".")
+    limitation = (f"The evidence given does not settle whether {text[0].lower()}{text[1:]} for the oldest people "
+                  f"[[clm:{main}]].")
+    ex3 = _exec([ask()], [revision(add=limitation, how="unanswerable", note="no study reports the oldest people",
+                                   limitation="last")])
+    assert w.run(_ctx(env, ex3, attempt=3)).status == "done"
+    assert w.gate(ps, 3).ok, w.gate(ps, 3).failures
+
+
+def test_a_limitation_sentence_must_cite_a_source():
+    base = "It was studied [[clm:clm_x]].\n"
+    md = "It was studied [[clm:clm_x]]. No study reported it [[clm:clm_x]]. It may matter [[inf]].\n"
+    assert _states_limitation(md, base, 2) is None
+    assert "already in the text" in _states_limitation(md, base, 1)
+    assert "cites no source" in _states_limitation(md, base, 3)
+    assert "no sentence" in _states_limitation(md, base, None)
+
+
+def test_a_limitation_sentence_must_stay_in_the_section_and_speak_to_the_question():
+    """Review of D4: a later revision deleting the limitation sentence unsettles its question; a sentence sharing no
+    word with the question and the sentence it is about is not written for it; a point on the whole manuscript is never
+    settled unanswerable (any section's sentence would do)."""
+    from rk.production.revise import _limitation_problem
+
+    base = "Aspirin was studied [[clm:clm_x]].\n"
+    md = "Aspirin was studied [[clm:clm_x]]. No trial of aspirin reported the oldest people [[clm:clm_x]].\n"
+    about = "Which aspirin doses? Aspirin was studied [[clm:clm_x]]."
+    assert _states_limitation(md, base, 2, final=md, about=about) is None
+    assert "no longer in the section" in _states_limitation(md, base, 2, final=base, about=about)
+    assert "shares no word" in _states_limitation(md, base, 2, final=md, about="Which statin doses were given?")
+    assert "never unanswerable" in _limitation_problem(None, {}, {}, {"section": "manuscript"}, {})
+
+
+@pytest.mark.parametrize("repair_limitation", [False, True])
+def test_a_repair_deleting_an_earlier_sentence_keeps_the_limitation_sentence(env, repair_limitation):
+    """Review of D4: the revision numbers its limitation sentence in the rejected text; a repair deleting a failing
+    sentence before it shifts the numbers. The number follows the sentence into the repaired text, so the question
+    stays settled by the sentence written for it, not by the one after it (or by none); a repair of the limitation
+    sentence, which did not fail, is ignored and leaves it as it was (re-review: the number followed the ignored
+    repair's text and was lost)."""
+    _, ps, _ = env
+    _drafted(env)
+    main = main_claim(ps, 1)
+    bad = f"Aspirin was studied in 1234 older people [[clm:{main}]]."
+    text = ArgumentService(ps).get_claim(main)["text"].rstrip(".")
+    limitation = (f"The evidence given does not settle whether {text[0].lower()}{text[1:]} for the oldest people "
+                  f"[[clm:{main}]].")
+    save_settings(load_settings().model_copy(update={"revise_max_rounds": 1}))
+
+    def mend(inputs):
+        md = inputs["revise"]["markdown"]
+        fixes = [(_numbered(md, "1234"), "")]
+        if repair_limitation:
+            fixes.append((len(parse_section(md)), f"No study reported the oldest people [[clm:{main}]]."))
+        return repair(*fixes)(inputs)
+
+    ex = _exec([ask(("introduction", 1))], [revision(add=f"{bad} {limitation}", how="unanswerable",
+                                                     note="no study reports the oldest people", limitation="last")],
+               [mend])
+    w = ReviseWorker()
+    assert _done(w.run(_ctx(env, ex)))
+    rejected, mended = revise_notes(ps, 1, kind="revision")
+    assert bad not in mended["markdown"] and limitation in mended["markdown"]
+    n = mended["answers"][0]["limitation_sentence"]
+    assert n == rejected["answers"][0]["limitation_sentence"] - 1
+    assert parse_section(mended["markdown"])[n - 1].prose.startswith("The evidence given does not settle")
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
 def test_revise_resumes_in_place_mid_round(env, monkeypatch):
     import rk.production.revise as revise_mod
 
@@ -591,6 +692,67 @@ def test_p1_degrade_deletes_questioned_and_failing_sentences(env):
     assert deg["stage"] == "revise" and deg["questions"] == [q["id"]]
     assert any(questioned in r for r in deg["removed"]) and any(reason in r for r in deg["removed"])
     assert all(len(draft_versions(ps, sec)) == 1 for sec in ("theme-1", "gaps-agenda"))
+
+
+def test_p1_degrade_unsettles_a_question_whose_limitation_sentence_it_deletes(env):
+    """Review of D4: a question settled ``unanswerable`` by a limitation sentence that no longer verifies is settled
+    when the degrade picks its deletions and unsettled once that sentence is deleted; the degrade deletes the
+    question's sentence too, so the gate after it passes."""
+    _, ps, _ = env
+    _ready(env)
+    main = main_claim(ps, 1)
+    (reason,) = [c for c in argument_claims(ps, 1) if c != main]
+    _drafted(env)
+    save_settings(load_settings().model_copy(update={"revise_max_rounds": 1}))
+    questioned = parse_section(draft_text(ps, "introduction", 1))[1].text
+    text = ArgumentService(ps).get_claim(reason)["text"].rstrip(".")
+    limitation = (f"The introduction cannot settle whether {text[0].lower()}{text[1:]} for the oldest people "
+                  f"[[clm:{reason}]].")
+    w = ReviseWorker()
+    ex = _exec([ask(("introduction", 1, 1))], [revision(add=limitation, how="unanswerable",
+                                                        note="no study reports the oldest people", limitation="last")])
+    assert _done(w.run(_ctx(env, ex)))
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    _p1_objection(ps, reason)  # the limitation sentence cannot verify any more
+    failures = w.gate(ps, 1).failures
+    assert failures and all("unanswerable" not in f for f in failures), failures
+    assert _done(w.degrade(_ctx(env, _exec([], [])), failures))
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    final = draft_text(ps, "introduction", draft_versions(ps, "introduction")[-1]["version"])
+    assert limitation not in final and questioned not in final
+    (deg,) = _degraded(ps)
+    (q,) = revise_notes(ps, 1, kind="questions")[0]["questions"]
+    assert deg["questions"] == [q["id"]]
+
+
+def test_p1_degrade_unsettles_a_question_whose_limitation_sentence_an_unresolved_question_is_about(env):
+    """Re-review of D4: the next round's reader questions the limitation sentence and that question stays unresolved;
+    the degrade deletes the limitation sentence for it, which unsettles the first question, so its sentence goes too
+    and the gate after the degrade passes."""
+    _, ps, _ = env
+    _drafted(env)
+    main = main_claim(ps, 1)
+    save_settings(load_settings().model_copy(update={"revise_max_rounds": 2}))
+    sentences = parse_section(draft_text(ps, "introduction", 1))
+    questioned = sentences[1].text
+    text = ArgumentService(ps).get_claim(main)["text"].rstrip(".")
+    limitation = (f"The introduction cannot settle whether {text[0].lower()}{text[1:]} for the oldest people "
+                  f"[[clm:{main}]].")
+    w = ReviseWorker()
+    ex = _exec([ask(("introduction", 1, 1)), ask(("introduction", 1, len(sentences)))],
+               [revision(add=limitation, how="unanswerable", note="no study reports the oldest people",
+                         limitation="last"), revision(how="declined", note="out of scope")])
+    assert _done(w.run(_ctx(env, ex)))
+    first, second = (q for n in revise_notes(ps, 1, kind="questions") for q in n["questions"])
+    assert second["sentence"].strip() == limitation, second
+    failures = w.gate(ps, 1).failures
+    assert len(failures) == 1 and second["id"] in failures[0], failures
+    assert _done(w.degrade(_ctx(env, _exec([], [])), failures))
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    final = draft_text(ps, "introduction", draft_versions(ps, "introduction")[-1]["version"])
+    assert limitation not in final and questioned not in final
+    (deg,) = _degraded(ps)
+    assert sorted(deg["questions"]) == sorted([first["id"], second["id"]])
 
 
 def test_p1_degrade_fails_on_a_section_level_question_of_a_required_section(env):
