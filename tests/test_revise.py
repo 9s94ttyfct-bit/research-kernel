@@ -440,7 +440,13 @@ def test_a_limitation_sentence_must_cite_a_source():
     assert _states_limitation(md, base, 2) is None
     assert "already in the text" in _states_limitation(md, base, 1)
     assert "cites no source" in _states_limitation(md, base, 3)
+    # never common knowledge: P1's degrade may delete [[ck]] sentences after its limitation check (review of D4)
+    ck = "It was studied [[clm:clm_x]]. No study reported it [[clm:clm_x]] [[ck]].\n"
+    assert "common knowledge" in _states_limitation(ck, base, 2)
     assert "no sentence" in _states_limitation(md, base, None)
+    # a sentence of the text copied with one more marker is not new (re-review of D4)
+    copied = "It was studied [[clm:clm_x]] [[clm:clm_y]]. No study reported it [[clm:clm_x]].\n"
+    assert "already in the text" in _states_limitation(copied, base, 1)
 
 
 def test_a_limitation_sentence_must_stay_in_the_section_and_speak_to_the_question():
@@ -455,6 +461,13 @@ def test_a_limitation_sentence_must_stay_in_the_section_and_speak_to_the_questio
     assert _states_limitation(md, base, 2, final=md, about=about) is None
     assert "no longer in the section" in _states_limitation(md, base, 2, final=base, about=about)
     assert "shares no word" in _states_limitation(md, base, 2, final=md, about="Which statin doses were given?")
+    # a later revision marking it [[ck]] (which P1's degrade may delete) makes it another sentence (review of D4)
+    marked = md.replace("people [[clm:clm_x]].", "people [[clm:clm_x]] [[ck]].")
+    assert "no longer in the section" in _states_limitation(md, base, 2, final=marked, about=about)
+    # a claim id is no word: citing the claim the question's sentence cites does not make it speak to the question
+    cited = "Statins were given [[clm:clm_01HXYZABQ]]. No trial reported the oldest people [[clm:clm_01HXYZABQ]].\n"
+    assert "shares no word" in _states_limitation(cited, "Statins were given [[clm:clm_01HXYZABQ]].\n", 2, final=cited,
+                                                  about="Which doses? Statins were given [[clm:clm_01HXYZABQ]].")
     assert "never unanswerable" in _limitation_problem(None, {}, {}, {"section": "manuscript"}, {})
 
 
