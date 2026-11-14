@@ -497,12 +497,18 @@ class BrowserSession:
                             {"url": url}, status=502) from None
 
     async def _state(self, page, status: int | None = None) -> PageState:
+        """The page's URL, title and HTML. A page still navigating gets 15 s more; one that still cannot be read fails
+        with ``navigation_failed`` (a ``ToolError``, so a run's full-text fetch records it per record)."""
         try:
-            content = await page.content()
-        except PwError:  # navigation still in progress
-            await page.wait_for_load_state("domcontentloaded", timeout=15000)
-            content = await page.content()
-        return PageState(page.url, await page.title(), content, status)
+            try:
+                content = await page.content()
+            except PwError:  # navigation still in progress
+                await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                content = await page.content()
+            return PageState(page.url, await page.title(), content, status)
+        except PwError as e:
+            raise ToolError("navigation_failed", f"could not read {page.url}: {str(e).splitlines()[0]}",
+                            {"url": page.url}, status=502) from None
 
     async def _checked_state(self, tab_id: str, owner: str | None, page, status: int | None = None) -> PageState:
         if self._is_agent(owner):

@@ -94,6 +94,20 @@ def test_vote_uses_every_admitted_judge(env):
     assert (result.decision, result.conservative_used) == ("include", True) and "disagree" in result.reason
 
 
+def test_a_majority_vote_takes_the_choice_of_more_than_half(env):
+    """Your decision (2026-11-14): with ``majority`` two of three judges decide, the dissent named in the reason; a
+    failed judge counts for no choice, so one valid choice of three is no majority and the vote is conservative."""
+    k, ps, lib = env
+    _, result = _vote(k, ps, lib, _votes("exclude", "exclude", "include"), majority=True)
+    assert (result.decision, result.conservative_used) == ("exclude", False)
+    assert result.reason == "by majority: judge_3 (anthropic) chose include"
+    ex = FailingJudge2({("judge", "VoteOut"): [{"choice": "exclude", "reason": "animal study"}],
+                        ("judge_3", "VoteOut"): [{"choice": "include", "reason": "adults"}]})
+    _, result = _vote(k, ps, lib, ex, majority=True)
+    assert (result.decision, result.conservative_used) == ("include", True)
+    assert result.reason == "no choice has a majority of the judges"
+
+
 def test_vote_with_a_failed_judge_task_is_conservative(env):
     k, ps, lib = env
     ex = FailingJudge2({("judge", "VoteOut"): [{"choice": "exclude", "reason": "animal study"}],
