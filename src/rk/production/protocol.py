@@ -62,13 +62,14 @@ Calibration 2 (P1 protocol rerun 2, 2026-11-12, ``docs/eval/p1-protocol-rerun-2-
   is voted on, the judges seeing both bounds, and search_screen's deduplicated count holds the cap (above it,
   ``search_screen->protocol``). The narrowing still narrows while ``total`` is above the cap; its best version is one
   whose ``lower`` is within the cap when there is one, then the lowest total (``_narrowed``).
-- A judge that answers approve and leaves some of its own open blocking points unmarked (``_unmarked``) is asked once
-  more in the same vote, on its own driver, to mark exactly those (``marks_follow_up``, ``MARKS_TASK``,
-  ``PointMarksOut``). Its marks on them join the opinion's ``resolved`` (marks on other ids are ignored) and the
-  opinion records them as ``repaired``; the tightening then applies as before, so a point still unmarked or marked
-  unresolved keeps the approve from counting. A failed follow-up leaves the opinion as it was; the follow-up is
-  recorded with the vote, so a resumed attempt reuses it and asks nothing again. Points close only by their own
-  judge's explicit mark.
+- A judge that leaves some of its own open blocking points unmarked (``_unmarked``), whether it answers approve or
+  revise, is asked once more in the same vote, on its own driver, to mark exactly those (``marks_follow_up``,
+  ``MARKS_TASK``, ``PointMarksOut``). Its marks on them join the opinion's ``resolved`` (marks on other ids are
+  ignored) and the opinion records them as ``repaired``; the tightening then applies as before, so a point still
+  unmarked or marked unresolved keeps an approve from counting, and a revise's marks tell the convergence rule
+  (``another_round``) which of its points the version closed. A failed follow-up leaves the opinion as it was; the
+  follow-up is recorded with the vote, so a resumed attempt reuses it and asks nothing again. Points close only by
+  their own judge's explicit mark.
 
 Calibration (search scope, 2026-11-12, ``docs/eval/search-scope-2026-11-12.md``): the kernel searches OpenAlex in
 titles, abstracts and keywords and Europe PMC in titles and abstracts (``rk.sources``), no longer their full texts, in
@@ -388,15 +389,19 @@ VOTE_QUESTION = (
     "is not frozen while a blocking one of them is open: do not answer revise, or raise a point, because another "
     "judge's point is open. The rules sheet (`kernel_rules`) is what the kernel does and cannot do whatever the "
     "protocol says: do not ask for anything it rules out.")
-# The follow-up a judge gets when it approved and left some of its own open blocking points unmarked.
+# The follow-up a judge gets when it left some of its own open blocking points unmarked, whatever it answered.
 # Calibration (P1 protocol rerun 2, 2026-11-12): cade attempts 2 and 3; judge approved, left p1.judge.2 (answered
 # changed by the Scout) unmarked, and the kernel counted it open and tightened the approve.
+# Calibration (srrepro10-12, 2026-11-14): every protocol that failed at the edge limit (srrepro10 ozone, srrepro11 tfa,
+# srrepro12 tfa) had judge answer revise with its own earlier points unmarked (5 opinions; every passed protocol's
+# judges marked all of theirs), so no point closed and the convergence grant never applied: srrepro12 tfa attempt 3
+# raised the 180 °C band boundary while leaving "the bands are not stated" (now stated) unmarked.
 MARKS_TASK = (
-    "You answered approve on protocol version `version` (`protocol`) but did not mark these open points of yours "
+    "You answered `choice` on protocol version `version` (`protocol`) but did not mark these open points of yours "
     "(`points`, each with its fault, the change you asked for and the authors' `answers` to it). Mark each of them in "
     "`resolved`, by its `id`: resolved true when this version resolves it, false when it does not, with why. A point "
-    "you leave unmarked or mark false keeps your approve from counting (it counts as revise). Do not search or use "
-    "tools.")
+    "you leave unmarked or mark false stays open: the protocol is not frozen while it is open, and an approve of yours "
+    "with it open counts as revise. Do not search or use tools.")
 # Where each search source matches a query (rk.sources.resolver and the source modules), as the protocol's search
 # execution and the judges' rules sheet state it.
 # Calibration (search scope, 2026-11-12, docs/eval/search-scope-2026-11-12.md): OpenAlex and Europe PMC no longer
@@ -709,17 +714,18 @@ def _unmarked(ledger: list[dict], role: str, out: ProtocolVoteOut) -> list[dict]
 
 def marks_follow_up(ledger: list[dict], role: str, out: ProtocolVoteOut, version: int,
                     protocol: str) -> FollowUp | None:
-    """The follow-up (``vote``'s ``follow_up``) of a judge that answered approve and left some of its own open
-    blocking points unmarked (``_unmarked``), else ``None``: the judge is asked (``MARKS_TASK``) to mark exactly those
-    points on the version (``version``, ``protocol`` as the judges see it), each given with its fault, change and the
-    authors' answers. Its marks on those points (``marked_point``; the last one per point) are added to the answer's
-    ``resolved``, its marks on any other id are ignored, and the opinion records the points it marked
-    (``repaired``). The tightening then applies to the merged answer as to any other: a point still unmarked, or
-    marked unresolved, keeps the approve from counting. A point closes only by its judge's explicit mark.
+    """The follow-up (``vote``'s ``follow_up``) of a judge that left some of its own open blocking points unmarked
+    (``_unmarked``), whatever it answered, else ``None``: the judge is asked (``MARKS_TASK``, with its ``choice``) to
+    mark exactly those points on the version (``version``, ``protocol`` as the judges see it), each given with its
+    fault, change and the authors' answers. Its marks on those points (``marked_point``; the last one per point) are
+    added to the answer's ``resolved``, its marks on any other id are ignored, and the opinion records the points it
+    marked (``repaired``). The tightening then applies to the merged answer as to any other: a point still unmarked, or
+    marked unresolved, keeps an approve from counting. A point closes only by its judge's explicit mark.
 
     Calibration (P1 protocol rerun 2, 2026-11-12): cade attempts 2 and 3 failed with both judges approving, judge
-    having left p1.judge.2, answered changed by the Scout, unmarked."""
-    if out.choice != "approve" or not (asked := _unmarked(ledger, role, out)):
+    having left p1.judge.2, answered changed by the Scout, unmarked. Calibration (srrepro10-12, 2026-11-14): a revise
+    too (``MARKS_TASK``)."""
+    if not (asked := _unmarked(ledger, role, out)):
         return None
     ids = [p["id"] for p in asked]
     points = {p["id"]: p for p in ledger}
@@ -731,7 +737,7 @@ def marks_follow_up(ledger: list[dict], role: str, out: ProtocolVoteOut, version
         return (answer.model_copy(update={"resolved": [*answer.resolved, *(marks[pid] for pid in repaired)]}),
                 {"repaired": repaired})
 
-    inputs = {"version": version, "protocol": protocol,
+    inputs = {"choice": out.choice, "version": version, "protocol": protocol,
               "points": [{k: p[k] for k in ("id", "section", "fault", "change", "answers")} for p in asked]}
     return FollowUp(MARKS_TASK, inputs, PointMarksOut, merge)
 
@@ -1859,8 +1865,8 @@ class ProtocolWorker:
         """The P1 vote on the version: the judges see it rendered (``render_protocol``), its probe, what changed since
         the version voted on before (``changes``), every open point with its answers (``open_points``), the kernel's
         rules sheet (``kernel_rules``) and which judge each is (``you``), and answer with points
-        (``ProtocolVoteOut``). A judge that approves and leaves some of its own open blocking points unmarked is asked
-        once to mark them (``marks_follow_up``). A judge's approve with an open blocking point of its own
+        (``ProtocolVoteOut``). A judge that leaves some of its own open blocking points unmarked is asked once to
+        mark them (``marks_follow_up``). A judge's approve with an open blocking point of its own
         (``_own_open_blocking``) counts as revise."""
         ps = ctx.ps
         row = protocol_row(ps, protocol_id)
