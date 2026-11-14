@@ -29,9 +29,14 @@ a code span is not checked and does not count).
 - **G-SUPPORT:** every cited claim passes the claim gate (``rk.verify.support.claim_problems``: supported, never by
   vote; V-HEDGE; V-STATS for a ``stat_result``; no open or conceded priority-1 objection); a withdrawn claim is never
   cited.
-- ``[[ck]]`` sentences carry no number and are at most 5% of a section's sentences; ``[[plan:]]`` only in a research
-  proposal. A section with a markdown table or a table caption fails (``section_problems``); so does a Writer's
-  section (any but the kernel-written ``KERNEL_WRITTEN``) with a heading, a reference definition or a footnote.
+- ``[[ck]]`` sentences carry no number and are at most 5% (``CK_MAX_SHARE``) of the whole manuscript's sentences
+  (``ck_problem``, checked by ``rk.production.draft.manuscript_problems``), never of a section's: a section reports its
+  share (``ck_share``) and passes whatever it is. Calibration (srrepro10, 2026-11-13): a 3-4 sentence introduction
+  with one background [[ck]] sentence, which nothing in a seeded review's library supports, was 25-33% and failed its
+  section on every try and after the P1 degrade, though the manuscript was 2 of ~72 sentences (2.8%); spec §9.1
+  V-COVER caps 常识 at "不超过 5%" without saying per section. ``[[plan:]]`` only in a research proposal. A section
+  with a markdown table or a table caption fails (``section_problems``); so does a Writer's section (any but the
+  kernel-written ``KERNEL_WRITTEN``) with a heading, a reference definition or a footnote.
 - **Research-operation sentences:** a Writer's sentence whose only source markers are ``run``/``plan`` (no claim,
   objection, figure or statistic) stands only in a section that describes the research operations
   (``rk.production.sections.describes_operations``: the Abstract, Methods, Results and Limitations of a review, a
@@ -140,9 +145,54 @@ class SectionVerdict(BaseModel):
     section: str
     version: int | None
     sentences: list[SentenceVerdict]
-    ck_share: float
+    ck_share: float  # its [[ck]] sentences' share, reported only (the cap is the manuscript's, ``ck_problem``)
     ok: bool
-    problems: list[str] = []  # section-level (the common-knowledge share, a table, an empty section)
+    problems: list[str] = []  # section-level (a table, a heading, an empty section, …)
+
+
+class CkCount(BaseModel):
+    """The manuscript's sentences and its common-knowledge (``[[ck]]``) sentences per section (``ck_count``)."""
+    sentences: int  # every sentence of the manuscript
+    by_section: dict[str, int]  # section id -> its ck sentences, in manuscript order; a section with none left out
+
+    @property
+    def ck(self) -> int:
+        return sum(self.by_section.values())
+
+    @property
+    def share(self) -> float:
+        return self.ck / self.sentences if self.sentences else 0.0
+
+    @property
+    def over(self) -> bool:
+        return self.share > CK_MAX_SHARE
+
+
+def is_ck(s: Sentence) -> bool:
+    """Whether the sentence is common knowledge: it carries a ``[[ck]]`` marker."""
+    return any(m.kind == "ck" for m in s.markers)
+
+
+def ck_count(texts: dict[str, str]) -> CkCount:
+    """The sentences (``parse_section``) and ``[[ck]]`` sentences of the manuscript ``texts`` (section id ->
+    markdown)."""
+    sentences, by_section = 0, {}
+    for section, md in texts.items():
+        parsed = parse_section(md)
+        sentences += len(parsed)
+        if ck := sum(1 for s in parsed if is_ck(s)):
+            by_section[section] = ck
+    return CkCount(sentences=sentences, by_section=by_section)
+
+
+def ck_problem(texts: dict[str, str]) -> str | None:
+    """The manuscript's common-knowledge share over ``CK_MAX_SHARE``, naming each section's ck sentences; ``None``
+    within it. The cap is of the whole manuscript, never a section's (see the module docstring)."""
+    n = ck_count(texts)
+    if not n.over:
+        return None
+    return (f"{n.ck} of {n.sentences} sentences of the manuscript are common knowledge ([[ck]]), more than "
+            f"{CK_MAX_SHARE:.0%}: " + ", ".join(f"{sec} ({k})" for sec, k in n.by_section.items()))
 
 
 def _claim(ps: ProjectStore, cid: str) -> dict | None:
@@ -437,11 +487,11 @@ def verify_sentence(ps: ProjectStore, s: Sentence, *, paper_type: str, kernel_wr
 
 def verify_section(ps: ProjectStore, section: str, markdown: str, *, paper_type: str,
                    version: int | None = None, known: dict[int, SentenceVerdict] | None = None) -> SectionVerdict:
-    """Every sentence of the section, the common-knowledge share (at most ``CK_MAX_SHARE``) and what the section may
-    not contain (``section_problems``: tables and table captions; in a Writer's section, i.e. one not in
-    ``KERNEL_WRITTEN``, headings, reference definitions and footnotes too). ``known``: sentence index -> a verdict the
-    caller keeps for that sentence instead of verifying it again (see the module docstring); every other sentence is
-    verified."""
+    """Every sentence of the section, its common-knowledge share (``ck_share``, reported only: the cap is the whole
+    manuscript's, ``ck_problem``) and what the section may not contain (``section_problems``: tables and table
+    captions; in a Writer's section, i.e. one not in ``KERNEL_WRITTEN``, headings, reference definitions and footnotes
+    too). ``known``: sentence index -> a verdict the caller keeps for that sentence instead of verifying it again (see
+    the module docstring); every other sentence is verified."""
     kernel_written = section in KERNEL_WRITTEN
     operations = describes_operations(paper_type, section)
     sentences = parse_section(markdown)
@@ -449,12 +499,8 @@ def verify_section(ps: ProjectStore, section: str, markdown: str, *, paper_type:
     verdicts = [known[s.index] if s.index in known
                 else verify_sentence(ps, s, paper_type=paper_type, kernel_written=kernel_written,
                                      operations=operations) for s in sentences]
-    ck = sum(1 for s in sentences if any(m.kind == "ck" for m in s.markers))
-    share = ck / len(sentences) if sentences else 0.0
+    share = sum(1 for s in sentences if is_ck(s)) / len(sentences) if sentences else 0.0
     problems = section_problems(markdown, kernel_written=kernel_written)
-    if share > CK_MAX_SHARE:
-        problems.append(f"{ck} of {len(sentences)} sentences are common knowledge ([[ck]]), more than "
-                        f"{CK_MAX_SHARE:.0%}")
     if not sentences:
         problems.append("the section has no sentences")
     return SectionVerdict(section=section, version=version, sentences=verdicts, ck_share=share,

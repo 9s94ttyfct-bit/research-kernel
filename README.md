@@ -411,7 +411,7 @@ After argue (and design, for a research proposal), four stages turn the argument
   - `[[fig:…]]`, `[[stat:…]]`: a figure or statistic;
   - `[[plan:…]]`: the frozen design or a hypothesis (proposals only);
   - `[[inf]]`: an inference, worded tentatively;
-  - `[[ck]]`: common knowledge, at most 1 sentence in 20.
+  - `[[ck]]`: common knowledge, at most 1 sentence in 20 of the whole manuscript (not of each section).
 
   The kernel verifies every sentence. V-COVER checks the markers; V-NUM checks that every number is in a cited
   target, the protocol's own numbers included; V-HEDGE checks that a sentence is no stronger than the claims and

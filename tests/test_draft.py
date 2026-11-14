@@ -31,7 +31,9 @@ from rk.production.draft import (
     DraftWorker,
     SectionDraft,
     SentenceRepair,
+    ck_deletions,
     draft_notes,
+    manuscript_problems,
     prisma_event,
     repair_sentences,
     unmet_support,
@@ -891,6 +893,91 @@ def test_degrade_that_verified_a_version_and_deleted_nothing_gates_again(env):
     assert draft_versions(ps, "conclusion")[-1]["verdict"]["ok"]
     assert w.gate(ps, 1).ok
     assert not ps.db.execute("SELECT 1 FROM events WHERE type='stage.degraded'").fetchall()
+
+
+def _points(prefix: str, n: int) -> str:
+    """``n`` tentative [[inf]] sentences, numbered by letters (a digit would be a number no marker covers)."""
+    return " ".join(f"{prefix} {chr(65 + i // 26)}{chr(65 + i % 26)} may hold [[inf]]." for i in range(n))
+
+
+def test_manuscript_problems_cap_common_knowledge_over_the_whole_manuscript(env):
+    """Calibration (srrepro10, 2026-11-13): the 5% [[ck]] cap is the manuscript's (spec §9.1 V-COVER), never a
+    section's; a section's single background sentence no longer fails it."""
+    _, ps, _ = env
+    _ready(env)
+    s = draft_inputs(ps)
+    ok = {"introduction": _points("Point", 10) + " Water is wet [[ck]].", "theme-1": _points("Item", 9)}
+    assert not [p for p in manuscript_problems(ps, s, ok) if "common knowledge" in p]
+    bad = {**ok, "theme-1": _points("Item", 9) + " Ice is cold [[ck]]."}
+    assert ("2 of 21 sentences of the manuscript are common knowledge ([[ck]]), more than 5%: introduction (1), "
+            "theme-1 (1)") in manuscript_problems(ps, s, bad)
+
+
+def _named(sections: dict, got: dict[str, set[int]]) -> dict[str, list[str]]:
+    return {sec: [sections[sec][i].text for i in sorted(ix)] for sec, ix in got.items()}
+
+
+def test_ck_deletions_take_the_section_with_most_ck_first_its_last_first_and_never_empty_one():
+    def sections(pad: int) -> dict:
+        return {"introduction": parse_section("Colonoscopy finds adenomas [[ck]]."),  # one sentence: never deleted
+                "theme-1": parse_section(_points("Point", pad) + " Water is wet [[ck]]. Ice is cold [[ck]]."),
+                "conclusion": parse_section(_points("Item", pad) + " Fire is hot [[ck]]. Snow is white [[ck]]. "
+                                            "Grass is green [[ck]].")}
+
+    # 6 ck in 66 sentences: 3 deletions (3 of 63), 2 are too few (4 of 64). The conclusion has the most (3): Grass, its
+    # last; then theme-1 ties it at 2 and comes first: Ice, its last; then the conclusion's 2: Snow
+    padded = sections(30)
+    assert _named(padded, ck_deletions(padded, {})) == {"theme-1": ["Ice is cold [[ck]]."],
+                                                        "conclusion": ["Snow is white [[ck]].",
+                                                                       "Grass is green [[ck]]."]}
+    # a ck sentence already planned for deletion counts (Grass): 5 of 65 left, 2 more deletions (3 of 63); only the new
+    # ones are returned
+    assert _named(padded, ck_deletions(padded, {"conclusion": {32}})) == {"theme-1": ["Ice is cold [[ck]]."],
+                                                                          "conclusion": ["Snow is white [[ck]]."]}
+    # 6 ck in 14: every ck sentence but the introduction's only one goes, though 1 of 9 is still over 5%
+    small = sections(4)
+    assert _named(small, ck_deletions(small, {})) == {
+        "theme-1": ["Water is wet [[ck]].", "Ice is cold [[ck]]."],
+        "conclusion": ["Fire is hot [[ck]].", "Snow is white [[ck]].", "Grass is green [[ck]]."]}
+    assert ck_deletions({"theme-1": parse_section(_points("Point", 19) + " Water is wet [[ck]].")}, {}) == {}
+
+
+def test_p1_degrade_deletes_common_knowledge_over_the_manuscripts_cap(env):
+    """The P1 degrade deletes [[ck]] sentences until the manuscript's share is within 5% (``ck_deletions``), in one
+    degrade with the failing sentences, recorded alike."""
+    _, ps, _ = env
+    _ready(env)
+    main = main_claim(ps, 1)
+    bad = f"Aspirin was studied in 1234 older people [[clm:{main}]]."
+    extras = {"introduction": "Colonoscopy finds adenomas [[ck]].",
+              "theme-1": _points("Point", 80) + " Water is wet [[ck]]. Ice is cold [[ck]].",
+              "gaps-agenda": "Fire is hot [[ck]].",
+              "conclusion": "Snow is white [[ck]]. Grass is green [[ck]]. The sky is blue [[ck]]."}
+
+    def out(inputs):
+        section = inputs["section"]["id"]
+        return writes(bad=bad if section == "gaps-agenda" else None, extra=extras[section])(inputs)
+
+    w = DraftWorker()
+    assert w.run(_ctx(env, _writer([out] * 6))).status == "done"
+    failures = w.gate(ps, 1).failures
+    assert any("1234" in f for f in failures)
+    (cap,) = [f for f in failures if "common knowledge" in f]
+    total = sum(len(parse_section(draft_text(ps, sec, draft_versions(ps, sec)[-1]["version"]))) for sec in _ids(ps))
+    # the failing sentence goes; then ck sentences until (7 - d) / (total - 1 - d) <= 5%
+    d = next(d for d in range(8) if (7 - d) / (total - 1 - d) <= 0.05)
+    assert 2 <= d <= 4, (total, d)
+    order = ["conclusion: “The sky is blue [[ck]].”", "theme-1: “Ice is cold [[ck]].”",
+             "conclusion: “Grass is green [[ck]].”", "introduction: “Colonoscopy finds adenomas [[ck]].”",
+             "theme-1: “Water is wet [[ck]].”", "gaps-agenda: “Fire is hot [[ck]].”",
+             "conclusion: “Snow is white [[ck]].”"]
+    res = w.degrade(_ctx(env, _writer([])), failures)
+    assert res.status == "done", res.reason
+    assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+    (deg,) = ps.db.execute("SELECT payload FROM events WHERE type='stage.degraded'").fetchall()
+    payload = json.loads(deg["payload"])
+    assert sorted(r for r in payload["removed"] if "1234" not in r) == sorted(order[:d])
+    assert len(payload["removed"]) == d + 1 and cap in payload["reason"]
 
 
 def test_writer_claims_carry_their_balance_requirements(env):
