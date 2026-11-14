@@ -16,6 +16,7 @@ Include = Literal["yes", "no", "unclear"]
 DecidedBy = Literal["agreement", "single", "human", "vote", "rule"]  # rule: a kernel rule (language), no screener
 
 RECORD_CAP = 3000  # records a search_screen attempt screens at most, unless the protocol sets another cap
+PRISMA_TYPES = frozenset({"systematic_review", "scoping_review"})  # PRISMA counts; an incomplete search blocks
 
 
 # the languages a new protocol's records are screened in: search_screen excludes a record in any other language by
