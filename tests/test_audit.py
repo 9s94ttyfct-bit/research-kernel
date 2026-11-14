@@ -380,6 +380,38 @@ def test_p1_final_review_not_approved_goes_to_revise_then_fails_at_limit(env):
     assert deg.status == "failed" and "judge says not_approved" in deg.reason and "never exported" in deg.reason
 
 
+def test_p1_final_review_can_send_a_claim_level_fault_back_to_argue(env):
+    """Calibration (srrepro10, 2026-11-13): cade's final vote refused the manuscript three times for a fault in its
+    claims (the main claim's scope said three further studies, a finding said five). Revise rewrites sentences, never
+    claims, so every audit->revise left it, and the run failed at the edge limit. The judges agreeing on argue_again
+    send the audit back to argue with their reasons; split, the conservative not_approved still goes to revise. The
+    judges see the claims (text and scope_limits) the manuscript cites, so they can tell where the fault is."""
+    _, ps, _ = env
+    revised(env)
+    w, ex = AuditWorker(), _judges("argue_again")
+    out = w.run(_ctx(env, ex))
+    assert (out.status, out.to) == ("back_edge", "argue"), (out.status, out.reason)
+    assert "judge says argue_again" in out.reason and "not reviewed by a human" in out.reason
+    d, svc = load_inputs(ps), ArgumentService(ps)
+    main = svc.get_claim(d.main)
+    for call in ex.calls:
+        seen = {c["claim_id"]: c for c in call["inputs"]["subject"]["claims"]}
+        assert seen[d.main] == {"claim_id": d.main, "role": "main", "text": main["text"],
+                                "scope_limits": main.get("scope_limits") or []}
+        assert set(seen) == {d.main, *d.argument, *d.findings}
+    calls = len(ex.calls)
+    again = w.run(_ctx(env, ex))  # resumed: the noted vote is kept, and so is where it sends the audit
+    assert (again.to, again.reason, len(ex.calls)) == ("argue", out.reason, calls)
+    # at the edge limit the degrade still never exports
+    assert w.degrade(_ctx(env, Exec({})), [out.reason]).status == "failed"
+
+
+def test_p1_final_review_split_between_argue_again_and_not_approved_goes_to_revise(env):
+    revised(env)
+    out = AuditWorker().run(_ctx(env, Exec(_votes(["argue_again"], ["not_approved"]))))
+    assert (out.status, out.to) == ("back_edge", "revise"), (out.status, out.reason)
+
+
 @pytest.mark.parametrize("env", [{"paper_type": t} for t in ("systematic_review", "critical_review")],
                          indirect=True, ids=["systematic_review", "critical_review"])
 def test_prereg_gate_only_for_systematic_and_scoping(env, monkeypatch):
