@@ -215,6 +215,7 @@ def serve(detach: bool = typer.Option(False, help="Start in the background and r
     from rk.browser.pacing import Pacer
     from rk.browser.service import BrowserService
     from rk.browser.session import BrowserSession
+    from rk.discovery.sources import KernelSources
     from rk.orchestrator.engine import Orchestrator
     from rk.orchestrator.runs import RunManager
     from rk.server.app import create_app
@@ -247,7 +248,11 @@ def serve(detach: bool = typer.Option(False, help="Start in the background and r
                         "chromium` or start with --no-browser", fg="yellow", err=True)
     runs: RunManager | None = None
     registry = build_registry(kernel, browser=lambda: service, runs=lambda: runs)
-    runs = RunManager(kernel, registry, Orchestrator(kernel, registry))
+    # the runs' sources get the built-in browser too, the last full-text channel (srrepro10/11: every run's full-text
+    # retrieval said "built-in browser: not running" while rk serve ran it, 173 records in tfa alone)
+    orchestrator = Orchestrator(kernel, registry,
+                                sources_factory=lambda project: KernelSources(kernel, project, lambda: service))
+    runs = RunManager(kernel, registry, orchestrator)
     chats = ChatManager(kernel, registry)
     server = uvicorn.Server(uvicorn.Config(create_app(registry, rt.token, tokens=kernel.tokens, chats=chats, ui=ui,
                                                       kernel=kernel, browser=lambda: service, runs=runs),

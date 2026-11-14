@@ -1,7 +1,9 @@
 """The P1 multi-vendor vote: where P2 asks the human, P1 asks the judges (``rk.roles.policy.JUDGE_ROLES``) the same
 question. Only admitted judges vote: distinct known, non-human vendors, none the generator's (the shared admission of
 ``rk.verify.judge.admitted_judges``). The decision is the choice shared by every admitted judge; fewer than two
-admitted judges, any disagreement, or a failed or invalid answer gives the conservative option. Every vote is recorded
+admitted judges, any disagreement, or a failed or invalid answer gives the conservative option. A caller may ask for a
+majority instead (``majority``): the choice of more than half of the admitted judges, else the conservative option
+(your decision, 2026-11-14: the full-text screening vote). Every vote is recorded
 (``vote.decided``) as not human-reviewed.
 
 A vote may ask for a richer answer (``output``, a ``VoteOut`` with more fields, e.g. the protocol judges' points, or
@@ -67,7 +69,7 @@ def vote(ctx: StageContext, subject_type: str, subject_id: str, question: str, o
          inputs: dict, *, generator_vendors: Collection[str | None] = (), reuse: bool = False,
          output: type[VoteOut] = VoteOut, per_judge: Callable[[str], dict] | None = None,
          tighten: Callable[[str, VoteOut], str] | None = None,
-         follow_up: Callable[[str, VoteOut], FollowUp | None] | None = None) -> VoteResult:
+         follow_up: Callable[[str, VoteOut], FollowUp | None] | None = None, majority: bool = False) -> VoteResult:
     """Ask every admitted judge ``question`` about the subject (``inputs``, what they see of it) through
     ``ctx.executor``. ``generator_vendors`` are the vendors that generated the subject (e.g. the Ideator's and the
     Scout's for a protocol), empty when it is no generated text (e.g. a screened record). With ``reuse``, a vote
@@ -85,8 +87,13 @@ def vote(ctx: StageContext, subject_type: str, subject_id: str, question: str, o
     ``choice`` as given with that ``effective`` choice, the decision is taken over the effective choices, and the
     vote's ``reason`` names each tightened judge.
 
+    With ``majority`` the decision is the (effective) choice of more than half of the admitted judges, a failed or
+    invalid answer counting for no option, and the vote's ``reason`` names each judge that chose otherwise; with no
+    such choice it is the conservative option. Fewer than two admitted judges still give the conservative option.
+
     Calibration (P1 protocol rerun 2, 2026-11-12): ``follow_up``, opt-in like ``output``, ``per_judge`` and
-    ``tighten``."""
+    ``tighten``. Your decision (2026-11-14, after srrepro10/11: 2 of the reviews' included studies lost at the
+    full-text vote had two of three judges choosing include, one excluding on a misread criterion): ``majority``."""
     if not options or len(set(options)) != len(options):
         raise ValueError(f"options must be distinct and non-empty: {options!r}")
     if conservative not in options:
@@ -122,15 +129,22 @@ def vote(ctx: StageContext, subject_type: str, subject_id: str, question: str, o
                 opinion["effective"] = conservative
                 tightened.append(f"{role} ({vendor}) {why}")
             opinions.append(opinion)
-        choices = {o.get("effective", o["choice"]) for o in opinions}
-        if None in choices:
+        effective = [o.get("effective", o["choice"]) for o in opinions]
+        won = next((c for c in options if effective.count(c) * 2 > len(effective)), None) if majority else None
+        if majority and won is None:
+            reason = "no choice has a majority of the judges"
+        elif majority:
+            reason = "; ".join(f"by majority: {o['role']} ({o['vendor']}) chose {o['choice'] or 'nothing valid'}"
+                               for o, c in zip(opinions, effective, strict=True) if c != won)
+        elif None in effective:
             reason = "a judge gave no valid choice"
-        elif len(choices) > 1:
+        elif len(set(effective)) > 1:
             reason = "the judges disagree"
         else:
             reason = ""
-    conservative_used = bool(reason)
-    decision = conservative if conservative_used else opinions[0].get("effective", opinions[0]["choice"])
+    conservative_used = won is None if majority and len(admitted) >= 2 else bool(reason)
+    decision = (conservative if conservative_used
+                else won if majority else opinions[0].get("effective", opinions[0]["choice"]))
     reason = "; ".join(r for r in (reason, *tightened) if r)
     vid = add_vote(ctx.ps, subject_type=subject_type, subject_id=subject_id, question=question, options=options,
                    conservative=conservative, decision=decision, conservative_used=conservative_used, reason=reason,

@@ -63,7 +63,10 @@ rules), V-PRISMA and the gate.
      excluding it only when its title and abstract show it fails one; at full text "exclude". Every vote's final is
      decided by ``vote`` and its reason starts "screeners disagreed" ("screeners disagreed; P1 conservative: to the
      full text" or "…: excluded" when the vote took the conservative option); ``voted_out`` tells its exclusions
-     (by the decision, never by the conservative option) apart for PRISMA and the limitations. Calibration
+     (by the decision, never by the conservative option) apart for PRISMA and the limitations. Your decision
+     (2026-11-14): at full text the vote is decided by majority (``vote``'s ``majority``: the choice of more than half
+     of the admitted judges, else the conservative exclude), the final's reason naming each judge that chose
+     otherwise; at title/abstract every judge must agree, as before. Calibration
      (full-text screening, 2026-11-13): at full text the question (``FULL_TEXT_VOTE``) asks the judges to include a
      record when the text shown establishes that it meets every criterion, to exclude it when the text shown
      establishes that it fails one, naming it, and to exclude it, saying which criterion is unsettled and marking
@@ -830,7 +833,7 @@ def _vote_on(ctx: StageContext, phase: str, rid: str, context: dict, record: dic
     screeners = _view_of(views, rid)
     inputs = {**context, "record": record, "screeners": screeners}
     res = vote(ctx, "record", rid, _vote_question(phase), list(CHOICES), CONSERVATIVE[phase], inputs,
-               output=RecordVoteOut if phase == FULL_TEXT else VoteOut)
+               output=RecordVoteOut if phase == FULL_TEXT else VoteOut, majority=phase == FULL_TEXT)
     inc = "yes" if res.decision == "include" else "no"
     if phase == FULL_TEXT and inc == "no" and _unsettled(res, screeners):
         reason = (f"screeners disagreed; {NOT_ESTABLISHED} ({TEXT_KIND_WORDS[record['text_kind']]}); not reviewed by "
@@ -839,8 +842,9 @@ def _vote_on(ctx: StageContext, phase: str, rid: str, context: dict, record: dic
         what = "to the full text" if inc == "yes" else "excluded"
         reason = f"screeners disagreed; P1 conservative: {what} ({res.reason}; not reviewed by a human)"
     else:
-        reason = (f"screeners disagreed; the P1 vote {'included' if inc == 'yes' else 'excluded'} it (not reviewed "
-                  "by a human)")
+        how = f"; {res.reason}" if res.reason else ""
+        reason = (f"screeners disagreed; the P1 vote {'included' if inc == 'yes' else 'excluded'} it{how} (not "
+                  "reviewed by a human)")
     set_final(ctx.ps, rid, ctx.attempt, phase, inc, "vote", reason, actor=ctx.actor)
 
 

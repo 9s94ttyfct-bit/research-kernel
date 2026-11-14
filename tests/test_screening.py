@@ -229,19 +229,24 @@ def test_p1_title_abstract_disagreement_votes_conservative_include(env):
 
 
 @pytest.mark.parametrize("env", [SR_P1], indirect=True)
-def test_p1_full_text_disagreement_votes_conservative_exclude(env):
+def test_p1_full_text_disagreement_is_decided_by_majority(env):
+    """Your decision (2026-11-14): at full text two of the three judges decide, either way, and the final's reason
+    names the dissent (srrepro11 ozone: a record two judges included was excluded by the third's misread criterion)."""
     _, ps, _ = env
     _freeze(ps)
     works = [_work("Aspirin X [yes/yes]", 1), _work("Aspirin Y [yes/yes]", 2)]
-    ex = Screeners(full_text={"Aspirin X [yes/yes]": "yes/no"},
-                   votes={("Aspirin X [yes/yes]", FT): ("include", "exclude")})
+    ex = Screeners(full_text={"Aspirin X [yes/yes]": "yes/no", "Aspirin Y [yes/yes]": "unclear/no"},
+                   votes={("Aspirin X [yes/yes]", FT): ("include", "exclude"),  # judge_2 and judge_3 exclude
+                          ("Aspirin Y [yes/yes]", FT): ("exclude", "include")})  # judge_2 and judge_3 include
     out = SearchScreenWorker().run(_ctx(env, ex, FakeSources({"aspirin": works})))
 
     assert out.status == "done"
     t = _titles(env)
     ft = {t[f["record_id"]]: (f["include"], f["decided_by"], f["reason"]) for f in store.finals(ps, 1, phase=FT)}
-    assert ft["Aspirin X [yes/yes]"][:2] == ("no", "vote")
-    assert ft["Aspirin X [yes/yes]"][2].startswith("screeners disagreed; P1 conservative: excluded")
+    assert ft["Aspirin X [yes/yes]"] == ("no", "vote", ("screeners disagreed; the P1 vote excluded it; by majority: "
+                                                        "judge (openai) chose include (not reviewed by a human)"))
+    assert ft["Aspirin Y [yes/yes]"] == ("yes", "vote", ("screeners disagreed; the P1 vote included it; by majority: "
+                                                         "judge (openai) chose exclude (not reviewed by a human)"))
     assert ex.of("judge", FT)[0]["inputs"]["question"] == screening.FULL_TEXT_VOTE
 
 
@@ -1042,8 +1047,8 @@ def test_a_full_text_vote_that_cannot_settle_eligibility_excludes_with_its_own_r
 
 @pytest.mark.parametrize("env", [SR_P1], indirect=True)
 def test_a_full_text_vote_exclusion_on_a_failed_criterion_keeps_its_reason(env):
-    """Judges who exclude on a criterion the text shows failing (not unsettled), unanimous or split, give the
-    existing vote reasons, and nothing is counted as not established."""
+    """Judges who exclude on a criterion the text shows failing (not unsettled), unanimous or by majority, give the
+    vote reasons, and nothing is counted as not established."""
     _, ps, _ = env
     _freeze(ps)
     works = [_work("Aspirin fails [yes/yes]", 1), _work("Aspirin torn [yes/yes]", 2),
@@ -1057,8 +1062,9 @@ def test_a_full_text_vote_exclusion_on_a_failed_criterion_keeps_its_reason(env):
     ft = _ft_finals(env)
     assert ft["Aspirin fails [yes/yes]"] == ("no", "vote", ("screeners disagreed; the P1 vote excluded it (not "
                                                             "reviewed by a human)"))
-    assert ft["Aspirin torn [yes/yes]"] == ("no", "vote", ("screeners disagreed; P1 conservative: excluded (the "
-                                                           "judges disagree; not reviewed by a human)"))
+    assert ft["Aspirin torn [yes/yes]"] == ("no", "vote", ("screeners disagreed; the P1 vote excluded it; by "
+                                                           "majority: judge (openai) chose include (not reviewed by "
+                                                           "a human)"))
     assert "2 excluded by the P1 vote on a disagreement)" in out.reason and "not established" not in out.reason
     p = prisma_counts(ps, 1)
     assert p.excluded_ft == {VOTED_OUT: 2} and p.not_established == 0
