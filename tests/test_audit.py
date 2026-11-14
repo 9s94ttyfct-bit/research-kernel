@@ -34,6 +34,7 @@ from rk.orchestrator.state import (
     run_row,
     stage_row,
 )
+from rk.production import synthesis as synthesis_mod
 from rk.production.argue import argument_claims, main_claim
 from rk.production.artifacts import ArtifactIn, add_artifact
 from rk.production.audit import (
@@ -66,7 +67,6 @@ from tests.production_fakes import (
     stage_run,
 )
 from tests.test_balance import object_to
-from tests.test_design import _votes
 from tests.test_draft import _ready, writes
 from tests.test_synthesis import CapOnce, Exec
 
@@ -107,6 +107,19 @@ def _ctx(env, ex, attempt: int = 1, **sources):
                                   sources=FakeSources({}, lib=lib, **sources)), guidance="")
 
 
+FINAL = "FinalVoteOut"
+
+
+def _votes(first=(), second=(), *, findings: bool = False) -> dict:
+    """The two judges' final-review answers in order; with ``findings``, each names the manuscript's first finding."""
+    def answer(choice: str):
+        def out(inputs):
+            named = [c["claim_id"] for c in inputs["subject"]["claims"] if c["role"] == "finding"][:1]
+            return {"choice": choice, "reason": f"judge says {choice}", "findings": named if findings else []}
+        return out
+    return {("judge", FINAL): [answer(c) for c in first], ("judge_2", FINAL): [answer(c) for c in second]}
+
+
 def _judges(*choices: str) -> Exec:
     return Exec(_votes(list(choices), list(choices)))
 
@@ -123,7 +136,8 @@ def _vendor(role: str) -> str | None:
 # ---- tests ----
 def test_audit_is_a_default_worker_with_its_edges():
     assert isinstance(default_workers().get("audit"), AuditWorker)
-    assert {("audit", "draft"), ("audit", "argue"), ("audit", "read_extract"), ("audit", "revise")} <= BACK_EDGES
+    assert {("audit", "draft"), ("audit", "argue"), ("audit", "synthesize"), ("audit", "read_extract"),
+            ("audit", "revise")} <= BACK_EDGES
     assert "audit" not in OPEN_STAGES
 
 
@@ -412,6 +426,48 @@ def test_p1_final_review_split_between_argue_again_and_not_approved_goes_to_revi
     assert (out.status, out.to) == ("back_edge", "revise"), (out.status, out.reason)
 
 
+def test_p1_final_review_sends_a_fault_in_a_finding_back_to_synthesize_through_the_engine(env):
+    """Calibration (srrepro10 cade, 2026-11-13; your decision): a synthesis finding mixed two outcomes and its scope
+    contradicted the pooled estimate the manuscript reported; revise cannot rewrite a finding and argue only reuses it,
+    so the run ended at the edge limit. The judges agreeing on synthesize_again, each naming the finding, send the
+    audit to synthesize with their reasons as its guidance, and the new synthesize attempt writes that finding again
+    instead of keeping it word for word."""
+    k, ps, lib = env
+    revised(env)
+    (finding, *_) = [c for c in load_inputs(ps).findings if c != load_inputs(ps).main]
+    before = synthesis_mod._load(ps)
+    assert finding in {c for c, _ in synthesis_mod._kept_findings(ps, 99, before)[0]}  # kept until named
+    ex = Exec(_votes(["synthesize_again"] * 2, ["synthesize_again"] * 2, findings=True))
+    o, run_id = stage_run(k, ps, lib, "audit", ex)
+    assert o.step("demo", run_id, actor="tester") == "running"
+    assert current_stage(ps) == "synthesize" and edge_rows(ps)["audit->synthesize"]["count"] == 1
+    assert "judge says synthesize_again" in stage_row(ps, "synthesize")["guidance"]
+    kept, released = synthesis_mod._kept_findings(ps, 99, synthesis_mod._load(ps))
+    assert released == [finding] and finding not in {c for c, _ in kept}
+
+
+@pytest.mark.parametrize("revisable", ["all", "none"])
+def test_p1_synthesize_again_naming_no_writable_finding_counts_as_not_approved(env, monkeypatch, revisable):
+    """A judge choosing synthesize_again without naming a finding a new synthesize attempt can write again (none
+    named, or only one that is not ``revisable``: a kernel stat_result, recomputed, never written) would send
+    synthesize a rerun that changes nothing: the choice counts as the conservative not_approved."""
+    import rk.production.audit as audit_mod
+
+    revised(env)
+    if revisable == "none":
+        monkeypatch.setattr(audit_mod, "revisable", lambda ps, attempt: {})
+    named = revisable == "none"  # the judges name the first finding, which then is no writable one
+    out = AuditWorker().run(_ctx(env, Exec(_votes(["synthesize_again"], ["synthesize_again"], findings=named))))
+    assert (out.status, out.to) == ("back_edge", "revise"), (out.status, out.reason)
+    assert "named no finding" in out.reason
+
+
+def test_p1_final_review_split_between_synthesize_again_and_argue_again_goes_to_revise(env):
+    revised(env)
+    out = AuditWorker().run(_ctx(env, Exec(_votes(["synthesize_again"], ["argue_again"], findings=True))))
+    assert (out.status, out.to) == ("back_edge", "revise"), (out.status, out.reason)
+
+
 @pytest.mark.parametrize("env", [{"paper_type": t} for t in ("systematic_review", "critical_review")],
                          indirect=True, ids=["systematic_review", "critical_review"])
 def test_prereg_gate_only_for_systematic_and_scoping(env, monkeypatch):
@@ -436,7 +492,7 @@ def test_prereg_gate_only_for_systematic_and_scoping(env, monkeypatch):
 def test_audit_resumes_in_place(env):
     _, ps, _ = env
     revised(env)
-    ex = CapOnce(_votes(["approve"] * 2, ["approve"] * 2), at=("judge", "VoteOut"))
+    ex = CapOnce(_votes(["approve"] * 2, ["approve"] * 2), at=("judge", FINAL))
     w = AuditWorker()
     ctx = _ctx(env, ex)
     with pytest.raises(RateCapped):
@@ -683,7 +739,7 @@ def test_p1_not_approved_reasons_reach_every_writer_and_gate_revise_through_the_
     assert o.step("demo", run_id, actor="tester") == "failed"  # P1 at the limit never exports it unapproved
     run = run_row(ps, run_id)
     assert "never exported" in run["reason"] and "judge says not_approved" in run["reason"], run
-    assert len(ex.of("judge", "VoteOut")) == 2
+    assert len(ex.of("judge", FINAL)) == 2
 
 
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
@@ -727,7 +783,7 @@ def test_quote_note_whose_locator_no_longer_holds_its_text_fails_v_quote(env):
 def test_a_removed_report_file_is_written_again_from_its_event_before_the_vote(env):
     _, ps, _ = env
     revised(env)
-    ex = CapOnce(_votes(["approve"] * 2, ["approve"] * 2), at=("judge", "VoteOut"))
+    ex = CapOnce(_votes(["approve"] * 2, ["approve"] * 2), at=("judge", FINAL))
     w = AuditWorker()
     ctx = _ctx(env, ex)
     with pytest.raises(RateCapped):
@@ -738,7 +794,7 @@ def test_a_removed_report_file_is_written_again_from_its_event_before_the_vote(e
     assert out.status == "done", out.reason
     md = (ps.root / rep["md_path"]).read_text(encoding="utf-8")
     assert sha256_hex(md.encode()) == rep["sha256"]["md"]
-    assert ex.of("judge", "VoteOut")[-1]["inputs"]["subject"]["audit_report"] == md
+    assert ex.of("judge", FINAL)[-1]["inputs"]["subject"]["audit_report"] == md
 
 
 def test_g_ref_covers_the_studies_pooled_into_a_cited_stat_result(env):

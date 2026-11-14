@@ -251,7 +251,8 @@ def test_stages_route_lists_the_stages_with_their_status(wb):
         ("gaps->landscape", 0, 2), ("topics->gaps", 0, 2), ("question->topics", 0, 2), ("protocol->question", 0, 2),
         ("search_screen->protocol", 0, 2), ("read_extract->search_screen", 0, 2), ("synthesize->read_extract", 0, 2),
         ("argue->synthesize", 0, 2), ("argue->question", 0, 2), ("draft->argue", 0, 2), ("revise->draft", 0, 2),
-        ("audit->draft", 0, 2), ("audit->argue", 0, 2), ("audit->read_extract", 0, 2), ("audit->revise", 0, 2)}
+        ("audit->draft", 0, 2), ("audit->argue", 0, 2), ("audit->synthesize", 0, 2), ("audit->read_extract", 0, 2),
+        ("audit->revise", 0, 2)}
 
     wb.orch.workers["gaps"] = FakeWorker(runs=[StageOutcome("rerun", reason="too few gaps")])
     wb.orch.workers["topics"] = FakeWorker(runs=[lambda ctx: StageOutcome(
@@ -302,7 +303,7 @@ def test_stages_route_marks_the_stages_with_a_worker_and_offers_their_runs(wb):
                                                    "read_extract->search_screen", "synthesize->read_extract",
                                                    "argue->synthesize", "argue->question", "draft->argue",
                                                    "revise->draft", "audit->draft", "audit->argue",
-                                                   "audit->read_extract", "audit->revise"}
+                                                   "audit->synthesize", "audit->read_extract", "audit->revise"}
     assert (g["until_options"], g["discovery_passed"]) == (["topics", "question", *later], False)
     run_id = start(wb, "question")
     until(lambda: run_row(wb.ps, run_id)["status"] == "done")
