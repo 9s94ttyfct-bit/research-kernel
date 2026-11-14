@@ -24,6 +24,7 @@ class CitedRef(BaseModel):
     title: str
     first_author: str | None = None
     year: int | None = None
+    authors: list[str] = []  # every author's family name, in the cited order, when known (a library item's)
 
 
 class RefResult(BaseModel):
@@ -59,6 +60,12 @@ def _author_match(cited: str, family: str) -> bool:
     return not joined.isascii() and joined in "".join(toks)
 
 
+def _same_authors(cited: list[str], record: list[str]) -> bool:
+    """Whether two lists of family names hold the same authors, in any order (folded, punctuation ignored)."""
+    key = lambda names: sorted(" ".join(re.findall(r"\w+", _fold(n))) for n in names)
+    return bool(cited) and len(cited) == len(record) and key(cited) == key(record)
+
+
 def compare(cited: CitedRef, resolved: ResolvedWork | None) -> RefResult:
     if resolved is None:
         return RefResult(verdict="not_found", details={"identifier": cited.identifier})
@@ -72,6 +79,11 @@ def compare(cited: CitedRef, resolved: ResolvedWork | None) -> RefResult:
     if cited.first_author and item.creators:
         m = _author_match(cited.first_author, item.creators[0].family)
         details["first_author"] = {"cited": cited.first_author, "record": item.creators[0].family, "ok": m}
+        # calibration (srrepro10, 2026-11-13): PubMed and a DOI's Crossref deposit may order the same authors
+        # differently (the corresponding author first); the same author set is no wrong reference
+        if not m and _same_authors(cited.authors, [c.family for c in item.creators if c.family]):
+            m = True
+            details["first_author"].update(ok=True, order="the same authors in another order")
         ok &= m
     if cited.year is not None and item.year is not None:
         y = abs(cited.year - item.year) <= YEAR_TOLERANCE
