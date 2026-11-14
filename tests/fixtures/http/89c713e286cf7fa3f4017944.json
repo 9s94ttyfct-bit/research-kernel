@@ -1,0 +1,32 @@
+{
+ "method": "GET",
+ "url": "https://clinicaltrials.gov/api/v2/studies",
+ "params": [
+  [
+   "countTotal",
+   "true"
+  ],
+  [
+   "fields",
+   "NCTId"
+  ],
+  [
+   "filter.advanced",
+   "AREA[StudyFirstPostDate]RANGE[MIN,2001-12-31]"
+  ],
+  [
+   "pageSize",
+   "1"
+  ],
+  [
+   "query.term",
+   "aspirin AND stroke"
+  ]
+ ],
+ "status": 200,
+ "headers": {
+  "content-type": "application/json"
+ },
+ "body": "{\"totalCount\":7,\"studies\":[\n{\"protocolSection\":{\"identificationModule\":{\"nctId\":\"NCT00005493\"}}}\n],\"nextPageToken\":\"ZVNj7o2Elu8o3lpyWc35o-32mpOQJJxoZPGh2vwW\"}",
+ "encoding": "text"
+}

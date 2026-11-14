@@ -109,7 +109,7 @@ def test_rate_capped_task_raises_with_wait_and_is_not_budgeted(env):
 
 def test_sources_order_without_s2_key(env):
     k, _, _, _ = env
-    assert KernelSources(k, "demo").sources() == ["openalex", "europepmc", "pubmed", "arxiv"]
+    assert KernelSources(k, "demo").sources() == ["openalex", "europepmc", "pubmed", "arxiv", "clinicaltrials"]
     save_settings(load_settings().model_copy(update={"s2_key": "s2-test"}))
     assert KernelSources(k, "demo").sources()[:3] == ["openalex", "s2", "europepmc"]
 

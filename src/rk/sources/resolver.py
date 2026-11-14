@@ -3,7 +3,10 @@
 Calibration (search scope, 2026-11-12, docs/eval/search-scope-2026-11-12.md): OpenAlex is searched in titles, abstracts
 and the keywords it tags works with (``openalex.SEARCH``) and Europe PMC in titles and abstracts
 (``europepmc.title_abstract``), in every search, count and year count; PubMed takes a query as given (its automatic
-term mapping applies), arXiv searches all fields and Semantic Scholar its relevance search."""
+term mapping applies), arXiv searches all fields and Semantic Scholar its relevance search.
+
+Calibration (registry search, 2026-11-14): ClinicalTrials.gov takes a query as given in its basic search
+(``clinicaltrials``: registry records, their year the year first posted)."""
 
 from __future__ import annotations
 
@@ -14,13 +17,22 @@ from pydantic import BaseModel, ConfigDict
 from rk.config import Settings
 from rk.library.models import Ids, ItemIn
 from rk.net.http import HttpClient
-from rk.sources import arxiv, biorxiv, crossref, europepmc, openalex, pubmed, s2
+from rk.sources import (
+    arxiv,
+    biorxiv,
+    clinicaltrials,
+    crossref,
+    europepmc,
+    openalex,
+    pubmed,
+    s2,
+)
 from rk.sources.crossref import CrossrefWork, Update
 from rk.sources.hits import Hits, as_hits
 from rk.sources.identifiers import Identifier
 from rk.sources.openalex import OpenAlexWork
 
-SearchSource = Literal["openalex", "europepmc", "pubmed", "arxiv", "s2"]
+SearchSource = Literal["openalex", "europepmc", "pubmed", "arxiv", "s2", "clinicaltrials"]
 
 
 class SearchLimits(NamedTuple):
@@ -36,6 +48,7 @@ SEARCH_LIMITS: dict[str, SearchLimits] = {
     "pubmed": SearchLimits(10_000, 10_000),  # ESearch returns the first 10,000 PMIDs only
     "arxiv": SearchLimits(2000, 30_000),  # the API's max_results per call and its result-set limit
     "s2": SearchLimits(100, 1000),  # /paper/search: limit <= 100, offset + limit <= 1000
+    "clinicaltrials": SearchLimits(clinicaltrials.MAX_PAGE, None),  # pageSize <= 1000; token paging goes to the end
 }
 
 
@@ -126,13 +139,16 @@ def search(ctx: SourceContext, query: str, source: SearchSource, limit: int = 25
            after_year: int | None = None, offset: int = 0, date_from: int | None = None,
            date_to: int | None = None) -> Hits:
     """Search one source (OpenAlex in titles, abstracts and keywords, Europe PMC in titles and abstracts, PubMed as
-    given, arXiv in all fields, Semantic Scholar by relevance): ``limit`` hits from ``offset``, within the source's ``SEARCH_LIMITS`` (else
-    ``ValueError``; OpenAlex and Europe PMC page, so there ``offset`` must be a multiple of ``limit``).
-    ``date_from``..``date_to`` (publication years, inclusive, either end open) is filtered on every source's server.
+    given, arXiv in all fields, Semantic Scholar by relevance, ClinicalTrials.gov in its basic search): ``limit`` hits
+    from ``offset``, within the source's ``SEARCH_LIMITS`` (else ``ValueError``; OpenAlex, Europe PMC and
+    ClinicalTrials.gov page, so there ``offset`` must be a multiple of ``limit``).
+    ``date_from``..``date_to`` (publication years, inclusive, either end open; ClinicalTrials.gov: the year a study was
+    first posted) is filtered on every source's server.
     With ``after_year`` only works published in a later year are returned: OpenAlex filters on the server; the other
     sources' hits are filtered here, so fewer than ``limit`` may be left (undated hits drop). An empty year range
     (``date_from`` after ``date_to``, or ``after_year`` at or after ``date_to``) has no hits. ``Hits.dropped`` counts
-    the page's entries the source returned but that could not be read, ``Hits.total`` the query's results (arXiv's)."""
+    the page's entries the source returned but that could not be read, ``Hits.total`` the query's results (arXiv's,
+    ClinicalTrials.gov's)."""
     check_limits(source, limit, offset)
     lo = max((y for y in (date_from, after_year + 1 if after_year is not None else None) if y is not None),
              default=None)
@@ -164,4 +180,7 @@ def _search(ctx: SourceContext, query: str, source: SearchSource, limit: int, af
     if source == "s2":
         return s2.search(http, query, api_key=st.s2_key, limit=limit, offset=offset, date_from=date_from,
                          date_to=date_to)
+    if source == "clinicaltrials":
+        return clinicaltrials.search(http, query, page_size=limit, offset=offset, date_from=date_from,
+                                     date_to=date_to)
     raise ValueError(f"unknown source {source}")

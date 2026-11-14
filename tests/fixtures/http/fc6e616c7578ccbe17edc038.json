@@ -1,0 +1,36 @@
+{
+ "method": "GET",
+ "url": "https://clinicaltrials.gov/api/v2/studies",
+ "params": [
+  [
+   "countTotal",
+   "true"
+  ],
+  [
+   "fields",
+   "NCTId,BriefTitle,OfficialTitle,BriefSummary,StudyFirstPostDate,LeadSponsorName"
+  ],
+  [
+   "markupFormat",
+   "legacy"
+  ],
+  [
+   "pageSize",
+   "3"
+  ],
+  [
+   "pageToken",
+   "ZVNj7o2Elu8o3lpyWc35o-32mpOQJJxuZPSh3_g"
+  ],
+  [
+   "query.term",
+   "aspirin AND stroke"
+  ]
+ ],
+ "status": 200,
+ "headers": {
+  "content-type": "application/json"
+ },
+ "body": "{\"studies\":[\n{\"protocolSection\":{\"identificationModule\":{\"nctId\":\"NCT00822536\",\"briefTitle\":\"Optimal Duration of Dual Antiplatelet Therapy After Drug-eluting Stent Implantation\",\"officialTitle\":\"Optimal Duration of Dual Antiplatelet Therapy After Drug Eluting Stent (DES) Implantation\"},\"statusModule\":{\"studyFirstPostDateStruct\":{\"date\":\"2009-01-14\"}},\"sponsorCollaboratorsModule\":{\"leadSponsor\":{\"name\":\"Assistance Publique - Hôpitaux de Paris\"}},\"descriptionModule\":{\"briefSummary\":\"To compare treatment with aspirin alone versus the combined antiplatelet treatment\\r\\naspirin and clopidogrel after 12 months of combined antiplatelet treatment following\\r\\ndrug-eluting stent (DES) implantation.\"}}},\n{\"protocolSection\":{\"identificationModule\":{\"nctId\":\"NCT06521463\",\"briefTitle\":\"SIMPLAAFY Clinical Trial\",\"officialTitle\":\"WATCHMAN FLX™ Pro Left Atrial Appendage Closure Device With Alternative Post-Implant Monotherapy\"},\"statusModule\":{\"studyFirstPostDateStruct\":{\"date\":\"2024-07-26\"}},\"sponsorCollaboratorsModule\":{\"leadSponsor\":{\"name\":\"Boston Scientific Corporation\"}},\"descriptionModule\":{\"briefSummary\":\"The primary objective is to demonstrate the safety and effectiveness of two monotherapy\\r\\nregimens versus dual antiplatelet (DAPT) therapy following post-implant with the WATCHMAN\\r\\nFLX Pro device in a commercial clinical setting.\"}}},\n{\"protocolSection\":{\"identificationModule\":{\"nctId\":\"NCT03578822\",\"briefTitle\":\"Thrombolysis With rhPro-UK in 4.5-6 Hours After Acute Ischemic Stroke in a Double-blinded,Controlled Trial\",\"officialTitle\":\"A Phase III Trial to Assess the Efficacy and Safety of Recombinant Human Prourokinase in the Treatment of Acute Acute Ischaemic Stroke in 4.5-6 Hours After Stroke Onset\"},\"statusModule\":{\"studyFirstPostDateStruct\":{\"date\":\"2018-07-06\"}},\"sponsorCollaboratorsModule\":{\"leadSponsor\":{\"name\":\"Tasly Biopharmaceuticals Co., Ltd.\"}},\"descriptionModule\":{\"briefSummary\":\"This is a randomized,controlled, double-blinded, phase 3 clinical study to evaluate the\\r\\nefficacy and safety of recombinant human urokinase(rhPro-UK) versus basic treatment for\\r\\npatients with acute ischaemic stroke in 4.5-6 hours after stroke onset.\"}}}\n],\"nextPageToken\":\"ZVNj7o2Elu8o3lpyWc35o-32mpOQJJxtZvCh2_g\"}",
+ "encoding": "text"
+}

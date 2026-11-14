@@ -55,9 +55,10 @@ def _exclude_ids(body) -> list[str]:
 FIELDS = {"openalex": r"OpenAlex[^;\n]*titles, abstracts and[^;\n]*keywords",
           "europepmc": r"Europe PMC[^;\n]*titles and abstracts[^;\n]*TITLE_ABS",
           "pubmed": r"PubMed[^;\n]*automatic term mapping", "arxiv": r"arXiv[^;\n]*all fields",
-          "s2": r"Semantic Scholar[^;\n]*relevance search"}
+          "s2": r"Semantic Scholar[^;\n]*relevance search",
+          "clinicaltrials": r"ClinicalTrials\.gov[^;\n]*basic search"}
 NAMES = {"openalex": "OpenAlex", "europepmc": "Europe PMC", "pubmed": "PubMed", "arxiv": "arXiv",
-         "s2": "Semantic Scholar"}
+         "s2": "Semantic Scholar", "clinicaltrials": "ClinicalTrials.gov"}
 
 
 def test_search_execution_names_the_fields_each_chosen_source_searches(sr_env):
@@ -69,11 +70,14 @@ def test_search_execution_names_the_fields_each_chosen_source_searches(sr_env):
     assert openalex.SEARCH == "search.title_abstract_keywords"
     assert europepmc.title_abstract("x") == "TITLE_ABS:(x)"
     _, ps, _ = sr_env
-    for sources in (["openalex", "pubmed"], ["europepmc", "arxiv"], ["s2", "openalex", "europepmc"]):
+    for sources in (["openalex", "pubmed"], ["europepmc", "arxiv"], ["s2", "openalex", "europepmc"],
+                    ["pubmed", "clinicaltrials"]):
         body = with_kernel_facts(a_protocol(search_strategy=SearchStrategy(
             sources=sources, queries=["aspirin AND stroke", "antiplatelet AND elderly"])), "systematic_review", "auto")
         row = {"id": "prt_none", "version": 1, "body": body.model_dump(mode="json")}
         block = search_execution_lines(row["body"])
+        (years,) = [line for line in block if line.startswith("- publication years")]
+        assert ("ClinicalTrials.gov: the date a study was first posted" in years) == ("clinicaltrials" in sources)
         assert "\n".join(render_protocol(ps, row)).count("\n".join(block)) == 1
         (fields,) = [line for line in block if "fields" in line]
         for s, name in NAMES.items():

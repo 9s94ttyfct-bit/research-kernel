@@ -12,6 +12,7 @@ from rk.sources.identifiers import (
     normalize_arxiv,
     normalize_doi,
     normalize_isbn,
+    normalize_nct,
     normalize_openalex,
     normalize_pmcid,
     normalize_pmid,
@@ -37,6 +38,7 @@ class Ids(BaseModel):
     openalex: str | None = None
     s2: str | None = None
     isbn: str | None = None
+    nct: str | None = None  # a ClinicalTrials.gov registration number (a registry record's identity)
     url: str | None = None
 
     def normalized(self) -> Ids:
@@ -48,6 +50,7 @@ class Ids(BaseModel):
             openalex=normalize_openalex(self.openalex),
             s2=self.s2 or None,
             isbn=normalize_isbn(self.isbn),
+            nct=normalize_nct(self.nct),
             url=self.url or None,
         )
 

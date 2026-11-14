@@ -78,6 +78,12 @@ each source (``SEARCHED_IN``); the Scout (``STRATEGY_TASK``) builds each query f
 group of synonyms, only concepts every eligible record names in its title or abstract, and narrows by tightening a
 concept or dropping the broadest query, never by adding a concept.
 
+Calibration (registry search, 2026-11-14): the kernel also searches the trial registry ClinicalTrials.gov
+(``rk.sources.clinicaltrials``: a query as given in its basic search, the publication years as the date a study was
+first posted, counted for the record-cap probe). Its hits are registry records, deduplicated by NCT number and screened
+like any other record. The rules sheet, the Ideator's task and the PRISMA-P checks say that ClinicalTrials.gov is the
+one trial registry searched (``SOURCE_NAMES``, ``UNRUN_SEARCHES``).
+
 Calibration (search and screening, 2026-11-12, ``docs/eval/search-screen-2026-11-12.md``): the Ideator is told what
 eligibility states and that it does not require the statistic, unit or scale an outcome is reported in, nor an
 aggregate of it (``ELIGIBILITY_RULE`` in ``DRAFT_TASK``); a judge may raise a point on a criterion that does (no
@@ -276,9 +282,9 @@ KERNEL_PRISMA_P_KEYS = ("title", "contributors", *KERNEL_PRISMA_P)
 LANGUAGE_CRITERION_ID = "E-lang"
 LANGUAGE_NAMES = {"en": "English"}
 DEDUP_RULE = ("duplicates: each hit joins the library item of the same work, matched by identifier (DOI, PMID, "
-              "PMCID, arXiv id, OpenAlex id, Semantic Scholar id or ISBN), else by normalised title (case, accents, "
-              "spaces and punctuation ignored) and publication year; the first record of each work is screened, "
-              "every later hit is counted as a duplicate removed")
+              "PMCID, arXiv id, OpenAlex id, Semantic Scholar id, ISBN or ClinicalTrials.gov NCT number), else by "
+              "normalised title (case, accents, spaces and punctuation ignored) and publication year; the first "
+              "record of each work is screened, every later hit is counted as a duplicate removed")
 
 # Calibration (search and screening, 2026-11-12, docs/eval/search-screen-2026-11-12.md section 4): tfa's eligibility
 # admitted only total TFA as % of total fatty acids, so studies that measure the outcome in another form were excluded.
@@ -315,8 +321,9 @@ DRAFT_TASK = (
     "agree with them (no criterion admits another language). Write every text as what the review does, never a "
     "placeholder for someone to complete later (\"to be completed by the researcher\", \"[TO BE ADDED]\", \"will be "
     "registered\"). The PRISMA-P texts name only the sources of the search strategy and promise no search the kernel "
-    "does not run (it searches only those sources: no grey literature, trial registries, reference lists, citation or "
-    "hand-searching, no contact with authors). Never claim that the question or the review is novel. "
+    "does not run (it searches only those sources: no grey literature, no trial registry other than "
+    "ClinicalTrials.gov, no reference lists, citation or hand-searching, no contact with authors). Never claim that "
+    "the question or the review is novel. "
     "When a previous draft is given, revise it: change only what the guidance asks for and keep the rest, dropping "
     "none of its PRISMA-P items unless an open point or the guidance asks you to remove one. When a frozen "
     "protocol is given, change only what the guidance asks for. Follow the guidance when there is any. When "
@@ -347,7 +354,10 @@ STRATEGY_TASK = (
     "plural of a quoted phrase included (\"kidney stone\" OR \"kidney stones\": Europe PMC does not stem "
     "phrases), and AND only the concepts every eligible record names in its title or abstract (the population or "
     "condition, the intervention or exposure, and the study design only when the eligibility requires it). "
-    f"{QUERY_BUILD_RULE} No bare unquoted string of many words, and no field tags. When a previous draft is given "
+    f"{QUERY_BUILD_RULE} No bare unquoted string of many words, and no field tags. `clinicaltrials` is the trial "
+    "registry ClinicalTrials.gov: its records are study registrations (title, brief summary, sponsor), screened like "
+    "any other record; it searches a query as given in its basic search (many fields of each study record, with its "
+    "own synonyms) and ignores * and ?, so spell variants out with OR. When a previous draft is given "
     "(with the record counts of its queries), revise its strategy: change only what the guidance asks for. When "
     "`narrowing` is given, the record-cap "
     "probe of the previous draft's strategy (`total`: the record counts of each query on each counted source within "
@@ -413,6 +423,9 @@ SEARCHED_IN = {
     "pubmed": "PubMed as given (its automatic term mapping applies)",
     "arxiv": "arXiv in all fields (as all:<query>)",
     "s2": "Semantic Scholar as given (its relevance search)",
+    "clinicaltrials": ("ClinicalTrials.gov as given in its basic search (a trial registry: the titles, conditions, "
+                       "interventions, keywords, brief summary, outcomes and other fields of each study record, with "
+                       "the registry's synonym expansion, and * and ? ignored rather than read as wildcards)"),
 }
 # The judges' rules sheet: what the kernel does whatever the protocol says, so a judge does not ask the authors for
 # what they cannot change or the kernel cannot do. Every statement is what the code does (rk.production.search,
@@ -426,23 +439,28 @@ KERNEL_RULES = (
     "the project's records. The protocol is drafted by the kernel's agent roles, which know no fact outside the "
     "project's records (an external registration, funding, interests, a human author or a contact address).\n"
     "2. Sources. The search runs only on the sources in the search strategy, taken from the kernel's search sources: "
-    "OpenAlex, Europe PMC, PubMed, arXiv and, when its API key is set, Semantic Scholar. The kernel has no search of "
-    "trial registries or grey literature, no reference-list or citation searching, no hand-searching and no contact "
-    "with authors.\n"
+    "OpenAlex, Europe PMC, PubMed, arXiv, the trial registry ClinicalTrials.gov and, when its API key is set, Semantic "
+    "Scholar. A ClinicalTrials.gov hit is a study's registry record (its title, brief summary, lead sponsor and the "
+    "date it was first posted; not its results or the publications it lists), deduplicated and screened like any "
+    "other record; it shares no identifier with an article reporting the same study, so the two are separate records. "
+    "The kernel searches no other trial registry and no grey literature, and has no reference-list or citation "
+    "searching, no hand-searching and no contact with authors.\n"
     "3. Queries. Each query is sent as written to the search API of each listed source and searched there in these "
     f"fields: {'; '.join(SEARCHED_IN.values())}. The kernel adds no MeSH terms and does not rewrite a query into a "
     "source's own syntax; a query needs no field tags to be searched in titles and abstracts on OpenAlex and Europe "
     "PMC. "
     "OpenAlex rejects wildcards (* and ?) and ~, so the protocol's checks fail a query with them on OpenAlex.\n"
     "4. Years. The publication years are applied as each source's own publication-year filter (arXiv: its "
-    "submission date); an open start is the earliest record a source indexes, an open end the date of the search.\n"
+    "submission date; ClinicalTrials.gov: the date a study was first posted); an open start is the earliest record a "
+    "source indexes, an open end the date of the search.\n"
     "5. Log. Every page a source returns is logged in the project's search log with its time, source, query, "
     "publication years, offset and the records it returned. A search a source cannot finish (e.g. its paging limit) "
     "is logged as incomplete; a systematic or scoping review then goes back to protocol.\n"
     f"6. Deduplication. {DEDUP_RULE[0].upper()}{DEDUP_RULE[1:]}.\n"
     "7. Record cap. The cap counts records after deduplication. Once the search finds more distinct works than the "
     "cap, search_screen stops, screens none of them and goes back to protocol; records are never cut to the cap. The "
-    f"record-cap probe shown with the protocol is {PROBE_NOTE}; only OpenAlex, Europe PMC and PubMed give counts.\n"
+    f"record-cap probe shown with the protocol is {PROBE_NOTE}; only OpenAlex, Europe PMC, PubMed and "
+    "ClinicalTrials.gov give counts.\n"
     "8. Language. A record whose language a source records outside the search strategy's languages is excluded by "
     f"rule before screening ({LANGUAGE_CRITERION_ID}); a record with no recorded language is screened as English.\n"
     "9. Freeze. The frozen protocol's SHA-256 and the time of its freeze are recorded in the project's event log; a "
@@ -920,10 +938,15 @@ def _placeholders(body: Protocol) -> list[str]:
 # Calibration (P1 protocol diagnosis 2026-11-12): rule R5; search.prose_vs_strategy points.
 SOURCE_NAMES = {"openalex": ("OpenAlex", r"open ?alex"), "europepmc": ("Europe PMC", r"europe ?pmc"),
                 "pubmed": ("PubMed", r"pub ?med|medline"), "arxiv": ("arXiv", r"arxiv"),
-                "s2": ("Semantic Scholar", r"semantic ?scholar")}
+                "s2": ("Semantic Scholar", r"semantic ?scholar"),
+                # a trial registry in the singular is the one the kernel searches
+                "clinicaltrials": ("ClinicalTrials.gov", r"clinical ?trials\.gov|\bct\.gov\b|trials? regist(?:ry|er)\b")}
+# Calibration (registry search, 2026-11-14): ClinicalTrials.gov is a source (``SOURCE_NAMES``), so naming it or "the
+# trial registry" passes when the strategy lists it; trial registries in the plural, or another registry, are no search
+# the kernel runs.
 UNRUN_SEARCHES = re.compile(
-    r"gr[ae]y literature|hand-?search\w*|reference lists?|citation (?:chasing|searching|tracking)|clinicaltrials\.gov"
-    r"|\bictrp\b|\bisrctn\b|trial regist(?:ry|ries|er|ers)\b"
+    r"gr[ae]y literature|hand-?search\w*|reference lists?|citation (?:chasing|searching|tracking)"
+    r"|\bictrp\b|\bisrctn\b|trials? regist(?:ries|ers)\b"
     r"|contact(?:ing)? (?:the )?(?:study |corresponding )?authors", re.IGNORECASE)
 # a clause that says what is not done (a negated mention is no claim)
 NEGATED = re.compile(r"\b(?:not|no|never|none|without|neither|nor|cannot)\b|n't", re.IGNORECASE)
@@ -963,8 +986,9 @@ def _prisma_p_against_strategy(body: Protocol) -> list[str]:
         promised = list(dict.fromkeys(m.group(0) for c in _claims(text) for m in UNRUN_SEARCHES.finditer(c)))
         if promised:
             out.append(f"prisma_p.{key} promises {', '.join(map(repr, promised))}, which the kernel does not run (it "
-                       "searches only the strategy's sources: no grey literature, trial registries, reference lists, "
-                       "citation or hand-searching, no contact with authors): remove it, or say it is not done")
+                       "searches only the strategy's sources: no grey literature, no trial registry other than "
+                       "ClinicalTrials.gov, no reference lists, citation or hand-searching, no contact with authors): "
+                       "remove it, or say it is not done")
     return out
 
 
@@ -1436,6 +1460,19 @@ def publication_years(ss: dict) -> str:
     return f"{start} to {end}"
 
 
+# the strategy's sources whose publication-year filter applies to another date (``search_execution_lines``)
+YEAR_DATES = {"arxiv": "arXiv: its submission date", "clinicaltrials": "ClinicalTrials.gov: the date a study was first "
+              "posted"}
+
+
+def _year_dates(sources: list[str]) -> str:
+    """`` (arXiv: …; ClinicalTrials.gov: …)`` for the listed sources whose year filter applies to another date, else
+    ``""``."""
+    said = [YEAR_DATES[s] for s in dict.fromkeys(sources) if s in YEAR_DATES]
+    return f" ({'; '.join(said)})" if said else ""
+
+
+
 def search_execution_lines(body: dict) -> list[str]:
     """How ``search_screen`` runs the protocol's search strategy (``rk.production.search``), as the protocol's review
     shows it after the strategy: the publication years written out, each query sent as written to each source and the
@@ -1444,7 +1481,8 @@ def search_execution_lines(body: dict) -> list[str]:
 
     Calibration (P1 protocol diagnosis 2026-11-12): rule R4; no_start_date, not_reproducible, dedup_unspecified and
     cap_handling_unspecified points. Calibration (search scope, 2026-11-12): the fields of each of the strategy's
-    sources, OpenAlex's and Europe PMC's titles and abstracts instead of their full texts."""
+    sources, OpenAlex's and Europe PMC's titles and abstracts instead of their full texts. Calibration (registry search,
+    2026-11-14): ClinicalTrials.gov's years are the date a study was first posted."""
     ss, cap = body["search_strategy"], body["record_cap"]
     n_q, n_s = len(ss["queries"]), len(ss["sources"])
     # a stored try may name a source the kernel does not search (the checks reject it): shown, not a crash
@@ -1452,7 +1490,7 @@ def search_execution_lines(body: dict) -> list[str]:
     return [
         "Search execution (written by the kernel: how search_screen runs this strategy after the freeze):",
         (f"- publication years: {publication_years(ss)} (inclusive), applied as each source's own publication-year "
-         f"filter{' (arXiv: its submission date)' if 'arxiv' in ss['sources'] else ''}."),
+         f"filter{_year_dates(ss['sources'])}."),
         (f"- each query is sent as written above to the search API of each listed source ({n_q} queries x {n_s} "
          f"sources = {n_q * n_s} searches) and searched there in these fields: {fields}. The kernel adds no MeSH "
          "terms and does not rewrite a query into a source's own syntax."),

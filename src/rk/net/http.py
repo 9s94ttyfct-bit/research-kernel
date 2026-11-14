@@ -26,6 +26,7 @@ DEFAULT_MIN_INTERVALS: dict[str, float] = {
     "arxiv.org": 15.0,
     "api.semanticscholar.org": 1.0,
     "api.biorxiv.org": 0.5,
+    "clinicaltrials.gov": 1.2,  # the API's rate limit is about 50 requests a minute per address
 }
 DEFAULT_INTERVAL = 1.0
 SECRET_PARAMS = frozenset({"api_key", "key", "apikey", "token"})

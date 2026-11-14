@@ -322,13 +322,13 @@ def build_registry(k: Kernel, browser: Callable[[], BrowserService | None] | Non
     # ---- search & resolve ----
     class SearchArgs(BaseModel):
         query: str
-        source: Literal["openalex", "europepmc", "pubmed", "arxiv", "s2"] = "openalex"
+        source: Literal["openalex", "europepmc", "pubmed", "arxiv", "s2", "clinicaltrials"] = "openalex"
         limit: int = Field(10, ge=1, le=100)
         project: str | None = None
         add: bool = False
 
-    @tool("rk_search_works", "Search a scholarly source (OpenAlex and Europe PMC in titles and abstracts); optionally "
-          "add hits to a project library.", SearchArgs, True)
+    @tool("rk_search_works", "Search a scholarly source (OpenAlex and Europe PMC in titles and abstracts) or the "
+          "ClinicalTrials.gov registry (its basic search); optionally add hits to a project library.", SearchArgs, True)
     def _search(ctx: CallContext, a: SearchArgs) -> Out:
         try:
             items = search(k.ctx(), a.query, a.source, a.limit)

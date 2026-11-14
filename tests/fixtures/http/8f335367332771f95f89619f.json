@@ -1,0 +1,32 @@
+{
+ "method": "GET",
+ "url": "https://clinicaltrials.gov/api/v2/studies",
+ "params": [
+  [
+   "countTotal",
+   "true"
+  ],
+  [
+   "fields",
+   "NCTId,BriefTitle,OfficialTitle,BriefSummary,StudyFirstPostDate,LeadSponsorName"
+  ],
+  [
+   "markupFormat",
+   "legacy"
+  ],
+  [
+   "pageSize",
+   "3"
+  ],
+  [
+   "query.term",
+   "aspirin AND stroke"
+  ]
+ ],
+ "status": 200,
+ "headers": {
+  "content-type": "application/json"
+ },
+ "body": "{\"totalCount\":1032,\"studies\":[\n{\"protocolSection\":{\"identificationModule\":{\"nctId\":\"NCT02247128\",\"briefTitle\":\"Antiplatelet Therapy for Patients Undergoing Transcatheter Aortic Valve Implantation\",\"officialTitle\":\"Antiplatelet Therapy for Patients Undergoing Transcatheter Aortic Valve Implantation\"},\"statusModule\":{\"studyFirstPostDateStruct\":{\"date\":\"2014-09-23\"}},\"sponsorCollaboratorsModule\":{\"leadSponsor\":{\"name\":\"St. Antonius Hospital\"}},\"descriptionModule\":{\"briefSummary\":\"At present, a variety of antithrombotic regimens are prescribed in the early\\r\\npostprocedure period after transcatheter aortic valve implantation (TAVI). Dual\\r\\nantiplatelet therapy (DAPT) using aspirin and a thienopyridine in the initial period\\r\\nafter TAVI is the recommended strategy; however, mono antiplatelet therapy using aspirin\\r\\nis suggested not to be inferior. In patients with atrial fibrillation (AF) or another\\r\\nindication for oral anticoagulation (OAC), no recommendations on best treatment regimen\\r\\ncurrently exist although triple therapy (OAC + DAPT) is best avoided due to increased\\r\\nbleeding risk.\\r\\n\\r\\nWe hypothesise that the omission of clopidogrel in the first 3 months after TAVI is safer\\r\\nand not less beneficial than the addition of clopidogrel to aspirin (cohort A) or OAC\\r\\n(cohort B).\"}}},\n{\"protocolSection\":{\"identificationModule\":{\"nctId\":\"NCT05744804\",\"briefTitle\":\"Efficacy and Safety of Low Dose Rivaroxaban in Patients With Anterior Myocardial Infarction\",\"officialTitle\":\"Efficacy and Safety of Low Dose Rivaroxaban in Patients With Anterior Myocardial Infarction\"},\"statusModule\":{\"studyFirstPostDateStruct\":{\"date\":\"2023-02-27\"}},\"sponsorCollaboratorsModule\":{\"leadSponsor\":{\"name\":\"Sohag University\"}},\"descriptionModule\":{\"briefSummary\":\"Despite the use of guideline directed optimal medical therapy, 12% of patients with\\r\\nstable coronary heart disease and 18% of patients with recent acute coronary syndrome\\r\\nexperience recurrent major adverse cardiovascular events 1. The risk of recurrent\\r\\ncardiovascular events may be related to persistent elevation of thrombin beyond the index\\r\\nevent 2,3\\r\\n\\r\\nwhich leads to progression of cardiovascular disease by inducing inflammation,\\r\\nendothelial dysfunction and thrombosis 4. In patients with coronary heart disease,\\r\\nvitamin K antagonists (VKAs) and direct oral anticoagulants (DOACs) have been explored as\\r\\nsecondary prevention strategies and have shown cardiovascular benefits at the cost of\\r\\nhigher bleeding events 5,6,7,8.\\r\\n\\r\\nhoweverLeft ventricular thrombus (LVT) usually appearswithin 1 month after ST-segment\\r\\nelevation myocardial infarction (STEMI) and mostlyforms after anterior STEMI.9,11Although\\r\\nthe prevalenceof LVT after acute myocardial infarction hasdecreased dramatically in\\r\\nmodern times due to the progress of reperfusion therapy, LVT incidence in patients with\\r\\nanterior STEMI remains at 4% to 26%.10,12 It complicates acute myocardial infarction and\\r\\nis associated with a higher incidence of poor outcomes.9\"}}},\n{\"protocolSection\":{\"identificationModule\":{\"nctId\":\"NCT03462498\",\"briefTitle\":\"ShorT and OPtimal Duration of Dual AntiPlatelet Therapy-2 Study for the Patients With ACS\",\"officialTitle\":\"Study to Evaluate the Safety of Reducing Dual Antiplatelet Therapy (DAPT) Duration to 1 Month for Patients With Acute Coronary Syndrome (ACS) After Implantation of Everolimus-eluting Cobalt-chromium Stent\"},\"statusModule\":{\"studyFirstPostDateStruct\":{\"date\":\"2018-03-12\"}},\"sponsorCollaboratorsModule\":{\"leadSponsor\":{\"name\":\"Kyoto University, Graduate School of Medicine\"}},\"descriptionModule\":{\"briefSummary\":\"The purpose of this study is to evaluate the safety of reducing dual antiplatelet therapy\\r\\n(DAPT) duration to 1 month after implantation of the everolimus-eluting cobalt-chromium\\r\\nstent (CoCr-EES) under the setting of acute coronary syndrome (ACS).\"}}}\n],\"nextPageToken\":\"ZVNj7o2Elu8o3lpyWc35o-32mpOQJJxuZPSh3_g\"}",
+ "encoding": "text"
+}
