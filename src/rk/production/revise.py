@@ -128,6 +128,7 @@ from rk.production.draft import (
     writer_inputs,
 )
 from rk.production.manuscript import (
+    MARKER,
     Sentence,
     draft_text,
     draft_versions,
@@ -175,7 +176,8 @@ REVISE_TASK = (
     "it now answers it; a revised answer with the text unchanged answers nothing), answered (the text already answers "
     "it: say where in the note), unanswerable (the claims, notes, artifacts, events and protocol you are given cannot "
     "answer it: your revision then adds a sentence saying what the evidence does not settle about what the question "
-    "asks, citing the source that shows it (a claim, an objection, the protocol or an event), and limitation_sentence "
+    "asks, citing the source that shows it (a claim, an objection, the protocol or an event; never [[ck]]), and "
+    "limitation_sentence "
     "gives that new sentence's number in your returned markdown, from 1; say in the note what is missing; a later "
     "revision keeps that sentence word for word) or declined (a priority 2 or 3 "
     "question only: say why in the note); every answer has a note. A question on section manuscript is a point of the "
@@ -412,11 +414,18 @@ _STOP = frozenset({"about", "after", "also", "been", "being", "between", "both",
 
 
 def _norm(prose: str) -> str:
+    """A sentence's prose, markers kept, spacing aside: a marker added or dropped makes another sentence."""
     return " ".join(prose.split())
 
 
+def _words(prose: str) -> str:
+    """A sentence's wording, markers and spacing aside (re-review of D4: a copied sentence with one more marker is not
+    new, and a claim id is no word)."""
+    return " ".join(MARKER.sub(" ", prose).split())
+
+
 def _content_words(text: str) -> set[str]:
-    return {w for w in re.findall(r"[^\W\d_]{4,}", text.casefold()) if w not in _STOP}
+    return {w for w in re.findall(r"[^\W\d_]{4,}", _words(text).casefold()) if w not in _STOP}
 
 
 def _states_limitation(markdown: str, base: str, number: int | None, *, final: str | None = None,
@@ -424,7 +433,9 @@ def _states_limitation(markdown: str, base: str, number: int | None, *, final: s
     """Why an ``unanswerable`` answer's ``limitation_sentence`` is no sentence the revision wrote to state the
     limitation, else ``None``: it is a sentence of the revision, new in it (its prose is in no sentence of ``base``, the
     version it was written on: a sentence already there was not written for the question), citing a source
-    (``LIMITATION_SOURCES``: never only ``[[inf]]`` or ``[[ck]]``), still in ``final`` (the section's latest version: a
+    (``LIMITATION_SOURCES``: never only ``[[inf]]``) and not marked ``[[ck]]`` (what this evidence cannot settle is no
+    common knowledge, and P1's degrade may delete ``[[ck]]`` sentences after its limitation check; review of D4), still
+    in ``final`` (the section's latest version: a
     later revision may have deleted it) and sharing a content word with ``about`` (the question and the sentence it is
     about: a cheap guard against a sentence on something else; whether it truly answers stays the reader's and the
     judges' to say). The accepted revision verifies every sentence, so it says only what its sources hold."""
@@ -434,12 +445,16 @@ def _states_limitation(markdown: str, base: str, number: int | None, *, final: s
                 "from 1)")
     s = sentences[number - 1]
     prose = _norm(s.prose)
-    if prose in {_norm(b.prose) for b in parse_section(base)}:
+    if _words(s.prose) in {_words(b.prose) for b in parse_section(base)}:
         return (f"its limitation_sentence {number} was already in the text: write the sentence stating what the "
                 "evidence cannot answer")
-    if not {m.kind for m in s.markers} & LIMITATION_SOURCES:
+    kinds = {m.kind for m in s.markers}
+    if not kinds & LIMITATION_SOURCES:
         return (f"its limitation_sentence {number} cites no source ([[clm:]], [[obj:]], [[run:]], [[stat:]] or "
                 "[[fig:]]) for what the evidence cannot answer")
+    if "ck" in kinds:
+        return (f"its limitation_sentence {number} is marked common knowledge ([[ck]]): what this evidence cannot "
+                "answer is no common knowledge")
     if final is not None and prose not in {_norm(b.prose) for b in parse_section(final)}:
         return f"its limitation sentence “{prose}” is no longer in the section's latest version"
     if about and not _content_words(prose) & _content_words(about):
@@ -1056,7 +1071,8 @@ class ReviseWorker:
                         cannot.append(f"{what} is about a sentence that is no longer in it (“{q['sentence']}”), and "
                                       f"{spec.id} is a required section: nothing can be deleted for it")
                 # a question settled by a limitation sentence about to be deleted (one that cannot verify, or one an
-                # unresolved question is about) is unresolved once it is: its own sentence goes too (review of D4)
+                # unresolved question is about) is unresolved once it is: its own sentence goes too (review of D4); the
+                # ``[[ck]]`` deletions after this loop never take one (a limitation sentence is never ``[[ck]]``)
                 lost = {_norm(x.prose) for x in sentences if x.index in drop}
                 pending = [q for q in limited if q["id"] not in handled
                            and settled[q["id"]]["limitation_prose"] in lost]
