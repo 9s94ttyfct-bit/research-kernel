@@ -36,6 +36,7 @@ from rk.orchestrator.state import (
     start_run,
     tasks_used,
 )
+from rk.production import store
 from rk.production.argue import (
     RQ_QUESTION,
     SKEPTIC_TOOLS,
@@ -44,6 +45,7 @@ from rk.production.argue import (
     ArgumentDraft,
     Critique,
     RecheckOut,
+    _off_window,
     argue_limitations,
     argue_notes,
     argument_claims,
@@ -53,7 +55,7 @@ from rk.production.argue import (
 )
 from rk.production.argue import _load as argue_inputs
 from rk.production.extraction import usable_evidence
-from rk.production.models import SynthesisPlan
+from rk.production.models import SearchStrategy, SynthesisPlan
 from rk.production.synthesis import (
     SynthesizeWorker,
     _revised,
@@ -65,6 +67,7 @@ from rk.roles.prompts import build_system_prompt
 from rk.tools import builtin
 from rk.tools.builtin import build_registry
 from tests.production_fakes import (
+    a_protocol,
     make_frozen_project,
     production_ctx,
     stage_run,
@@ -522,6 +525,24 @@ def test_the_degrade_rejects_an_objection_offering_a_work_outside_the_date_windo
     assert (o["status"], o["note"]) == ("rejected_invalid", ("rejected at the edge limit (P1): its source was published "
                                         "in 1995, outside the protocol's date window (2000 to the search)"))
     assert w.gate(ps, 1).ok, w.gate(ps, 1).failures
+
+
+def test_a_work_published_after_a_closed_date_window_is_outside_it(env):
+    """The upper end (cade's case: a trial published two years after the window): with the window 2000 to 2005, a
+    verified work of 2007 is outside it and one of 2005 inside; the window's end is inclusive."""
+    _, ps, lib = env
+    finding = _synthesize(env)[0]
+    pid = store.add_protocol(ps, 1, a_protocol(search_strategy=SearchStrategy(
+        sources=["openalex"], queries=["aspirin stroke elderly"], date_from=2000, date_to=2005)), version=2,
+        actor="tester")
+    store.freeze_protocol(ps, pid, actor="tester")
+
+    def off(year: int) -> dict | None:
+        src = _old_work(lib, f"Late outcomes reported in {year}", year)
+        return _off_window(ps, {"category": "counterexample", "target_id": finding, "source_id": src})
+
+    assert off(2007) == {"year": 2007, "date_from": 2000, "date_to": 2005}
+    assert off(2005) is None
 
 
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
