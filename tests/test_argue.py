@@ -700,6 +700,10 @@ def test_the_rq_vote_sees_the_findings_the_answer_stands_on(env):
     usable = usable_evidence(ps, stage_row(ps, "read_extract")["passed_attempt"])
     assert subject["included_k"] == len({u["item_id"] for u in usable}) > 0
     assert subject["synthesis_requests"] == [NEED]
+    # the main claim is read with its reasons (arguer-coverage review: the findings come in as reasons)
+    main = main_claim(ps, 1)
+    linked = [svc.get_claim(e["from_id"]) for e in svc.list_edges(to_id=main, type="reason_of")]
+    assert linked and subject["reasons"] == [{"claim_id": c["id"], "text": c["text"]} for c in linked]
     assert not [w for w in TOPIC_WORDS if w in RQ_QUESTION.lower()]
 
 
