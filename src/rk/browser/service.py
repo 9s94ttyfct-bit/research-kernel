@@ -79,6 +79,19 @@ class BrowserService:
         proxy = self.kernel.settings().library_proxy
         return urlsplit(proxy.replace("{url}", "").replace("{url_enc}", "")).hostname if proxy else None
 
+    def _via_library(self, url: str) -> bool:
+        """Whether ``url`` is on the library proxy: the proxy's own host and port or, for an EZproxy that proxies by
+        host name, a host under its domain (``www-nature-com.libproxy.example.edu``; the domain is the proxy's host
+        without EZproxy's ``login.`` label, so ``login.libproxy.example.edu`` serves ``*.libproxy.example.edu``)."""
+        proxy = self.kernel.settings().library_proxy
+        if not proxy:
+            return False
+        own = urlsplit(proxy.replace("{url}", "").replace("{url_enc}", ""))
+        parts, host = urlsplit(url), (urlsplit(url).hostname or "")
+        domain = (own.hostname or "").removeprefix("login.")
+        bare = domain != own.hostname and host == domain  # login.libproxy.X also serves its menu on libproxy.X
+        return parts.netloc.lower() == own.netloc.lower() or bare or host.endswith("." + domain)
+
     def _proxied(self, url: str) -> tuple[str, bool]:
         """The URL through the library proxy (``{url}`` raw as EZproxy expects, ``{url_enc}`` percent-encoded as
         OpenAthens redirectors expect), and whether the proxy is used."""
@@ -118,7 +131,15 @@ class BrowserService:
 
     def _site_of(self, url: str) -> str:
         parts = urlsplit(url)
-        return self._site_hosts().get(parts.netloc.lower()) or parts.hostname or "?"
+        if site := self._site_hosts().get(parts.netloc.lower()):
+            return site
+        if self._via_library(url):  # every page behind the proxy is the library's: one pause, one pace
+            return "library"
+        return parts.hostname or "?"
+
+    def resume_site(self, site: str) -> None:
+        """End ``site``'s pause (you signed in or solved the page): the next browser call goes ahead."""
+        self.pacer.unpause(site)
 
     @contextmanager
     def _busy(self):
@@ -147,7 +168,7 @@ class BrowserService:
         if owner is not HUMAN:  # the page is yours now (an agent tab cannot post: your sign-in would be refused)
             self.session.hand_over(tab, owner)
             self._tabs = {k: v for k, v in self._tabs.items() if v != tab}
-        raise HumanRequired(kind, chk, url, block.reason, tab)
+        raise HumanRequired(kind, chk, url, block.reason, tab, site)
 
     def _tab_for(self, owner: str | None, key: str) -> str:
         tid = self._tabs.get((owner, key))
@@ -364,7 +385,7 @@ class BrowserService:
                              provenance={"page_metadata_diff": diff} if diff else None)
         if resolved is None and added.created:  # an item already in the library keeps its reference check
             lib.update(added.item_id, ref_status="page_metadata_only", actor=ctx.actor, actor_kind=_actor_kind(ctx))
-        via_library = bool(self._proxy_host()) and urlsplit(state.url).hostname == self._proxy_host()
+        via_library = self._via_library(state.url)
         origin = "library_browser" if via_library else "publisher_browser"
         try:  # never clicks in your tab: only a PDF the page links to is fetched
             got = self._download(ctx, project, ps, t.id, HUMAN, state.url, state.html, "publisher", click=False)

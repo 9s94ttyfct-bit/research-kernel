@@ -59,7 +59,7 @@ class Sources(FakeSources):
         super().__init__(items, **kw)
         self.failing = set(failing)
 
-    def fulltext(self, item_id: str, why: list[str] | None = None) -> bool:
+    def fulltext(self, item_id: str, why: list[str] | None = None, *, wait_for_library: bool = False) -> bool:
         if self._title(item_id) in self.failing:
             raise HttpError(503, "https://fulltext.example/x")
         return super().fulltext(item_id, why)
@@ -255,7 +255,7 @@ class OpenAccessSources(FakeSources):
         super().__init__(items, **kw)
         self.ctx = ctx
 
-    def fulltext(self, item_id: str, why: list[str] | None = None) -> bool:
+    def fulltext(self, item_id: str, why: list[str] | None = None, *, wait_for_library: bool = False) -> bool:
         return fetch_fulltext(self.lib.ps, self.lib, self.ctx, item_id, actor="t", why=why) is not None
 
 

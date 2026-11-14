@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from rk.checkpoints import create_checkpoint
 from rk.config import DEFAULT_DRIVERS, Settings, save_settings
 from rk.discovery.models import HypothesisIn, Intake, RQBody, Topic
-from rk.discovery.sources import ABSTRACT_SOURCES, COUNTED_SOURCES
+from rk.discovery.sources import ABSTRACT_SOURCES, COUNTED_SOURCES, LibrarySignIn
 from rk.discovery.store import add_rq, add_topic, freeze_rq, record_intake
 from rk.fulltext import FulltextResult, _record_snapshot, latest_snapshot
 from rk.ids import new_id
@@ -178,8 +178,9 @@ class FakeSources:
     (``None``: the source gave no count), and ``count`` refuses a source outside ``COUNTED_SOURCES`` as
     ``KernelSources`` does. ``resolvable`` maps an identifier to the work ``add`` adds to the library (unknown:
     ``None``). ``abstracts`` maps ``(source, id)`` (a PMID for ``pubmed``, a DOI for ``europepmc``) to the abstract
-    ``abstracts`` returns; a source in ``abstract_failures`` raises an ``HttpError`` (503) there instead. Every call is
-    recorded in ``calls``."""
+    ``abstracts`` returns; a source in ``abstract_failures`` raises an ``HttpError`` (503) there instead. A title in
+    ``sign_in`` makes ``fulltext`` (with ``wait_for_library``) raise ``LibrarySignIn``, carrying ``browser_wait`` as the
+    browser's checkpoint, until ``resume_library`` is called. Every call is recorded in ``calls``."""
 
     def __init__(self, items: dict[str, list[ItemIn]], *, lib=None, s2: bool = False,
                  statuses: dict[str, str] | None = None, default_status: str = "pass",
@@ -187,7 +188,8 @@ class FakeSources:
                  retractions: dict[str, RetractionInfo] | None = None, citing: dict[str, list[ItemIn]] | None = None,
                  fulltexts: dict[str, list[str]] | None = None, resolvable: dict[str, ItemIn] | None = None,
                  record_counts: dict[tuple[str, str], int | None] | None = None,
-                 abstracts: dict[tuple[str, str], str] | None = None, abstract_failures: frozenset[str] = frozenset()):
+                 abstracts: dict[tuple[str, str], str] | None = None, abstract_failures: frozenset[str] = frozenset(),
+                 sign_in: frozenset[str] = frozenset(), browser_wait: str | None = None):
         self.items, self.lib, self.s2 = items, lib, s2
         self.statuses, self.default_status = statuses or {}, default_status
         self.counts, self.retractions = year_counts or {}, retractions or {}
@@ -197,6 +199,7 @@ class FakeSources:
         self.calls: list[tuple] = []
         self.search_args: list[dict] = []
         self.count_args: list[dict] = []
+        self.sign_in, self.signed_in, self.browser_wait = sign_in, False, browser_wait
 
     def _title(self, item_id: str) -> str:
         if self.lib is None:
@@ -265,15 +268,24 @@ class FakeSources:
         self.calls.append(("retraction", item_id))
         return self.retractions.get(self._title(item_id), RetractionInfo(status="none"))
 
-    def fulltext(self, item_id: str, why: list[str] | None = None) -> bool:
+    def fulltext(self, item_id: str, why: list[str] | None = None, *, wait_for_library: bool = False) -> bool:
         title = self._title(item_id)
         if latest_snapshot(self.lib.ps, item_id) is not None:
             return True
+        if title in self.sign_in and not self.signed_in:  # as KernelSources: only a caller that can wait is stopped
+            if wait_for_library:
+                raise LibrarySignIn(f"library sign-in page for {title}", self.browser_wait)
+            (why if why is not None else []).append("built-in browser: library sign-in page")
+            return False
         pages = self.fulltexts.get(title)
         if pages is None:
             return False
         add_text_layer(self.lib.ps, item_id, pages)
         return True
+
+    def resume_library(self) -> None:
+        self.calls.append(("resume_library",))
+        self.signed_in = True
 
     def add(self, identifier: str) -> str | None:
         self.calls.append(("add", identifier))

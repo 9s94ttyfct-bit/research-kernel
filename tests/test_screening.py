@@ -8,7 +8,12 @@ from pathlib import Path
 import pytest
 
 import rk
-from rk.checkpoints import answer_checkpoint, get_checkpoint, list_checkpoints
+from rk.checkpoints import (
+    answer_checkpoint,
+    create_checkpoint,
+    get_checkpoint,
+    list_checkpoints,
+)
 from rk.discovery.executor import RateCapped
 from rk.library.models import Ids, ItemIn
 from rk.orchestrator.engine import Orchestrator, default_workers
@@ -1068,3 +1073,49 @@ def test_a_full_text_vote_exclusion_on_a_failed_criterion_keeps_its_reason(env):
     assert "2 excluded by the P1 vote on a disagreement)" in out.reason and "not established" not in out.reason
     p = prisma_counts(ps, 1)
     assert p.excluded_ft == {VOTED_OUT: 2} and p.not_established == 0
+
+
+@pytest.mark.parametrize("env", [SR_P1], indirect=True)
+def test_a_library_sign_in_waits_for_you_and_the_retrieval_goes_on_after(env):
+    """Calibration (a university EZproxy, 2026-11-14): the library proxy asking you to sign in stops the full-text
+    retrieval on a login_wait checkpoint of the stage (not abstract-only for every record after it); your 'done' lets
+    the library go on and the retrieval runs again, so the record that met the sign-in page gets its full text."""
+    _, ps, _ = env
+    _freeze(ps)
+    works = [_work("Aspirin open [yes/yes]", 1), _work("Aspirin walled [yes/yes]", 2)]
+    src = FakeSources({"aspirin": works}, sign_in=frozenset({"Aspirin walled [yes/yes]"}),
+                      fulltexts={"Aspirin walled [yes/yes]": ["Methods. Results."]})
+    w = SearchScreenWorker()
+    out = w.run(_ctx(env, Screeners(), src))
+
+    assert out.status == "waiting_human"
+    cp = get_checkpoint(ps, out.checkpoint_id)
+    assert (cp["kind"], cp["stage"], cp["options"]) == ("login_wait", "search_screen", ["done"])
+    assert store.retrieval_note(ps, 1) is None  # nothing noted until the library could be asked
+    assert w.run(_ctx(env, Screeners(), src)).checkpoint_id == cp["id"]  # resumed before the answer: the same wait
+
+    done = w.on_answer(_ctx(env, Screeners(), src), _answer(ps, cp["id"], {"choice": "done"}))
+    assert done.status == "done" and ("resume_library",) in src.calls
+    t = {v: k for k, v in _titles(env).items()}
+    note = store.retrieval_note(ps, 1)
+    assert note["retrieved"] == [t["Aspirin walled [yes/yes]"]]
+    assert note["abstract_only"] == [t["Aspirin open [yes/yes]"]]
+
+
+@pytest.mark.parametrize("env", [SR_P1], indirect=True)
+@pytest.mark.parametrize("kind", ["login_wait", "captcha_wait"])
+def test_a_library_sign_in_waits_on_the_browsers_own_checkpoint(env, kind):
+    """The browser opened its login_wait (or, for a CAPTCHA on the library, its captcha_wait) in this project: the
+    stage waits on that one (one prompt for one page), and your answer to it lets the retrieval go on."""
+    _, ps, _ = env
+    _freeze(ps)
+    browser_wait = create_checkpoint(ps, kind, "handle the page", ["done"], actor="kernel:browser")
+    src = FakeSources({"aspirin": [_work("Aspirin walled [yes/yes]", 1)]}, browser_wait=browser_wait,
+                      sign_in=frozenset({"Aspirin walled [yes/yes]"}),
+                      fulltexts={"Aspirin walled [yes/yes]": ["Methods. Results."]})
+    w = SearchScreenWorker()
+    out = w.run(_ctx(env, Screeners(), src))
+    assert (out.status, out.checkpoint_id) == ("waiting_human", browser_wait)
+    assert [c["id"] for c in list_checkpoints(ps, "open")] == [browser_wait]
+    done = w.on_answer(_ctx(env, Screeners(), src), _answer(ps, browser_wait, {"choice": "done"}))
+    assert done.status == "done" and store.retrieval_note(ps, 1)["retrieved"] != []
