@@ -3,8 +3,9 @@
 ``SECTIONS`` lists each paper type's sections in order. A critical review has one ``theme-<n>`` section per theme of
 its synthesis besides the listed ones: ``required_sections`` puts them after ``introduction``, numbered from 1 in the
 synthesis's order (a theme named twice, case and whitespace aside, is one section); one without any theme fails the
-draft gate. Titles and purposes follow spec §7.3. ``disclosure`` is written by the kernel (``kernel_written``), never
-by the Writer."""
+draft gate. Titles and purposes follow spec §7.3. ``disclosure`` and a systematic or scoping review's
+``study-selection`` (``SELECTION``: the PRISMA flow counts, ``rk.production.draft.selection_text``; your decision,
+2026-11-14) are written by the kernel (``kernel_written``), never by the Writer."""
 
 from __future__ import annotations
 
@@ -25,7 +26,10 @@ class SectionSpec(BaseModel):
 
 _DISCLOSURE = SectionSpec(id="disclosure", title="Disclosure", kernel_written=True, operations=True,
                           purpose="What the kernel ran to produce this manuscript, each step with its record.")
-KERNEL_WRITTEN = frozenset({_DISCLOSURE.id})  # the sections only the kernel writes (verified with their own rules)
+SELECTION = SectionSpec(id="study-selection", title="Study selection", kernel_written=True, operations=True,
+                        purpose="The PRISMA flow counts of the search and screening, each under its own label.")
+# the sections only the kernel writes (verified with their own rules)
+KERNEL_WRITTEN = frozenset({_DISCLOSURE.id, SELECTION.id})
 
 
 def _review(results_title: str, results_purpose: str) -> list[SectionSpec]:
@@ -36,8 +40,9 @@ def _review(results_title: str, results_purpose: str) -> list[SectionSpec]:
                     purpose="Why the question matters to the audience and what the review sets out to answer."),
         SectionSpec(id="methods", title="Methods", operations=True,
                     purpose="The frozen protocol: sources and search, eligibility, screening, extraction, risk of bias "
-                            "(how each study's evidence was assessed) and the synthesis method, with the search and "
-                            "screening counts."),
+                            "(how each study's evidence was assessed) and the synthesis method, with what each search "
+                            "returned (the flow counts are the Study selection section's)."),
+        SELECTION,
         SectionSpec(id="results", title=results_title, purpose=results_purpose, operations=True),
         SectionSpec(id="discussion", title="Discussion",
                     purpose="What the findings and the argument mean for the question, with the contested points and "
@@ -53,13 +58,11 @@ def _review(results_title: str, results_purpose: str) -> list[SectionSpec]:
 
 SECTIONS: dict[str, list[SectionSpec]] = {
     "systematic_review": _review(
-        "Results", "The PRISMA flow of the studies (the flow figure and its counts), the characteristics of the "
-                   "included studies and the synthesis results, with the pooled statistics and figures where there are "
-                   "any."),
+        "Results", "The characteristics of the included studies and the synthesis results, with the pooled "
+                   "statistics and figures where there are any (the flow counts are the Study selection section's)."),
     "scoping_review": _review(
         "Evidence map and thematic synthesis",
-        "The PRISMA flow of the studies (the flow figure and its counts), the evidence map and the themes of the "
-        "synthesis."),
+        "The evidence map and the themes of the synthesis (the flow counts are the Study selection section's)."),
     "critical_review": [
         SectionSpec(id="introduction", title="Introduction", operations=True,
                     purpose="Context, then the problem, then the review's response: why the question matters to the "

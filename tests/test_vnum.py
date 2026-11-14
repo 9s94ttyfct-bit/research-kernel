@@ -106,3 +106,35 @@ def test_a_cited_study_count_is_grounded_only_where_it_counts_studies(claim, ok)
     """Re-review of fix round 1: a number equal to the claim's count of cited studies is grounded only when the words
     after it name the studies ("3 studies", "3 of the cited studies"), never as a dose, a duration or a fold."""
     assert check_numbers(claim, [], counts={3}).ok is ok
+
+
+@pytest.mark.parametrize(("text", "found"), [
+    ("Seven studies were included.", [7]),
+    ("Thirty-four full texts were assessed.", [34]),
+    ("In the two randomised trials, one or more adenomas were found.", [2]),
+    ("The two-trial pooled estimate.", [2]),
+    ("Two reviewers searched three databases with three search strings.", [2, 3, 3]),
+    ("Twenty one records and seventeen trials of 12 mg.", [21, 17, 12]),
+    ("Three other studies and five trials.", [3, 5]),
+    ("At least one adenoma per patient.", []),
+    ("One of the trials.", []),
+    ("Two or more trials.", []),
+    ("Three randomised controlled trials.", [3]),
+    # review of D5: a count of something else, a duration, "at least"
+    ("One site with records.", []),
+    ("Two weeks after trials.", []),
+    ("Within one year from studies.", []),
+    ("At least one study.", []),
+])
+def test_a_spelled_number_counts_only_what_a_review_counts(text, found):
+    """Your decision (2026-11-14, after srrepro10 cade's "Thirty-four full texts assessed" went unchecked): a spelled
+    number before a count noun is a number V-NUM checks; elsewhere ("one or more adenomas") it is not."""
+    assert [n.value for n in extract_numbers(text)] == found
+
+
+def test_a_spelled_count_must_be_in_the_evidence_like_a_written_one():
+    assert check_numbers("Thirty-four full texts were assessed.", ["34 records were assessed"]).ok
+    assert not check_numbers("Thirty-four full texts were assessed.", ["9 full texts and 25 abstracts"]).ok
+    assert check_numbers("Pressure rose in three trials.", [], counts={3}).ok
+    assert check_numbers("Pressure rose in 3 randomised trials.", [], counts={3}).ok
+    assert not check_numbers("Pressure rose in 3 weeks after trials.", [], counts={3}).ok

@@ -4,8 +4,11 @@ a code span is not checked and does not count).
 
 - **V-COVER:** at least one source marker; each ``clm``/``run``/``fig``/``stat``/``plan``/``obj`` marker names a
   target that exists (a statistic is ``stt_``, a figure ``fig_``; a ``run`` is the frozen protocol or an event, in a
-  Writer's section a research operation's (``RESEARCH_EVENTS``; the kernel-written Disclosure cites any event it
-  reports); a ``plan`` a frozen design or a hypothesis that was not dropped; an ``obj`` one of argue's passed attempt's
+  Writer's section a research operation's (``RESEARCH_EVENTS``), never the PRISMA flow's (``PRISMA_EVENT``: its counts
+  are the kernel-written Study selection section's, which a Writer's sentence neither cites nor restates; your
+  decision, 2026-11-14, after srrepro10 cade wrote "Thirty-four full texts assessed" while 25 of the 34 were assessed
+  on their abstract only); the kernel-written sections cite any event they report); a ``plan`` a frozen design or a
+  hypothesis that was not dropped; an ``obj`` one of argue's passed attempt's
   objections with a source in the library, ``rk.verify.balance.objection_problem``: it cites what that source, an
   outside work, says) and, where it has a hash, still matches it (an artifact's file, the frozen protocol's body, the
   frozen design's body, and the frozen design a hypothesis is pre-registered in by its ``prereg_hash``). ``inf`` and
@@ -13,11 +16,13 @@ a code span is not checked and does not count).
   the form to write (``malformed_marker_problem``). Calibration (critical3 final review): without ``obj``, sentences
   about the benchmark a Skeptic objection came from cited a claim that never mentions it, and were exported as
   citations of included studies.
-- **V-NUM:** every number of the sentence is in a marker's target (``number_pool``): a claim's text and its evidence
-  notes, as written; an objection's text; an artifact's reported values (a pooled statistic's ``display`` values and
-  ``k``, a map table's counts), an event's whitelisted fields (``EVENT_NUMBERS``) and the protocol's stored values,
-  exactly or rounded as the sentence writes them; a protocol's, design's or hypothesis's text (e.g. an eligibility
-  age). ``[[inf]]`` and ``[[ck]]`` cover no number.
+- **V-NUM:** every number of the sentence (spelled ones counting what a review counts too,
+  ``rk.verify.numbers.extract_numbers``) is in a marker's target (``number_pool``): a claim's text and its evidence
+  notes, as written, and a count of the studies it rests on where the number counts studies ("two randomised
+  trials"); an objection's text; an artifact's reported values (a pooled statistic's ``display`` values and ``k``, a
+  map table's counts), an event's whitelisted fields (``EVENT_NUMBERS``) and the protocol's stored values with how
+  many sources and queries it searches, exactly or rounded as the sentence writes them; a protocol's, design's or
+  hypothesis's text (e.g. an eligibility age). ``[[inf]]`` and ``[[ck]]`` cover no number.
 - **V-HEDGE:** the sentence is no stronger than the strongest claim or objection it cites (their texts); an
   ``[[inf]]`` sentence is worded tentatively (level ≤ 1: "[[inf]] 转为推断性措辞"). Quoted text that V-QUOTE checks is
   the source's wording, not the sentence's, and is left out of the measure.
@@ -62,7 +67,7 @@ from rk.canon import canonical_json, sha256_hex
 from rk.production.artifacts import artifact
 from rk.production.common import entity_row
 from rk.production.manuscript import Marker, Sentence, parse_section, section_problems
-from rk.production.sections import KERNEL_WRITTEN, describes_operations
+from rk.production.sections import KERNEL_WRITTEN, SELECTION, describes_operations
 from rk.production.store import design, protocol_hash, protocol_row
 from rk.store.project import ProjectStore
 from rk.text.layer import normalize_query
@@ -70,7 +75,7 @@ from rk.verify.balance import objection_problem
 from rk.verify.hedge import hedge_level
 from rk.verify.numbers import NumberPool, extract_numbers, numeric_leaves
 from rk.verify.quote import find_verbatim
-from rk.verify.support import claim_problems
+from rk.verify.support import cited_studies, claim_problems
 
 CK_MAX_SHARE = 0.05
 INF_MAX_LEVEL = 1
@@ -103,6 +108,7 @@ _QUOTED = re.compile(
     r"|«(?P<d>[^«»]+)»"
     r"|(?<!\w)‘(?P<e>(?:[^‘’]|’(?=\w))+)’(?!\w)"
     r"|(?<!\w)'(?=\S)(?P<f>(?:[^'\n]|'(?=\w))+?)(?<=\S)'(?!\w)")
+PRISMA_EVENT = "draft.prisma"  # rk.production.draft.prisma_event
 # The numbers a run event reports: per event type, the named top-level fields of its producer's payload that a
 # manuscript states (never bookkeeping: attempt, round, offset, limit, timestamps, ids; never nested payloads). A list
 # field gives its length. An event type not listed covers no number.
@@ -122,13 +128,15 @@ EVENT_NUMBERS: dict[str, tuple[str, ...]] = {
     # rk.production.draft.prisma_event: the PRISMA counts of search_screen's passed attempt (never the attempt or the
     # protocol id it records, which the audit recomputes the counts from); the full-text exclusions per reason come
     # with the flow figure, the event has their total
-    "draft.prisma": ("identified", "duplicates_removed", "screened", "excluded_ta", "sought", "not_retrieved",
-                     "assessed_ft", "excluded_ft_total", "included", "excluded_language", "abstract_only"),
+    PRISMA_EVENT: ("identified", "duplicates_removed", "screened", "excluded_ta", "sought", "not_retrieved",
+                   "assessed_ft", "full_text_retrieved", "excluded_ft_total", "included", "excluded_language",
+                   "abstract_only"),
 }
 # What a [[run:evt_…]] marker in a Writer's section may cite (spec §9.1 V-COVER ②: the system's own research
-# operations): the producers of a run event's numbers, which are the events the Writer is given. The kernel-written
-# Disclosure cites any event it reports (a stage's pass, a checkpoint answer, a vote, a degrade, …).
-RESEARCH_EVENTS = frozenset(EVENT_NUMBERS)
+# operations): the producers of a run event's numbers, which are the events the Writer is given, but the PRISMA flow
+# (the kernel's Study selection section states it). The kernel-written sections cite any event they report (a stage's
+# pass, a checkpoint answer, a vote, a degrade, the PRISMA flow, …).
+RESEARCH_EVENTS = frozenset(EVENT_NUMBERS) - {PRISMA_EVENT}
 # V-HEDGE's ceiling for a Writer's sentence whose only source markers are ``run``/``plan`` (no claim, figure or
 # statistic): plain statement (``hedge_level`` 2), never categorical (3). The strictest ceiling under which a plain
 # report of what ran ("We searched PubMed from 2024") still passes; tentative wording (1) would refuse it.
@@ -284,6 +292,9 @@ def _target_problem(ps: ProjectStore, m: Marker, paper_type: str, kernel_written
         got = _event(ps, m.target)
         if got is None:
             return f"no event {m.target}"
+        if not kernel_written and got[0] == PRISMA_EVENT:
+            return (f"{m.target} is the PRISMA flow: its counts are stated by the kernel's {SELECTION.title} section, "
+                    "and a Writer's sentence neither cites nor restates them")
         if not kernel_written and got[0] not in RESEARCH_EVENTS:
             return (f"{m.target} ({got[0]}) is not a research operation: a [[run:]] marker cites what the kernel ran "
                     f"for the research (an event of {', '.join(sorted(RESEARCH_EVENTS))}) or the frozen protocol")
@@ -388,6 +399,7 @@ def number_pool(ps: ProjectStore, markers: list[Marker]) -> NumberPool:
         if m.kind == "clm" and (c := _claim(ps, m.target)) is not None:
             texts = [c["text"]] + [n["text"] for e in c["evidence"] for n in e["notes"] if n]
             pool.nums += [n for t in texts for n in extract_numbers(t)]
+            pool.studies.append(cited_studies(c))
         elif m.kind == "obj" and (o := _objection(ps, m.target)) is not None:
             pool.nums += extract_numbers(o["text"])
         elif m.kind in ("stat", "fig") and (a := artifact(ps, m.target)) is not None:
@@ -395,6 +407,10 @@ def number_pool(ps: ProjectStore, markers: list[Marker]) -> NumberPool:
         elif m.kind == "run" and m.target.startswith("prt_") and (p := protocol_row(ps, m.target)) is not None:
             pool.values += numeric_leaves(p["body"])
             pool.nums += [n for t in _strings(p["body"]) for n in extract_numbers(t)]  # e.g. an eligibility age
+            # how many sources and queries it searches ("three databases", "three search strings": spelled counts are
+            # checked, your decision 2026-11-14), as an event's list field gives its length
+            ss = p["body"].get("search_strategy") or {}
+            pool.values += [float(len(ss[f])) for f in ("sources", "queries") if isinstance(ss.get(f), list)]
         elif m.kind == "run" and (ev := _event(ps, m.target)) is not None:
             pool.values += _event_values(*ev)
         elif m.kind == "plan" and m.target.startswith("dsg_") and (d := design(ps, m.target)) is not None:
@@ -458,7 +474,7 @@ def verify_sentence(ps: ProjectStore, s: Sentence, *, paper_type: str, kernel_wr
     if "ck" in kinds and nums:
         problems.append("a common knowledge sentence ([[ck]]) carries no number: " + ", ".join(n.text for n in nums))
     pool = number_pool(ps, s.markers)
-    problems += [f"the number {n.text} is not in any marker's target" for n in nums if not pool.covers(n)]
+    problems += [f"the number {n.text} is not in any marker's target" for n in nums if not pool.covers(n, s.prose)]
     measured = prose
     if any(m.kind in ("clm", "obj") or (m.kind == "run" and (m.target or "").startswith("prt_")) for m in s.markers):
         sources = _quote_sources(ps, s.markers)

@@ -403,7 +403,7 @@ def stat_claim_text(a: dict) -> tuple[str, list[dict]]:
     keys = [p[0] for p in pieces if isinstance(p, tuple)]
     text = "".join(p if isinstance(p, str) else str(d[p[0]]) if p[1] is None else _fmt(d[p[0]], p[1])
                    for p in pieces)
-    nums = extract_numbers(text)
+    nums = extract_numbers(text, spelled=False)  # the template's digits, by position
     if len(nums) != len(keys):
         raise RuntimeError(f"the template printed {len(nums)} numbers for {len(keys)} values: {text!r}")
     return text, [{"artifact_id": a["id"], "key": k, "text": n.text} for k, n in zip(keys, nums, strict=True)]
@@ -436,7 +436,7 @@ def direction_claim_text(a: dict) -> tuple[str, list[dict]]:
         " the same value (vote counting by direction of effect, not a pooled estimate; no test of significance)."]
     keys = [p[0] for p in pieces if isinstance(p, tuple)]
     text = "".join(p if isinstance(p, str) else str(d[p[0]]) for p in pieces)
-    nums = extract_numbers(text)
+    nums = extract_numbers(text, spelled=False)  # the template's digits, by position
     if [n.text for n in nums] != [str(d[k]) for k in keys]:
         raise RuntimeError(f"the outcome or field names print numbers of their own: {text!r}")
     return text, [{"artifact_id": a["id"], "key": k, "text": n.text} for k, n in zip(keys, nums, strict=True)]

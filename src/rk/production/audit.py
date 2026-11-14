@@ -113,13 +113,13 @@ from rk.production.artifacts import artifact
 from rk.production.common import answer_comment, write_atomic
 from rk.production.disclosure import SECTION, disclosure_problems, write_disclosure
 from rk.production.draft import (
-    PRISMA_EVENT,
     PRISMA_FIELDS,
     DraftInputs,
     latest_texts,
     latest_version,
     load_inputs,
     manuscript_problems,
+    prisma_numbers,
 )
 from rk.production.manuscript import parse_section, source_markers
 from rk.production.protocol import protocol_prereg_ok
@@ -131,7 +131,7 @@ from rk.store.events import NewEvent
 from rk.store.project import ProjectStore
 from rk.text.layer import TextLayer
 from rk.verify.balance import UNANSWERED, check_balance
-from rk.verify.cover import verify_section
+from rk.verify.cover import PRISMA_EVENT, verify_section
 from rk.verify.prisma import check_prisma, prisma_counts
 from rk.verify.stats import check_stats
 from rk.verify.support import claim_problems
@@ -418,8 +418,7 @@ def _stale_prisma(ps: ProjectStore, s: DraftInputs, evt: str, payload: dict) -> 
         why.append(f"it was computed under the protocol {payload.get('protocol_id')}, and the protocol in force is "
                    f"{fp['id'] if fp else 'none'}")
     if sa is not None:
-        p = prisma_counts(ps, sa)
-        now = {**vars(p), "excluded_ft_total": sum(p.excluded_ft.values())}
+        now = prisma_numbers(prisma_counts(ps, sa))
         why += [f"{f} {payload.get(f)} is now {now[f]}" for f in PRISMA_FIELDS if payload.get(f) != now[f]]
     return why
 

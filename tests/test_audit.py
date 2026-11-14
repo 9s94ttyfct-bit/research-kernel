@@ -46,7 +46,7 @@ from rk.production.audit import (
     quote_note_problem,
 )
 from rk.production.disclosure import DISCLOSURE_PATH, write_disclosure
-from rk.production.draft import PRISMA_EVENT, DraftWorker, load_inputs
+from rk.production.draft import DraftWorker, load_inputs
 from rk.production.manuscript import (
     draft_text,
     draft_versions,
@@ -58,6 +58,7 @@ from rk.production.store import add_protocol, freeze_protocol, frozen_protocol
 from rk.production.synthesis import synthesis_claims
 from rk.sources.s2 import NotConfigured
 from rk.store.events import NewEvent
+from rk.verify.cover import PRISMA_EVENT
 from rk.verify.retract import RetractionInfo
 from tests.discovery_fakes import FakeSources
 from tests.production_fakes import (
@@ -275,17 +276,6 @@ def test_unanswered_objection_takes_audit_to_argue_other_balance_problems_to_dra
     assert all(f in rep["gates"]["V-BALANCE"] for f in rep["routes"]["argue"])
 
 
-def _cites_prisma(inputs):
-    """A Writer output that cites the PRISMA event in methods."""
-    md = writes()(inputs)["markdown"]
-    if inputs["section"]["id"] == "methods":
-        e = next(e for e in inputs["events"] if e["type"] == PRISMA_EVENT)
-        n = e["numbers"]
-        md = (md.rstrip("\n") + f" The search identified {n['identified']} records and included {n['included']} "
-              f"studies [[run:{e['event_id']}]].\n")
-    return {"markdown": md}
-
-
 def _stale(ps) -> list[str]:
     return [f for f in audit_manuscript(ps, paper_type="systematic_review").gates["V-PRISMA"]
             if f.startswith("stale PRISMA counts")]
@@ -294,9 +284,9 @@ def _stale(ps) -> list[str]:
 @pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
 def test_stale_prisma_counts_take_audit_to_draft(env):
     _, ps, _ = env
-    revised(env, writer=_cites_prisma)
+    revised(env)
     (evt,) = [r["evt_id"] for r in ps.db.execute("SELECT evt_id FROM events WHERE type=?", (PRISMA_EVENT,))]
-    assert f"[[run:{evt}]]" in draft_text(ps, "methods", 1)
+    assert f"[[run:{evt}]]" in draft_text(ps, "study-selection", 1)  # the kernel's Study selection cites it
     w = AuditWorker()
     out = w.run(_ctx(env, _judges("approve")))
     assert out.status == "done", out.reason
@@ -315,7 +305,7 @@ def test_stale_prisma_counts_when_a_count_differs_or_the_protocol_changed(env, m
     import rk.production.audit as audit_mod
 
     _, ps, _ = env
-    revised(env, writer=_cites_prisma)
+    revised(env)
     (evt,) = [r["evt_id"] for r in ps.db.execute("SELECT evt_id FROM events WHERE type=?", (PRISMA_EVENT,))]
     assert not _stale(ps)
     counts = audit_mod.prisma_counts
