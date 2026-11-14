@@ -7,7 +7,10 @@ a code span is not checked and does not count).
   Writer's section a research operation's (``RESEARCH_EVENTS``), never the PRISMA flow's (``PRISMA_EVENT``: its counts
   are the kernel-written Study selection section's, which a Writer's sentence neither cites nor restates; your
   decision, 2026-11-14, after srrepro10 cade wrote "Thirty-four full texts assessed" while 25 of the 34 were assessed
-  on their abstract only); the kernel-written sections cite any event they report); a ``plan`` a frozen design or a
+  on their abstract only; nor restates the inclusion count: a count of studies or records equal to the PRISMA
+  ``included`` count, stated as the review's inclusion, fails however it is grounded, ``_restated_prisma``, option A of
+  your decision of
+  2026-11-14); the kernel-written sections cite any event they report); a ``plan`` a frozen design or a
   hypothesis that was not dropped; an ``obj`` one of argue's passed attempt's
   objections with a source in the library, ``rk.verify.balance.objection_problem``: it cites what that source, an
   outside work, says) and, where it has a hash, still matches it (an artifact's file, the frozen protocol's body, the
@@ -73,7 +76,7 @@ from rk.store.project import ProjectStore
 from rk.text.layer import normalize_query
 from rk.verify.balance import objection_problem
 from rk.verify.hedge import hedge_level
-from rk.verify.numbers import NumberPool, extract_numbers, numeric_leaves
+from rk.verify.numbers import NumberPool, count_phrase, extract_numbers, numeric_leaves
 from rk.verify.quote import find_verbatim
 from rk.verify.support import cited_studies, claim_problems
 
@@ -450,6 +453,34 @@ def _quotations(s: Sentence, prose: str) -> list[tuple[int, int, str]]:
     return [(q.start(), q.end(), next(g for g in q.groups() if g is not None)) for q in _QUOTED.finditer(prose)]
 
 
+# a count stated as the review's inclusion: "the review included seven studies" (before the count), "the seven
+# included studies" (between the count and its noun), "seven studies were included" (after its noun)
+_INCLUDED_BEFORE = re.compile(r"\binclud(?:ed|es|ing)\s+(?:a\s+total\s+of\s+|all\s+)?$", re.IGNORECASE)
+_INCLUDED_GAP = re.compile(r"\bincluded\b", re.IGNORECASE)
+_INCLUDED_AFTER = re.compile(r"\s+(?:were|was|(?:have|has|had)\s+been|are|is)\s+(?:\w+\s+)?included\b", re.IGNORECASE)
+
+
+def _restated_prisma(ps: ProjectStore, text: str, nums: list) -> list[str]:
+    """Why a Writer's sentence ``text`` restates the PRISMA inclusion count: a number counting studies or records
+    (``count_phrase``) equal to the ``included`` count of the project's latest ``draft.prisma`` event, stated as the
+    review's inclusion (``_INCLUDED_*``). A citation can ground such a number ("Seven studies were included" citing a
+    claim that rests on the seven studies), but the kernel's Study selection section states it. Your decision,
+    2026-11-14, option A: only the inclusion wording; "Seven trials found …", "Three trials included adolescents" and
+    the other boxes' wording ("475 records were screened") stand."""
+    r = ps.db.execute("SELECT payload FROM events WHERE type=? ORDER BY seq DESC LIMIT 1", (PRISMA_EVENT,)).fetchone()
+    if not nums or r is None or not _number(included := json.loads(r["payload"]).get("included")):
+        return []
+    out = []
+    for n in nums:
+        if n.value != included or (m := count_phrase(text, n)) is None:
+            continue
+        if (_INCLUDED_BEFORE.search(text[max(0, n.span[0] - 40):n.span[0]]) or _INCLUDED_GAP.search(m["gap"])
+                or _INCLUDED_AFTER.match(text, m.end())):
+            out.append(f"the number {n.text} restates the PRISMA count of included records: the kernel's "
+                       f"{SELECTION.title} section states it; write without the count (e.g. \"the included studies\")")
+    return out
+
+
 def verify_sentence(ps: ProjectStore, s: Sentence, *, paper_type: str, kernel_written: bool = False,
                     operations: bool = True) -> SentenceVerdict:
     """The sentence against every rule of the module docstring; ``kernel_written``: of a section only the kernel
@@ -475,6 +506,8 @@ def verify_sentence(ps: ProjectStore, s: Sentence, *, paper_type: str, kernel_wr
         problems.append("a common knowledge sentence ([[ck]]) carries no number: " + ", ".join(n.text for n in nums))
     pool = number_pool(ps, s.markers)
     problems += [f"the number {n.text} is not in any marker's target" for n in nums if not pool.covers(n, s.prose)]
+    if not kernel_written:
+        problems += _restated_prisma(ps, s.prose, nums)
     measured = prose
     if any(m.kind in ("clm", "obj") or (m.kind == "run" and (m.target or "").startswith("prt_")) for m in s.markers):
         sources = _quote_sources(ps, s.markers)

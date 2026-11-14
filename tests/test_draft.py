@@ -656,8 +656,9 @@ def test_prisma_event_pools_its_counts_never_its_attempt(env):
     (ok,) = parse_section(f"The search identified 2 records and included 2 studies [[run:{evt}]].")
     assert verify_sentence(ps, ok, paper_type="systematic_review", kernel_written=True).ok
     # a Writer's sentence never cites (nor so restates) the flow: the kernel's Study selection section states it
-    (problem,) = verify_sentence(ps, ok, paper_type="systematic_review").problems
-    assert "is the PRISMA flow" in problem and "Study selection" in problem, problem
+    problems = verify_sentence(ps, ok, paper_type="systematic_review").problems
+    assert any("is the PRISMA flow" in p and "Study selection" in p for p in problems), problems
+    assert any("restates the PRISMA count" in p for p in problems), problems  # option A too
     for n in ("9", "1"):  # the draft attempt and the search_screen attempt it records are never pooled
         (s,) = parse_section(f"The counts come from attempt {n} [[run:{evt}]].")
         v = verify_sentence(ps, s, paper_type="systematic_review", kernel_written=True)
@@ -732,6 +733,35 @@ def test_a_count_of_the_studies_a_cited_claim_rests_on_is_grounded(env):
         (s,) = parse_section(text)
         number = [p for p in verify_sentence(ps, s, paper_type="systematic_review").problems if "the number" in p]
         assert (not number) is ok, (text, number)
+
+
+@pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)
+def test_a_writer_never_restates_the_prisma_inclusion_count(env):
+    """Your decision (2026-11-14, option A): "Seven studies were included" citing a claim that rests on the seven
+    included studies is grounded, yet restates the inclusion count the kernel's Study selection states, and fails in a
+    Writer's sentence; "Seven trials found …", "Three trials included adolescents" and another box's wording ("N
+    records were screened", even when N is the inclusion count) stand."""
+    _, ps, _ = env
+    _ready(env)
+    cid = synthesis_claims(ps, 1)[0]
+    k = cited_studies(ArgumentService(ps).get_claim(cid))
+    word = {1: "One", 2: "Two", 3: "Three"}[k]
+    ps.apply(NewEvent(type=PRISMA_EVENT, entity_id=None, actor_kind="kernel", actor="tester",
+                      payload={"attempt": 1, "search_attempt": 1, "protocol_id": None,
+                               **{f: k for f in EVENT_NUMBERS[PRISMA_EVENT]}}))  # every box counts k
+    for text, restates, grounded in ((f"{word} studies were included in the review [[clm:{cid}]].", True, True),
+                                     (f"The {k} included trials agree [[clm:{cid}]].", True, True),
+                                     (f"The review included {k} trials [[clm:{cid}]].", True, True),
+                                     (f"{word} randomised trials found it [[clm:{cid}]].", False, True),
+                                     (f"{word} trials included adolescents [[clm:{cid}]].", False, True),
+                                     (f"{word} records were screened [[clm:{cid}]].", False, False)):
+        (s,) = parse_section(text)
+        problems = verify_sentence(ps, s, paper_type="systematic_review").problems
+        assert any("restates the PRISMA count of included records" in p for p in problems) is restates, (
+            text, problems)
+        assert (not [p for p in problems if "not in any marker's target" in p]) is grounded, (text, problems)
+        kernel = verify_sentence(ps, s, paper_type="systematic_review", kernel_written=True).problems
+        assert not any("restates" in p for p in kernel)
 
 
 @pytest.mark.parametrize("env", [{"paper_type": "systematic_review"}], indirect=True)

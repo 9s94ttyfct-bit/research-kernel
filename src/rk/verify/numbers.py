@@ -65,6 +65,8 @@ _SPELLED = re.compile(
 # the words after a number that make it a count of studies ("3 studies", "two randomised trials", "3 of the cited
 # studies"), never "3 of the included studies", "3 weeks"
 _COUNTS_STUDIES = re.compile(rf"(?:\s+of\s+the\s+(?:cited\s+)?{_STUDY_NOUN}|{_GAP}{_STUDY_NOUN})\b", re.IGNORECASE)
+# the words after a number that make it a count of what a review counts ("7 records", "seven full texts")
+_COUNTS_ITEMS = re.compile(rf"(?P<gap>{_GAP}){_COUNT_NOUN}\b", re.IGNORECASE)
 
 
 def _spelled_value(words: str) -> int:
@@ -139,6 +141,13 @@ def counts_studies(text: str, n: Num) -> bool:
     """Whether the number ``n`` of ``text`` counts studies: no unit, and the words after it name the studies
     (``_COUNTS_STUDIES``)."""
     return n.unit is None and _COUNTS_STUDIES.match(text, n.span[1]) is not None
+
+
+def count_phrase(text: str, n: Num) -> re.Match | None:
+    """The words from the number ``n`` of ``text`` to the count noun after it (``gap``: those between) when ``n``
+    counts what a review counts (studies, records, full texts, …): no unit and a count noun after it
+    (``_COUNTS_ITEMS``); else ``None``."""
+    return _COUNTS_ITEMS.match(text, n.span[1]) if n.unit is None else None
 
 
 def same_number(a: Num, b: Num) -> bool:
