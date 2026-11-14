@@ -681,6 +681,21 @@ def test_failed_self_check_in_p1_is_an_input_of_the_rq_vote(env):
     assert (out.status, out.to) == ("back_edge", "question")
 
 
+def test_the_rq_vote_sees_the_findings_the_answer_stands_on(env):
+    """Calibration (srrepro10, 2026-11-13): judges voted does_not_answer because the main claim did not cover parts of
+    the question (imaging modalities, temperature ranges) that no included study addressed, which they could not tell
+    from parts the claim left out. The RQ vote shows them the supported findings of the synthesis it argues on."""
+    _, ps, _ = env
+    _synthesize(env)
+    ex = _exec([draft()], [critique()])
+    assert ArgueWorker().run(_ctx(env, ex)).status == "done"
+    (rq,) = [c for c in ex.of("judge", "VoteOut") if c["inputs"]["question"] == RQ_QUESTION]
+    svc = ArgumentService(ps)
+    supported = [c for c in synthesis_claims(ps, 1) if svc.get_claim(c)["status"] == "supported"]
+    assert supported and rq["inputs"]["subject"]["findings"] == [
+        {"claim_id": c, "text": svc.get_claim(c)["text"]} for c in supported]
+
+
 @pytest.mark.parametrize("env", [{"production_mode": "collab"}], indirect=True)
 def test_failed_self_check_in_p2_reaches_your_final_review(env):
     _, ps, _ = env

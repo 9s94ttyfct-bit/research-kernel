@@ -82,7 +82,10 @@ rk support check --text passage.txt --sources src_… --driver codex_cli --gold 
   review's)". When the P1 RQ vote finds the main claim does not answer the RQ, argue goes back to synthesize, not to
   question, and fails once argue→synthesize has no use left (`docs/eval/seeded-fixed-2026-11-13.md`: going back to
   question re-ran the novelty check on a given question, which found a published review of it, in tfa the reproduced
-  review itself, and the runs ended at gaps).
+  review itself, and the runs ended at gaps). The RQ judges see the main claim, its scope limits, the supported
+  synthesis findings it argues on and the Arguer's self-check. A part of the question that no included study addresses,
+  named as such in the claim, is an evidence gap and not a failure to answer; leaving out a part that a finding
+  speaks to is a failure.
 
 ## Built-in browser and Workbench
 
