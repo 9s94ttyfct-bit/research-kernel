@@ -40,6 +40,11 @@ class HttpError(Exception):
         self.status = status
         self.url = url
 
+    @property
+    def why(self) -> str:
+        """The failure in a few words, for a reason line ("HTTP 404")."""
+        return f"HTTP {self.status}"
+
 
 class BadBody(HttpError):
     """A 200 whose body is not what the endpoint returns (e.g. an HTML error page instead of JSON): a source error
@@ -49,6 +54,22 @@ class BadBody(HttpError):
         Exception.__init__(self, f"HTTP 200 for {url}: {why}")
         self.status = 200
         self.url = url
+
+
+class RedirectLoop(HttpError):
+    """The URL redirected more times than the client follows (a loop, e.g. a cookie or login wall): no status was
+    answered, so ``status`` is 300 (a redirect the client stopped following), outside the transient statuses
+    (``rk.discovery.boundary``), and it is not retried. srrepro10, 2026-11-13: httpx's ``TooManyRedirects`` escaped
+    every caller's ``except HttpError``."""
+
+    def __init__(self, url: str):
+        Exception.__init__(self, f"too many redirects for {url}")
+        self.status = 300
+        self.url = url
+
+    @property
+    def why(self) -> str:
+        return "too many redirects"
 
 
 class BudgetExhausted(Exception):
@@ -206,6 +227,8 @@ class HttpClient:
                     resp = self._client.get(url, params={k: v for k, v in (params or {}).items() if v is not None},
                                             headers=headers)
                     status = resp.status_code
+                except httpx.TooManyRedirects as e:
+                    raise RedirectLoop(public_url) from e
                 except httpx.TransportError:
                     resp, status = None, 0
             if resp is not None:

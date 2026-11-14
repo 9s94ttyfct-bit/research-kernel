@@ -122,6 +122,26 @@ def test_a_rate_limited_open_access_host_skips_that_url_and_the_run_goes_on(ps, 
     assert why[-1].startswith("arXiv HTML: rate-limited (HTTP 429) until ")
 
 
+# srrepro10, 2026-11-13: an open-access URL redirecting in a loop raised httpx's TooManyRedirects past fetch_fulltext,
+# so the record's full-text step failed whole, without trying its other URLs or saying why
+def test_a_redirect_loop_on_an_open_access_url_tries_the_next_url_with_the_reason(ps, lib, tmp_path):
+    pdf = (DOCS / "two_pages.pdf").read_bytes()
+
+    def handler(req):
+        if req.url.host == "repo.example.org":
+            return httpx.Response(302, headers={"location": str(req.url)})
+        return httpx.Response(200, content=pdf, headers={"content-type": "application/pdf"})
+
+    ctx = SourceContext(http=HttpClient(tmp_path / "h.sqlite", user_agent="t", sleep=lambda s: None,
+                                        transport=httpx.MockTransport(handler)), settings=Settings())
+    iid = lib.add_item(ItemIn(title="Copper catalysts", year=2021, oa_urls=["https://repo.example.org/a.pdf",
+                                                                             "https://example.org/paper.pdf"]),
+                       added_by="agent", actor="t").item_id
+    why: list[str] = []
+    assert fetch_fulltext(ps, lib, ctx, iid, actor="t", why=why).kind == "pdf"
+    assert "open-access URL https://repo.example.org/a.pdf: too many redirects" in why
+
+
 # Calibration (full-text screening, 2026-11-13): the records with a PMCID that ended abstract-only were free PMC articles
 # outside the open-access subset: Europe PMC's full-text XML answered 500 and BioC "No result", reasons dropped
 NO_BIOC = b"[Error] : No result can be found. <BR><HR><B> - https://www.ncbi.nlm.nih.gov/research/bionlp/RESTful/"

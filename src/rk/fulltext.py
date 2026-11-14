@@ -103,7 +103,7 @@ def _html_snapshot(ps: ProjectStore, http: HttpClient, item_id: str, url: str, a
     try:
         res = http.get(url)
     except HttpError as e:
-        why.append(f"{source}: HTTP {e.status}")
+        why.append(f"{source}: {e.why}")
         return None
     except BudgetExhausted as e:
         why.append(f"{source}: {_rate_limited(e)}")
@@ -152,7 +152,7 @@ def fetch_fulltext(ps: ProjectStore, lib: Library, ctx: SourceContext, item_id: 
         try:
             oa = openalex.get_work(http, Identifier(kind="doi", value=item.ids.doi), ctx.settings.openalex_key)
         except HttpError as e:
-            why.append(f"OpenAlex (PMCID by DOI): HTTP {e.status}")
+            why.append(f"OpenAlex (PMCID by DOI): {e.why}")
             oa = None
         if oa:
             lib.add_item(oa.item, added_by="agent", actor=actor)
@@ -161,7 +161,7 @@ def fetch_fulltext(ps: ProjectStore, lib: Library, ctx: SourceContext, item_id: 
         try:
             med = europepmc.by_pmid(http, item.ids.pmid)
         except HttpError as e:
-            why.append(f"Europe PMC (PMCID by PMID): HTTP {e.status}")
+            why.append(f"Europe PMC (PMCID by PMID): {e.why}")
             med = None
         if med is not None and med.item.ids.pmcid:
             lib.add_item(med.item, added_by="agent", actor=actor)
@@ -177,7 +177,7 @@ def fetch_fulltext(ps: ProjectStore, lib: Library, ctx: SourceContext, item_id: 
                 xml = europepmc.fulltext_xml(http, item.ids.pmcid)
             except HttpError as e:
                 outside = " (Europe PMC answers so for articles outside the open-access subset)" if e.status == 500 else ""
-                why.append(f"Europe PMC full-text XML: HTTP {e.status}{outside}")
+                why.append(f"Europe PMC full-text XML: {e.why}{outside}")
             else:
                 if not xml:
                     why.append("Europe PMC full-text XML: none")
@@ -190,7 +190,7 @@ def fetch_fulltext(ps: ProjectStore, lib: Library, ctx: SourceContext, item_id: 
         try:
             doc = pubmed.bioc_json(http, item.ids.pmcid)
         except HttpError as e:
-            why.append(f"PMC BioC: HTTP {e.status}")
+            why.append(f"PMC BioC: {e.why}")
             doc = None
         else:
             if not doc:
@@ -211,7 +211,7 @@ def fetch_fulltext(ps: ProjectStore, lib: Library, ctx: SourceContext, item_id: 
         try:
             res = http.get(url, ttl_s=0)
         except HttpError as e:
-            why.append(f"open-access URL {url}: HTTP {e.status}")
+            why.append(f"open-access URL {url}: {e.why}")
             continue
         except BudgetExhausted as e:
             why.append(f"open-access URL {url}: {_rate_limited(e)}")
