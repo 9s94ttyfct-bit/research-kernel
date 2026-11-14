@@ -122,6 +122,17 @@ def test_prisma_p_sources_agree_with_the_strategy():
         assert "prisma_p.information_sources" in failure, promise
     assert sr(sr_body(prisma_p=with_items(information_sources="We search OpenAlex. Grey literature is not "
                                                               "searched."))) == []
+    # Calibration (registry search, 2026-11-14): ClinicalTrials.gov ("the trial registry") is a source, so a strategy
+    # listing it may name it; trial registries in the plural, or another registry, are no search the kernel runs
+    registry = sr_body(search_strategy=sr_body().search_strategy.model_copy(
+        update={"sources": ["openalex", "europepmc", "clinicaltrials"]}))
+    for text in ("We search OpenAlex, Europe PMC and ClinicalTrials.gov.",
+                 "We search OpenAlex, Europe PMC and the trial registry ClinicalTrials.gov."):
+        assert sr(registry.model_copy(update={"prisma_p": with_items(information_sources=text)})) == [], text
+    for text in ("We also search trial registries.", "We also search the WHO ICTRP.", "We also search ISRCTN."):
+        (failure,) = sr(registry.model_copy(update={"prisma_p": with_items(
+            information_sources=f"We search OpenAlex. {text}")}))
+        assert "promises" in failure and "no trial registry other than ClinicalTrials.gov" in failure, text
 
 
 # ---- R6: outcomes and diagnostic accuracy ----

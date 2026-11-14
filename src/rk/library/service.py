@@ -60,8 +60,11 @@ class Library:
         if found:
             return found
         tn = normalize_title(item.title)
-        if tn and item.year is not None:
-            r = self.db.execute("SELECT id FROM items WHERE title_norm=? AND year=?", (tn, item.year)).fetchone()
+        if tn and item.year is not None:  # registries reuse generic titles: a different NCT is a different study
+            nct = item.ids.nct  # add_item normalized the ids
+            r = self.db.execute("SELECT id FROM items WHERE title_norm=? AND year=? AND (? IS NULL OR "
+                                "json_extract(data, '$.ids.nct') IS NULL OR json_extract(data, '$.ids.nct')=?)",
+                                (tn, item.year, nct, nct)).fetchone()
             if r:
                 return r["id"]
         if not item.ids.pairs() and item.ids.url:  # a web page with no identifier: the page address is its identity

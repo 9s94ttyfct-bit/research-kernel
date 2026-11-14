@@ -64,6 +64,18 @@ def normalize_openalex(s: str | None) -> str | None:
     return m.group(1).upper() if m else None
 
 
+_NCT_RE = re.compile(r"^(?:https?://(?:www\.)?clinicaltrials\.gov/(?:study|ct2/show)/)?(NCT\d{8})/?$", re.IGNORECASE)
+
+
+def normalize_nct(s: str | None) -> str | None:
+    """A ClinicalTrials.gov registration number (``NCT`` and eight digits, or its study-page address) as
+    ``NCT01234567``; ``None`` for anything else."""
+    if not s:
+        return None
+    m = _NCT_RE.match(str(s).strip())
+    return m.group(1).upper() if m else None
+
+
 def _isbn_ok(digits: str) -> bool:
     if len(digits) == 10:
         total = sum((10 - i) * (10 if c in "Xx" else int(c)) for i, c in enumerate(digits))

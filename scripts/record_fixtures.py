@@ -1,7 +1,8 @@
 """Record live HTTP fixtures used by the offline test-suite.
 
 Usage: RK_FIXTURE_MAILTO=you@example.org uv run python scripts/record_fixtures.py [group ...]
-Groups: core (Crossref/OpenAlex), more (Europe PMC, PubMed, BioC, arXiv, bioRxiv), traps, fulltext.
+Groups: core (Crossref/OpenAlex), more (Europe PMC, PubMed, BioC, arXiv, bioRxiv), traps, fulltext, gold, registry
+(ClinicalTrials.gov).
 """
 
 from __future__ import annotations
@@ -13,7 +14,15 @@ from pathlib import Path
 
 from rk.net.http import HttpClient
 from rk.net.recording import RecordingTransport
-from rk.sources import arxiv, biorxiv, crossref, europepmc, openalex, pubmed
+from rk.sources import (
+    arxiv,
+    biorxiv,
+    clinicaltrials,
+    crossref,
+    europepmc,
+    openalex,
+    pubmed,
+)
 from rk.sources.identifiers import Identifier
 
 OUT = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "http"
@@ -75,7 +84,20 @@ def gold(h: HttpClient) -> None:
         assert europepmc.fulltext_xml(h, pmcid), pmcid
 
 
-GROUPS = {"core": core, "more": more, "traps": traps, "fulltext": fulltext, "gold": gold}
+# ClinicalTrials.gov: a search page, the page after it (token paging), counts, a first-posted year range
+REGISTRY_QUERY = "aspirin AND stroke"
+
+
+def registry(h: HttpClient) -> None:
+    clinicaltrials.search(h, REGISTRY_QUERY, page_size=3)
+    clinicaltrials.search(h, REGISTRY_QUERY, page_size=3, offset=3)
+    clinicaltrials.search(h, REGISTRY_QUERY, page_size=3, date_from=2010, date_to=2012)
+    clinicaltrials.count(h, REGISTRY_QUERY)
+    clinicaltrials.count(h, REGISTRY_QUERY, date_from=2010, date_to=2012)
+    clinicaltrials.count(h, REGISTRY_QUERY, date_to=2001)
+
+
+GROUPS = {"core": core, "more": more, "traps": traps, "fulltext": fulltext, "gold": gold, "registry": registry}
 
 if __name__ == "__main__":
     h = client()

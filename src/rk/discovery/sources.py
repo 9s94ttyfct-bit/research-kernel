@@ -11,7 +11,7 @@ from rk.fulltext import fulltext_with_fallback, latest_snapshot
 from rk.library.add import add_source
 from rk.library.models import ItemIn
 from rk.library.service import Library
-from rk.sources import europepmc, openalex, pubmed, resolver
+from rk.sources import clinicaltrials, europepmc, openalex, pubmed, resolver
 from rk.sources.hits import Hits, as_hits
 from rk.sources.identifiers import Identifier, parse_identifier
 from rk.store.project import ProjectStore
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 HITS_COLLECTION = "Search hits"
 CITED_BY_LIMIT = 25  # citing works per cited_by lookup (one OpenAlex page)
-COUNTED_SOURCES = ("openalex", "europepmc", "pubmed")  # the sources ``count`` can size a query on
+COUNTED_SOURCES = ("openalex", "europepmc", "pubmed", "clinicaltrials")  # the sources ``count`` can size a query on
 ABSTRACT_SOURCES = ("pubmed", "europepmc")  # the sources ``abstracts`` looks abstracts up in, by PMID and by DOI
 
 
@@ -94,9 +94,11 @@ class KernelSources:
         return self.kernel.project(self.project)
 
     def sources(self) -> list[str]:
-        """Usable search sources in preference order; Semantic Scholar only with an API key."""
+        """Usable search sources in preference order; Semantic Scholar only with an API key. ClinicalTrials.gov, a
+        trial registry whose records are registrations rather than publications, comes last, so the discovery searches
+        that take the first sources (landscape, gap checks, novelty) do not search it."""
         s2 = ["s2"] if self.kernel.settings().s2_key else []
-        return ["openalex", *s2, "europepmc", "pubmed", "arxiv"]
+        return ["openalex", *s2, "europepmc", "pubmed", "arxiv", "clinicaltrials"]
 
     def search(self, query: str, source: str, limit: int = 25, after_year: int | None = None, *, offset: int = 0,
                date_from: int | None = None, date_to: int | None = None) -> list[ItemIn]:
@@ -111,9 +113,10 @@ class KernelSources:
         return openalex.year_counts(ctx.http, query, api_key=ctx.settings.openalex_key)
 
     def count(self, query: str, source: str, *, date_from: int | None = None, date_to: int | None = None) -> int | None:
-        """OpenAlex ``meta.count`` (titles, abstracts and keywords), Europe PMC ``hitCount`` (titles and abstracts) or
-        PubMed esearch ``count`` (the query as given) of the query in the years ``date_from``..``date_to`` when given,
-        filtered on the source's server (``None`` when the response has none)."""
+        """OpenAlex ``meta.count`` (titles, abstracts and keywords), Europe PMC ``hitCount`` (titles and abstracts),
+        PubMed esearch ``count`` (the query as given) or ClinicalTrials.gov ``totalCount`` (its basic search; the years
+        a study was first posted) of the query in the years ``date_from``..``date_to`` when given, filtered on the
+        source's server (``None`` when the response has none)."""
         ctx = self.kernel.ctx()
         if source == "openalex":
             return openalex.count(ctx.http, query, api_key=ctx.settings.openalex_key, date_from=date_from,
@@ -122,6 +125,8 @@ class KernelSources:
             return europepmc.count(ctx.http, query, date_from=date_from, date_to=date_to)
         if source == "pubmed":
             return pubmed.count(ctx.http, query, date_from=date_from, date_to=date_to)
+        if source == "clinicaltrials":
+            return clinicaltrials.count(ctx.http, query, date_from=date_from, date_to=date_to)
         raise ValueError(f"no record count for source {source!r}; counted: {', '.join(COUNTED_SOURCES)}")
 
     def abstracts(self, source: str, ids: list[str]) -> dict[str, str]:

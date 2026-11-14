@@ -241,6 +241,10 @@ def fulltext_with_fallback(kernel, ps: ProjectStore, lib: Library, item_id: str,
     r = fetch_fulltext(ps, lib, kernel.ctx(), item_id, actor=call.actor, why=why)
     if r is not None or not kernel.settings().fulltext_browser_fallback:
         return r
+    ids = lib.get(item_id).ids
+    if ids.nct and not (ids.doi or ids.pmid or ids.pmcid or ids.arxiv):  # its study page holds no article
+        why.append("built-in browser: not tried, a trial registry record is assessed on its registration")
+        return None
     svc = browser()
     if svc is None or not svc.running:
         why.append("built-in browser: not running")
