@@ -126,13 +126,15 @@ def test_agent_frame_rule_is_same_host(frame, top, ok):
      True, False),  # the challenge frame loads; its own requests are Cloudflare's, outside the tab
     ("https://doi.org/cdn-cgi/challenge-platform/h/b/flow/ov1/123:456/abc", "https://doi.org/10.1/x", False, True),
     ("https://other.example/cdn-cgi/challenge-platform/h/b/flow/x", "https://doi.org/10.1/x", False, False),
-    ("https://www.publisher.example/a?__cf_chl_tk=abc", "https://www.publisher.example/a", False, False),
+    ("https://www.publisher.example/a?__cf_chl_f_tk=abc", "https://www.publisher.example/a", False, True),  # the form
+    ("https://victim.example/account/delete?__cf_chl_f_tk=a", "https://www.publisher.example/a", False, False),
+    ("https://www.publisher.example/a?x=__cf_chl_f_tk", "https://www.publisher.example/a", False, False),  # a key only
     ("https://evil.cloudflare.com.example/x", "https://doi.org/x", False, False),
     ("https://www.publisher.example/x/cdn-cgi/challenge-platform/y", "https://www.publisher.example/a", False, False),
 ])
 def test_bot_check_exceptions_are_only_cloudflares_frame_and_challenge_posts(url, top, frame, post):
-    """Agent tabs may load Cloudflare's challenge frame and POST to the challenge endpoint of the page's own host (your
-    decision 2026-11-15), and nothing else."""
+    """Agent tabs may load Cloudflare's challenge frame and POST, on the page's own host, to the challenge endpoint or
+    the challenge form's ``__cf_chl_`` URL (your decisions 2026-11-15), and nothing else."""
     from rk.browser.session import bot_check_frame, bot_check_post
 
     assert (bot_check_frame(url), bot_check_post(url, top)) == (frame, post)

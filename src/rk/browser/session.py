@@ -30,7 +30,7 @@ from collections.abc import Coroutine, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 from playwright.async_api import Error as PwError
 
@@ -107,9 +107,9 @@ def frame_allowed(frame_url: str, top_url: str) -> bool:
     return f.scheme == t.scheme and (f.hostname or "").lower() == (t.hostname or "").lower()
 
 
-# A bot check's own requests (your decision, 2026-11-15): without them every Cloudflare page (doi.org, AHA journals
+# A bot check's own requests (your decisions, 2026-11-15): without them every Cloudflare page (doi.org, AHA journals
 # through the library proxy) paused all runs until you answered, though a real browser passes the check on its own.
-# Only these two exceptions; every other agent-tab rule holds.
+# Only these exceptions; every other agent-tab rule holds.
 _BOT_CHECK_FRAME_HOSTS = frozenset({"challenges.cloudflare.com"})
 _BOT_CHECK_POST_PATH = "/cdn-cgi/challenge-platform/"
 
@@ -121,10 +121,15 @@ def bot_check_frame(url: str) -> bool:
 
 
 def bot_check_post(url: str, top_url: str) -> bool:
-    """Whether a POST goes to Cloudflare's challenge endpoint at the root of the challenged page's own host (the page
-    in the tab), never another site's."""
+    """Whether a POST is Cloudflare's own, on the challenged page's host (the page in the tab), never another site's:
+    to its challenge endpoint at the site's root, or its challenge form posted back to the page with a ``__cf_chl_``
+    token. The form exception was added after the endpoint alone left doi.org at "Just a moment…" for 45 s in an
+    agent tab (live, 2026-11-15)."""
     u, t = urlsplit(url), urlsplit(top_url)
-    return u.path.startswith(_BOT_CHECK_POST_PATH) and u.netloc.lower() == t.netloc.lower()
+    if u.netloc.lower() != t.netloc.lower():
+        return False
+    return u.path.startswith(_BOT_CHECK_POST_PATH) or any(
+        k.startswith("__cf_chl_") for k in parse_qs(u.query, keep_blank_values=True))
 
 
 def _forbidden(url: str, reason: str) -> ToolError:
