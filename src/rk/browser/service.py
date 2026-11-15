@@ -14,7 +14,7 @@ from urllib.parse import quote, urlsplit
 
 from rk.browser import HumanRequired, Paced, SitePaused
 from rk.browser.adapters import ADAPTERS, SiteAdapter, valid
-from rk.browser.adapters.publisher import find_pdf_url, refresh_target
+from rk.browser.adapters.publisher import find_pdf_url, pdf_in_script, refresh_target
 from rk.browser.detect import Block, detect_block
 from rk.browser.log import record_browse
 from rk.browser.metadata import PageMetadata, merge_with_api, parse_page_metadata
@@ -335,15 +335,26 @@ class BrowserService:
         _status, _ctype, body, final = self.session.fetch_bytes(tab, owner, pdf_url, referer=page_url)
         if body[:5] == b"%PDF-":
             return body, pdf_url
-        if block := detect_block(final, body[:200_000].decode("utf-8", "replace"), proxy_host=self._proxy_host()):
+        text = body[:200_000].decode("utf-8", "replace")
+        if block := detect_block(final, text, proxy_host=self._proxy_host()):
             self._block(ctx, project, ps, site, block, final, tab)
+        if nxt := (refresh_target(final, text) or pdf_in_script(final, text)):  # an HTML hop to the file
+            if self._via_library(page_url) and "{url}" in (self.kernel.settings().library_proxy or "") \
+                    and not self._via_library(nxt):
+                nxt = self._proxied(nxt)[0]
+            _status, _ctype, body2, _final = self.session.fetch_bytes(tab, owner, nxt, referer=final)
+            if body2[:5] == b"%PDF-":
+                return body2, nxt
         path = urlsplit(pdf_url).path
         if click and path and not re.search(r"[\"'\\\]]", path):  # some sites serve the PDF only as a download
             dl = self.session.click_download(tab, owner, f'a[href*="{path}"]', timeout_s=15)
             if dl and dl[:5] == b"%PDF-":
                 return dl, pdf_url
+        title = re.search(r"<title[^>]*>([^<]{0,120})", text, re.IGNORECASE)
         raise ToolError("pdf_not_obtained", "the PDF link did not return a PDF (paywall or interstitial page?)",
-                        {"final_url": final, "landing_url": page_url, "pdf_url": pdf_url}, status=404)
+                        {"final_url": final, "landing_url": page_url, "pdf_url": pdf_url,
+                         "page_title": title.group(1).strip() if title else None, "page_start": text[:300]},
+                        status=404)
 
     def fetch_fulltext(self, ctx: CallContext, project: str, item_id: str) -> FulltextResult:
         with self._busy():

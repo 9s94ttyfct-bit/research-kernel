@@ -289,6 +289,21 @@ def test_a_pdf_link_added_by_script_is_found(service, kernel, sites):
     assert out["origin"] == "library_browser"
 
 
+def test_a_pdf_link_answering_with_a_script_redirect_reaches_the_file(service, kernel, sites):
+    """A PDF link that answers with a page whose script sends the browser on to the file (ScienceDirect's pdfft) is
+    followed to the PDF."""
+    sites.route("/doi/10.5555/sd", lambda r: html(landing("10.5555/sd", "/science/article/pii/Y/pdfft?md5=1")))
+    sites.route("/science/article/pii/Y/pdfft", lambda r: html(
+        "<html><head><title>Redirecting</title></head><body><script>window.location = "
+        "'/assets/1-s2.0-Y-main.pdf?X-Amz-Token=t';</script></body></html>"))
+    sites.route("/assets/1-s2.0-Y-main.pdf", lambda r: pdf(tiny_pdf("Behind the script redirect.")))
+    human_logs_in(service, sites)
+    iid = add_item(kernel, url=sites.url("/doi/10.5555/sd"))
+    out = build_registry(kernel, browser=lambda: service).call(
+        "rk_source_fetch_fulltext", {"project": "demo", "source_id": iid}, READER)
+    assert out["origin"] == "library_browser"
+
+
 def test_a_redirect_off_the_proxy_goes_through_the_proxy_again(service, kernel, sites, plain):
     """A redirect page sending the browser to a publisher host off the proxy (an absolute URL) is followed through the
     proxy; the article then reached off the proxy host is recorded as the publisher's, not the library's."""

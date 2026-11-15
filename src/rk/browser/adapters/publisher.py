@@ -52,3 +52,17 @@ def refresh_target(page_url: str, html: str, max_delay_s: float = 10) -> str | N
     content = doc.xpath('string(//meta[translate(@http-equiv, "REFSH", "refsh")="refresh"]/@content)')
     m = _REFRESH.match(content)
     return urljoin(page_url, m.group(2).strip()) if m and float(m.group(1)) <= max_delay_s else None
+
+
+_SCRIPT_PDF = re.compile(r"""(?:location(?:\.href)?\s*=|location\.(?:replace|assign)\()\s*['"]([^'"]+)['"]""")
+
+
+def pdf_in_script(page_url: str, html: str) -> str | None:
+    """The address a page's script sends the browser to (``window.location = '…'``, ``location.replace('…')``) when it
+    is a PDF (``.pdf`` in its path): a PDF link that answers with such a page (ScienceDirect's ``pdfft``) before the
+    file, or ``None``."""
+    for m in _SCRIPT_PDF.finditer(html):
+        url = urljoin(page_url, m.group(1).replace("\\/", "/"))
+        if re.search(r"\.pdf(?:$|[?#])", url, re.IGNORECASE):
+            return url
+    return None
