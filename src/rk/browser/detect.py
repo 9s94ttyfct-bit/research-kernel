@@ -56,6 +56,10 @@ def detect_block(url: str, html: str, *, proxy_host: str | None = None) -> Block
         return Block("captcha", "page asks to prove you are human")
     if _LOGIN_HOST.search(host) or _LOGIN_PATH.search(path):
         return Block("login", f"redirected to a sign-in page ({host})")
-    if proxy_host and (host == proxy_host or host.endswith("." + proxy_host)) and _PASSWORD.search(html or ""):
+    # Only the proxy's own pages: a publisher page served through a host-name proxy (www-x-com.<proxy host>) often
+    # carries its own hidden login form. Calibration (a university EZproxy, 2026-11-15): a Wiley article read through
+    # the proxy paused every run for a sign-in that was not needed. An expired proxy session redirects to the proxy's
+    # login URL or the university's sign-in host, which the rules above catch.
+    if proxy_host and host == proxy_host and _PASSWORD.search(html or ""):
         return Block("login", f"library proxy {proxy_host} asks you to sign in")
     return None

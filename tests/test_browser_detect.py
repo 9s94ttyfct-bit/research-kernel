@@ -89,6 +89,15 @@ def test_proxy_password_form():
     assert b and b.kind == "login"
 
 
+def test_publisher_login_form_through_a_host_name_proxy_is_not_a_sign_in():
+    """A publisher article served through the proxy (www-x-com.<proxy host>) with the publisher's own hidden login
+    form is the article, not the proxy asking you to sign in."""
+    html = ARTICLE.replace("</body>", '<form id="login"><input type="password" name="pass"></form></body>')
+    assert "password" in html
+    assert detect_block("https://onlinelibrary-wiley-com.ezproxy.library.example/doi/10.1000/x", html,
+                        proxy_host="ezproxy.library.example") is None
+
+
 def test_article_with_signin_link_not_blocked():
     assert detect_block("https://publisher.example/article/123", ARTICLE) is None
 
