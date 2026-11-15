@@ -53,7 +53,7 @@ def _actor_kind(ctx: CallContext) -> str:
 
 class BrowserService:
     def __init__(self, kernel, session: BrowserSession, pacer: Pacer, *, adapters: dict[str, SiteAdapter] | None = None,
-                 doi_base: str = "https://doi.org/", challenge_wait_s: float = 15.0,
+                 doi_base: str = "https://doi.org/", challenge_wait_s: float = 45.0,
                  sleep=time.sleep, clock=time.monotonic):
         self.kernel = kernel
         self.session = session
@@ -85,15 +85,17 @@ class BrowserService:
         """``(state, block)`` for the page in ``tab``: a bot check that clears itself (a Cloudflare managed challenge
         passes in a real browser within seconds) is waited out for up to ``challenge_wait_s`` before it counts.
         Calibration (a university EZproxy, 2026-11-15): doi.org through the proxy showed its challenge for a moment, and
-        the check, made at once, paused every run for a CAPTCHA that was gone when you looked."""
+        the check, made at once, paused every run for a CAPTCHA that was gone when you looked; an AHA journal page's
+        challenge outlasted a 15 s wait and was gone minutes later. 45 s stays inside the 120 s other browser calls wait
+        for this one."""
         block = detect_block(state.url, state.html, proxy_host=self._proxy_host())
         end = self._clock() + self.challenge_wait_s  # a deadline: each read can itself wait for a page load
         while block is not None and block.kind == "captcha" and self._clock() < end:
             self._sleep(1.0)
             try:
                 state = self.session.content(tab, owner)
-            except ToolError as e:  # the challenge is redirecting by design: read again until the deadline
-                if e.type != "navigation_failed" or self._clock() >= end:
+            except ToolError as e:  # the challenge is redirecting by design: read again until the deadline, and a
+                if e.type != "navigation_failed":  # challenge still redirecting then is the CAPTCHA last seen
                     raise
                 continue
             block = detect_block(state.url, state.html, proxy_host=self._proxy_host())
