@@ -12,14 +12,21 @@ from lxml import html as lhtml
 
 from rk.text.markup import sanitize_html
 
-# Challenge widgets and interstitials only. reCAPTCHA v3 / invisible widgets (a script, a size=invisible anchor iframe,
-# a hidden g-recaptcha-response textarea) score traffic silently on normal pages, so they are not blocks.
-_CAPTCHA_MARKUP = re.compile(
+# Challenge interstitials and challenge widgets only. reCAPTCHA v3 / invisible widgets (a script, a size=invisible anchor
+# iframe, a hidden g-recaptcha-response textarea) score traffic silently on normal pages, so they are not blocks.
+_CHALLENGE_MARKUP = re.compile(
     r"""(?:id|class)\s*=\s*["'](?:[^"']*\s)?(?:gs_captcha_ccl|captcha-form|challenge-form|challenge-error-text|"""
-    r"""cf-chl-widget[\w-]*|cf-challenge[\w-]*|g-recaptcha|h-captcha|cf-turnstile)["'\s]"""
-    r"""|src\s*=\s*["'][^"']*/cdn-cgi/challenge-platform/[^"']*chl_page"""
+    r"""cf-chl-widget[\w-]*|cf-challenge[\w-]*)["'\s]"""
+    r"""|src\s*=\s*["'][^"']*/cdn-cgi/challenge-platform/[^"']*chl_page""",
+    re.IGNORECASE)
+# A widget a site can also put in a form of a normal page (a comment or e-letter form): a block only on a page that is
+# not an article. Calibration (a university EZproxy, 2026-11-15): an AHA journal article with the reCAPTCHA of its
+# e-letter form paused every run.
+_WIDGET_MARKUP = re.compile(
+    r"""(?:id|class)\s*=\s*["'](?:[^"']*\s)?(?:g-recaptcha|h-captcha|cf-turnstile)["'\s]"""
     r"""|src\s*=\s*["'][^"']*recaptcha/(?:api2|enterprise)/anchor[^"']*size=(?:normal|compact)""",
     re.IGNORECASE)
+_ARTICLE_META = re.compile(r"""<meta\s[^>]*(?:name|property)\s*=\s*["'](?:citation_|dc\.|prism\.)""", re.IGNORECASE)
 _CAPTCHA_TEXT = re.compile(r"\b(?:unusual traffic|not a (?:ro)?bot|verify (?:that )?you are (?:a )?human|"
                            r"are you a robot|sending automated queries|performing security verification)\b",
                            re.IGNORECASE)
@@ -50,7 +57,7 @@ def detect_block(url: str, html: str, *, proxy_host: str | None = None) -> Block
     host, path = parts.hostname or "", parts.path + ("?" + parts.query if parts.query else "")
     if "/sorry/" in parts.path or (host == "ipv4.google.com" and parts.path.startswith("/sorry")):
         return Block("captcha", "Google 'unusual traffic' page")
-    if _CAPTCHA_MARKUP.search(html or ""):
+    if _CHALLENGE_MARKUP.search(html or "") or (_WIDGET_MARKUP.search(html or "") and not _ARTICLE_META.search(html)):
         return Block("captcha", "CAPTCHA or bot-check widget on the page")
     if _CAPTCHA_TEXT.search(_visible_text(html or "")):
         return Block("captcha", "page asks to prove you are human")

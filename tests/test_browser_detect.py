@@ -24,6 +24,17 @@ def test_cloudflare_challenge():
     assert detect_block("https://publisher.example/a", html).kind == "captcha"
 
 
+def test_an_article_with_a_comment_form_recaptcha_is_not_a_captcha():
+    """An article page (scholarly meta tags) whose e-letter form carries a reCAPTCHA is the article; the same widget on
+    a page that is not an article is still a CAPTCHA, and a challenge interstitial is one whatever its meta tags."""
+    widget = '<form><div class="g-recaptcha " data-sitekey="k"></div></form>'
+    article = f'<html><head><meta name="dc.Title" content="T"></head><body><h1>T</h1>{widget}</body></html>'
+    assert detect_block("https://www-journal-org.ezproxy.library.example/doi/10.1/x", article) is None
+    assert detect_block("https://publisher.example/a", f"<html><body>{widget}</body></html>").kind == "captcha"
+    challenge = article.replace(widget, '<span id="challenge-error-text">Enable JavaScript</span>')
+    assert detect_block("https://publisher.example/a", challenge).kind == "captcha"
+
+
 def test_unusual_traffic_text():
     html = "<html><body><p>Our systems have detected UNUSUAL TRAFFIC from your computer network.</p></body></html>"
     assert detect_block("https://scholar.google.com/scholar?q=x", html).kind == "captcha"
