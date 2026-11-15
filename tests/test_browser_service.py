@@ -457,6 +457,10 @@ def test_an_ezproxy_that_proxies_by_host_name_is_the_library(tmp_home, replay_ht
                              ("https://notlibproxy.example.edu/x", False)):
             assert svc._via_library(url) is library, url
             assert (svc._site_of(url) == "library") is library, url
+        # PDF limits count per publisher, not per proxy: the host a proxied host stands for
+        assert svc._publisher_host("https://www-sciencedirect-com.libproxy.example.edu/pdfft") == "www.sciencedirect.com"
+        assert svc._publisher_host("https://onlinelibrary--wiley-com.libproxy.example.edu/x") == "onlinelibrary-wiley.com"
+        assert svc._publisher_host("https://www.nature.com/articles/x.pdf") == "www.nature.com"
     finally:
         k.close()
 

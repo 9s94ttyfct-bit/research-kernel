@@ -124,6 +124,18 @@ class BrowserService:
             return url, False
         return proxy.replace("{url_enc}", quote(url, safe="")).replace("{url}", url), True
 
+    def _publisher_host(self, url: str) -> str:
+        """The publisher host a URL stands for: behind a host-name proxy, ``www-sciencedirect-com.libproxy.x.edu`` is
+        ``www.sciencedirect.com`` (EZproxy writes the host's dots as ``-`` and its ``-`` as ``--``); otherwise the
+        URL's own host. Calibration (2026-11-15): the per-publisher PDF limit counted every library PDF under the
+        proxy's domain, so 40 attempts across all publishers stopped all library PDFs for the day."""
+        host = (urlsplit(url).hostname or "").lower()
+        proxy = self.kernel.settings().library_proxy or ""
+        domain = (urlsplit(proxy.replace("{url}", "").replace("{url_enc}", "")).hostname or "").removeprefix("login.")
+        if "{url}" in proxy and domain and host.endswith("." + domain):
+            return host[: -len(domain) - 1].replace("--", "\0").replace("-", ".").replace("\0", "-")
+        return host
+
     def _check_pause(self, site: str) -> None:
         p = self.pacer.paused(site)
         if not p:
@@ -331,7 +343,7 @@ class BrowserService:
         pdf_url = find_pdf_url(page_url, html)
         if not pdf_url:
             return None
-        self.pacer.acquire([f"pdf:{registrable_domain(urlsplit(pdf_url).hostname or '')}", "pdf:*"])
+        self.pacer.acquire([f"pdf:{registrable_domain(self._publisher_host(pdf_url))}", "pdf:*"])
         _status, _ctype, body, final = self.session.fetch_bytes(tab, owner, pdf_url, referer=page_url)
         if body[:5] == b"%PDF-":
             return body, pdf_url
