@@ -53,12 +53,14 @@ def _actor_kind(ctx: CallContext) -> str:
 
 class BrowserService:
     def __init__(self, kernel, session: BrowserSession, pacer: Pacer, *, adapters: dict[str, SiteAdapter] | None = None,
-                 doi_base: str = "https://doi.org/"):
+                 doi_base: str = "https://doi.org/", challenge_wait_s: float = 15.0,
+                 sleep=time.sleep, clock=time.monotonic):
         self.kernel = kernel
         self.session = session
         self.pacer = pacer
         self.adapters = adapters or ADAPTERS
         self.doi_base = doi_base
+        self.challenge_wait_s, self._sleep, self._clock = challenge_wait_s, sleep, clock
         self._steps: dict[tuple[str | None, str | None], int] = {}
         self._tabs: dict[tuple[str | None, str], str] = {}
         self._op = threading.RLock()
@@ -78,6 +80,24 @@ class BrowserService:
     def _proxy_host(self) -> str | None:
         proxy = self.kernel.settings().library_proxy
         return urlsplit(proxy.replace("{url}", "").replace("{url_enc}", "")).hostname if proxy else None
+
+    def _settled_block(self, tab: str, owner, state):
+        """``(state, block)`` for the page in ``tab``: a bot check that clears itself (a Cloudflare managed challenge
+        passes in a real browser within seconds) is waited out for up to ``challenge_wait_s`` before it counts.
+        Calibration (a university EZproxy, 2026-11-15): doi.org through the proxy showed its challenge for a moment, and
+        the check, made at once, paused every run for a CAPTCHA that was gone when you looked."""
+        block = detect_block(state.url, state.html, proxy_host=self._proxy_host())
+        end = self._clock() + self.challenge_wait_s  # a deadline: each read can itself wait for a page load
+        while block is not None and block.kind == "captcha" and self._clock() < end:
+            self._sleep(1.0)
+            try:
+                state = self.session.content(tab, owner)
+            except ToolError as e:  # the challenge is redirecting by design: read again until the deadline
+                if e.type != "navigation_failed" or self._clock() >= end:
+                    raise
+                continue
+            block = detect_block(state.url, state.html, proxy_host=self._proxy_host())
+        return state, block
 
     def _via_library(self, url: str) -> bool:
         """Whether ``url`` is on the library proxy: the proxy's own host and port or, for an EZproxy that proxies by
@@ -210,8 +230,8 @@ class BrowserService:
             tab = self._tab_for(owner, f"search:{site}")
             self.session.goto(tab, owner, url)
             self.session.wait_for(tab, owner, adapter.ready_selector, 20)
-            state = self.session.content(tab, owner)
-            if block := detect_block(state.url, state.html, proxy_host=self._proxy_host()):
+            state, block = self._settled_block(tab, owner, self.session.content(tab, owner))
+            if block:
                 self._block(ctx, project, ps, site, block, state.url, tab)
             hits = adapter.parse(state.html, state.url)
             if not valid(adapter, hits, state.html):
@@ -239,8 +259,10 @@ class BrowserService:
             else:
                 tab = self._new_tab(owner, url)
                 state = self.session.content(tab, owner)
-            if owner is not HUMAN and (block := detect_block(state.url, state.html, proxy_host=self._proxy_host())):
-                self._block(ctx, project, ps, site, block, state.url, tab)
+            if owner is not HUMAN:
+                state, block = self._settled_block(tab, owner, state)
+                if block:
+                    self._block(ctx, project, ps, site, block, state.url, tab)
             meta = parse_page_metadata(state.html, state.url)
             record_browse(ps, task_id=ctx.task_id, site=site, action="open", url=state.url, actor=ctx.actor)
             return {"tab": tab, "url": state.url, "title": state.title, "status": state.status,
@@ -276,8 +298,11 @@ class BrowserService:
             hosts = self._site_hosts()
             self.session.submit_hosts = set(hosts)
             state = self.session.act(tab, owner, action, allow_submit=urlsplit(before).netloc.lower() in hosts)
-            if owner is not HUMAN and (block := detect_block(state.url, state.html, proxy_host=self._proxy_host())):
-                self._block(ctx, project, ps, site, block, state.url, tab)
+            if owner is not HUMAN:
+                state, block = (self._settled_block(tab, owner, state) if action.get("kind") in _NAVIGATING else
+                                (state, detect_block(state.url, state.html, proxy_host=self._proxy_host())))
+                if block:
+                    self._block(ctx, project, ps, site, block, state.url, tab)
             return {"tab": tab, "url": state.url, "title": state.title}
 
     def tabs(self, ctx: CallContext) -> list[dict]:
@@ -333,8 +358,8 @@ class BrowserService:
         owner = _owner(ctx)
         tab = self._new_tab(owner)
         try:
-            state = self.session.goto(tab, owner, landing)
-            if block := detect_block(state.url, state.html, proxy_host=self._proxy_host()):
+            state, block = self._settled_block(tab, owner, self.session.goto(tab, owner, landing))
+            if block:
                 self._block(ctx, project, ps, site, block, state.url, tab)
             record_browse(ps, task_id=ctx.task_id, site=site, action="open", url=state.url, actor=ctx.actor)
             got = self._download(ctx, project, ps, tab, owner, state.url, state.html, site)

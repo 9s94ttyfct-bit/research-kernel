@@ -59,6 +59,9 @@ def sites():
             else redirect("/idp/profile/SAML2/Redirect/SSO"))
     s.route("/doi/10.5555/paywall", lambda r: html(landing("10.5555/paywall", "/pdf/paywall.pdf")))
     s.route("/pdf/paywall.pdf", lambda r: html("<html><body><h1>Purchase this article</h1></body></html>"))
+    s.route("/doi/10.5555/challenge", lambda r: html(  # a bot check that passes itself, as a real browser's would
+        '<html><body><div class="cf-turnstile"></div><p>Checking your browser</p>'
+        '<script>setTimeout(() => location.replace("/doi/10.5555/ok"), 700)</script></body></html>'))
     s.route("/blog", lambda r: html("<html><head><title>Lab notebook: humidity tests</title></head><body>"
                                     "<p>We exposed fixture films to 85% relative humidity for 1000 hours.</p>"
                                     "</body></html>"))
@@ -115,7 +118,7 @@ def service(kernel, tmp_path, sites, scholar_site, plain):
                 "scholar": dataclasses.replace(ADAPTERS["scholar"],
                                                search_url=lambda q, s, p=0: scholar_site.url("/scholar"))}
     svc = BrowserService(kernel, session, Pacer(tmp_path / "pacer.sqlite", FAST, max_wait_s=5), adapters=adapters,
-                         doi_base=sites.url("/doi/"))
+                         doi_base=sites.url("/doi/"), challenge_wait_s=3.0)
     yield svc
     session.close()
 
@@ -242,6 +245,18 @@ def test_source_fetch_fulltext_falls_back_to_browser(service, kernel, sites):
     reg = build_registry(kernel, browser=lambda: service)
     out = reg.call("rk_source_fetch_fulltext", {"project": "demo", "source_id": iid}, READER)
     assert out["origin"] == "library_browser"
+
+
+def test_a_bot_check_that_clears_itself_is_waited_out(service, kernel, sites):
+    """A bot check that the browser passes on its own within seconds does not open a CAPTCHA wait: the article behind
+    it is fetched."""
+    human_logs_in(service, sites)
+    iid = add_item(kernel, url=sites.url("/doi/10.5555/challenge"))
+    out = build_registry(kernel, browser=lambda: service).call(
+        "rk_source_fetch_fulltext", {"project": "demo", "source_id": iid}, READER)
+    ps, _ = kernel.project("demo")
+    assert out["origin"] == "library_browser"
+    assert ps.db.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 0
 
 
 def test_status_shows_only_the_callers_tabs(service, kernel, sites):
