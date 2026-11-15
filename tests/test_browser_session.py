@@ -88,6 +88,27 @@ def test_agent_tab_refuses_cross_site_iframes(session, sites, intranet):
     assert any(u.endswith("/form") for u in frames)  # same-site frames still load
 
 
+def test_agent_tab_loads_only_the_bot_check_frame_host_cross_site(session, sites, monkeypatch):
+    """Cloudflare's challenge frame host (here: the fixture's localhost, patched in) loads cross-site in an agent tab;
+    another host's frame at a challenge-endpoint path is still refused."""
+    import rk.browser.session as sess
+
+    other = sites.base.replace("127.0.0.1", "localhost")
+    monkeypatch.setattr(sess, "_BOT_CHECK_FRAME_HOSTS", frozenset({"localhost"}))
+    sites.route("/turnstile", lambda r: html("<title>challenge frame</title>"))
+    sites.route("/cdn-cgi/challenge-platform/x", lambda r: html("<title>not cloudflare</title>"))
+    sites.route("/cf-page", lambda r: html(f"<title>challenged</title><iframe src='{other}/turnstile'></iframe>"))
+    t = session.new_tab("tsk_A", sites.url("/cf-page"))
+    session.call(session._page(t.id).wait_for_timeout(1000), 30)
+    assert any(u.startswith(other + "/turnstile") for u in [f.url for f in session._page(t.id).frames])
+    monkeypatch.setattr(sess, "_BOT_CHECK_FRAME_HOSTS", frozenset({"challenges.cloudflare.com"}))
+    sites.route("/cf-page2", lambda r: html(
+        f"<title>challenged</title><iframe src='{other}/cdn-cgi/challenge-platform/x'></iframe>"))
+    t2 = session.new_tab("tsk_A", sites.url("/cf-page2"))
+    session.call(session._page(t2.id).wait_for_timeout(1000), 30)
+    assert not any(u.startswith(other) for u in [f.url for f in session._page(t2.id).frames])
+
+
 @pytest.mark.parametrize("frame,top,ok", [
     ("https://bar.github.io/x", "https://foo.github.io/", False),  # different sites (private PSL suffix)
     ("https://cdn.publisher.example/x", "https://www.publisher.example/a", False),  # same site, other host: refused
@@ -98,6 +119,23 @@ def test_agent_frame_rule_is_same_host(frame, top, ok):
     from rk.browser.session import frame_allowed
 
     assert frame_allowed(frame, top) is ok
+
+
+@pytest.mark.parametrize("url,top,frame,post", [
+    ("https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/turnstile/if/ov2/av0/rcv/x", "https://doi.org/x",
+     True, False),  # the challenge frame loads; its own requests are Cloudflare's, outside the tab
+    ("https://doi.org/cdn-cgi/challenge-platform/h/b/flow/ov1/123:456/abc", "https://doi.org/10.1/x", False, True),
+    ("https://other.example/cdn-cgi/challenge-platform/h/b/flow/x", "https://doi.org/10.1/x", False, False),
+    ("https://www.publisher.example/a?__cf_chl_tk=abc", "https://www.publisher.example/a", False, False),
+    ("https://evil.cloudflare.com.example/x", "https://doi.org/x", False, False),
+    ("https://www.publisher.example/x/cdn-cgi/challenge-platform/y", "https://www.publisher.example/a", False, False),
+])
+def test_bot_check_exceptions_are_only_cloudflares_frame_and_challenge_posts(url, top, frame, post):
+    """Agent tabs may load Cloudflare's challenge frame and POST to the challenge endpoint of the page's own host (your
+    decision 2026-11-15), and nothing else."""
+    from rk.browser.session import bot_check_frame, bot_check_post
+
+    assert (bot_check_frame(url), bot_check_post(url, top)) == (frame, post)
 
 
 def test_agent_tab_blocks_private_destinations(session, sites, intranet):

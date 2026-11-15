@@ -14,7 +14,7 @@ from urllib.parse import quote, urlsplit
 
 from rk.browser import HumanRequired, Paced, SitePaused
 from rk.browser.adapters import ADAPTERS, SiteAdapter, valid
-from rk.browser.adapters.publisher import find_pdf_url
+from rk.browser.adapters.publisher import find_pdf_url, refresh_target
 from rk.browser.detect import Block, detect_block
 from rk.browser.log import record_browse
 from rk.browser.metadata import PageMetadata, merge_with_api, parse_page_metadata
@@ -40,6 +40,7 @@ SITE_LABELS = {"scholar": "Google Scholar", "pubmed": "PubMed", "europepmc": "Eu
 _AX_LIMIT = 20000
 _MAX_AGENT_TABS = 5
 _NAVIGATING = {"click", "press", "back"}
+_MAX_REFRESH_HOPS = 3
 
 
 def _owner(ctx: CallContext) -> str | None:
@@ -361,8 +362,20 @@ class BrowserService:
         tab = self._new_tab(owner)
         try:
             state, block = self._settled_block(tab, owner, self.session.goto(tab, owner, landing))
+            rewriting = "{url}" in (self.kernel.settings().library_proxy or "")  # EZproxy, not a redirector
+            for _ in range(_MAX_REFRESH_HOPS):  # a redirect page (Elsevier's linkinghub) before the article
+                if block or find_pdf_url(state.url, state.html) or not (nxt := refresh_target(state.url, state.html)):
+                    break
+                record_browse(ps, task_id=ctx.task_id, site=site, action="open", url=state.url, actor=ctx.actor)
+                if via_library and rewriting and not self._via_library(nxt):  # a hop off the proxy goes through it
+                    nxt = self._proxied(nxt)[0]
+                state, block = self._settled_block(tab, owner, self.session.goto(tab, owner, nxt))
             if block:
                 self._block(ctx, project, ps, site, block, state.url, tab)
+            # the page reached, not the one asked for: an EZproxy sends a host it does not proxy to the publisher (an
+            # OpenAthens-style redirector always lands on the publisher's host, with your institution's session)
+            if via_library and rewriting:
+                via_library = self._via_library(state.url)
             record_browse(ps, task_id=ctx.task_id, site=site, action="open", url=state.url, actor=ctx.actor)
             got = self._download(ctx, project, ps, tab, owner, state.url, state.html, site)
             if got is None:

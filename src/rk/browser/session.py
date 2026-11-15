@@ -107,6 +107,26 @@ def frame_allowed(frame_url: str, top_url: str) -> bool:
     return f.scheme == t.scheme and (f.hostname or "").lower() == (t.hostname or "").lower()
 
 
+# A bot check's own requests (your decision, 2026-11-15): without them every Cloudflare page (doi.org, AHA journals
+# through the library proxy) paused all runs until you answered, though a real browser passes the check on its own.
+# Only these two exceptions; every other agent-tab rule holds.
+_BOT_CHECK_FRAME_HOSTS = frozenset({"challenges.cloudflare.com"})
+_BOT_CHECK_POST_PATH = "/cdn-cgi/challenge-platform/"
+
+
+def bot_check_frame(url: str) -> bool:
+    """Whether a subframe document is Cloudflare's challenge frame. It loads outside the tab's request interceptor and
+    talks to Cloudflare alone."""
+    return (urlsplit(url).hostname or "").lower() in _BOT_CHECK_FRAME_HOSTS
+
+
+def bot_check_post(url: str, top_url: str) -> bool:
+    """Whether a POST goes to Cloudflare's challenge endpoint at the root of the challenged page's own host (the page
+    in the tab), never another site's."""
+    u, t = urlsplit(url), urlsplit(top_url)
+    return u.path.startswith(_BOT_CHECK_POST_PATH) and u.netloc.lower() == t.netloc.lower()
+
+
 def _forbidden(url: str, reason: str) -> ToolError:
     return ToolError("forbidden_url", f"agent tabs cannot open {url}: {reason}", {"url": url, "reason": reason},
                      status=403)
@@ -276,7 +296,7 @@ class BrowserSession:
             await route.abort("accessdenied")
             return
         if (page is not None and request.resource_type == "document" and request.frame != page.main_frame
-                and not frame_allowed(url, page.main_frame.url)):
+                and not frame_allowed(url, page.main_frame.url) and not bot_check_frame(url)):
             await route.abort("accessdenied")  # frame from another host: it could run outside the tab's interceptor
             return
         if not was_armed and page is not None and request.is_navigation_request() and request.frame == page.main_frame:
@@ -306,13 +326,16 @@ class BrowserSession:
             try:
                 reason = None if urlsplit(url).scheme in ("data", "blob") else await self._blocked_reason(url)
                 doc = ev.get("resourceType") == "Document"
-                if not reason and doc and ev.get("frameId") != main_id and not frame_allowed(url, page.main_frame.url):
+                if not reason and doc and ev.get("frameId") != main_id and not frame_allowed(url, page.main_frame.url) \
+                        and not bot_check_frame(url):
                     reason = "frames from other hosts are not loaded in agent tabs"
                 method = ev["request"].get("method", "GET").upper()
                 # §9.3: while an agent owns the tab, nothing it triggers may post (forms, scripts behind a button:
-                # account changes, payments) except on search sites; a tab handed to you can sign in
+                # account changes, payments) except on search sites and a bot check's POST to its own endpoint; a
+                # tab handed to you can sign in
                 if not reason and method not in ("GET", "HEAD", "OPTIONS") and self._is_agent(self._owners.get(tid)) \
-                        and urlsplit(url).netloc.lower() not in self.submit_hosts:
+                        and urlsplit(url).netloc.lower() not in self.submit_hosts \
+                        and not (method == "POST" and bot_check_post(url, page.main_frame.url)):
                     reason = "agents submit forms only on search sites"
                 if reason:
                     if doc and ev.get("frameId") == main_id:

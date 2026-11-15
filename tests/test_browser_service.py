@@ -62,6 +62,9 @@ def sites():
     s.route("/doi/10.5555/challenge", lambda r: html(  # a bot check that passes itself, as a real browser's would
         '<html><body><div class="cf-turnstile"></div><p>Checking your browser</p>'
         '<script>setTimeout(() => location.replace("/doi/10.5555/ok"), 700)</script></body></html>'))
+    s.route("/doi/10.5555/redirect", lambda r: html(  # Elsevier's linkinghub: a "Redirecting" page with a meta refresh
+        '<html><head><title>Redirecting</title><meta HTTP-EQUIV="REFRESH" content="2; url=\'/doi/10.5555/ok?a=1&amp;b=2\'">'
+        "</head><body><p>Redirecting</p></body></html>"))
     s.route("/blog", lambda r: html("<html><head><title>Lab notebook: humidity tests</title></head><body>"
                                     "<p>We exposed fixture films to 85% relative humidity for 1000 hours.</p>"
                                     "</body></html>"))
@@ -257,6 +260,28 @@ def test_a_bot_check_that_clears_itself_is_waited_out(service, kernel, sites):
     ps, _ = kernel.project("demo")
     assert out["origin"] == "library_browser"
     assert ps.db.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 0
+
+
+def test_a_redirect_page_is_followed_to_the_article(service, kernel, sites):
+    """A landing page that only redirects (a meta refresh, as Elsevier's linkinghub) is followed to the article, whose
+    PDF is fetched."""
+    human_logs_in(service, sites)
+    iid = add_item(kernel, url=sites.url("/doi/10.5555/redirect"))
+    out = build_registry(kernel, browser=lambda: service).call(
+        "rk_source_fetch_fulltext", {"project": "demo", "source_id": iid}, READER)
+    assert out["origin"] == "library_browser"
+
+
+def test_a_redirector_proxy_keeps_library_provenance_on_the_publisher_host(service, kernel, sites, plain):
+    """An OpenAthens-style redirector ({url_enc}) lands on the publisher's own host with your institution's session:
+    the PDF is still recorded as obtained through the library."""
+    plain.route("/redirector", lambda r: redirect(r.query["url"]))
+    save_settings(kernel.settings().model_copy(update={"library_proxy": plain.url("/redirector") + "?url={url_enc}"}))
+    human_logs_in(service, sites)
+    iid = add_item(kernel, url=sites.url("/doi/10.5555/ok"))
+    out = build_registry(kernel, browser=lambda: service).call(
+        "rk_source_fetch_fulltext", {"project": "demo", "source_id": iid}, READER)
+    assert out["origin"] == "library_browser"
 
 
 def test_status_shows_only_the_callers_tabs(service, kernel, sites):

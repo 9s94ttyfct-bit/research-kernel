@@ -38,3 +38,17 @@ def find_pdf_url(landing_url: str, html: str) -> str | None:
         if re.search(r"\.pdf(?:$|[?#])", href, re.IGNORECASE) and re.search(r"\bpdf\b", label, re.IGNORECASE):
             return urljoin(landing_url, href)
     return None
+
+
+_REFRESH = re.compile(r"""^\s*(\d+(?:\.\d+)?)\s*[;,]\s*url\s*=\s*['"]?([^'"]+)['"]?\s*$""", re.IGNORECASE)
+
+
+def refresh_target(page_url: str, html: str, max_delay_s: float = 10) -> str | None:
+    """Where a redirect page sends the browser through its ``<meta http-equiv="refresh" content="N; url=...">`` (N at
+    most ``max_delay_s``), or ``None``. Calibration (a university EZproxy, 2026-11-15): Elsevier's linkinghub answers
+    every Elsevier DOI with such a page ("Redirecting", 2 s), read before the redirect ran, so no Elsevier article had
+    a PDF link."""
+    doc = doc_of(html)
+    content = doc.xpath('string(//meta[translate(@http-equiv, "REFSH", "refsh")="refresh"]/@content)')
+    m = _REFRESH.match(content)
+    return urljoin(page_url, m.group(2).strip()) if m and float(m.group(1)) <= max_delay_s else None
