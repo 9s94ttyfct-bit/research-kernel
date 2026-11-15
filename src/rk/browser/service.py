@@ -41,6 +41,7 @@ _AX_LIMIT = 20000
 _MAX_AGENT_TABS = 5
 _NAVIGATING = {"click", "press", "back"}
 _MAX_REFRESH_HOPS = 3
+_REFRESH_WAIT_S = 15.0  # refresh_target follows delays up to 10 s
 
 
 def _owner(ctx: CallContext) -> str | None:
@@ -368,8 +369,12 @@ class BrowserService:
                     break
                 record_browse(ps, task_id=ctx.task_id, site=site, action="open", url=state.url, actor=ctx.actor)
                 if via_library and rewriting and not self._via_library(nxt):  # a hop off the proxy goes through it
-                    nxt = self._proxied(nxt)[0]
-                state, block = self._settled_block(tab, owner, self.session.goto(tab, owner, nxt))
+                    moved = self.session.goto(tab, owner, self._proxied(nxt)[0])
+                else:  # let the page's own refresh run: a navigation started over it is aborted (ERR_ABORTED, live
+                    #     on linkinghub through the proxy); navigate only when the page stayed
+                    moved = (self.session.wait_moved(tab, owner, state.url, _REFRESH_WAIT_S)
+                             or self.session.goto(tab, owner, nxt))
+                state, block = self._settled_block(tab, owner, moved)
             if block:
                 self._block(ctx, project, ps, site, block, state.url, tab)
             # the page reached, not the one asked for: an EZproxy sends a host it does not proxy to the publisher (an

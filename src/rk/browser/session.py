@@ -562,6 +562,21 @@ class BrowserSession:
 
         return self.call(go(), timeout_s + 10)
 
+    def wait_moved(self, tab_id: str, owner: str | None, from_url: str, timeout_s: float) -> PageState | None:
+        """The page once the tab has navigated on its own away from ``from_url`` (a meta refresh or a script
+        redirect running), or ``None`` when it stayed for ``timeout_s``."""
+        page = self._check_owner(tab_id, owner)
+
+        async def go():
+            try:
+                await page.wait_for_url(lambda u: u != from_url, wait_until="domcontentloaded",
+                                        timeout=timeout_s * 1000)
+            except PwError:
+                return None
+            return await self._checked_state(tab_id, owner, page)
+
+        return self.call(go(), timeout_s + 70)
+
     def content(self, tab_id: str, owner: str | None) -> PageState:
         page = self._check_owner(tab_id, owner)
         return self.call(self._checked_state(tab_id, owner, page), 60)
