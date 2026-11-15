@@ -272,6 +272,21 @@ def test_a_redirect_page_is_followed_to_the_article(service, kernel, sites):
     assert out["origin"] == "library_browser"
 
 
+def test_a_redirect_off_the_proxy_goes_through_the_proxy_again(service, kernel, sites, plain):
+    """A redirect page sending the browser to a publisher host off the proxy (an absolute URL) is followed through the
+    proxy; the article then reached off the proxy host is recorded as the publisher's, not the library's."""
+    plain.route("/article", lambda r: html(landing("10.5555/abs", "/pdf/abs.pdf")))
+    plain.route("/pdf/abs.pdf", lambda r: pdf(tiny_pdf("Off-proxy article text.")))
+    sites.route("/doi/10.5555/abs-redirect", lambda r: html(
+        f'<html><head><meta http-equiv="refresh" content="1; url={plain.url("/article")}"></head></html>'))
+    human_logs_in(service, sites)
+    iid = add_item(kernel, url=sites.url("/doi/10.5555/abs-redirect"))
+    out = build_registry(kernel, browser=lambda: service).call(
+        "rk_source_fetch_fulltext", {"project": "demo", "source_id": iid}, READER)
+    assert any(h.startswith("/proxy") and "/article" in h for h in sites.hits)  # the hop went through the proxy
+    assert out["origin"] == "publisher_browser"
+
+
 def test_a_redirector_proxy_keeps_library_provenance_on_the_publisher_host(service, kernel, sites, plain):
     """An OpenAthens-style redirector ({url_enc}) lands on the publisher's own host with your institution's session:
     the PDF is still recorded as obtained through the library."""
