@@ -272,6 +272,23 @@ def test_a_redirect_page_is_followed_to_the_article(service, kernel, sites):
     assert out["origin"] == "library_browser"
 
 
+def test_a_pdf_link_added_by_script_is_found(service, kernel, sites):
+    """An article page that adds its PDF link by script after the document has loaded (ScienceDirect) is read again
+    once quiet, and the PDF is fetched."""
+    sites.route("/doi/10.5555/scripted", lambda r: html(  # the link comes with a later request, as ScienceDirect's
+        "<html><head><title>Scripted article</title></head><body><h1>Scripted article</h1><div id='bar'></div>"
+        "<script>fetch('/bar').then(r => r.text()).then(t => { document.getElementById('bar').innerHTML = t; })"
+        "</script></body></html>"))
+    sites.route("/bar", lambda r: (time.sleep(0.8), html(
+        '<a href="/science/article/pii/X/pdfft?md5=1&amp;pid=x-main.pdf">View PDF</a>'))[1])
+    sites.route("/science/article/pii/X/pdfft", lambda r: pdf(tiny_pdf("Scripted article text.")))
+    human_logs_in(service, sites)
+    iid = add_item(kernel, url=sites.url("/doi/10.5555/scripted"))
+    out = build_registry(kernel, browser=lambda: service).call(
+        "rk_source_fetch_fulltext", {"project": "demo", "source_id": iid}, READER)
+    assert out["origin"] == "library_browser"
+
+
 def test_a_redirect_off_the_proxy_goes_through_the_proxy_again(service, kernel, sites, plain):
     """A redirect page sending the browser to a publisher host off the proxy (an absolute URL) is followed through the
     proxy; the article then reached off the proxy host is recorded as the publisher's, not the library's."""

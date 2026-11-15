@@ -375,6 +375,8 @@ class BrowserService:
                     moved = (self.session.wait_moved(tab, owner, state.url, _REFRESH_WAIT_S)
                              or self.session.goto(tab, owner, nxt))
                 state, block = self._settled_block(tab, owner, moved)
+            if not block and not find_pdf_url(state.url, state.html):  # links added by script (ScienceDirect, live)
+                state, block = self._settled_block(tab, owner, self.session.idle_content(tab, owner))
             if block:
                 self._block(ctx, project, ps, site, block, state.url, tab)
             # the page reached, not the one asked for: an EZproxy sends a host it does not proxy to the publisher (an

@@ -577,6 +577,20 @@ class BrowserSession:
 
         return self.call(go(), timeout_s + 70)
 
+    def idle_content(self, tab_id: str, owner: str | None, timeout_s: float = 10) -> PageState:
+        """The page once its network has gone quiet (at most ``timeout_s``): a page that adds its links by script
+        (ScienceDirect's PDF link) has them by then."""
+        page = self._check_owner(tab_id, owner)
+
+        async def go():
+            try:
+                await page.wait_for_load_state("networkidle", timeout=timeout_s * 1000)
+            except PwError:
+                pass  # a page that never goes quiet is read as it is
+            return await self._checked_state(tab_id, owner, page)
+
+        return self.call(go(), timeout_s + 70)
+
     def content(self, tab_id: str, owner: str | None) -> PageState:
         page = self._check_owner(tab_id, owner)
         return self.call(self._checked_state(tab_id, owner, page), 60)
