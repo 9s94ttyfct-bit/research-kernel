@@ -610,6 +610,19 @@ def test_step_error_fails_the_run_with_its_reason(env):
     assert run_row(ps, run2)["reason"] == "RuntimeError: disk full"
 
 
+def test_a_browser_closed_under_a_step_is_retried_like_a_source_outage(env):
+    """Stopping rk serve can close its browser under a step before the runs are stopped (live: two runs failed on a
+    restart): the step is retried after a backoff instead of failing the run, so a shutdown leaves it to the restart."""
+    class TargetClosedError(Exception):  # Playwright's, matched by name
+        pass
+
+    _, ps, _, make = env
+    closed = TargetClosedError("BrowserContext.new_page: Target page, context or browser has been closed")
+    m, _ = make(_workers(landscape=FakeWorker(runs=[closed, StageOutcome("done")])), source_backoff_s=0.01)
+    run_id = m.start("demo", "topics", actor="tester")
+    _wait(lambda: run_row(ps, run_id)["status"] == "done")
+
+
 def test_transient_source_error_backs_off_and_steps_again(env):
     from rk.net.http import HttpError
 

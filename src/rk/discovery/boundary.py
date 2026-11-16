@@ -9,7 +9,8 @@ exceptions (``BudgetExceeded``, ``RateCapped``) and an exhausted source API budg
 the run (spec §11.3) instead of skipping the item.
 
 ``transient_source_error`` tells which errors outside such a boundary (e.g. a landscape search) are worth stepping the
-run again after a backoff instead of failing it: an HTTP 429, a 5xx, a transport error or an unreadable 200 body."""
+run again after a backoff instead of failing it: an HTTP 429, a 5xx, a transport error, an unreadable 200 body or a
+closed browser."""
 
 from __future__ import annotations
 
@@ -50,7 +51,10 @@ def per_item(what: str, call: Callable[[], T]) -> tuple[T | None, str | None]:
 
 
 def transient_source_error(e: BaseException) -> bool:
-    """A source error that may go away: HTTP 429, 5xx, a transport error (status 0) or an unreadable 200 body."""
-    if isinstance(e, httpx.TransportError):
+    """A source error that may go away: HTTP 429, 5xx, a transport error (status 0), an unreadable 200 body, or the
+    built-in browser closed under the step (Playwright's ``TargetClosedError``, matched by name: the class is only in
+    its private ``_impl``). Live, 2026-11-15: stopping ``rk serve`` closed the browser before the runs stopped, and two
+    runs failed instead of resuming after the restart."""
+    if isinstance(e, httpx.TransportError) or type(e).__name__ == "TargetClosedError":
         return True
     return isinstance(e, HttpError) and (e.status in (0, 200, 429) or e.status >= 500)
