@@ -23,6 +23,11 @@ def test_crossref_peerj_metadata(replay_http):
     assert w.item.ids.doi == "10.7717/peerj.1364" and w.updates == []
 
 
+def test_landing_url_is_the_registered_publisher_page(replay_http):
+    assert crossref.landing_url(replay_http, "10.7717/peerj.1364", MAILTO) == "https://peerj.com/articles/1364"
+    assert crossref.landing_url(replay_http, "10.9999/rk-does-not-exist-2026", MAILTO) is None
+
+
 def test_openalex_peerj(replay_http):
     w = openalex.get_work(replay_http, Identifier(kind="doi", value="10.7717/peerj.1364"), None)
     assert w.item.year == 2015 and w.item.ids.pmid == "26528420" and w.item.ids.pmcid == "PMC4627914"

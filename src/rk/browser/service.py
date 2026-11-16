@@ -30,6 +30,7 @@ from rk.fulltext import (
 )
 from rk.library.formats import from_csl
 from rk.net.http import HttpError
+from rk.sources import crossref
 from rk.sources.identifiers import Identifier
 from rk.sources.resolver import ResolvedWork, resolve
 from rk.tools.registry import CallContext, ToolError
@@ -55,13 +56,14 @@ def _actor_kind(ctx: CallContext) -> str:
 
 class BrowserService:
     def __init__(self, kernel, session: BrowserSession, pacer: Pacer, *, adapters: dict[str, SiteAdapter] | None = None,
-                 doi_base: str = "https://doi.org/", challenge_wait_s: float = 45.0,
+                 doi_base: str = "https://doi.org/", landing_of=None, challenge_wait_s: float = 45.0,
                  sleep=time.sleep, clock=time.monotonic):
         self.kernel = kernel
         self.session = session
         self.pacer = pacer
         self.adapters = adapters or ADAPTERS
         self.doi_base = doi_base
+        self.landing_of = landing_of or self._crossref_landing  # DOI -> registered landing URL, or None
         self.challenge_wait_s, self._sleep, self._clock = challenge_wait_s, sleep, clock
         self._steps: dict[tuple[str | None, str | None], int] = {}
         self._tabs: dict[tuple[str | None, str], str] = {}
@@ -326,9 +328,16 @@ class BrowserService:
                 for t in self.session.tabs(_owner(ctx))]
 
     # ---- full text ----------------------------------------------------------------------------------------------
+    def _crossref_landing(self, doi: str) -> str | None:
+        ctx = self.kernel.ctx()
+        try:
+            return crossref.landing_url(ctx.http, doi, ctx.settings.email)
+        except (HttpError, OSError):  # Crossref unreachable: doi.org still resolves the DOI
+            return None
+
     def _landing(self, item) -> str:
-        if item.ids.doi:
-            return self.doi_base + item.ids.doi
+        if item.ids.doi:  # the publisher's registered page first; doi.org only for a DOI Crossref has no page for
+            return self.landing_of(item.ids.doi) or self.doi_base + item.ids.doi
         if item.ids.pmid:
             return f"https://pubmed.ncbi.nlm.nih.gov/{item.ids.pmid}/"
         if item.ids.arxiv:
@@ -378,7 +387,9 @@ class BrowserService:
             item = lib.get(item_id)
         except KeyError as e:
             raise ToolError("not_found", f"no item {item_id}", status=404) from e
-        landing, via_library = self._proxied(self._landing(item))
+        start = self._landing(item)
+        from_resolver = bool(item.ids.doi) and start == self.doi_base + item.ids.doi
+        landing, via_library = self._proxied(start)
         site = "library" if via_library else "publisher"
         self._check_pause(site)
         self.pacer.acquire([f"site:{site}"])
@@ -401,6 +412,13 @@ class BrowserService:
             if not block and not find_pdf_url(state.url, state.html):  # links added by script (ScienceDirect, live)
                 state, block = self._settled_block(tab, owner, self.session.idle_content(tab, owner))
             if block:
+                if block.kind == "captcha" and from_resolver \
+                        and self._publisher_host(state.url) == urlsplit(self.doi_base).hostname:
+                    # the DOI resolver's own bot check is not the library's or a publisher's: this paper goes without
+                    # a full text and nothing is paused (your decision, 2026-11-16, after doi.org challenged every
+                    # request from one network for 15 h and its one CAPTCHA paused all runs' library fetches)
+                    raise ToolError("doi_unresolved", "the DOI resolver showed a security check that did not clear",
+                                    {"final_url": state.url, "landing_url": landing}, status=404)
                 self._block(ctx, project, ps, site, block, state.url, tab)
             # the page reached, not the one asked for: an EZproxy sends a host it does not proxy to the publisher (an
             # OpenAthens-style redirector always lands on the publisher's host, with your institution's session)

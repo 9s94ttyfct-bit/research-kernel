@@ -62,6 +62,8 @@ def sites():
     s.route("/doi/10.5555/challenge", lambda r: html(  # a bot check that passes itself, as a real browser's would
         '<html><body><div class="cf-turnstile"></div><p>Checking your browser</p>'
         '<script>setTimeout(() => location.replace("/doi/10.5555/ok"), 700)</script></body></html>'))
+    s.route("/doi/10.5555/blocked", lambda r: html(  # a bot check that does not pass (doi.org's, live, for a network)
+        '<html><body><div class="cf-turnstile"></div><p>Checking your browser</p></body></html>'))
     s.route("/doi/10.5555/redirect", lambda r: html(  # Elsevier's linkinghub: a "Redirecting" page with a meta refresh
         '<html><head><title>Redirecting</title><meta HTTP-EQUIV="REFRESH" content="2; url=\'/doi/10.5555/ok?a=1&amp;b=2\'">'
         "</head><body><p>Redirecting</p></body></html>"))
@@ -121,7 +123,7 @@ def service(kernel, tmp_path, sites, scholar_site, plain):
                 "scholar": dataclasses.replace(ADAPTERS["scholar"],
                                                search_url=lambda q, s, p=0: scholar_site.url("/scholar"))}
     svc = BrowserService(kernel, session, Pacer(tmp_path / "pacer.sqlite", FAST, max_wait_s=5), adapters=adapters,
-                         doi_base=sites.url("/doi/"), challenge_wait_s=3.0)
+                         doi_base=sites.url("/doi/"), landing_of=lambda doi: None, challenge_wait_s=3.0)
     yield svc
     session.close()
 
@@ -205,6 +207,32 @@ def test_pdf_link_returning_html_not_attached(service, kernel, sites):
     assert e.value.type == "pdf_not_obtained" and e.value.details["final_url"].endswith("/pdf/paywall.pdf")
     ps, _ = kernel.project("demo")
     assert ps.db.execute("SELECT COUNT(*) FROM attachments").fetchone()[0] == 0
+
+
+def test_a_doi_opens_its_registered_landing_page_not_the_resolver(service, kernel, sites):
+    """The DOI resolver can challenge a whole network (doi.org, live): a DOI with a registered landing page opens that
+    page, and the resolver is not contacted."""
+    human_logs_in(service, sites)
+    service.landing_of = {"10.5555/moved": sites.url("/doi/10.5555/ok")}.get  # no /doi/10.5555/moved route
+    iid = add_item(kernel, doi="10.5555/moved")
+    r = service.fetch_fulltext(READER, "demo", iid)
+    assert (r.kind, r.origin) == ("pdf", "library_browser")
+    assert not any("10.5555/moved" in h for h in sites.hits)
+
+
+def test_the_resolvers_own_bot_check_skips_the_paper_without_a_pause(service, kernel, sites):
+    human_logs_in(service, sites)
+    ps, _ = kernel.project("demo")
+    with pytest.raises(ToolError) as e:
+        service.fetch_fulltext(READER, "demo", add_item(kernel, doi="10.5555/blocked"))
+    assert e.value.type == "doi_unresolved"
+    assert ps.db.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 0
+    assert service.fetch_fulltext(READER, "demo", add_item(kernel, doi="10.5555/ok")).kind == "pdf"  # not paused
+
+    service.landing_of = {"10.5555/pub": sites.url("/doi/10.5555/blocked")}.get  # the publisher's page: still yours
+    with pytest.raises(HumanRequired) as e:
+        service.fetch_fulltext(READER, "demo", add_item(kernel, doi="10.5555/pub"))
+    assert e.value.details["kind"] == "captcha_wait"
 
 
 def test_save_page_page_metadata_only(service, kernel, sites):

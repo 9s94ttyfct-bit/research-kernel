@@ -88,6 +88,15 @@ def get_work(http: HttpClient, doi: str, mailto: str | None) -> CrossrefWork | N
     return CrossrefWork(item=message_to_item(m), updates=updates, raw=m)
 
 
+def landing_url(http: HttpClient, doi: str, mailto: str | None) -> str | None:
+    """The landing page the publisher registered for ``doi`` (where doi.org would redirect), or None when Crossref
+    does not know the DOI or lists no web address. Opening it skips doi.org, whose Cloudflare check can block a
+    whole network (live, 2026-11-16: every doi.org request from one Mac, even its handle API, got a 403 challenge)."""
+    w = get_work(http, doi, mailto)
+    url = ((w.raw.get("resource") or {}).get("primary") or {}).get("URL") if w else None
+    return url if isinstance(url, str) and url.startswith(("https://", "http://")) else None
+
+
 def csl(http: HttpClient, doi: str, mailto: str | None) -> dict | None:
     data, res = http.get_json(
         f"{BASE}/works/{quote(doi, safe='/()')}/transform/application/vnd.citationstyles.csl+json",
