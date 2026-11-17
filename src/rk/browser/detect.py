@@ -52,6 +52,10 @@ def _visible_text(html: str) -> str:
         return ""
 
 
+def has_password_field(html: str) -> bool:
+    return bool(_PASSWORD.search(html or ""))
+
+
 def detect_block(url: str, html: str, *, proxy_host: str | None = None) -> Block | None:
     parts = urlsplit(url)
     host, path = parts.hostname or "", parts.path + ("?" + parts.query if parts.query else "")

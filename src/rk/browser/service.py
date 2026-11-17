@@ -15,7 +15,7 @@ from urllib.parse import quote, urlsplit
 from rk.browser import HumanRequired, Paced, SitePaused
 from rk.browser.adapters import ADAPTERS, SiteAdapter, valid
 from rk.browser.adapters.publisher import find_pdf_url, pdf_in_script, refresh_target
-from rk.browser.detect import Block, detect_block
+from rk.browser.detect import Block, detect_block, has_password_field
 from rk.browser.log import record_browse
 from rk.browser.metadata import PageMetadata, merge_with_api, parse_page_metadata
 from rk.browser.pacing import Pacer
@@ -43,6 +43,7 @@ _MAX_AGENT_TABS = 5
 _NAVIGATING = {"click", "press", "back"}
 _MAX_REFRESH_HOPS = 3
 _REFRESH_WAIT_S = 15.0  # refresh_target follows delays up to 10 s
+_REGISTRY_HOSTS = {"clinicaltrials.gov"}  # trial registries: a registration page, never an article PDF
 
 
 def _owner(ctx: CallContext) -> str | None:
@@ -84,6 +85,13 @@ class BrowserService:
     def _proxy_host(self) -> str | None:
         proxy = self.kernel.settings().library_proxy
         return urlsplit(proxy.replace("{url}", "").replace("{url_enc}", "")).hostname if proxy else None
+
+    def _proxy_declined(self, state) -> bool:
+        """Whether the page is still the proxy's own start page (``…/login?url=``) without a sign-in form: the proxy
+        did not take the URL. An expired session leaves it for the university's sign-in host instead."""
+        own = urlsplit((self.kernel.settings().library_proxy or "").replace("{url}", "").replace("{url_enc}", ""))
+        at = urlsplit(state.url)
+        return (at.netloc.lower(), at.path) == (own.netloc.lower(), own.path) and not has_password_field(state.html)
 
     def _settled_block(self, tab: str, owner, state):
         """``(state, block)`` for the page in ``tab``: a bot check that clears itself (a Cloudflare managed challenge
@@ -388,6 +396,11 @@ class BrowserService:
         except KeyError as e:
             raise ToolError("not_found", f"no item {item_id}", status=404) from e
         start = self._landing(item)
+        if (urlsplit(start).hostname or "").removeprefix("www.") in _REGISTRY_HOSTS:
+            # a DOI minted for a trial registration (Case Medical Research's 10.31525/ct1-nct…, live) lands on the
+            # registry: its page holds no article, and the record is assessed on its registration
+            raise ToolError("registry_record", "the item's page is a trial registry record, not an article",
+                            {"landing_url": start}, status=404)
         from_resolver = bool(item.ids.doi) and start == self.doi_base + item.ids.doi
         landing, via_library = self._proxied(start)
         site = "library" if via_library else "publisher"
@@ -398,6 +411,14 @@ class BrowserService:
         try:
             state, block = self._settled_block(tab, owner, self.session.goto(tab, owner, landing))
             rewriting = "{url}" in (self.kernel.settings().library_proxy or "")  # EZproxy, not a redirector
+            if via_library and rewriting and self._proxy_declined(state):
+                # an EZproxy that does not proxy the host leaves its start page blank (live, 2026-11-17: osf.io, ERS,
+                # clinicaltrials.gov; the /login URL then paused every run as a sign-in page): open the page itself
+                record_browse(ps, task_id=ctx.task_id, site=site, action="open", url=state.url, actor=ctx.actor)
+                landing, via_library, site = start, False, "publisher"
+                self._check_pause(site)
+                self.pacer.acquire([f"site:{site}"])
+                state, block = self._settled_block(tab, owner, self.session.goto(tab, owner, start))
             for _ in range(_MAX_REFRESH_HOPS):  # a redirect page (Elsevier's linkinghub) before the article
                 if block or find_pdf_url(state.url, state.html) or not (nxt := refresh_target(state.url, state.html)):
                     break

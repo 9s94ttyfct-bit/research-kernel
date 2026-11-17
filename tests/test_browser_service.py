@@ -51,7 +51,9 @@ def sites():
     s.route("/pubmed-broken", lambda r: html((FIXTURES / "pubmed_results.html").read_text()
                                              .replace("full-docsum", "redesigned")))
     s.route("/scholar", lambda r: html(SCHOLAR_BLOCK))
-    s.route("/proxy", lambda r: redirect(r.query["url"]) if logged_in(r) else redirect("/idp/profile/SAML2/Redirect/SSO"))
+    s.route("/proxy", lambda r: (html("<html><head></head><body></body></html>") if "declined" in r.query["url"]
+                                 else redirect(r.query["url"])) if logged_in(r)
+            else redirect("/idp/profile/SAML2/Redirect/SSO"))  # a host it does not proxy: a blank start page (live)
     s.route("/idp/profile/SAML2/Redirect/SSO", lambda r: html(SSO_PAGE))
     s.route("/human-login", lambda r: html("<p>signed in</p>", headers={"Set-Cookie": "libsess=1; Path=/; Max-Age=600"}))
     s.route("/doi/10.5555/ok", lambda r: html(landing("10.5555/ok", "/pdf/ok.pdf")))
@@ -233,6 +235,24 @@ def test_the_resolvers_own_bot_check_skips_the_paper_without_a_pause(service, ke
     with pytest.raises(HumanRequired) as e:
         service.fetch_fulltext(READER, "demo", add_item(kernel, doi="10.5555/pub"))
     assert e.value.details["kind"] == "captcha_wait"
+
+
+def test_a_host_the_proxy_declines_is_opened_directly(service, kernel, sites):
+    """An EZproxy leaves its start page blank for a host it does not proxy (live: osf.io, ERS): that is no sign-in
+    page; the paper's own page is opened instead."""
+    human_logs_in(service, sites)
+    service.landing_of = {"10.5555/declined": sites.url("/doi/10.5555/ok?declined=1")}.get
+    r = service.fetch_fulltext(READER, "demo", add_item(kernel, doi="10.5555/declined"))
+    assert (r.kind, r.origin) == ("pdf", "publisher_browser")
+    ps, _ = kernel.project("demo")
+    assert ps.db.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 0
+
+
+def test_a_registry_landing_page_is_not_fetched(service, kernel):
+    service.landing_of = {"10.31525/ct1-nct00000001": "https://clinicaltrials.gov/ct2/show/NCT00000001"}.get
+    with pytest.raises(ToolError) as e:
+        service.fetch_fulltext(READER, "demo", add_item(kernel, doi="10.31525/ct1-nct00000001"))
+    assert e.value.type == "registry_record" and not service.tabs(READER)
 
 
 def test_save_page_page_metadata_only(service, kernel, sites):
