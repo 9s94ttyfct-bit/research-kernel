@@ -344,15 +344,11 @@ class BrowserService:
 
     # ---- full text ----------------------------------------------------------------------------------------------
     def _crossref_landing(self, doi: str) -> str | None:
-        """The DOI's registered landing page, over https: many are registered as http://, and the library proxy
-        declines an http URL of a host it serves over https (live, 2026-11-17: http://pubs.rsna.org was declined and
-        opened directly, behind RSNA's CAPTCHA; https://pubs.rsna.org went through the proxy)."""
         ctx = self.kernel.ctx()
         try:
-            url = crossref.landing_url(ctx.http, doi, ctx.settings.email)
+            return crossref.landing_url(ctx.http, doi, ctx.settings.email)
         except (HttpError, OSError):  # Crossref unreachable: doi.org still resolves the DOI
             return None
-        return "https://" + url.removeprefix("http://") if url and url.startswith("http://") else url
 
     def _landing(self, item) -> str:
         if item.ids.doi:  # the publisher's registered page first; doi.org only for a DOI Crossref has no page for
@@ -422,6 +418,12 @@ class BrowserService:
         try:
             state, block = self._settled_block(tab, owner, self.session.goto(tab, owner, landing))
             rewriting = "{url}" in (self.kernel.settings().library_proxy or "")  # EZproxy, not a redirector
+            if via_library and rewriting and self._proxy_declined(state) and start.startswith("http://"):
+                # many landing pages are registered as http://, and the proxy declines an http URL of a host it serves
+                # over https (live, 2026-11-17: http://pubs.rsna.org was declined, https://pubs.rsna.org was served)
+                record_browse(ps, task_id=ctx.task_id, site=site, action="open", url=state.url, actor=ctx.actor)
+                landing = self._proxied("https://" + start.removeprefix("http://"))[0]
+                state, block = self._settled_block(tab, owner, self.session.goto(tab, owner, landing))
             if via_library and rewriting and self._proxy_declined(state):
                 # an EZproxy that does not proxy the host leaves its start page blank (live, 2026-11-17: osf.io, ERS,
                 # clinicaltrials.gov; the /login URL then paused every run as a sign-in page): open the page itself

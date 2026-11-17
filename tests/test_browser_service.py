@@ -51,9 +51,18 @@ def sites():
     s.route("/pubmed-broken", lambda r: html((FIXTURES / "pubmed_results.html").read_text()
                                              .replace("full-docsum", "redesigned")))
     s.route("/scholar", lambda r: html(SCHOLAR_BLOCK))
-    s.route("/proxy", lambda r: (html("<html><head></head><body></body></html>") if "declined" in r.query["url"]
-                                 else redirect(r.query["url"])) if logged_in(r)
-            else redirect("/idp/profile/SAML2/Redirect/SSO"))  # a host it does not proxy: a blank start page (live)
+    def proxy(r):
+        url = r.query["url"]
+        if not logged_in(r):
+            return redirect("/idp/profile/SAML2/Redirect/SSO")
+        if "httpsonly" in url:  # a host the proxy serves over https only (live: pubs.rsna.org), on its own host there
+            return redirect("/doi/10.5555/ok") if url.startswith("https://") \
+                else html("<html><head></head><body></body></html>")
+        if "declined" in url:  # a host it does not proxy: a blank start page (live)
+            return html("<html><head></head><body></body></html>")
+        return redirect(url)
+
+    s.route("/proxy", proxy)
     s.route("/idp/profile/SAML2/Redirect/SSO", lambda r: html(SSO_PAGE))
     s.route("/human-login", lambda r: html("<p>signed in</p>", headers={"Set-Cookie": "libsess=1; Path=/; Max-Age=600"}))
     s.route("/doi/10.5555/ok", lambda r: html(landing("10.5555/ok", "/pdf/ok.pdf")))
@@ -539,18 +548,10 @@ def test_a_proxy_on_this_computer_is_told_apart_by_its_port(tmp_home, replay_htt
         k.close()
 
 
-def test_a_crossref_landing_page_is_opened_over_https(tmp_home, replay_http, monkeypatch):
-    """Live (2026-11-17): the library proxy declines http://pubs.rsna.org, registered so in Crossref, and serves
-    https://pubs.rsna.org."""
-    from rk.sources import crossref
-
-    k = Kernel(tmp_home, http=replay_http)
-    try:
-        svc = BrowserService(k, types.SimpleNamespace(submit_hosts=set()), pacer=None)
-        monkeypatch.setattr(crossref, "landing_url", lambda http, doi, mailto: {
-            "10.1/a": "http://pubs.example.org/doi/10.1/a", "10.1/b": "https://b.example.org/x"}.get(doi))
-        assert svc._crossref_landing("10.1/a") == "https://pubs.example.org/doi/10.1/a"
-        assert svc._crossref_landing("10.1/b") == "https://b.example.org/x"
-        assert svc._crossref_landing("10.1/none") is None
-    finally:
-        k.close()
+def test_an_http_landing_page_the_proxy_declines_is_tried_over_https_through_it(service, kernel, sites):
+    """Live (2026-11-17): Crossref registers http://pubs.rsna.org pages; the proxy declines that URL and serves
+    https://pubs.rsna.org. The https URL is tried through the proxy before the page is opened directly."""
+    human_logs_in(service, sites)
+    service.landing_of = {"10.5555/httpsonly": "http://pubs.example.org/doi/httpsonly"}.get
+    r = service.fetch_fulltext(READER, "demo", add_item(kernel, doi="10.5555/httpsonly"))
+    assert (r.kind, r.origin) == ("pdf", "library_browser")
