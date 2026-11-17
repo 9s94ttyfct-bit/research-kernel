@@ -255,6 +255,19 @@ def test_a_registry_landing_page_is_not_fetched(service, kernel):
     assert e.value.type == "registry_record" and not service.tabs(READER)
 
 
+def test_a_publisher_captcha_pauses_that_publisher_only(service, kernel, sites, plain):
+    """Live: one publisher's CAPTCHA (ERS) paused every other publisher fetched off the proxy."""
+    human_logs_in(service, sites)
+    plain.route("/article", lambda r: html('<html><body><div class="cf-turnstile"></div><p>Checking your browser</p>'
+                                           "</body></html>"))
+    service.landing_of = {"10.5555/p1": plain.url("/article?declined=1"),
+                          "10.5555/p2": sites.url("/doi/10.5555/ok?declined=1")}.get
+    with pytest.raises(HumanRequired) as e:
+        service.fetch_fulltext(READER, "demo", add_item(kernel, doi="10.5555/p1"))
+    assert e.value.details["site"] == "publisher:" + plain.base.removeprefix("http://")
+    assert service.fetch_fulltext(READER, "demo", add_item(kernel, doi="10.5555/p2")).kind == "pdf"
+
+
 def test_save_page_page_metadata_only(service, kernel, sites):
     service.session.new_tab(None, sites.url("/blog"))
     out = service.save_page(HUMAN, "demo")

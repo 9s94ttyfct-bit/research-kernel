@@ -46,6 +46,12 @@ _REFRESH_WAIT_S = 15.0  # refresh_target follows delays up to 10 s
 _REGISTRY_HOSTS = {"clinicaltrials.gov"}  # trial registries: a registration page, never an article PDF
 
 
+def _publisher_site(url: str) -> str:
+    """The pause and pacing site of a page fetched off the library proxy: its own host. Live, 2026-11-17: one
+    publisher's CAPTCHA (ERS) paused every other publisher while it waited."""
+    return "publisher:" + urlsplit(url).netloc.lower()
+
+
 def _owner(ctx: CallContext) -> str | None:
     """Tabs of the human (CLI and Workbench calls) or of one agent task."""
     return HUMAN if ctx.role == "cli" else (ctx.task_id or ctx.actor)
@@ -199,7 +205,8 @@ class BrowserService:
 
     def _block(self, ctx: CallContext, project: str, ps, site: str, block: Block, url: str, tab: str):
         kind = "captcha_wait" if block.kind == "captcha" else "login_wait"
-        label = SITE_LABELS.get(site, site)
+        label = SITE_LABELS.get(site) or (f"the publisher site {site.removeprefix('publisher:')}"
+                                          if site.startswith("publisher:") else site)
         if kind == "captcha_wait":
             prompt = (f"{label} is showing a CAPTCHA or an 'unusual traffic' page ({url}). Solve it in the built-in "
                       "browser window, then answer 'done'. The Kernel never solves CAPTCHAs itself.")
@@ -403,7 +410,7 @@ class BrowserService:
                             {"landing_url": start}, status=404)
         from_resolver = bool(item.ids.doi) and start == self.doi_base + item.ids.doi
         landing, via_library = self._proxied(start)
-        site = "library" if via_library else "publisher"
+        site = "library" if via_library else _publisher_site(start)
         self._check_pause(site)
         self.pacer.acquire([f"site:{site}"])
         owner = _owner(ctx)
@@ -415,7 +422,7 @@ class BrowserService:
                 # an EZproxy that does not proxy the host leaves its start page blank (live, 2026-11-17: osf.io, ERS,
                 # clinicaltrials.gov; the /login URL then paused every run as a sign-in page): open the page itself
                 record_browse(ps, task_id=ctx.task_id, site=site, action="open", url=state.url, actor=ctx.actor)
-                landing, via_library, site = start, False, "publisher"
+                landing, via_library, site = start, False, _publisher_site(start)
                 self._check_pause(site)
                 self.pacer.acquire([f"site:{site}"])
                 state, block = self._settled_block(tab, owner, self.session.goto(tab, owner, start))
@@ -497,7 +504,8 @@ class BrowserService:
         via_library = self._via_library(state.url)
         origin = "library_browser" if via_library else "publisher_browser"
         try:  # never clicks in your tab: only a PDF the page links to is fetched
-            got = self._download(ctx, project, ps, t.id, HUMAN, state.url, state.html, "publisher", click=False)
+            got = self._download(ctx, project, ps, t.id, HUMAN, state.url, state.html, _publisher_site(state.url),
+                                 click=False)
         except ToolError as e:
             if e.type == "human_required":
                 raise
