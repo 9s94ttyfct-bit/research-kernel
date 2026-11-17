@@ -537,3 +537,20 @@ def test_a_proxy_on_this_computer_is_told_apart_by_its_port(tmp_home, replay_htt
         assert svc._via_library("http://127.0.0.1:8002/scholar") is False
     finally:
         k.close()
+
+
+def test_a_crossref_landing_page_is_opened_over_https(tmp_home, replay_http, monkeypatch):
+    """Live (2026-11-17): the library proxy declines http://pubs.rsna.org, registered so in Crossref, and serves
+    https://pubs.rsna.org."""
+    from rk.sources import crossref
+
+    k = Kernel(tmp_home, http=replay_http)
+    try:
+        svc = BrowserService(k, types.SimpleNamespace(submit_hosts=set()), pacer=None)
+        monkeypatch.setattr(crossref, "landing_url", lambda http, doi, mailto: {
+            "10.1/a": "http://pubs.example.org/doi/10.1/a", "10.1/b": "https://b.example.org/x"}.get(doi))
+        assert svc._crossref_landing("10.1/a") == "https://pubs.example.org/doi/10.1/a"
+        assert svc._crossref_landing("10.1/b") == "https://b.example.org/x"
+        assert svc._crossref_landing("10.1/none") is None
+    finally:
+        k.close()

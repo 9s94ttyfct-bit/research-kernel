@@ -344,11 +344,15 @@ class BrowserService:
 
     # ---- full text ----------------------------------------------------------------------------------------------
     def _crossref_landing(self, doi: str) -> str | None:
+        """The DOI's registered landing page, over https: many are registered as http://, and the library proxy
+        declines an http URL of a host it serves over https (live, 2026-11-17: http://pubs.rsna.org was declined and
+        opened directly, behind RSNA's CAPTCHA; https://pubs.rsna.org went through the proxy)."""
         ctx = self.kernel.ctx()
         try:
-            return crossref.landing_url(ctx.http, doi, ctx.settings.email)
+            url = crossref.landing_url(ctx.http, doi, ctx.settings.email)
         except (HttpError, OSError):  # Crossref unreachable: doi.org still resolves the DOI
             return None
+        return "https://" + url.removeprefix("http://") if url and url.startswith("http://") else url
 
     def _landing(self, item) -> str:
         if item.ids.doi:  # the publisher's registered page first; doi.org only for a DOI Crossref has no page for
