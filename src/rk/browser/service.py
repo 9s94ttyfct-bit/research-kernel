@@ -453,11 +453,17 @@ class BrowserService:
                     # request from one network for 15 h and its one CAPTCHA paused all runs' library fetches)
                     raise ToolError("doi_unresolved", "the DOI resolver showed a security check that did not clear",
                                     {"final_url": state.url, "landing_url": landing}, status=404)
+                if block.kind == "captcha" and via_library and rewriting and not self._via_library(state.url):
+                    site = _publisher_site(state.url)  # a bot check off the proxy is that publisher's, not the library's
                 self._block(ctx, project, ps, site, block, state.url, tab)
             # the page reached, not the one asked for: an EZproxy sends a host it does not proxy to the publisher (an
-            # OpenAthens-style redirector always lands on the publisher's host, with your institution's session)
-            if via_library and rewriting:
-                via_library = self._via_library(state.url)
+            # OpenAthens-style redirector always lands on the publisher's host, with your institution's session). Its
+            # PDF is that publisher's too: live (2026-11-17), a repository PDF's CAPTCHA (research.rug.nl, reached from
+            # the proxy) paused the library for every run
+            if via_library and rewriting and not self._via_library(state.url):
+                via_library, site = False, _publisher_site(state.url)
+                self._check_pause(site)
+                self.pacer.acquire([f"site:{site}"])
             record_browse(ps, task_id=ctx.task_id, site=site, action="open", url=state.url, actor=ctx.actor)
             got = self._download(ctx, project, ps, tab, owner, state.url, state.html, site)
             if got is None:

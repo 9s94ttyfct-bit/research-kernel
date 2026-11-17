@@ -277,6 +277,21 @@ def test_a_publisher_captcha_pauses_that_publisher_only(service, kernel, sites, 
     assert service.fetch_fulltext(READER, "demo", add_item(kernel, doi="10.5555/p2")).kind == "pdf"
 
 
+def test_a_captcha_on_a_pdf_off_the_proxy_pauses_that_host_not_the_library(service, kernel, sites, plain):
+    """Live (2026-11-17): a repository's PDF (research.rug.nl), reached from the proxy, showed a CAPTCHA that paused
+    the library for every run."""
+    human_logs_in(service, sites)
+    plain.route("/repo", lambda r: html(landing("10.5555/repo", "/files/thesis.pdf")))
+    plain.route("/files/thesis.pdf", lambda r: html('<html><body><div class="cf-turnstile"></div>'
+                                                     "<p>Checking your browser</p></body></html>"))
+    service.landing_of = {"10.5555/repo": plain.url("/repo"), "10.5555/ok": sites.url("/doi/10.5555/ok")}.get
+    with pytest.raises(HumanRequired) as e:
+        service.fetch_fulltext(READER, "demo", add_item(kernel, doi="10.5555/repo"))
+    assert e.value.details["site"] == "publisher:" + plain.base.removeprefix("http://")
+    r = service.fetch_fulltext(READER, "demo", add_item(kernel, doi="10.5555/ok"))
+    assert (r.kind, r.origin) == ("pdf", "library_browser")
+
+
 def test_save_page_page_metadata_only(service, kernel, sites):
     service.session.new_tab(None, sites.url("/blog"))
     out = service.save_page(HUMAN, "demo")
